@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- zh-Hans. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">zh-Hans</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">写一条便签——全家人都能看到。</string>
     <string name="s_add_note">添加便签</string>
     <string name="s_approval">批准</string>
@@ -158,11 +161,9 @@
     <string name="s_request_declined_explanation">家庭拥有者拒绝了你的申请。你可以试试其他邀请码，或者创建自己的家庭。</string>
     <string name="s_waiting_explanation">这里没有什么可取消的——拥有者会让你加入或拒绝申请。</string>
     <string name="s_take_photo">拍照</string>
-    <string name="s_record_video">录像</string>
+    <string name="s_camera">相机</string>
     <string name="s_add_a_message_or_send_it_on_its_own">可以加一句话，也可以直接发送。</string>
     <string name="s_remove_attachment">移除附件</string>
-    <string name="s_record_audio">录制音频</string>
-    <string name="s_stop">停止</string>
     <string name="s_audio">音频</string>
     <string name="s_play">播放</string>
     <string name="s_pause">暂停</string>
@@ -187,8 +188,21 @@
     <string name="s_couldnt_load_statistics">无法加载统计</string>
     <string name="s_check_connection_try_again">请检查网络后重试。</string>
     <string name="s_saved_by_one_copy">相同的文件只保存一份，节省了 %1$s。</string>
-    <string name="s_attachments_and_size">%1$d 个附件，%2$s</string>
-    <string name="s_questions_to_assistant">向助手提问 %1$d 次</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="other">%1$d 个附件，%2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="other">向助手提问 %1$d 次</item>
+    </plurals>
+    <string name="s_stats_pictures">图片</string>
+    <string name="s_stats_recordings_as_text">录音转文字</string>
+    <string name="s_stats_recording_time">录音时长</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="other">助手生成的 %1$d 张图片</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="other">录音转文字 %1$d 次</item>
+    </plurals>
     <string name="s_family_language">家庭语言</string>
     <string name="s_family_language_explanation">在家庭对话里向助手提问时，它回答所用的语言。这不会改变这个 app 的界面语言。未选择时，它用提问者的语言回答。</string>
     <string name="s_not_set">未设置</string>
@@ -391,7 +405,6 @@
     <string name="s_safety_for">%1$s的安全选项</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">给助手看一张照片</string>
-    <string name="s_show_the_assistant_a_picture_note">照片会离开此服务器，发送给服务器所用的模型</string>
     <string name="s_ask_for_a_picture">请它画一张图</string>
     <string name="s_assistant_sees_this_picture">助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_sees_these_pictures">助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型。</string>
@@ -412,6 +425,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">这条回复提到了助手，所以助手将看到你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_mention_sees_both_and_recent">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
+    <string name="s_assistant_provider_refused">助手的服务提供方拒绝了这个请求。换个说法试试。</string>
     <string name="s_assistant_vision">允许助手查看照片</string>
     <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
     <string name="e_change_assistant_vision_failed">无法更改该设置</string>
@@ -532,6 +546,7 @@
     <string name="s_draw_another_backdrop">重新绘制背景图</string>
     <string name="s_drawing">正在绘制…</string>
     <string name="s_draw_failed">无法绘制。</string>
+    <string name="s_describe_in_general_words">请用笼统的词语描述人和事物——真实姓名和品牌常常会被拒绝。</string>
     <string name="s_tick_failed">无法勾选。</string>
     <string name="s_no_calendar_app">没有可添加的日历应用。</string>
     <string name="s_the_assistant">助手</string>
@@ -553,4 +568,141 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">在你同意之前，你写的内容不会发给 %1$s，助手也不会回答你。</string>
     <string name="s_consent_stopping_takes_effect_at_once">你写给助手的内容会发给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
     <string name="s_couldnt_save_your_answer">没能保存你的选择。请再试一次。</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">贴纸</string>
+    <string name="s_stickers">贴纸</string>
+    <string name="s_family_stickers">家庭贴纸</string>
+    <string name="s_family_stickers_count">%1$d / %2$d</string>
+    <string name="s_family_stickers_explanation">家里的任何人都可以添加贴纸。添加的人或家庭所有者可以移除它。</string>
+    <string name="s_recently_used">最近使用</string>
+    <string name="s_no_stickers_yet">还没有贴纸</string>
+    <string name="s_no_stickers_hint">在“家庭”页面添加一些吧。</string>
+    <string name="s_add_sticker">添加贴纸</string>
+    <string name="s_add_to_family_stickers">添加到家庭贴纸</string>
+    <string name="s_sticker_label">描述（可选）</string>
+    <string name="s_sticker_label_hint">给屏幕阅读器的几个字，不会显示在图片上。</string>
+    <string name="s_remove_sticker">移除贴纸</string>
+    <string name="s_remove_sticker_q">移除这张贴纸？</string>
+    <string name="s_remove_sticker_explanation">它会从家庭贴纸中移除。已发送的消息仍会保留它。</string>
+    <string name="s_sticker_added">已添加到家庭贴纸</string>
+    <string name="s_sticker_already_in_pack">已在家庭贴纸中</string>
+    <string name="s_sticker_pack_full">家庭已有 %1$d 张贴纸。移除一张才能再添加。</string>
+    <string name="s_sticker_too_large">这张太大了。贴纸最大为 %1$s。</string>
+    <string name="s_sticker_add_failed">无法添加贴纸，请重试。</string>
+    <string name="s_sticker_unreadable">无法读取这张图片。</string>
+    <string name="s_sticker_animated_must_be_webp">动态贴纸必须是 WebP 格式。无法添加这一张。</string>
+    <string name="s_sticker_label_too_long">描述最多 %1$d 个字符。</string>
+    <string name="s_sticker_remove_not_allowed">只有添加贴纸的人或家庭所有者可以移除它。</string>
+    <string name="s_sticker_remove_failed">无法移除贴纸，请重试。</string>
+    <string name="s_sticker_not_available_offline">这张贴纸还不在这部手机上。联网后再试一次。</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">显示文字</string>
+    <string name="s_transcript_hide">隐藏文字</string>
+    <string name="s_transcript_getting">正在获取文字…</string>
+    <string name="s_transcript_no_speech">没有说话声</string>
+    <string name="s_transcript_failed">无法获取文字。请重试。</string>
+    <string name="s_transcript_refused">助手的服务提供方拒绝了这段录音。</string>
+    <string name="s_transcript_unavailable">无法为这条消息获取文字。</string>
+    <string name="s_transcript_too_long">这段录音太长，无法转成文字。</string>
+    <string name="s_transcript_unreadable">无法读取这个文件中的声音。</string>
+    <string name="s_transcript_a11y">录音的文字</string>
+    <string name="s_assistant_transcripts">语音和视频转文字</string>
+    <string name="s_assistant_transcripts_explanation">打开后，成员可以在家庭聊天中获取其他成员的语音消息、音频和视频的文字，届时该录音的声音会发送给 %1$s。只有在有人请求时才会发送，而且只在发送者本人已同意使用助手时。每个人无需此开关也能获取自己录音的文字。除非你打开，否则它是关闭的。</string>
+    <string name="s_assistant_transcripts_no_server">此处不可用：这个服务器无法把录音转成文字。</string>
+    <string name="s_consent_transcript_sound_sent">如果你请求获取语音消息、音频文件或视频的文字，它的声音会发送给 %1$s。</string>
+    <string name="e_change_assistant_transcripts_failed">无法更改该设置</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">查资料</string>
+    <string name="s_assistant_lookups">可以查资料</string>
+    <string name="s_assistant_lookups_explanation">打开后，当问题需要时（比如天气、新闻、它不确定的事实），助手可以在 %1$s 中查资料。发送给它们的只有助手根据问题写出的简短搜索词或地名，绝不会是对话本身，而且只在提问的成员已同意时才会发送。回答会列出信息来源。除非你打开，否则它是关闭的。</string>
+    <string name="s_consent_lookups_with_history">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s（在家庭对话里，也可能参考最近的消息），之后它的回答会列出信息来源。</string>
+    <string name="s_consent_lookups_alone">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s，之后它的回答会列出信息来源。</string>
+    <string name="s_agree_with_lookups">同意，包括查资料</string>
+    <string name="s_agree_without_lookups">同意，但不查资料</string>
+    <string name="s_review_and_allow_lookups">查看并允许查资料…</string>
+    <string name="s_stop_lookups">停止查资料</string>
+    <string name="s_lookups_until_you_allow">在你允许查资料之前，助手只用它已经知道的内容回答你，你的问题中的任何内容都不会发给 %1$s。</string>
+    <string name="s_lookups_stopping_takes_effect">助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s。停止后立即生效；已经发出去的收不回来。</string>
+    <string name="s_list_two">%1$s和%2$s</string>
+    <string name="s_list_three">%1$s、%2$s和%3$s</string>
+    <string name="s_stats_web_searches">网络搜索</string>
+    <string name="e_change_assistant_lookups_failed">无法更改该设置</string>
+    <plurals name="s_web_searches">
+        <item quantity="other">网络搜索 %1$d 次</item>
+    </plurals>
+    <string name="s_greeting_weather">问候中的天气</string>
+    <string name="s_greeting_weather_place_placeholder">城市或城镇</string>
+    <string name="s_greeting_weather_add_place">添加地点</string>
+    <string name="s_greeting_weather_remove_place">移除地点</string>
+    <string name="s_greeting_weather_limit">最多 3 个地点。</string>
+    <string name="s_greeting_weather_footer">每日问候还会提到这些地点今天的天气。为获取天气预报，只会把地名发送给 Open-Meteo，不会发送其他任何内容。</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">语音消息未发送 · %1$s</string>
+    <string name="s_send_voice_message">发送语音消息</string>
+    <string name="s_delete_recording">删除录音</string>
+    <string name="s_keep">保留</string>
+    <string name="s_delete_this_recording">要删除这段录音吗？</string>
+    <string name="e_record_after_the_call">通话结束后就可以录制消息了。</string>
+    <string name="e_send_or_delete_the_unsent_first">请先发送或删除未发送的语音消息。</string>
+    <string name="s_recording_stopped_at_five_minutes">录音已满五分钟，已停止。</string>
+    <string name="e_recording_stopped_unexpectedly">录音意外停止了。</string>
+    <string name="s_voice_message_with_length">语音消息 · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">录制语音消息</string>
+    <string name="s_take_video">拍视频</string>
+    <string name="s_open_settings">打开设置</string>
+    <string name="s_stop_recording">停止录音</string>
+    <string name="s_stop_and_listen_first">停止并先试听</string>
+    <string name="s_start_recording_action">开始录音</string>
+    <string name="s_play_after_recording">录音结束后才能播放。</string>
+    <string name="s_thirty_seconds_left">还剩30秒</string>
+    <string name="s_cant_hear_microphone_muted">什么也听不到。麦克风是不是静音了？</string>
+    <string name="s_announce_recording">正在录音</string>
+    <string name="s_announce_recording_deleted">录音已删除</string>
+    <string name="s_announce_voice_message_sent">语音消息已发送</string>
+    <string name="s_announce_ready_to_review">可以检查了，%1$s</string>
+    <string name="e_wait_for_the_attachment">请等当前附件处理完。</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">视频消息</string>
+    <string name="s_video_message_a11y">视频消息，%1$s</string>
+    <string name="s_not_played">未播放</string>
+    <string name="s_open_full_screen">全屏打开</string>
+    <string name="s_couldnt_load_video_tap">无法加载视频。轻点以重试。</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">录制视频消息</string>
+    <string name="s_send_video_message">发送视频消息</string>
+    <string name="s_retake">重拍</string>
+    <string name="s_record">录制</string>
+    <string name="s_switch_camera">切换相机</string>
+    <string name="s_video_message_with_length">视频消息 · %1$s</string>
+    <string name="s_not_recording">未在录制</string>
+    <string name="s_only_you_can_see_this">开始录制前，只有你能看到这个画面。</string>
+    <string name="s_starting_camera">正在启动相机…</string>
+    <string name="s_cant_see_anything">什么也看不到。相机是不是关了或被遮住了？</string>
+    <string name="s_ten_seconds_left">还剩10秒</string>
+    <string name="s_recording_stopped_at_one_minute">录制已满一分钟，已停止。</string>
+    <string name="s_video_too_short">这段视频太短了。</string>
+    <string name="s_delete_video_message">要删除视频消息吗？</string>
+    <string name="s_video_messages_need_camera_and_microphone">视频消息需要使用相机和麦克风。</string>
+    <string name="e_camera_permission_settings">Family 需要使用你的相机的权限。请在“设置”中开启。</string>
+    <string name="s_camera_in_use_by_another_app">相机正被其他应用使用。</string>
+    <string name="s_couldnt_make_it_round">无法做成圆形视频。将作为普通视频发送。</string>
+    <string name="s_too_big_for_video_message">太大，无法作为视频消息发送。将作为普通视频发送。</string>
+    <string name="s_announce_camera_ready">相机已就绪</string>
+    <string name="s_announce_recording_video">正在录制视频</string>
+    <string name="s_announce_video_message_sent">视频消息已发送</string>
+    <string name="s_announce_camera_turned_off">相机已关闭</string>
+    <string name="s_record_voice_message_instead">改为录制语音消息</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">语音消息，%1$s</string>
+    <string name="s_played">已播放</string>
+    <string name="s_playback_speed">播放速度</string>
+    <string name="s_playback_speed_a11y">播放速度，%1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1.5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">未发送</string>
+    <string name="s_switch">切换</string>
+    <string name="s_stop">停止</string>
 </resources>

@@ -78,6 +78,28 @@ pub struct Family {
     /// Whether a mention may be shown the members' profile pictures.
     #[serde(default)]
     pub ai_faces: bool,
+    /// Whether a member may ask for the text of ANOTHER member's voice note
+    /// in the family chat — their own they may always ask about. False
+    /// unless the owner turned it on, tied to no other switch
+    /// (docs/protocol.md, "Transcripts on request").
+    #[serde(default)]
+    pub ai_transcripts: bool,
+    /// Whether the assistant may look things up for this family — send a
+    /// query or a place name it wrote to the providers `assistant.lookups`
+    /// names. False unless the owner turned it on, tied to no other switch,
+    /// and absent (so false) from a server that predates it
+    /// (docs/protocol.md, "Looking things up").
+    #[serde(default)]
+    pub ai_lookups: bool,
+    /// The places, at most three, whose weather today the daily greeting
+    /// mentions — names the owner typed, as the server KEPT them (trimmed,
+    /// folded, repeats dropped). ALWAYS present, `[]` by default; every
+    /// member reads it and only the owner sets it. Absent from a server
+    /// that predates it, and anything that is not a list of names reads as
+    /// none (docs/protocol.md, "Today's weather, for places the owner
+    /// chose").
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub greeting_places: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -155,6 +177,13 @@ pub struct Me {
     /// drawn.
     #[serde(default)]
     pub assistant_consent_at: Option<String>,
+    /// When this member agreed that the assistant may send a query it wrote
+    /// from their words to the lookup providers — none if they have not, on
+    /// a server with no lookup source, and on one that predates it. It only
+    /// ever stands on `assistant_consent_at` (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-10-03).
+    #[serde(default)]
+    pub assistant_lookup_consent_at: Option<String>,
 }
 
 impl Me {
@@ -214,6 +243,57 @@ pub struct Assistant {
     /// recipient offers no assistant at all.
     #[serde(default)]
     pub processor: Option<String>,
+    /// Whether this SERVER can turn a recording into text — present
+    /// whenever this object is; absent from a server that predates it,
+    /// which cannot.
+    #[serde(default)]
+    pub transcribe: bool,
+    /// The most bytes of sound it sends, present only while `transcribe`.
+    #[serde(default)]
+    pub transcribe_max_bytes: Option<i64>,
+    /// The providers the assistant may look things up in, by name —
+    /// `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, in
+    /// that order. ABSENT when the server has none, which reads here as
+    /// empty, and so does `[]` (fc_text::lookups::offered). A `null`, or
+    /// anything else that is not a list of names, reads as none too: a
+    /// client that cannot name the providers does not ask.
+    #[serde(default, deserialize_with = "names_or_none")]
+    pub lookups: Vec<String>,
+    /// Whether the daily greeting can carry today's forecast for the
+    /// family's `greeting_places` — true only where this server posts
+    /// greetings and has weather configured. ALWAYS present whenever this
+    /// object is; absent from a server that predates it, which reads as
+    /// false, and so does anything that is not a boolean: the places field
+    /// is offered only when it is true.
+    #[serde(default, deserialize_with = "true_or_false")]
+    pub greeting_weather: bool,
+}
+
+/// `true`, or false for anything else — a missing key, a `null` or a
+/// stray shape never fails the read of the whole roster.
+fn true_or_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
+}
+
+/// A list of names, or nothing at all — never a failed read of the whole
+/// roster because one optional key came in a shape this client did not
+/// expect. Entries that are not strings are dropped.
+fn names_or_none<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// `GET /families/mine`, trimmed to what this client draws.
@@ -234,6 +314,28 @@ pub struct Roster {
     /// there is anything past this client's board cursor to catch up on.
     #[serde(default)]
     pub max_board_seq: i64,
+    /// The sticker pack's high-water mark, the same way — OMITTED while the
+    /// pack has never been written to, which reads here as 0
+    /// (docs/protocol.md, "Sticker pack").
+    #[serde(default)]
+    pub max_pack_seq: i64,
+    /// How many stickers a family's pack may hold, and how many bytes one
+    /// may be. ALWAYS present on a server that has packs — so their absence
+    /// is how this client knows the server predates them, and offers no
+    /// sticker button and no pack there rather than finding a 404 when
+    /// somebody clicks one.
+    #[serde(default)]
+    pub max_pack_items: Option<i64>,
+    #[serde(default)]
+    pub max_pack_item_bytes: Option<i64>,
+    /// How long and how big a video message may be. ALWAYS present on a
+    /// server that has video messages — so their absence is how this client
+    /// knows the server predates them, and offers no video entry at all and
+    /// never sends `round` there (docs/protocol.md, "Video messages").
+    #[serde(default)]
+    pub max_round_video_ms: Option<i64>,
+    #[serde(default)]
+    pub max_round_video_bytes: Option<i64>,
     /// The family itself — the owner's invite code and switches with it.
     #[serde(default)]
     pub family: Option<Family>,
@@ -339,6 +441,18 @@ pub struct AiCounts {
     pub completion_tokens: i64,
     #[serde(default)]
     pub images: i64,
+    /// Recordings turned into text, charged to whoever asked, and their
+    /// total length — transcription is billed by length, not tokens.
+    #[serde(default)]
+    pub transcripts: i64,
+    #[serde(default)]
+    pub transcript_duration_ms: i64,
+    /// The PAID web searches the assistant made answering this member (or
+    /// the family) — Brave or SearXNG calls that came back with an answer;
+    /// weather and Wikipedia are free and not counted. Absent, so 0, from a
+    /// server that predates lookups (docs/protocol.md, "Family statistics").
+    #[serde(default)]
+    pub searches: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -655,6 +769,68 @@ pub struct Attachment {
     pub longitude: Option<f64>,
     #[serde(default)]
     pub accuracy_m: Option<f64>,
+    /// This attachment was SENT as a sticker (docs/protocol.md, "Sticker
+    /// pack" — the chat kind, not a board note). Present only when true,
+    /// set by the send and never changed; a pack item's own attachment
+    /// never carries it. A client that has not heard of it draws a photo,
+    /// which is what the attachment otherwise is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sticker: bool,
+    /// This video was SENT as a video message, drawn as a circle
+    /// (docs/protocol.md, "Video messages"). Present only when true, set by
+    /// the send and never changed, never beside `sticker` and never on
+    /// anything but a video. A client that has not heard of it draws a
+    /// square video tile, which is what the attachment otherwise is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub round: bool,
+    /// A voice note's shape: 48 lowercase hex digits, one level 0–15 per
+    /// slice of the recording, measured by the sender (docs/protocol.md, "A
+    /// voice note's waveform"). Absent where none was sent — a picked sound
+    /// file, an older sender, an older server — and read through
+    /// `fc_text::waveform::levels_or_placeholder`, so a malformed one draws
+    /// the neutral placeholder rather than failing the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+/// One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+///
+/// A TOMBSTONE carries only `id`, `deleted` and `pack_seq`, which is why
+/// everything else is optional here, as it is on a [`Note`]; a live item
+/// always has who added it and its picture, and one that arrives without
+/// them is a server fault the pack refuses rather than drawing an empty
+/// square.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct PackItem {
+    pub id: i64,
+    pub pack_seq: i64,
+    #[serde(default)]
+    pub deleted: bool,
+    /// Who added it — still named after they have left or deleted their
+    /// account, and resolved the way their old messages are.
+    #[serde(default)]
+    pub added_by: Option<i64>,
+    /// An ordinary `kind=photo` attachment whose bytes are the sticker.
+    #[serde(default)]
+    pub attachment: Option<Attachment>,
+    /// A few words for a screen reader, when whoever added it gave some.
+    /// Never drawn over the picture.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+impl PackItem {
+    /// Whether this copy can be shown and sent: a tombstone cannot, and
+    /// neither can a live item missing what every live item has.
+    pub fn is_usable(&self) -> bool {
+        !self.deleted && self.added_by.is_some() && self.attachment.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -744,6 +920,109 @@ impl Message {
     pub fn mentions(&self) -> &[Mention] {
         self.mentions.as_deref().unwrap_or(&[])
     }
+
+    /// The sticker this message IS, if it is one: exactly one attachment, a
+    /// photo, flagged by the send (docs/protocol.md, "Sending one"). Anything
+    /// else — no flag, a flag from a server that one day puts it on an
+    /// album — is drawn as what its attachments otherwise are.
+    pub fn sticker(&self) -> Option<&Attachment> {
+        match self.attachments() {
+            [only] if only.sticker && only.kind == "photo" => Some(only),
+            _ => None,
+        }
+    }
+
+    /// The voice message this message IS, if it is one: exactly one
+    /// attachment, audio, and nothing else — no words, no poll, no call. Its
+    /// menu offers what a recording has (Show text, Playback speed, Save)
+    /// and nothing a text has: there are no words to copy or edit (the
+    /// approved design for #79).
+    pub fn voice_note(&self) -> Option<&Attachment> {
+        if !self.body.is_empty() || self.poll.is_some() || self.call.is_some() {
+            return None;
+        }
+        match self.attachments() {
+            [only] if only.kind == "audio" => Some(only),
+            _ => None,
+        }
+    }
+
+    /// The video message this message IS, if it is one — drawn as a circle
+    /// (docs/protocol.md, "Video messages"; the plan for #79, S5.1). The one
+    /// test every client shares, `fc_text::record::is_round`: exactly one
+    /// attachment, a video, carrying `round: true`, and no body. Anything
+    /// else — two attachments, the flag on a photo, words beside it — is
+    /// drawn as the ordinary message it otherwise is.
+    pub fn round_video(&self) -> Option<&Attachment> {
+        let flags: Vec<fc_text::record::AttachmentFlags> = self
+            .attachments()
+            .iter()
+            .map(|attachment| fc_text::record::AttachmentFlags {
+                kind: &attachment.kind,
+                round: attachment.round,
+            })
+            .collect();
+        if fc_text::record::is_round(&self.body, &flags) {
+            self.attachments().first()
+        } else {
+            None
+        }
+    }
+}
+
+/// Why an assistant answer stopped early — an `ai_error`'s optional
+/// `reason`, already read (docs/protocol.md, "The assistant").
+///
+/// Two values and not a string, because a client MUST treat a reason it
+/// does not know as absent: the decision is made once, where the frame is
+/// read, and nothing after it can invent a meaning for a word a newer
+/// server sends. It is what the failed row REMEMBERS, beside the fact that
+/// it failed, so the sentence survives every redraw the flag did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiFailure {
+    /// Any failure the server did not say more about — the provider out of
+    /// reach, a broken stream, a picture that could not be stored — and any
+    /// `reason` this client has not learned.
+    #[default]
+    Failed,
+    /// `"refused"`: the AI provider's OWN safety or content filter declined
+    /// the question, the answer or a picture's description. Asking again in
+    /// the same words gets the same refusal, so the sentence says to put it
+    /// another way instead.
+    Refused,
+}
+
+impl AiFailure {
+    /// The wire's `reason`, with everything but a known word read as absent.
+    pub fn from_reason(reason: Option<&str>) -> AiFailure {
+        match reason {
+            Some("refused") => AiFailure::Refused,
+            _ => AiFailure::Failed,
+        }
+    }
+
+    /// What the failed answer says — in the bubble, in the row still
+    /// waiting for words, and so to a screen reader.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            AiFailure::Failed => t("Couldn't answer that. Ask again."),
+            AiFailure::Refused => {
+                t("The assistant's provider refused that. Try putting it another way.")
+            }
+        }
+    }
+}
+
+/// Deserialises an `ai_error`'s `reason` FORGIVINGLY: a word this client
+/// does not know, or a value that is not a word at all, is the failure it
+/// always was — never a frame dropped for being unreadable, which would
+/// leave the row waiting for an answer that is not coming.
+pub fn ai_failure<'de, D>(deserializer: D) -> Result<AiFailure, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let reason = serde_json::Value::deserialize(deserializer)?;
+    Ok(AiFailure::from_reason(reason.as_str()))
 }
 
 #[cfg(test)]
@@ -971,6 +1250,179 @@ mod tests {
         );
     }
 
+    /// A sticker message as the server sends one, and the photo an older
+    /// server (or an ordinary send) leaves it as: the flag is present only
+    /// when true, and never written back as `false`.
+    #[wasm_bindgen_test]
+    fn a_sticker_is_a_photo_with_one_more_field() {
+        let sent: Message = serde_json::from_str(
+            r#"{"id": 1400, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-09-30T10:00:00Z",
+                "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp",
+                                 "size": 18234, "width": 512, "height": 512,
+                                 "has_preview": false, "sticker": true}],
+                "attachment": {"id": 90, "kind": "photo", "sticker": true}}"#,
+        )
+        .expect("reads");
+        assert_eq!(sent.sticker().map(|attachment| attachment.id), Some(90));
+        let plain: Message = serde_json::from_str(
+            r#"{"id": 1401, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-09-30T10:00:00Z",
+                "attachments": [{"id": 91, "kind": "photo", "mime": "image/webp"}]}"#,
+        )
+        .expect("reads");
+        assert!(plain.sticker().is_none(), "absent is an ordinary photo");
+        assert!(!plain.attachments()[0].sticker);
+        // Never two: a sticker is its own message.
+        let mut album = sent.clone();
+        let again = album.attachments()[0].clone();
+        album.attachments.as_mut().expect("has some").push(again);
+        assert!(album.sticker().is_none());
+        // THE ONE TEST, the same on every client: exactly ONE attachment,
+        // of kind photo, carrying `sticker: true`. The flag on anything
+        // that is not a photo is not a sticker, and neither is a message
+        // with no attachment at all.
+        for kind in ["video", "file", "audio", "location"] {
+            let mut other = sent.clone();
+            other.attachments.as_mut().expect("has some")[0].kind = kind.into();
+            assert!(other.sticker().is_none(), "a flagged {kind}");
+        }
+        let mut bare = sent.clone();
+        bare.attachments = None;
+        assert!(bare.sticker().is_none());
+        // A body beside it does not change what it is drawn as: the test
+        // is the attachment's, and only the attachment's.
+        let mut worded = sent.clone();
+        worded.body = "words".into();
+        assert!(worded.sticker().is_some());
+        // Written only when true — the outbox keeps its rows as JSON.
+        let kept = serde_json::to_value(&plain.attachments()[0]).expect("encodes");
+        assert!(kept.get("sticker").is_none());
+        let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
+        assert_eq!(kept["sticker"], true);
+    }
+
+    /// A VIDEO MESSAGE is a video with one more field (docs/protocol.md,
+    /// "Video messages"): read from every shape the server sends it in,
+    /// drawn round only by the one test every client shares — exactly one
+    /// attachment, a video, `round: true`, no body — and written back only
+    /// when true, so the outbox's JSON of an ordinary video never grows it.
+    #[wasm_bindgen_test]
+    fn a_video_message_is_a_video_with_one_more_field() {
+        let sent: Message = serde_json::from_str(
+            r#"{"id": 1500, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-05T10:00:00Z",
+                "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4",
+                                 "size": 1649700, "width": 480, "height": 480,
+                                 "duration_ms": 23400, "has_preview": true, "round": true}],
+                "attachment": {"id": 91, "kind": "video", "round": true}}"#,
+        )
+        .expect("reads");
+        let round = sent.round_video().expect("a circle");
+        assert_eq!((round.id, round.duration_ms), (91, Some(23400)));
+        assert!(sent.sticker().is_none(), "never a sticker as well");
+
+        let plain: Message = serde_json::from_str(
+            r#"{"id": 1501, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-05T10:00:00Z",
+                "attachments": [{"id": 92, "kind": "video", "mime": "video/mp4",
+                                 "width": 480, "height": 480}]}"#,
+        )
+        .expect("reads");
+        assert!(plain.round_video().is_none(), "absent is an ordinary video");
+        assert!(!plain.attachments()[0].round);
+
+        // Never two: a video message travels alone.
+        let mut pair = sent.clone();
+        let again = pair.attachments()[0].clone();
+        pair.attachments.as_mut().expect("has some").push(again);
+        assert!(pair.round_video().is_none());
+        // The flag on anything that is not a video is not a circle.
+        for kind in ["photo", "file", "audio", "location"] {
+            let mut other = sent.clone();
+            other.attachments.as_mut().expect("has some")[0].kind = kind.into();
+            assert!(other.round_video().is_none(), "a flagged {kind}");
+        }
+        let mut bare = sent.clone();
+        bare.attachments = None;
+        assert!(bare.round_video().is_none());
+        // Words beside it — which the server refuses anyway — draw it as
+        // the ordinary message it would then be (`is_round` compares the
+        // body exactly: the server stores a trimmed-empty body as "").
+        for body in ["words", " "] {
+            let mut worded = sent.clone();
+            worded.body = body.into();
+            assert!(worded.round_video().is_none(), "{body:?}");
+        }
+        // The edits feed, a history page and `last_message` all carry it
+        // the same way; a newer field beside it changes nothing.
+        let newer: Attachment =
+            serde_json::from_str(r#"{"id": 93, "kind": "video", "round": true, "invented": 1}"#)
+                .expect("reads");
+        assert!(newer.round);
+        // Written only when true — the outbox keeps its rows as JSON.
+        let kept = serde_json::to_value(&plain.attachments()[0]).expect("encodes");
+        assert!(kept.get("round").is_none());
+        let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
+        assert_eq!(kept["round"], true);
+    }
+
+    /// A pack item live, labelled, and as a tombstone — which carries
+    /// nothing but its id, its seq and that it is gone.
+    #[wasm_bindgen_test]
+    fn a_pack_item_reads_every_shape_the_protocol_gives_it() {
+        let live: PackItem = serde_json::from_str(
+            r#"{"id": 5, "added_by": 7, "created_at": "2026-09-30T10:00:00Z", "pack_seq": 12,
+                "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 18234,
+                               "width": 512, "height": 512, "has_preview": false},
+                "label": "party cat", "invented": [1, 2]}"#,
+        )
+        .expect("an item this client can read");
+        assert!(live.is_usable());
+        assert_eq!(live.label.as_deref(), Some("party cat"));
+        let attachment = live.attachment.as_ref().expect("its picture");
+        assert_eq!(attachment.id, 71);
+        assert!(
+            !attachment.sticker,
+            "the flag is a message's, never an item's"
+        );
+
+        let gone: PackItem = serde_json::from_str(r#"{"id": 5, "deleted": true, "pack_seq": 14}"#)
+            .expect("a tombstone reads");
+        assert!(gone.deleted && !gone.is_usable());
+        assert_eq!(gone.added_by, None);
+
+        let broken: PackItem =
+            serde_json::from_str(r#"{"id": 6, "pack_seq": 15, "added_by": 7}"#).expect("reads");
+        assert!(
+            !broken.is_usable(),
+            "a live item with no picture is refused"
+        );
+    }
+
+    /// The pack's mark and the two limits ride on the roster — and their
+    /// absence is a server from before packs.
+    #[wasm_bindgen_test]
+    fn the_roster_says_whether_the_server_has_packs() {
+        let roster: Roster = serde_json::from_str(
+            r#"{"members": [], "max_pack_seq": 14, "max_pack_items": 200,
+                "max_pack_item_bytes": 524288}"#,
+        )
+        .expect("reads");
+        assert_eq!(roster.max_pack_seq, 14);
+        assert_eq!(roster.max_pack_items, Some(200));
+        assert_eq!(roster.max_pack_item_bytes, Some(524_288));
+        // A pack never written to: the limits, and no mark.
+        let untouched: Roster = serde_json::from_str(
+            r#"{"members": [], "max_pack_items": 200, "max_pack_item_bytes": 524288}"#,
+        )
+        .expect("reads");
+        assert_eq!(untouched.max_pack_seq, 0);
+        let older: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
+        assert_eq!(older.max_pack_items, None);
+        assert_eq!(older.max_pack_item_bytes, None);
+    }
+
     #[wasm_bindgen_test]
     fn the_roster_carries_the_boards_high_water_mark() {
         let roster: Roster =
@@ -1018,5 +1470,124 @@ mod tests {
         let me: Me = serde_json::from_str(json).expect("reads");
         assert_eq!(me.blocked_user_ids, vec![9, 11]);
         assert_eq!(me.support_contact.as_deref(), Some("ops@example.com"));
+    }
+
+    /// LOOKUPS, read tolerantly (docs/protocol.md, "Looking things up"):
+    /// a server that has them says so in four places, and a server that
+    /// predates them says nothing in any — which reads as no switch, no
+    /// consent, no providers and no searches, never as a failed read.
+    #[wasm_bindgen_test]
+    fn lookups_are_read_where_they_are_sent_and_nothing_where_they_are_not() {
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "ai_lookups": true},
+                "assistant_consent_at": "2026-10-03T09:00:00Z",
+                "assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}"#,
+        )
+        .expect("reads");
+        assert!(me.family.as_ref().is_some_and(|family| family.ai_lookups));
+        assert_eq!(
+            me.assistant_lookup_consent_at.as_deref(),
+            Some("2026-10-03T09:30:00Z")
+        );
+        let old: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths"}}"#,
+        )
+        .expect("reads");
+        assert!(!old.family.as_ref().unwrap().ai_lookups, "absent is off");
+        assert_eq!(old.assistant_lookup_consent_at, None);
+
+        let assistant = |lookups: &str| -> Assistant {
+            let json = format!(
+                r#"{{"user_id": 1, "display_name": "Assistant", "processor": "Azure"{lookups}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert_eq!(
+            assistant(r#", "lookups": ["Brave Search", "Open-Meteo", "Wikipedia"]"#).lookups,
+            vec!["Brave Search", "Open-Meteo", "Wikipedia"]
+        );
+        assert_eq!(
+            assistant(r#", "lookups": ["SearXNG"]"#).lookups,
+            vec!["SearXNG"]
+        );
+        for nobody in [
+            "",
+            r#", "lookups": []"#,
+            r#", "lookups": null"#,
+            r#", "lookups": "Brave""#,
+        ] {
+            assert!(assistant(nobody).lookups.is_empty(), "{nobody:?}");
+        }
+        assert_eq!(
+            assistant(r#", "lookups": ["Wikipedia", 3, null]"#).lookups,
+            vec!["Wikipedia"],
+            "what is not a name is dropped, the rest kept"
+        );
+
+        let stats: Stats = serde_json::from_str(
+            r#"{"totals": {"ai": {"questions": 4, "searches": 9}},
+                "members": [{"user_id": 7, "display_name": "Anna", "ai": {"searches": 4}},
+                            {"user_id": 9, "display_name": "Bob", "ai": {"questions": 1}}]}"#,
+        )
+        .expect("reads");
+        assert_eq!(stats.totals.ai.searches, 9);
+        assert_eq!(stats.members[0].ai.searches, 4);
+        assert_eq!(stats.members[1].ai.searches, 0, "absent is none");
+    }
+
+    /// GREETING WEATHER, read tolerantly (docs/protocol.md, "Today's
+    /// weather, for places the owner chose"): the family's places from
+    /// `GET /me`, `GET /families/mine` and a PATCH answer, and the server's
+    /// `assistant.greeting_weather` — and from a server that predates them,
+    /// no places and no field, never a failed read.
+    #[wasm_bindgen_test]
+    fn greeting_weather_is_read_where_it_is_sent_and_nothing_where_it_is_not() {
+        let family = |extra: &str| -> Family {
+            let json = format!(r#"{{"id": 3, "name": "The Smiths"{extra}}}"#);
+            serde_json::from_str(&json).expect("the family still reads")
+        };
+        assert_eq!(
+            family(r#", "greeting_places": ["Moscow", "Belgrade"]"#).greeting_places,
+            vec!["Moscow", "Belgrade"]
+        );
+        for none in [
+            "",
+            r#", "greeting_places": []"#,
+            r#", "greeting_places": null"#,
+            r#", "greeting_places": "Moscow""#,
+        ] {
+            assert!(family(none).greeting_places.is_empty(), "{none:?}");
+        }
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "family": {"id": 3, "name": "The Smiths", "greeting_places": ["Novi Sad"]},
+                "greetings_enabled": true}"#,
+        )
+        .expect("reads");
+        assert_eq!(me.family.unwrap().greeting_places, vec!["Novi Sad"]);
+
+        let roster = |assistant: &str| -> Roster {
+            let json = format!(
+                r#"{{"members": [], "assistant": {{"user_id": 1, "display_name": "Assistant"{assistant}}}}}"#
+            );
+            serde_json::from_str(&json).expect("the roster still reads")
+        };
+        assert!(
+            roster(r#", "greeting_weather": true"#)
+                .assistant
+                .unwrap()
+                .greeting_weather
+        );
+        for off in [
+            "",
+            r#", "greeting_weather": false"#,
+            r#", "greeting_weather": null"#,
+            r#", "greeting_weather": "yes""#,
+            r#", "greeting_weather": 1"#,
+        ] {
+            assert!(!roster(off).assistant.unwrap().greeting_weather, "{off:?}");
+        }
     }
 }

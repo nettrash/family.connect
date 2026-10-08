@@ -143,7 +143,31 @@ public sealed record AttachmentDto(
     string? Name = null,
     double? Latitude = null,
     double? Longitude = null,
-    double? AccuracyM = null)
+    double? AccuracyM = null,
+    /// <summary>
+    /// This attachment was SENT AS A STICKER (docs/protocol.md, "Sticker pack"): the send said so,
+    /// the server stamped it, and it never changes. Present on the wire only when true — so an
+    /// attachment from before stickers, and every one a pack ITEM carries, reads false here.
+    /// </summary>
+    /// <remarks>
+    /// NOT a board note. "Sticker" in this codebase already names the card a note is drawn as
+    /// (<c>App.Logic.Sticker</c>, <c>StickerFace</c>); this is the other thing — a picture in a
+    /// chat — and the only place the wire itself spells the word.
+    /// </remarks>
+    bool Sticker = false,
+    /// <summary>
+    /// This video was SENT AS A VIDEO MESSAGE (docs/protocol.md, "Video messages"): a square H.264/AAC MP4 recorded to be
+    /// drawn round. Present on the wire only when true, set by the send and never changed — so every video from before
+    /// video messages, and every one a 1.2 app sent, reads false here. Never beside <see cref="Sticker"/>, never on
+    /// anything but a video; in every other respect it is still <c>kind=video</c>.
+    /// </summary>
+    bool Round = false,
+    /// <summary>
+    /// A voice note's shape (docs/protocol.md, "A voice note's waveform"): 48 lowercase hex digits the SENDER measured,
+    /// absent on a picked sound file, a video, anything else, and everything an older client or server sent. Read
+    /// through <see cref="FamilyConnect.Core.Waveform.LevelsOrPlaceholder"/>, never trusted to be well formed.
+    /// </summary>
+    string? Waveform = null)
 {
     public bool IsPhoto => Kind == "photo";
     public bool IsVideo => Kind == "video";
@@ -189,6 +213,34 @@ public sealed record MessageDto(
     /// </summary>
     public IReadOnlyList<AttachmentDto> Media =>
         Attachments ?? (Attachment is null ? [] : [Attachment]);
+
+    /// <summary>
+    /// The picture this message IS, when it is a sticker (docs/protocol.md, "Sending one").
+    /// </summary>
+    /// <remarks>
+    /// THE ONE TEST, AND THE SAME ON EVERY CLIENT: exactly ONE attachment, that attachment is
+    /// <c>kind=photo</c>, and it carries <c>sticker: true</c>. Nothing else is asked — not the
+    /// body, not the type — so five clients cannot disagree about which message is a sticker.
+    /// Anything else (a message from before stickers, a server that ignores the flag, two
+    /// attachments) is null, and is drawn as the ordinary message it otherwise is.
+    /// </remarks>
+    public AttachmentDto? StickerPicture =>
+        Media is [{ Sticker: true, Kind: "photo" } picture] ? picture : null;
+
+    /// <summary>
+    /// The video this message IS, when it is a video message — drawn as a circle with no balloon
+    /// (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5.1).
+    /// </summary>
+    /// <remarks>
+    /// THE SAME TEST ON EVERY CLIENT (<c>fc_text::record::is_round</c>, its vectors in <c>record-vectors.json</c>): exactly
+    /// ONE attachment, that attachment is <c>kind=video</c>, it carries <c>round: true</c>, and the message has NO BODY.
+    /// Anything else — two attachments, the flag on a photo, a body, a server that ignores the flag — is null, and is drawn
+    /// as the ordinary message it otherwise is. The body is compared EXACTLY: the server stores an attachment message whose
+    /// body trims to nothing as <c>""</c>, so no port's idea of whitespace can make two clients disagree. A body the wire
+    /// left out is read as none.
+    /// </remarks>
+    public AttachmentDto? RoundVideo =>
+        string.IsNullOrEmpty(Body) && Media is [{ Round: true, Kind: "video" } video] ? video : null;
 }
 
 public sealed record TaskItemDto(long Id, string Text, bool Done, long? DoneBy = null);
@@ -231,6 +283,33 @@ public sealed record NoteDto(
     /// </summary>
     public IReadOnlyList<TaskItemDto> TaskList => Items ?? [];
 }
+
+/// <summary>
+/// One item of the family's sticker pack (docs/protocol.md, "Sticker pack") — a picture the family
+/// KEEPS, which is not the same thing as a sticker somebody SENT: a sent one is a message carrying
+/// its own copy, and neither names the other.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A TOMBSTONE is <c>{"id", "deleted": true, "pack_seq"}</c> and nothing else — no picture, no
+/// author, no label — which is why everything but the id and the seq is optional here.
+/// </para>
+/// <para>
+/// <see cref="Attachment"/> is an ordinary <c>kind=photo</c> attachment whose bytes are the
+/// sticker, and it never carries <c>sticker</c>: that flag is a message's. Its ORIGINAL bytes are
+/// what is drawn, whatever <c>has_preview</c> says — the flag can be inherited through dedup from
+/// somebody who once sent the same PNG as a photograph, and a preview is a JPEG.
+/// </para>
+/// </remarks>
+public sealed record PackItemDto(
+    long Id,
+    long AddedBy = 0,
+    AttachmentDto? Attachment = null,
+    string? CreatedAt = null,
+    long PackSeq = 0,
+    /// <summary>A few words for a screen reader, when whoever added it gave any. Never drawn over the picture.</summary>
+    string? Label = null,
+    bool Deleted = false);
 
 /// <summary>The error body, as it arrives.</summary>
 public sealed record ErrorEnvelope(ErrorBody Error);

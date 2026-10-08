@@ -1,6 +1,6 @@
 [package]
 name = "family-connect-web"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["nettrash"]
 description = "Family Connect in a browser — the web client (docs/protocol.md)."
@@ -56,6 +56,7 @@ web-sys = { version = "0.3", features = [
     "HtmlMediaElement",
     "HtmlAudioElement",
     "HtmlVideoElement",
+    "MediaQueryList",
     "WheelEvent",
     "PointerEvent",
     "HtmlCanvasElement",
@@ -95,13 +96,23 @@ web-sys = { version = "0.3", features = [
     "MediaRecorderOptions",
     "BlobEvent",
     "AudioContext",
+    "AudioContextOptions",
+    "AudioContextState",
     "BaseAudioContext",
+    "OfflineAudioContext",
     "AudioNode",
     "AudioBuffer",
     "AudioDestinationNode",
     "MediaStreamAudioSourceNode",
     "ScriptProcessorNode",
     "AudioProcessingEvent",
+    "AudioWorklet",
+    "Worklet",
+    "AudioWorkletNode",
+    "AudioWorkletNodeOptions",
+    "ChannelCountMode",
+    "MessagePort",
+    "MessageEvent",
     "Geolocation",
     "Position",
     "Coordinates",
@@ -116,6 +127,9 @@ web-sys = { version = "0.3", features = [
     "ClipboardItem",
     "ImageData",
     "ResizeObserver",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "HtmlIFrameElement",
     "CssStyleDeclaration",
     "DomTokenList",
     "PointerEventInit",
@@ -123,6 +137,7 @@ web-sys = { version = "0.3", features = [
     "MouseEventInit",
     "StorageEvent",
     "CompositionEvent",
+    "FormData",
 ] }
 
 [dev-dependencies]

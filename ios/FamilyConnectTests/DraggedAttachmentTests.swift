@@ -132,6 +132,26 @@ struct DraggedAttachmentTests {
         #expect(DraggedAttachment.suggestedFileName(for: try video()) == "video-7.mov")
     }
 
+    /// A voice message carries no name either, and "Save to Files" / Save…
+    /// on its menu (#79) name the file by this same rule: it lands in Files
+    /// or the Finder as a sound file, not as "photo-12.jpg" with sound in
+    /// it. The cache keeps the same spelling, so Share hands on the same.
+    @Test("A nameless voice message is named as a sound file")
+    func voiceMessageIsASoundFile() throws {
+        #expect(ChatSyncCoordinator.fallbackName(for: try audio()) == "voice-12.m4a")
+        #expect(ChatSyncCoordinator.cachedFileName(for: try audio()) == "voice-12.m4a")
+        let mp3 = try attachment(
+            #"{"id": 5, "kind": "audio", "mime": "audio/mpeg", "size": 400, "has_preview": false}"#)
+        #expect(ChatSyncCoordinator.fallbackName(for: mp3) == "voice-5.mp3")
+        let unknown = try attachment(
+            #"{"id": 6, "kind": "audio", "mime": "audio/x-unknown", "size": 400, "has_preview": false}"#)
+        #expect(ChatSyncCoordinator.fallbackName(for: unknown) == "voice-6.m4a")
+        // A picked sound file keeps its own name.
+        let named = try attachment(
+            #"{"id": 8, "kind": "audio", "mime": "audio/mpeg", "size": 400, "has_preview": false, "name": "Song.mp3"}"#)
+        #expect(ChatSyncCoordinator.cachedFileName(for: named) == "Song.mp3")
+    }
+
     /// The name comes off the wire, and a drag puts it on somebody else's
     /// filesystem. Same treatment `localFileURL` gives it — because it IS
     /// that function's, not a second copy of the rule.

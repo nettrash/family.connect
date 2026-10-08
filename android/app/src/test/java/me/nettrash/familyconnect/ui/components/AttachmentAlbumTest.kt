@@ -45,6 +45,21 @@ class AttachmentAlbumTest {
         assertThat(AttachmentAlbum.rows(listOf(photo1))).isEmpty()
     }
 
+    /**
+     * "Show text" under an album, as iOS, the web and Windows offer it: one
+     * line per video in the pile, numbered among the videos only when
+     * there is more than one, so each line says which it is the text of.
+     */
+    @Test
+    fun everyVideoInAPileGetsItsOwnTranscriptLine() {
+        val video7 = FakeAttachmentApi.attachment(id = 7, kind = "video")
+        assertThat(AttachmentAlbum.transcriptVideos(listOf(photo1, video2, photo4)))
+            .containsExactly(video2 to null)
+        assertThat(AttachmentAlbum.transcriptVideos(listOf(photo1, video2, photo4, video7)))
+            .containsExactly(video2 to 1, video7 to 2).inOrder()
+        assertThat(AttachmentAlbum.transcriptVideos(listOf(photo1, photo4))).isEmpty()
+    }
+
     @Test
     fun cardTakesTheFirstItemsAspect() {
         // 1600×1200 is 4:3, inside the clamp.

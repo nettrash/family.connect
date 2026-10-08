@@ -11,6 +11,7 @@
 //! family, and it is shown only when the server said so.
 
 use fc_text::i18n::{t, t1, tn, tp};
+use fc_text::lookups;
 use fc_text::media::display_size;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
@@ -24,7 +25,7 @@ use crate::prep;
 use crate::time;
 use crate::views::avatar::Avatar;
 use crate::views::birthday::BirthdayDialog;
-use crate::views::consent::AssistantConsentDialog;
+use crate::views::consent::{AssistantConsentDialog, LookupConsentDialog};
 use crate::views::dialog::{Confirm, Modal};
 use crate::views::password::ChangePasswordDialog;
 
@@ -59,6 +60,9 @@ enum Open {
     /// The screen that asks whether this member's words may go to the
     /// model — reached from the row below, not only from a blocked send.
     AssistantConsent,
+    /// The lookup question alone, for a member who has agreed to the
+    /// assistant already (docs/protocol.md, "Looking things up").
+    LookupConsent,
 }
 
 #[derive(Clone, PartialEq)]
@@ -206,6 +210,23 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
             on_action.emit(Action::SetAssistantConsent { granted: false })
         })
     };
+    // The same for lookups: one press, and the footnote says what it
+    // cannot undo.
+    let withdraw_lookup_consent = {
+        let on_action = props.on_action.clone();
+        Callback::from(move |_: MouseEvent| {
+            on_action.emit(Action::SetAssistantLookupConsent { granted: false })
+        })
+    };
+    let sources = props
+        .assistant
+        .as_ref()
+        .map(|assistant| lookups::providers(&assistant.lookups))
+        .unwrap_or_default();
+    let family_history = props
+        .family
+        .as_ref()
+        .is_some_and(|family| family.ai_history);
 
     let pick_picture = {
         let busy = picture_busy.clone();
@@ -356,22 +377,48 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
             let on_agree = {
                 let on_action = props.on_action.clone();
                 let close_open = close_open.clone();
-                Callback::from(move |_: ()| {
+                Callback::from(move |with_lookups: bool| {
                     close_open.emit(());
-                    on_action.emit(Action::SetAssistantConsent { granted: true });
+                    on_action.emit(Action::agreement(with_lookups));
                 })
             };
             html! {
                 <AssistantConsentDialog
                     {processor}
-                    family_history={props.family.as_ref().is_some_and(|family| family.ai_history)}
+                    {family_history}
                     family_vision={props.family.as_ref().is_some_and(|family| family.ai_vision)}
+                    transcribe={props.assistant.as_ref().is_some_and(|assistant| assistant.transcribe)}
+                    lookups={sources.clone()}
+                    {on_agree}
+                    on_cancel={close_open.clone()}
+                />
+            }
+        }
+        Open::LookupConsent => {
+            let on_agree = {
+                let on_action = props.on_action.clone();
+                let close_open = close_open.clone();
+                Callback::from(move |_: ()| {
+                    close_open.emit(());
+                    on_action.emit(Action::SetAssistantLookupConsent { granted: true });
+                })
+            };
+            html! {
+                <LookupConsentDialog
+                    lookups={sources.clone()}
+                    {family_history}
                     {on_agree}
                     on_cancel={close_open.clone()}
                 />
             }
         }
     };
+    let lookup_row = lookups::settings(
+        account.assistant_consent_at.is_some(),
+        account.assistant_lookup_consent_at.is_some(),
+        &sources,
+    );
+    let named_sources = lookups::names(&sources);
 
     html! {
         <section class="pane settings-pane" aria-labelledby="settings-title">
@@ -512,6 +559,29 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                             </p>
                         }
                     </section>
+                    if let Some(row) = lookup_row {
+                        <section class="group lookup-consent" aria-labelledby="settings-lookups">
+                            <h3 id="settings-lookups">{ lookups::heading() }</h3>
+                            if let (lookups::Settings::Allowed, Some(agreed)) = (row, account.assistant_lookup_consent_at.clone()) {
+                                <div class="setting-row">
+                                    <span>{ t("Agreed") }</span>
+                                    <span class="meta">{ time::stamp(&agreed) }</span>
+                                </div>
+                                <div class="setting-row">
+                                    <button class="link danger stop-lookups" onclick={withdraw_lookup_consent.clone()}>
+                                        { t("Stop Lookups") }
+                                    </button>
+                                </div>
+                            } else {
+                                <div class="setting-row">
+                                    <button class="link allow-lookups" onclick={show(Open::LookupConsent)}>
+                                        { t("Review and Allow Lookups…") }
+                                    </button>
+                                </div>
+                            }
+                            <p class="footnote">{ lookups::settings_footnote(row, &named_sources) }</p>
+                        </section>
+                    }
                 }
 
                 <section class="group" aria-labelledby="settings-privacy">
@@ -773,13 +843,22 @@ fn statistics(stats: &Stats) -> Html {
                     <p class="footnote">{ t1("%@ saved by storing one copy of identical files.", &display_size(saved)) }</p>
                 }
             </section>
-            if ai.questions > 0 || ai.images > 0 {
+            if ai.questions > 0 || ai.images > 0 || ai.transcripts > 0 || ai.searches > 0 {
                 <section class="group">
                     <h3>{ t("Assistant") }</h3>
                     { number_row(t("Questions"), ai.questions.to_string()) }
                     { number_row(t("Tokens"), (ai.prompt_tokens + ai.completion_tokens).to_string()) }
                     if ai.images > 0 {
                         { number_row(t("Pictures"), ai.images.to_string()) }
+                    }
+                    // Billed by length, not tokens — so the length is shown.
+                    if ai.transcripts > 0 {
+                        { number_row(t("Recordings as text"), ai.transcripts.to_string()) }
+                        { number_row(t("Recording time"), recording_time(ai.transcript_duration_ms)) }
+                    }
+                    // Billed per search, as pictures are per picture.
+                    if ai.searches > 0 {
+                        { number_row(t("Web searches"), ai.searches.to_string()) }
                     }
                 </section>
             }
@@ -797,6 +876,12 @@ fn statistics(stats: &Stats) -> Html {
             </section>
         </>
     }
+}
+
+/// The total length of the recordings sent for their text, as a duration
+/// — `3:42`, or `1:03:42` past an hour — rounded to the nearest second.
+pub fn recording_time(duration_ms: i64) -> String {
+    fc_text::call_record::duration((duration_ms.max(0) + 500) / 1000)
 }
 
 /// What one member sends, besides words (ios StatisticsView).
@@ -820,6 +905,12 @@ pub fn member_line(member: &MemberStats) -> String {
     }
     if member.ai.images > 0 {
         parts.push(tn("%lld pictures from the assistant", member.ai.images));
+    }
+    if member.ai.transcripts > 0 {
+        parts.push(tn("%lld recordings as text", member.ai.transcripts));
+    }
+    if member.ai.searches > 0 {
+        parts.push(tn("%lld web searches", member.ai.searches));
     }
     if parts.is_empty() {
         t("Words only").to_string()
@@ -869,6 +960,72 @@ mod tests {
             member_line(&member),
             "1 attachment, 1.2 MB · 2 questions to the assistant · 1 picture from the assistant"
         );
+        member.ai.transcripts = 3;
+        assert!(member_line(&member).ends_with(" · 3 recordings as text"));
+        member.ai.searches = 1;
+        assert!(member_line(&member).ends_with(" · 3 recordings as text · 1 web search"));
+        member.ai.searches = 9;
+        assert!(member_line(&member).ends_with(" · 9 web searches"));
+    }
+
+    /// The searches line counts in each language's own forms.
+    #[wasm_bindgen_test]
+    fn web_searches_are_counted_in_the_readers_forms() {
+        use fc_text::i18n::{use_lang, Lang};
+        let mut member = MemberStats {
+            user_id: 1,
+            display_name: "Anna".into(),
+            messages: 0,
+            attachments: AttachmentCounts::default(),
+            ai: AiCounts::default(),
+        };
+        let said = |member: &MemberStats, lang: Lang| {
+            use_lang(lang);
+            let line = member_line(member);
+            use_lang(Lang::En);
+            line
+        };
+        member.ai.searches = 0;
+        assert_eq!(said(&member, Lang::En), "Words only", "none is not a line");
+        for (count, english, russian, serbian) in [
+            (
+                1,
+                "1 web search",
+                "1 поиск в интернете",
+                "1 претрага на вебу",
+            ),
+            (
+                2,
+                "2 web searches",
+                "2 поиска в интернете",
+                "2 претраге на вебу",
+            ),
+            (
+                5,
+                "5 web searches",
+                "5 поисков в интернете",
+                "5 претрага на вебу",
+            ),
+            (
+                21,
+                "21 web searches",
+                "21 поиск в интернете",
+                "21 претрага на вебу",
+            ),
+        ] {
+            member.ai.searches = count;
+            assert_eq!(said(&member, Lang::En), english);
+            assert_eq!(said(&member, Lang::Ru), russian);
+            assert_eq!(said(&member, Lang::Sr), serbian);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn recording_time_is_a_duration() {
+        assert_eq!(recording_time(0), "0:00");
+        assert_eq!(recording_time(-5), "0:00");
+        assert_eq!(recording_time(222_400), "3:42");
+        assert_eq!(recording_time(3_822_000), "1:03:42");
     }
 
     #[wasm_bindgen_test]
@@ -885,5 +1042,199 @@ mod tests {
             picture_failure(&server("internal"), false),
             "Couldn't remove the photo."
         );
+    }
+
+    /// THE MEMBER'S LOOKUP ROW (docs/protocol.md, "Consenting to the
+    /// assistant", amended 2026-10-03): absent until the assistant consent
+    /// stands and wherever the server has no source; before agreeing, a
+    /// door to the lookup question alone, whose "I Agree" sends exactly the
+    /// lookup consent; after, the date and "Stop Lookups", which withdraws
+    /// only that.
+    #[wasm_bindgen_test]
+    async fn the_lookup_row_asks_alone_and_stops_alone() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let assistant = |lookups: &[&str]| Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: None,
+            vision: false,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: lookups.iter().map(|name| name.to_string()).collect(),
+            greeting_weather: false,
+        };
+        let account = |assistant_at: Option<&str>, lookup_at: Option<&str>| Me {
+            user: crate::model::User {
+                id: 7,
+                username: "me".into(),
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+            assistant_consent_at: assistant_at.map(str::to_owned),
+            assistant_lookup_consent_at: lookup_at.map(str::to_owned),
+            ..Default::default()
+        };
+        let mount = |account: Me, assistant: Assistant| {
+            let log = Rc::new(RefCell::new(Vec::<Action>::new()));
+            let sink = log.clone();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let props = SettingsProps {
+                account,
+                family: Some(Family {
+                    id: 3,
+                    name: "The Smiths".into(),
+                    ai_history: true,
+                    ..Default::default()
+                }),
+                assistant: Some(assistant),
+                roster_changes: 0,
+                on_action: Callback::from(move |action| sink.borrow_mut().push(action)),
+                on_close: Callback::noop(),
+                on_sign_out: Callback::noop(),
+            };
+            yew::Renderer::<SettingsPane>::with_root_and_props(root.clone(), props).render();
+            (root, log)
+        };
+        let click = |root: &web_sys::Element, selector: &str| {
+            root.query_selector(selector)
+                .unwrap()
+                .unwrap_or_else(|| panic!("no {selector}"))
+                .dyn_into::<web_sys::HtmlElement>()
+                .unwrap()
+                .click();
+        };
+        let three = ["Brave Search", "Open-Meteo", "Wikipedia"];
+
+        // Agreed to the assistant, not to lookups.
+        let (root, log) = mount(
+            account(Some("2026-10-03T09:00:00Z"), None),
+            assistant(&three),
+        );
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let row = root
+            .query_selector(".lookup-consent")
+            .unwrap()
+            .expect("the row");
+        let said = row.text_content().unwrap_or_default();
+        assert!(said.contains("Looking things up"));
+        assert!(said.contains("Review and Allow Lookups…"));
+        assert!(said.contains(
+            "nothing from your questions is sent to Brave Search, Open-Meteo and Wikipedia."
+        ));
+        assert!(row.query_selector(".stop-lookups").unwrap().is_none());
+        click(&root, ".allow-lookups");
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let dialog = root.text_content().unwrap_or_default();
+        assert!(
+            dialog.contains("in the family chat, possibly from recent messages too — to Brave Search, Open-Meteo and Wikipedia"),
+            "{dialog}"
+        );
+        let agree = root.query_selector_all(".dialog-actions button").unwrap();
+        let labels: Vec<String> = (0..agree.length())
+            .map(|index| {
+                agree
+                    .item(index)
+                    .unwrap()
+                    .text_content()
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(labels, ["Not Now", "I Agree"], "the lookup question alone");
+        agree
+            .item(1)
+            .unwrap()
+            .dyn_into::<web_sys::HtmlElement>()
+            .unwrap()
+            .click();
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert_eq!(
+            *log.borrow(),
+            vec![Action::SetAssistantLookupConsent { granted: true }],
+            "the lookup consent, and nothing else"
+        );
+        root.remove();
+
+        // Agreed to both: the date, and a stop that stops only lookups.
+        let (root, log) = mount(
+            account(Some("2026-10-03T09:00:00Z"), Some("2026-10-03T09:30:00Z")),
+            assistant(&three),
+        );
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let said = root
+            .query_selector(".lookup-consent")
+            .unwrap()
+            .expect("the row")
+            .text_content()
+            .unwrap_or_default();
+        assert!(said.contains("Agreed"));
+        assert!(said.contains("Stopping takes effect at once"));
+        click(&root, ".stop-lookups");
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert_eq!(
+            *log.borrow(),
+            vec![Action::SetAssistantLookupConsent { granted: false }]
+        );
+        root.remove();
+
+        // No row before the assistant consent, nor on a server without a
+        // source.
+        for (agreed, sources) in [(None, &three[..]), (Some("2026-10-03T09:00:00Z"), &[][..])] {
+            let (root, _log) = mount(account(agreed, None), assistant(sources));
+            gloo_timers::future::TimeoutFuture::new(30).await;
+            assert!(root.query_selector(".lookup-consent").unwrap().is_none());
+            root.remove();
+        }
+    }
+
+    /// The statistics screen counts searches only where there are some.
+    #[wasm_bindgen_test]
+    async fn the_statistics_show_searches_where_there_were_some() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let draw = |searches: i64| {
+            let stats = Stats {
+                generated_at: None,
+                totals: crate::model::StatsTotals {
+                    ai: AiCounts {
+                        questions: 3,
+                        searches,
+                        ..AiCounts::default()
+                    },
+                    ..Default::default()
+                },
+                members: Vec::new(),
+            };
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            #[derive(Properties, PartialEq)]
+            struct Shown {
+                stats: Stats,
+            }
+            #[function_component(Show)]
+            fn show(props: &Shown) -> Html {
+                statistics(&props.stats)
+            }
+            yew::Renderer::<Show>::with_root_and_props(root.clone(), Shown { stats }).render();
+            root
+        };
+        let root = draw(9);
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let said = root.text_content().unwrap_or_default();
+        assert!(said.contains("Web searches9"), "{said}");
+        root.remove();
+        let root = draw(0);
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert!(!root
+            .text_content()
+            .unwrap_or_default()
+            .contains("Web searches"));
+        root.remove();
     }
 }

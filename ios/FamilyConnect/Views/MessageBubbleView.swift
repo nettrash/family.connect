@@ -51,15 +51,18 @@ struct MessageBubbleView: View {
     let message: MessageSnapshot
     let isMine: Bool
     /// The assistant is still writing this one, so the bubble shows a
-    /// cursor. Purely cosmetic: the row's body is already whatever has
-    /// arrived, and the authoritative text lands as an edit either way.
+    /// cursor and no link preview card. The row's body is already whatever
+    /// has arrived, and the authoritative text lands as an edit either way
+    /// — which is why no card: until then the text is the model's, before
+    /// the server's link filter (MessageLinks.previewLink).
     ///
     /// True for an EMPTY assistant row from the moment it is fanned out,
     /// not from the first delta — a picture answer has no deltas at all,
     /// and the empty row is its whole "still working" state (protocol.md,
     /// "How a picture comes back").
     var isStreaming: Bool = false
-    /// An `ai_error` named this row: the answer stopped.
+    /// An `ai_error` named this row: the answer stopped. Its partial text,
+    /// if any, never gets a link preview card (MessageLinks.previewLink).
     ///
     /// Only ever drawn where the row would otherwise be BLANK. A text
     /// answer that failed midway keeps whatever arrived and says nothing
@@ -68,7 +71,11 @@ struct MessageBubbleView: View {
     /// empty by design and the attachment never came, so without this the
     /// row that "has to have somewhere to fail" fails into an empty
     /// balloon.
-    var assistantFailed: Bool = false
+    ///
+    /// WHICH failure, not only whether: a refusal by the provider's own
+    /// filter says so instead of "ask again" (protocol.md, "The
+    /// assistant"). Nil while the answer has not failed.
+    var assistantFailure: AssistantFailure? = nil
     let showsSenderName: Bool
     let senderName: String?
     /// Who sent it, for the run-head avatar. Only consulted when
@@ -191,8 +198,12 @@ struct MessageBubbleView: View {
         guard !isEmojiOnly else { return nil }
         // The RENDERED text, matching what the balloon draws: markdown
         // deletes characters, so detecting over the raw body previews links
-        // the reader cannot see and misses ones they can.
-        return MessageLinks.firstWebLinkAsDrawn(in: message.body)
+        // the reader cannot see and misses ones they can. And never for an
+        // assistant answer still being written or stopped by an `ai_error`:
+        // that text is the model's, before the server's link filter
+        // (MessageLinks.previewLink).
+        return MessageLinks.previewLink(
+            in: message.body, isStreaming: isStreaming, answerFailed: assistantFailure != nil)
     }
 
     /// The card to draw under this bubble, once its fetch has landed.
@@ -835,8 +846,12 @@ struct MessageBubbleView: View {
             // …and where it stopped instead of starting. The bubble is
             // already in place and already scrolled to; this is the only
             // thing that can go in it.
-            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
-                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+            if let assistantFailure, message.body.isEmpty && message.attachments.isEmpty {
+                Label {
+                    Text(assistantFailure.sentence)
+                } icon: {
+                    Image(systemName: "exclamationmark.circle")
+                }
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor.opacity(0.7))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1023,16 +1038,28 @@ struct MessageBubbleView: View {
     /// files, audio or location stack under it as the rows they have
     /// always been. The pile opens its first item; the viewer pages from
     /// there. No new image pipeline — the pile draws the same previews.
+    /// The message, as "Show text" under a voice note, an audio file or a
+    /// video needs it (docs/protocol.md, "Transcripts on request").
+    private var transcriptSubject: TranscriptSubject {
+        TranscriptSubject(
+            chatID: message.chatID, messageID: message.serverID, senderID: message.senderID)
+    }
+
     @ViewBuilder
     private func attachmentBlock(_ attachments: [AttachmentDTO]) -> some View {
-        if attachments.count == 1, let attachment = attachments.first {
+        if isSticker, let attachment = attachments.first {
+            stickerTile(attachment)
+        } else if isRoundVideo, let attachment = attachments.first {
+            roundTile(attachment)
+        } else if attachments.count == 1, let attachment = attachments.first {
             AttachmentView(
                 attachment: attachment,
                 onOpen: { onOpenAttachment(attachment) },
                 onLongPress: { onLongPress() },
                 onDoubleTap: { toggleQuickHeart() },
                 isMine: attachmentsOnTint,
-                onBalloon: !isMediaOnly)
+                onBalloon: !isMediaOnly,
+                transcriptSubject: transcriptSubject)
         } else {
             let media = AttachmentAlbum.media(of: attachments)
             let rows = AttachmentAlbum.rows(of: attachments)
@@ -1044,6 +1071,14 @@ struct MessageBubbleView: View {
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
                         isMine: attachmentsOnTint)
+                    // Each video in the pile gets its own "Show text" under
+                    // the pile, numbered when there are several so each
+                    // says which it is the text of.
+                    ForEach(TranscriptDoor.pileVideos(media)) { video in
+                        TranscriptSection(
+                            attachment: video.attachment, subject: transcriptSubject,
+                            isMine: attachmentsOnTint, videoNumber: video.number)
+                    }
                 } else if let single = media.first {
                     AttachmentView(
                         attachment: single,
@@ -1051,7 +1086,8 @@ struct MessageBubbleView: View {
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
                         isMine: attachmentsOnTint,
-                        onBalloon: !isMediaOnly)
+                        onBalloon: !isMediaOnly,
+                        transcriptSubject: transcriptSubject)
                 }
                 ForEach(rows) { attachment in
                     AttachmentView(
@@ -1063,9 +1099,56 @@ struct MessageBubbleView: View {
                         // A row always keeps its balloon (isMediaOnly is
                         // false whenever one is present), so this is
                         // always true — one rule, passed everywhere.
-                        onBalloon: !isMediaOnly)
+                        onBalloon: !isMediaOnly,
+                        transcriptSubject: transcriptSubject)
                 }
             }
+        }
+    }
+
+    /// A sticker: the picture alone, in the one fixed box every sticker on
+    /// this client is drawn in, fitted whole (docs/protocol.md, "How it is
+    /// drawn"). No tile, no clip, no hairline and no placeholder wash —
+    /// each of those is a rectangle, and a rectangle behind a transparent
+    /// picture is the bubble this message does not have.
+    ///
+    /// The gestures are the photo tile's own, in the photo tile's order
+    /// (count 2 before count 1, which is what makes them exclusive): a tap
+    /// shows it larger, a double tap hearts, a long press opens the menu.
+    /// It is a message like any other.
+    private func stickerTile(_ attachment: AttachmentDTO) -> some View {
+        StickerImage(attachmentID: attachment.id)
+            .frame(width: StickerPack.messageBox, height: StickerPack.messageBox)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { toggleQuickHeart() }
+            .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+            .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Sticker")
+            .accessibilityAddTraits(.isButton)
+            // A bare gesture publishes no accessibility action — measured,
+            // see ZZAXProbeTests.
+            .accessibilityAction { onOpenAttachment(attachment) }
+    }
+
+    /// A video message: the circle alone, with no balloon, and "Show text"
+    /// under it, outside its gestures (#79, S5.2, S5.5). The sticker branch
+    /// skips the transcript footer; this one adds its own, in the colour
+    /// that reads on the chat background.
+    ///
+    /// A tap plays it in place with sound (RoundVideoTile), a double tap
+    /// hearts, a long press opens the menu — where "Open Full Screen" is, as
+    /// is the expand control while it plays.
+    private func roundTile(_ attachment: AttachmentDTO) -> some View {
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+            RoundVideoTile(
+                attachment: attachment,
+                isMine: isMine,
+                upload: .of(message, isMine: isMine),
+                onDoubleTap: { toggleQuickHeart() },
+                onLongPress: { onLongPress() },
+                onOpenFullScreen: { onOpenAttachment(attachment) })
+            TranscriptSection(attachment: attachment, subject: transcriptSubject, isMine: false)
         }
     }
 
@@ -1127,8 +1210,18 @@ struct MessageBubbleView: View {
     /// other bare treatment. The rule, and why files, audio and places
     /// are not in it, lives in MessagePresentation.isMediaOnly.
     private var isMediaOnly: Bool {
-        MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+        // A sticker is bare on its own terms, quote or no quote — and so is
+        // a video message (#79, S5.2).
+        isSticker || isRoundVideo
+            || MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
     }
+
+    /// True when the message is a sticker — one flagged picture, no words.
+    private var isSticker: Bool { MessagePresentation.isSticker(message) }
+
+    /// True when the message is a video message — one flagged square video,
+    /// no words — drawn as a circle (MessagePresentation.isRoundVideo).
+    private var isRoundVideo: Bool { MessagePresentation.isRoundVideo(message) }
 
     /// True when the balloon draws with no fill — an emoji-only body or a
     /// media-only message. Everything that adapts to "nothing behind me"

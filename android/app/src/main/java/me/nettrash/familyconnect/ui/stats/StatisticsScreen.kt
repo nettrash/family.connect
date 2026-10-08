@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.ui.stats
 
 import android.content.Context
 import android.text.format.Formatter
+import androidx.annotation.PluralsRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -49,7 +50,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.data.net.dto.AiStatsDto
 import me.nettrash.familyconnect.data.net.dto.MemberStatsDto
+import me.nettrash.familyconnect.ui.chat.CallRecordWording
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -158,20 +161,10 @@ fun StatisticsScreen(
                         }
                     }
 
-                    if (stats.totals.ai.questions > 0) {
+                    val assistantRows = StatisticsLines.assistantRows(stats.totals.ai, context)
+                    if (assistantRows.isNotEmpty()) {
                         item { SectionHeader(stringResource(R.string.s_assistant)) }
-                        item {
-                            StatRow(
-                                stringResource(R.string.s_questions),
-                                "${stats.totals.ai.questions}",
-                            )
-                        }
-                        item {
-                            StatRow(
-                                stringResource(R.string.s_tokens),
-                                "${stats.totals.ai.promptTokens + stats.totals.ai.completionTokens}",
-                            )
-                        }
+                        items(assistantRows) { (label, value) -> StatRow(label, value) }
                     }
 
                     item { SectionHeader(stringResource(R.string.s_who_sends_what)) }
@@ -219,30 +212,87 @@ private fun MemberRow(member: MemberStatsDto, context: Context) {
             Text("${member.messages}", style = MaterialTheme.typography.bodyLarge)
         }
         Text(
-            text = summaryFor(member, context),
+            text = StatisticsLines.summaryFor(member, context),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
-/** One line under a member: what they sent besides words. */
-private fun summaryFor(member: MemberStatsDto, context: Context): String {
-    val parts = buildList {
-        if (member.attachments.count > 0) {
-            add(
-                context.getString(
-                    R.string.s_attachments_and_size,
-                    member.attachments.count,
-                    formatBytes(context, member.attachments.bytes),
-                ),
-            )
-        }
-        if (member.ai.questions > 0) {
-            add(context.getString(R.string.s_questions_to_assistant, member.ai.questions))
+/**
+ * The words of the page that are decisions, apart from Compose so a test
+ * can hold them: the same rows and the same member line iOS, the web and
+ * Windows draw.
+ */
+internal object StatisticsLines {
+
+    /**
+     * The assistant section's rows, label to value — empty when the family
+     * has used none of it, and then no section is drawn. A family that only
+     * asked for pictures or for transcripts still gets one: transcripts are
+     * not counted as questions, and a section that hid them would make
+     * what they cost read as free.
+     */
+    fun assistantRows(ai: AiStatsDto, context: Context): List<Pair<String, String>> {
+        if (ai.questions <= 0 && ai.images <= 0 && ai.transcripts <= 0 && ai.searches <= 0) return emptyList()
+        return buildList {
+            add(context.getString(R.string.s_questions) to "${ai.questions}")
+            add(context.getString(R.string.s_tokens) to "${ai.promptTokens + ai.completionTokens}")
+            if (ai.images > 0) add(context.getString(R.string.s_stats_pictures) to "${ai.images}")
+            // Paid web searches — the number that maps to a per-search bill,
+            // as pictures map to a per-picture one (docs/protocol.md,
+            // "Family statistics"). Absent from an older server, so 0, so
+            // no row.
+            if (ai.searches > 0) add(context.getString(R.string.s_stats_web_searches) to "${ai.searches}")
+            // Billed by length, not tokens — so the length is shown.
+            if (ai.transcripts > 0) {
+                add(context.getString(R.string.s_stats_recordings_as_text) to "${ai.transcripts}")
+                add(context.getString(R.string.s_stats_recording_time) to recordingTime(ai.transcriptDurationMs))
+            }
         }
     }
-    return if (parts.isEmpty()) context.getString(R.string.s_words_only) else parts.joinToString(" · ")
+
+    /** "3:42", or "1:03:42" past an hour — rounded to the nearest second. */
+    fun recordingTime(durationMs: Long): String =
+        CallRecordWording.duration(((durationMs.coerceAtLeast(0) + 500) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+
+    /**
+     * One line under a member: what they sent besides words. Every count is
+     * a plural resource — "1 picture", "3 картинки", "5 картинок" — never a
+     * plural noun with any number in front of it.
+     */
+    fun summaryFor(member: MemberStatsDto, context: Context): String {
+        val resources = context.resources
+        val parts = buildList {
+            if (member.attachments.count > 0) {
+                add(
+                    resources.getQuantityString(
+                        R.plurals.s_attachments_and_size,
+                        member.attachments.count,
+                        member.attachments.count,
+                        formatBytes(context, member.attachments.bytes),
+                    ),
+                )
+            }
+            if (member.ai.questions > 0) {
+                add(count(context, R.plurals.s_questions_to_assistant, member.ai.questions))
+            }
+            if (member.ai.images > 0) {
+                add(count(context, R.plurals.s_pictures_from_assistant, member.ai.images))
+            }
+            if (member.ai.transcripts > 0) {
+                add(count(context, R.plurals.s_recordings_as_text, member.ai.transcripts))
+            }
+            if (member.ai.searches > 0) {
+                add(count(context, R.plurals.s_web_searches, member.ai.searches))
+            }
+        }
+        return if (parts.isEmpty()) context.getString(R.string.s_words_only) else parts.joinToString(" · ")
+    }
+
+    /** A count whose only argument is the count itself. */
+    private fun count(context: Context, @PluralsRes id: Int, n: Int): String =
+        context.resources.getQuantityString(id, n, n)
 }
 
 /** `1.2 MB`, in the reader's own units and language. */

@@ -30,6 +30,13 @@
         </NavigationView>
 
         <!--
+            Where the video-message recorder lies while it is open (docs/audio-video-messages-2026-10-04.md, S3.3, S8.6): over
+            the rail and the page, under the title bar and under the call card. Empty and without a background — so never hit —
+            until the recorder is put in it.
+        -->
+        <Grid x:Name="RecorderHost" Grid.Row="1" />
+
+        <!--
             A call, over the corner of whatever is open (web views/call.rs): who, where it has got to, and what can be done
             about it. Hidden, never collapsed: the page carrying the media lives in it, and a browser engine taken out of the
             tree is one that stops.

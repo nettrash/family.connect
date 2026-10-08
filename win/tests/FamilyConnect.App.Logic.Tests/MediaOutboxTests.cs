@@ -109,6 +109,28 @@ public class MediaOutboxTests : IDisposable
         Assert.Empty(handler.Bodies);
     }
 
+    /// <summary>
+    /// A voice note goes up with the shape measured from it (docs/protocol.md, "A voice note's waveform"), in the query beside
+    /// its length; one with no shape goes up exactly as before.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceNotesWaveformGoesUpWithIt()
+    {
+        const string wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+        Queue("note");
+        Queue("plain");
+        var staging = new Staging();
+        staging.Files["note"] = new StagedMedia("audio", "audio/mp4", new byte[] { 1, 2, 3 }, DurationMs: 4200, Waveform: wire);
+        staging.Files["plain"] = new StagedMedia("audio", "audio/mp4", new byte[] { 1, 2, 3 }, DurationMs: 4200);
+        var (media, handler) = Build(new Server().On("/attachments", Uploaded(70)), staging);
+
+        Assert.Equal(2, await media.PushAsync());
+
+        Assert.Equal(
+            [$"/api/v1/attachments?kind=audio&duration_ms=4200&waveform={wire}", "/api/v1/attachments?kind=audio&duration_ms=4200"],
+            handler.Asked);
+    }
+
     /// <summary>A place whose numbers did not survive is as lost as a photo whose bytes did not: the row fails.</summary>
     [Fact]
     public async Task APlaceWithoutItsNumbersFailsTheRow()

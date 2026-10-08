@@ -22,7 +22,8 @@ struct SessionLogicTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, maxMembers: nil)
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false, greetingPlaces: [],
+        maxMembers: nil)
     private static let pending = PendingJoinRequestDTO(familyID: 3, familyName: "The Smiths", createdAt: nil)
 
     @Test("family present → active (regardless of prior waiting)")
@@ -96,7 +97,8 @@ struct AppSessionTransitionTests {
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
-        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, maxMembers: nil)
+        aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false, greetingPlaces: [],
+        maxMembers: nil)
 
     /// Spy-instrumented session against a never-hit API client.
     @MainActor
@@ -308,6 +310,35 @@ struct AppSessionTransitionTests {
             #expect(try KeychainStore.getString(account: KeychainStore.tokenAccount) == "tok")
         }
         #expect(AppSettings.serverURL != nil)
+    }
+
+    @Test("recently used stickers are this device's: they outlast a launch and a kick, and go at sign-out")
+    func stickerRecentsSurviveARestartAndGoAtSignOut() throws {
+        resetGlobals()
+        defer { resetGlobals() }
+        // An id no other suite sends — they share these defaults.
+        let sentinel: Int64 = 987_654_321
+        AppSettings.serverURL = URL(string: "https://family.example")!
+        let (session, _) = makeSession()
+        session.apply(me: MeResponse(user: Self.user, family: Self.family, role: "member", pendingJoinRequest: nil))
+        AppSettings.packRecents = StickerRecents.noting(sentinel, in: AppSettings.packRecents)
+
+        // PER DEVICE and past a restart: they are in the defaults DATABASE,
+        // under their own key, and not in anything that dies with the
+        // process — which is all "the next launch" reads.
+        let stored = UserDefaults.standard.array(forKey: "v1.pack.recents") as? [Int]
+        #expect(stored?.first == Int(sentinel))
+
+        // A kick or a leave keeps the session, and the list with it.
+        session.apply(me: MeResponse(user: Self.user, family: nil, role: nil, pendingJoinRequest: nil))
+        #expect(AppSettings.packRecents.contains(sentinel))
+
+        // Sign-out — by any road that ends the session — clears them, so
+        // they are not left on a shared device for whoever opens the panel
+        // next.
+        session.handleUnauthorized()
+        #expect(!AppSettings.packRecents.contains(sentinel))
+        #expect(UserDefaults.standard.object(forKey: "v1.pack.recents") == nil)
     }
 
     @Test("handleUnauthorized: token gone, server kept, chat data purged, → needsAuth")
@@ -590,6 +621,24 @@ struct AppSessionTransitionTests {
         #expect(session.phase == .needsAuth)
         #expect(spies.chatStoreCleared == 1)
         #expect(AppSettings.currentUserID == nil)
+    }
+
+    /// #79, S2.8 and S4 "Sign-out": everything recorded and not sent goes
+    /// with the session — and with a family that went, whose chats it was
+    /// recorded in. Every purge wipes chat data, so every purge clears it.
+    @Test("every purge deletes the voice messages that were not sent", arguments: [
+        SessionLogic.PurgeReason.logout, .serverChange, .unauthorized, .accountDeleted, .kicked, .leftFamily,
+    ])
+    func purgeClearsParkedRecordings(reason: SessionLogic.PurgeReason) {
+        resetGlobals()
+        defer { resetGlobals() }
+        let (session, _) = makeSession()
+        var cleared = 0
+        session.clearParkedRecordings = { cleared += 1 }
+
+        session.purge(reason)
+
+        #expect(cleared == 1, "a not-sent recording outlived \(reason)")
     }
 
     @Test("family_owner outside a family is ignored")

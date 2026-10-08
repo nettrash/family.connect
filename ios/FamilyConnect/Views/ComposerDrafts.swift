@@ -12,10 +12,16 @@
 //
 //  In-memory on purpose: a draft is a fragment of an unsent thought, not
 //  data — it survives navigation, not the process. Only the TEXT parks
-//  here; a recording in progress, staged attachments and an edit session
-//  are deliberately let go (stopping a live recording mid-route has no
-//  right answer, and an edit's banner names a message the reader is no
-//  longer looking at).
+//  here; staged attachments and an edit session are deliberately let go (a
+//  photo can be picked again, and an edit's banner names a message the
+//  reader is no longer looking at).
+//
+//  RECORDINGS ARE NOT LET GO any more (#79, S2.8). A recording running when
+//  the view dies, and a voice note still in review, are kept on disk as the
+//  chat's "Voice message not sent" row — ParkedRecordings — because a
+//  recording cannot be made again. A note in review takes the words in the
+//  field along as its caption, so a composer that parked one stashes an
+//  empty draft here.
 //
 import Foundation
 

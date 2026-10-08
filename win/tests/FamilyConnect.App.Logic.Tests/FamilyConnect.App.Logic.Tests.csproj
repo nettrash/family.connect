@@ -20,4 +20,15 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FamilyConnect.App.Logic\FamilyConnect.App.Logic.csproj" />
   </ItemGroup>
+
+  <!--
+    The record vectors (issue #79) — the Send slot, the video button and the round video's
+    arithmetic, printed by tools/board-oracle — for ComposerButton's tests. The copy CI compares
+    with the oracle lives beside the Core tests; it is LINKED here, never copied, so there is no
+    fourth copy to drift. It lands at Fixtures/record-vectors.json beside the test assembly, as it
+    does for the Core tests.
+  -->
+  <ItemGroup>
+    <None Include="..\FamilyConnect.Core.Tests\Fixtures\record-vectors.json" Link="Fixtures\record-vectors.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

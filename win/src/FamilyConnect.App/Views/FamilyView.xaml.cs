@@ -3,6 +3,7 @@ using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
 using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
+using FamilyConnect.Core.Store;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -10,6 +11,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
+using Windows.Storage.Pickers;
+using Windows.Storage.Streams;
 using static FamilyConnect.App.Views.Dialogs;
 
 namespace FamilyConnect.App.Views;
@@ -45,6 +49,15 @@ public sealed partial class FamilyView : UserControl
     private readonly Action<SessionState> onSession;
     private readonly Action<Resync.Report> onResync;
     private readonly Dictionary<string, BitmapImage> faces = [];
+
+    /// <summary>
+    /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards: the pack, what has been
+    /// decoded of it, and whether an add or a removal is under way.
+    /// </summary>
+    private readonly PackModel pack;
+    private readonly Action<PackItemDto> onPack;
+    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
+    private bool changingPack;
     private IReadOnlyList<JoinRequestDto> requests = [];
     private IReadOnlyList<ReportDto> reports = [];
     private bool busy;
@@ -58,14 +71,28 @@ public sealed partial class FamilyView : UserControl
     private FamilyPatch? pending;
     private bool drawing;
 
+    // The greeting's places (docs/protocol.md, "Today's weather, for places the owner chose"): the three fields as they
+    // are being edited, and the controls that draw them.
+    private readonly PlacesDraft places = new();
+    private bool savingPlaces;
+    private readonly Grid[] placeRows;
+    private readonly TextBox[] placeBoxes;
+    private readonly Button[] placeRemovers;
+
     internal FamilyView(AppServices services, Connection connection, Action close, Action<long> openChat)
     {
         this.services = services;
         this.connection = connection;
         this.openChat = openChat;
         family = new FamilyModel(connection.Api, connection.Chats);
+        pack = connection.Stickers;
         InitializeComponent();
         var say = services.Say;
+
+        StickersHeading.Text = say.Get("Family Stickers");
+        AddStickerButton.Content = say.Get("Add a sticker");
+        StickersFootnote.Text = say.Get("Pictures everyone in the family can send as stickers in a chat.");
+        AddStickerButton.Click += (_, _) => _ = AddStickersAsync();
 
         Heading.Text = say.Get("Family");
         DoneButton.Content = say.Get("Done");
@@ -100,11 +127,74 @@ public sealed partial class FamilyView : UserControl
         FacesTitle.Text = say.Get("Member faces");
         GreetingHeading.Text = say.Get("Daily greeting");
         GreetingTitle.Text = say.Get("Good morning message");
+        TranscriptsTitle.Text = say.Get("Voice and video as text");
+        LookupsHeading.Text = say.Get("Looking things up");
+        LookupsTitle.Text = say.Get("Can look things up");
+        PlacesHeading.Text = say.Get("Weather in the greeting");
+        AddPlaceButton.Content = say.Get("Add place");
+        PlacesFull.Text = say.Get("Up to 3 places.");
+        PlacesFootnote.Text = say.Get(
+            "The daily greeting will also mention today's weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.");
+        placeRows = [PlaceRow0, PlaceRow1, PlaceRow2];
+        placeBoxes = [PlaceBox0, PlaceBox1, PlaceBox2];
+        placeRemovers = [RemovePlace0, RemovePlace1, RemovePlace2];
+        for (var index = 0; index < placeBoxes.Length; index++)
+        {
+            var at = index;
+            var box = placeBoxes[at];
+            box.PlaceholderText = say.Get("City or town");
+            AutomationProperties.SetName(box, say.Get("City or town"));
+            // What may be typed is what the server keeps: no control characters, at most 80 characters — counted as the
+            // server counts them, which a TextBox's MaxLength (UTF-16 units) does not.
+            box.TextChanging += (sender, _) =>
+            {
+                if (drawing)
+                {
+                    return;
+                }
+                var typed = places.Set(at, sender.Text);
+                if (!string.Equals(typed, sender.Text, StringComparison.Ordinal))
+                {
+                    var caret = sender.SelectionStart;
+                    sender.Text = typed;
+                    sender.SelectionStart = Math.Min(caret, typed.Length);
+                }
+            };
+            box.LostFocus += (_, _) => _ = SavePlacesAsync();
+            box.KeyDown += (_, e) =>
+            {
+                if (e.Key == Windows.System.VirtualKey.Enter)
+                {
+                    e.Handled = true;
+                    _ = SavePlacesAsync();
+                }
+            };
+            var remove = placeRemovers[at];
+            AutomationProperties.SetName(remove, say.Get("Remove place"));
+            ToolTipService.SetToolTip(remove, say.Get("Remove place"));
+            remove.Click += (_, _) =>
+            {
+                if (places.Remove(at))
+                {
+                    _ = SavePlacesAsync();
+                }
+            };
+        }
+        AddPlaceButton.Click += (_, _) =>
+        {
+            if (!places.Add())
+            {
+                return;
+            }
+            Draw();
+            placeBoxes[places.Fields.Count - 1].Focus(FocusState.Programmatic);
+        };
         // A switch drawn beside its words rather than under a header: the words are still its name to a screen reader.
         foreach (var (toggle, title) in new (ToggleSwitch, TextBlock)[]
         {
             (LimitSwitch, LimitTitle), (HistorySwitch, HistoryTitle), (VisionSwitch, VisionTitle),
             (RecentPhotosSwitch, RecentPhotosTitle), (FacesSwitch, FacesTitle), (GreetingSwitch, GreetingTitle),
+            (TranscriptsSwitch, TranscriptsTitle), (LookupsSwitch, LookupsTitle),
         })
         {
             AutomationProperties.SetName(toggle, title.Text);
@@ -163,17 +253,39 @@ public sealed partial class FamilyView : UserControl
         RecentPhotosSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiHistoryPhotos = RecentPhotosSwitch.IsOn });
         FacesSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiFaces = FacesSwitch.IsOn });
         GreetingSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiGreeting = GreetingSwitch.IsOn });
+        TranscriptsSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiTranscripts = TranscriptsSwitch.IsOn });
+        LookupsSwitch.Toggled += (_, _) => Switched(() => new FamilyPatch { AiLookups = LookupsSwitch.IsOn });
 
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
         onSession = _ => QueueRedraw();
-        onResync = report => DispatcherQueue.TryEnqueue(() => _ = LoadOwnerListsAsync());
+        onResync = report => DispatcherQueue.TryEnqueue(() =>
+        {
+            _ = LoadOwnerListsAsync();
+            // The pass is what reads the pack and its ceilings, and a member's screen has no owner lists to redraw it.
+            if (!connection.Session.State.IsOwner)
+            {
+                Draw();
+            }
+        });
+        // A pack frame reaches everybody in the family, the one who caused it included — and it is never filtered by a
+        // block: an item is a picture the family keeps, not something a person said.
+        onPack = item =>
+        {
+            if (item.Deleted)
+            {
+                DispatcherQueue.TryEnqueue(() => stickerThumbs.Remove(item.Id));
+            }
+            QueueRedraw();
+        };
+        connection.Router.PackChanged += onPack;
         connection.Router.RosterChanged += onRoster;
         connection.Router.BlockChanged += onBlock;
         connection.Session.Changed += onSession;
         connection.Live.Resynced += onResync;
         Unloaded += (_, _) =>
         {
+            connection.Router.PackChanged -= onPack;
             connection.Router.RosterChanged -= onRoster;
             connection.Router.BlockChanged -= onBlock;
             connection.Session.Changed -= onSession;
@@ -232,6 +344,7 @@ public sealed partial class FamilyView : UserControl
             }
             MembersList.Children.Add(MemberRow(member, me.Id, owner));
         }
+        DrawStickers(owner);
         Arrange(ActualWidth);
     }
 
@@ -247,6 +360,12 @@ public sealed partial class FamilyView : UserControl
     {
         // 520 is what a member's row needs for a name, a username and its three controls without folding the username in two.
         var side = connection.Session.State.IsOwner && width >= 1280;
+        // How many stickers fit across their card. Set and never rebuilt: nothing is redrawn inside a size change.
+        var across = width >= 760 ? 6 : 4;
+        if (StickersGrid.MaximumRowsOrColumns != across)
+        {
+            StickersGrid.MaximumRowsOrColumns = across;
+        }
         if (sideBySide == side)
         {
             return;
@@ -265,6 +384,318 @@ public sealed partial class FamilyView : UserControl
         Margin = new Thickness(20, 0, 20, 0),
         Background = (Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
     };
+
+    // ---- the family's stickers -----------------------------------------------------------------
+    //
+    // The CHAT sticker's pack (docs/protocol.md, "Sticker pack"). Pack management lives here, on the family's screen,
+    // because the pack is the family's — like the board, and unlike a message.
+
+    /// <summary>
+    /// The pack as a grid, in the order it was added: how full it is, a way to add, and on each item this reader may
+    /// remove, a way to remove it. On a server that predates packs the card is not drawn at all.
+    /// </summary>
+    private void DrawStickers(bool owner)
+    {
+        var say = services.Say;
+        if (pack.Limits is not { } limits)
+        {
+            StickersSection.Visibility = Visibility.Collapsed;
+            return;
+        }
+        StickersSection.Visibility = Visibility.Visible;
+        var items = pack.Items();
+        StickersCount.Text = PackText.Fullness(items.Count, limits, say);
+        AddStickerButton.IsEnabled = !changingPack;
+        StickersGrid.Children.Clear();
+        StickersGrid.ItemWidth = StickerLook.ManageCell;
+        StickersGrid.ItemHeight = StickerLook.ManageCell;
+        StickersGrid.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in items)
+        {
+            // A blocked member's items are drawn like anybody's: a block hides what a person SAID, and a pack item is
+            // a picture the family keeps.
+            StickersGrid.Children.Add(StickerCell(item, pack.MayRemove(item, owner)));
+        }
+    }
+
+    private Grid StickerCell(PackItemDto item, bool mayRemove)
+    {
+        var say = services.Say;
+        var cell = new Grid { Width = StickerLook.ManageCell, Height = StickerLook.ManageCell };
+        var image = new Image { Stretch = Stretch.Uniform, Margin = new Thickness(8) };
+        // The few words whoever added it gave, for a screen reader — never drawn over the picture.
+        AutomationProperties.SetName(image, PackText.Name(item, say));
+        if (item.Label is { Length: > 0 } label)
+        {
+            ToolTipService.SetToolTip(image, label);
+        }
+        // Until the picture lands — and for good where nothing on this machine decodes it (WebP without its extension)
+        // — the cell says what it holds, as a sticker in a conversation does: a square with nothing in it but a remove
+        // button is a thing nobody can decide about.
+        var word = new TextBlock
+        {
+            Text = item.Label is { Length: > 0 } given ? given : say.Get("Sticker"),
+            FontSize = 11,
+            Opacity = 0.6,
+            Margin = new Thickness(8),
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        cell.Children.Add(word);
+        cell.Children.Add(image);
+        _ = ShowStickerAsync(image, word, item);
+        if (mayRemove)
+        {
+            // Whoever added it, or the family's owner. Anybody else is not shown a control the server would refuse.
+            var remove = new Button
+            {
+                Content = "✕",
+                FontSize = 10,
+                Padding = new Thickness(5, 1, 5, 2),
+                MinWidth = 0,
+                MinHeight = 0,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                IsEnabled = !changingPack,
+            };
+            ToolTipService.SetToolTip(remove, say.Get("Remove sticker"));
+            AutomationProperties.SetName(remove, say.Get("Remove sticker"));
+            var id = item.Id;
+            remove.Click += (_, _) => _ = RemoveStickerAsync(id);
+            cell.Children.Add(remove);
+        }
+        return cell;
+    }
+
+    /// <summary>A pack item's picture: its ORIGINAL bytes, whatever <c>has_preview</c> says, drawn still.</summary>
+    private async Task ShowStickerAsync(Image image, TextBlock word, PackItemDto item)
+    {
+        try
+        {
+            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            {
+                var (bytes, error) = await pack.BytesAsync(item);
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a pack item: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                var scale = XamlRoot?.RasterizationScale ?? 1;
+                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.ManageCell, scale, animate: false);
+                // A null is kept: this grid is redrawn on every frame about the family, and a codec that is not there
+                // is still not there.
+                stickerThumbs[item.Id] = decoded;
+            }
+            if (decoded is null)
+            {
+                // The word stays: it is what says a sticker is here.
+                return;
+            }
+            image.Source = decoded.First;
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a pack item: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Add stickers: any still picture this machine decodes, chosen from disk. A WebP or PNG within the byte ceiling goes
+    /// up AS IT IS; anything else is fitted whole into 512 × 512 and written as PNG, transparency kept — never through the
+    /// photo path, which would redraw it on white as JPEG. An animated picture that is not a WebP is refused in words,
+    /// never flattened; and each one is offered a label before it goes (<see cref="PackPicking"/>).
+    /// </summary>
+    private async Task AddStickersAsync()
+    {
+        if (changingPack || pack.Limits is not { } limits)
+        {
+            return;
+        }
+        var say = services.Say;
+        StickersError.Visibility = Visibility.Collapsed;
+        StickersNotice.Visibility = Visibility.Collapsed;
+        if (pack.IsFull)
+        {
+            // Said before a picture is even chosen: the ceiling is the family's.
+            ShowProblem(StickersError, PackText.Sentence(new ApiError(ErrorCodes.PackFull, "the pack is at its ceiling"), say));
+            return;
+        }
+        IReadOnlyList<StorageFile> files;
+        try
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary, ViewMode = PickerViewMode.Thumbnail };
+            // What Windows Imaging reads. Whether it reads THIS file is the decoder's to say (HEIC and WebP are Store
+            // extensions): one it cannot is answered "Couldn't read that file.", not left out of the picker.
+            foreach (var extension in StickerFileTypes)
+            {
+                picker.FileTypeFilter.Add(extension);
+            }
+            // A desktop app must name the window that owns the picker, or it throws.
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, services.WindowHandle);
+            files = await picker.PickMultipleFilesAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"picking stickers: {e.GetType().Name}");
+            ShowProblem(StickersError, say.Get("Something went wrong. Try again."));
+            return;
+        }
+        if (files.Count == 0)
+        {
+            return;
+        }
+        changingPack = true;
+        Draw();
+        string? problem = null;
+        PackAdded? last = null;
+        try
+        {
+            foreach (var file in files)
+            {
+                var (added, error) = await AddStickerAsync(file, limits);
+                if (error is not null)
+                {
+                    problem = error;
+                    // A full pack refuses every one after it too.
+                    if (pack.IsFull)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                last = added ?? last;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"adding stickers: {e.GetType().Name}");
+            problem = say.Get("Something went wrong. Try again.");
+        }
+        finally
+        {
+            changingPack = false;
+        }
+        Draw();
+        if (problem is not null)
+        {
+            ShowProblem(StickersError, problem);
+        }
+        else if (last is { } outcome)
+        {
+            StickersNotice.Text = PackText.Sentence(outcome, say);
+            StickersNotice.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>The still pictures somebody may make a sticker of: the two a sticker IS, and what Windows Imaging decodes besides.</summary>
+    private static readonly string[] StickerFileTypes =
+        [".webp", ".png", ".jpg", ".jpeg", ".heic", ".heif", ".gif", ".bmp", ".tif", ".tiff"];
+
+    /// <summary>One chosen file: what it came to, or the sentence that says why not. Null for both when its label was cancelled.</summary>
+    private async Task<(PackAdded? Added, string? Problem)> AddStickerAsync(StorageFile file, PackLimits limits)
+    {
+        var say = services.Say;
+        byte[] bytes;
+        try
+        {
+            var properties = await file.GetBasicPropertiesAsync();
+            // Nothing this large is a sticker, shrunk or not: refused before it is read into memory.
+            if (properties.Size > (ulong)MediaPrep.SizeLimit)
+            {
+                return (null, PackText.Sentence(new ApiError(ErrorCodes.PackItemTooLarge, "far over the ceiling"), say));
+            }
+            var buffer = await FileIO.ReadBufferAsync(file);
+            bytes = new byte[buffer.Length];
+            using var reader = DataReader.FromBuffer(buffer);
+            reader.ReadBytes(bytes);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a sticker file: {e.GetType().Name}");
+            return (null, say.Get("Couldn't read that file."));
+        }
+        var plan = PackPicking.For(bytes, limits, pack.Items().Count);
+        if (plan.What == PackPicking.Step.Refuse)
+        {
+            return (null, PackText.Sentence(plan.Refused ?? ApiError.Transport("refused"), say));
+        }
+        if (plan.What == PackPicking.Step.Make)
+        {
+            // THIS client's 512 × 512 rule, for a picture it is MAKING a sticker of. A finished sticker within the
+            // ceiling never comes here, and an animated one never can.
+            var made = await StickerImaging.MakeAsync(bytes);
+            if (made.Animated)
+            {
+                return (null, PackText.Sentence(PackPicking.Animated, say));
+            }
+            if (made.Bytes is not { } fitted)
+            {
+                return (null, say.Get("Couldn't read that file."));
+            }
+            bytes = fitted;
+            // Asked again, as the bytes it now is: a picture can come out of the box still over the ceiling.
+            if (PackPicking.Refusal(bytes, limits, pack.Items().Count) is { } refused)
+            {
+                return (null, PackText.Sentence(refused, say));
+            }
+        }
+        // The few words it may be given — asked once the picture is known to be one the pack will take, and before
+        // anything is uploaded. Cancel leaves this picture out and goes on to the next.
+        var (add, label) = await StickerLabelAsync(XamlRoot, say, file.Name);
+        if (!add)
+        {
+            return (null, null);
+        }
+        var (added, error) = await pack.AddAsync(bytes, label);
+        return error is null ? (added, null) : (null, PackText.Sentence(error, say));
+    }
+
+    /// <summary>Take one out — asked about first, because its picture goes with it and cannot be brought back from here.</summary>
+    private async Task RemoveStickerAsync(long itemId)
+    {
+        if (changingPack)
+        {
+            return;
+        }
+        var say = services.Say;
+        StickersError.Visibility = Visibility.Collapsed;
+        StickersNotice.Visibility = Visibility.Collapsed;
+        ApiError? error = null;
+        try
+        {
+            if (!await ConfirmAsync(
+                    XamlRoot, say, say.Get("Remove this sticker?"),
+                    say.Get("It leaves everyone's sticker panel. Stickers already sent stay in the chat."), say.Get("Remove")))
+            {
+                return;
+            }
+            changingPack = true;
+            error = await pack.RemoveAsync(itemId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"removing a sticker: {e.GetType().Name}");
+            error = ApiError.Transport(e.GetType().Name);
+        }
+        finally
+        {
+            changingPack = false;
+        }
+        stickerThumbs.Remove(itemId);
+        Draw();
+        if (error is not null)
+        {
+            ShowProblem(StickersError, PackText.Sentence(error, say));
+        }
+    }
 
     // ---- members -------------------------------------------------------------------------------
 
@@ -660,6 +1091,118 @@ public sealed partial class FamilyView : UserControl
         GreetingFootnote.Text = WithNote(
             say.Get("With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat."),
             state.GreetingsEnabled ? null : say.Get("Not available here: this server doesn't post daily greetings."));
+
+        // Other members' recordings as text: the owner's own switch, tied to no other. It names who receives the sound,
+        // so it is drawn only where the server names a processor — a server that names none offers no assistant at all.
+        TranscriptsCard.Visibility = AssistantConsent.IsAvailable(assistant.Processor) ? Visibility.Visible : Visibility.Collapsed;
+        TranscriptsSwitch.IsOn = shown.AiTranscripts;
+        TranscriptsSwitch.IsEnabled = idle && assistant.Transcribe;
+        TranscriptsFootnote.Text = WithNote(
+            say.Format(
+                "With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to %@. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.",
+                assistant.Processor ?? string.Empty),
+            assistant.Transcribe ? null : say.Get("Not available here: this server can't turn recordings into text."));
+
+        // Looking things up: offered only where the server names its providers — the array is absent on a server with no
+        // source and on one that predates it — and the footnote names who would receive a query (docs/protocol.md,
+        // "Looking things up").
+        var lookups = Lookups.Offered(assistant) ? Lookups.Providers(assistant) : null;
+        LookupsCard.Visibility = lookups is null ? Visibility.Collapsed : Visibility.Visible;
+        LookupsSwitch.IsOn = shown.AiLookups;
+        LookupsSwitch.IsEnabled = idle && lookups is not null;
+        LookupsFootnote.Text = lookups is null ? string.Empty : Lookups.SwitchFootnote(lookups, say);
+
+        DrawPlaces(state, idle);
+    }
+
+    /// <summary>
+    /// The greeting's places, under its switch: drawn for the owner where the server can fetch weather, editable with the
+    /// greeting on or off, and filled from the server's list unless the owner is in the middle of changing it.
+    /// </summary>
+    private void DrawPlaces(SessionState state, bool idle)
+    {
+        var offered = GreetingWeather.Shown(state);
+        PlacesPanel.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
+        if (!offered)
+        {
+            return;
+        }
+        places.Sync(GreetingWeather.Saved(state.Family));
+        // Still editable while its OWN save is on its way: what is typed meanwhile is kept, and saved next.
+        var editable = GreetingWeather.Editable(idle || savingPlaces);
+        for (var index = 0; index < placeRows.Length; index++)
+        {
+            var listed = index < places.Fields.Count;
+            placeRows[index].Visibility = listed ? Visibility.Visible : Visibility.Collapsed;
+            var text = listed ? places.Fields[index] : string.Empty;
+            // Set only when it differs, so a redraw never moves the caret of the field being typed in.
+            if (!string.Equals(placeBoxes[index].Text, text, StringComparison.Ordinal))
+            {
+                placeBoxes[index].Text = text;
+            }
+            placeBoxes[index].IsEnabled = editable;
+            placeRemovers[index].IsEnabled = editable;
+        }
+        AddPlaceButton.Visibility = places.CanAdd ? Visibility.Visible : Visibility.Collapsed;
+        AddPlaceButton.IsEnabled = editable;
+        PlacesFull.Visibility = places.CanAdd ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Send the places when they ask for something new: the whole list, which REPLACES the stored one, and then the list
+    /// the server KEPT, from its answer — never what was sent. One family change at a time, as for every switch.
+    /// </summary>
+    /// <remarks>Never logged: a place name is the owner's words, and the one thing this list sends anywhere.</remarks>
+    private async Task SavePlacesAsync()
+    {
+        if (drawing)
+        {
+            return;
+        }
+        // Another change on its way, or nothing to change: the fields are drawn as they now stand (a removed one goes at
+        // once), and a change still owed is sent when the save on its way comes back.
+        if (pending is not null || connection.Session.State.Family is not { } held || places.Pending() is not { } request)
+        {
+            Draw();
+            return;
+        }
+        var patch = new FamilyPatch { GreetingPlaces = request };
+        pending = patch;
+        savingPlaces = true;
+        AssistantError.Visibility = Visibility.Collapsed;
+        Draw();
+        FamilyDto? answered = null;
+        ApiError? error;
+        try
+        {
+            (answered, error) = await family.ChangeAsync(held, patch);
+            if (error is null)
+            {
+                await connection.Session.RefreshFamilyAsync();
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"changing the greeting places: {e.GetType().Name}");
+            error = ApiError.Transport(e.GetType().Name);
+        }
+        pending = null;
+        savingPlaces = false;
+        if (answered is not null)
+        {
+            places.Adopt(request, GreetingWeather.Saved(answered));
+        }
+        if (error is not null)
+        {
+            ShowProblem(AssistantError, HouseRules.AssistantFailure(error, services.Say));
+        }
+        Draw();
+        // A field left while this save was on its way asked for its own save and was turned away; it is sent now. One
+        // still being typed in waits for the person to leave it, as always.
+        if (error is null && places.Pending() is not null && placeBoxes.All(box => box.FocusState == FocusState.Unfocused))
+        {
+            _ = SavePlacesAsync();
+        }
     }
 
     private static string WithNote(string sentence, string? note) => note is null ? sentence : $"{sentence} {note}";

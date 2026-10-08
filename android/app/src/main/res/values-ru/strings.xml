@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ru. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">ru</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Добавь заметку — её увидит вся семья.</string>
     <string name="s_add_note">Добавить заметку</string>
     <string name="s_approval">Одобрение</string>
@@ -161,11 +164,9 @@
     <string name="s_request_declined_explanation">Владелец семьи отклонил заявку. Можешь попробовать другой код приглашения или создать свою семью.</string>
     <string name="s_waiting_explanation">Отсюда отменять нечего — владелец либо впустит тебя, либо отклонит заявку.</string>
     <string name="s_take_photo">Сделать фото</string>
-    <string name="s_record_video">Записать видео</string>
+    <string name="s_camera">Камера</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Добавь подпись или отправь так.</string>
     <string name="s_remove_attachment">Убрать вложение</string>
-    <string name="s_record_audio">Записать аудио</string>
-    <string name="s_stop">Стоп</string>
     <string name="s_audio">Аудио</string>
     <string name="s_play">Воспроизвести</string>
     <string name="s_pause">Пауза</string>
@@ -190,8 +191,33 @@
     <string name="s_couldnt_load_statistics">Не удалось загрузить статистику</string>
     <string name="s_check_connection_try_again">Проверь соединение и попробуй снова.</string>
     <string name="s_saved_by_one_copy">%1$s сэкономлено: одинаковые файлы хранятся в одном экземпляре.</string>
-    <string name="s_attachments_and_size">вложений: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">вопросов ассистенту: %1$d</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d вложение, %2$s</item>
+        <item quantity="few">%1$d вложения, %2$s</item>
+        <item quantity="many">%1$d вложений, %2$s</item>
+        <item quantity="other">%1$d вложения, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d вопрос ассистенту</item>
+        <item quantity="few">%1$d вопроса ассистенту</item>
+        <item quantity="many">%1$d вопросов ассистенту</item>
+        <item quantity="other">%1$d вопроса ассистенту</item>
+    </plurals>
+    <string name="s_stats_pictures">Картинки</string>
+    <string name="s_stats_recordings_as_text">Записи в текст</string>
+    <string name="s_stats_recording_time">Длительность записей</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d картинка от ассистента</item>
+        <item quantity="few">%1$d картинки от ассистента</item>
+        <item quantity="many">%1$d картинок от ассистента</item>
+        <item quantity="other">%1$d картинки от ассистента</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d запись в текст</item>
+        <item quantity="few">%1$d записи в текст</item>
+        <item quantity="many">%1$d записей в текст</item>
+        <item quantity="other">%1$d записи в текст</item>
+    </plurals>
     <string name="s_family_language">Язык семьи</string>
     <string name="s_family_language_explanation">Язык, на котором ассистент отвечает в семейном чате. Язык самого приложения от этого не меняется. Если ничего не выбрано, ответ приходит на языке вопроса.</string>
     <string name="s_not_set">Не задано</string>
@@ -406,7 +432,6 @@
     <string name="s_safety_for">Настройки безопасности для %1$s</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">Показать ассистенту фото</string>
-    <string name="s_show_the_assistant_a_picture_note">Фото уйдёт с этого сервера в модель, с которой он работает</string>
     <string name="s_ask_for_a_picture">Попросить картинку</string>
     <string name="s_assistant_sees_this_picture">Ассистенту покажут это фото. Оно уйдёт с этого сервера в модель, с которой он работает.</string>
     <string name="s_assistant_sees_these_pictures">Ассистенту покажут эти фото. Они уйдут с этого сервера в модель, с которой он работает.</string>
@@ -427,6 +452,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото отсюда и те, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
     <string name="s_assistant_answer_failed">Ассистент не смог закончить этот ответ. Спросите ещё раз.</string>
+    <string name="s_assistant_provider_refused">Сервис ассистента отказался это выполнить. Попробуй сформулировать иначе.</string>
     <string name="s_assistant_vision">Ассистент может смотреть фото</string>
     <string name="s_assistant_vision_explanation">Когда кто-то прикрепляет фото к вопросу в своём личном чате с ассистентом, прикрепляет его к сообщению с упоминанием ассистента в семейном чате или отвечает на фото, упоминая ассистента, это фото уходит в модель вместе с вопросом — не больше 4 на вопрос. Фото, на которое ассистенту не указали, не отправляется никогда, даже из более раннего сообщения (если не включено «Ассистент видит недавние фото»); видео, файлы, аудио и геопозиции — тоже. По умолчанию выключено; когда выключено, фото не отправляются никогда.</string>
     <string name="e_change_assistant_vision_failed">Не удалось изменить настройку</string>
@@ -571,6 +597,7 @@
     <string name="s_draw_another_backdrop">Нарисовать другой фон</string>
     <string name="s_drawing">Рисует…</string>
     <string name="s_draw_failed">Не удалось нарисовать.</string>
+    <string name="s_describe_in_general_words">Описывай людей и предметы общими словами — настоящие имена и бренды часто отклоняются.</string>
     <string name="s_tick_failed">Не удалось отметить.</string>
     <string name="s_no_calendar_app">Нет приложения календаря, куда добавить.</string>
     <string name="s_the_assistant">Ассистент</string>
@@ -592,4 +619,144 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Пока вы не согласитесь, ничего написанного вами не уходит в %1$s, и ассистент вам не отвечает.</string>
     <string name="s_consent_stopping_takes_effect_at_once">То, что вы пишете ассистенту, уходит в %1$s. Остановка действует сразу; уже отправленное вернуть нельзя.</string>
     <string name="s_couldnt_save_your_answer">Не удалось сохранить ваш ответ. Попробуйте ещё раз.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Стикер</string>
+    <string name="s_stickers">Стикеры</string>
+    <string name="s_family_stickers">Стикеры семьи</string>
+    <string name="s_family_stickers_count">%1$d из %2$d</string>
+    <string name="s_family_stickers_explanation">Добавить стикер может любой в семье. Убрать его может тот, кто добавил, или владелец семьи.</string>
+    <string name="s_recently_used">Недавние</string>
+    <string name="s_no_stickers_yet">Стикеров пока нет</string>
+    <string name="s_no_stickers_hint">Добавь их на экране «Семья».</string>
+    <string name="s_add_sticker">Добавить стикер</string>
+    <string name="s_add_to_family_stickers">Добавить в стикеры семьи</string>
+    <string name="s_sticker_label">Описание (необязательно)</string>
+    <string name="s_sticker_label_hint">Несколько слов для экранного диктора. Поверх картинки они не рисуются.</string>
+    <string name="s_remove_sticker">Убрать стикер</string>
+    <string name="s_remove_sticker_q">Убрать этот стикер?</string>
+    <string name="s_remove_sticker_explanation">Он исчезнет из стикеров семьи. В уже отправленных сообщениях он останется.</string>
+    <string name="s_sticker_added">Добавлено в стикеры семьи</string>
+    <string name="s_sticker_already_in_pack">Уже есть в стикерах семьи</string>
+    <string name="s_sticker_pack_full">В семье уже %1$d стикеров. Убери один, чтобы добавить новый.</string>
+    <string name="s_sticker_too_large">Этот слишком большой. Стикер может быть не больше %1$s.</string>
+    <string name="s_sticker_add_failed">Не удалось добавить стикер. Попробуй ещё раз.</string>
+    <string name="s_sticker_unreadable">Не удалось прочитать эту картинку.</string>
+    <string name="s_sticker_animated_must_be_webp">Анимированные стикеры должны быть в формате WebP. Этот добавить нельзя.</string>
+    <string name="s_sticker_label_too_long">Описание может содержать не более %1$d символов.</string>
+    <string name="s_sticker_remove_not_allowed">Убрать стикер может только тот, кто его добавил, или владелец семьи.</string>
+    <string name="s_sticker_remove_failed">Не удалось убрать стикер. Попробуй ещё раз.</string>
+    <string name="s_sticker_not_available_offline">Этого стикера ещё нет на телефоне. Попробуй ещё раз, когда будет сеть.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Показать текст</string>
+    <string name="s_transcript_hide">Скрыть текст</string>
+    <string name="s_transcript_getting">Получаем текст…</string>
+    <string name="s_transcript_no_speech">Без речи</string>
+    <string name="s_transcript_failed">Не удалось получить текст. Попробуй снова.</string>
+    <string name="s_transcript_refused">Сервис ассистента отказался обработать эту запись.</string>
+    <string name="s_transcript_unavailable">Для этого сообщения недоступно.</string>
+    <string name="s_transcript_too_long">Эта запись слишком длинная, чтобы превратить её в текст.</string>
+    <string name="s_transcript_unreadable">Не удалось прочитать звук в этом файле.</string>
+    <string name="s_transcript_a11y">Текст записи</string>
+    <string name="s_assistant_transcripts">Голос и видео текстом</string>
+    <string name="s_assistant_transcripts_explanation">Когда это включено, участники могут попросить текст голосовых сообщений, аудио и видео других участников в семейном чате, и тогда звук этой записи отправляется в %1$s. Он уходит только по чьей-то просьбе и только если отправивший его участник согласился на ассистента. Текст своих записей каждый может получить и без этого. Выключено, пока ты это не включишь.</string>
+    <string name="s_assistant_transcripts_no_server">Здесь недоступно: этот сервер не умеет превращать записи в текст.</string>
+    <string name="s_consent_transcript_sound_sent">Если вы попросите текст голосового сообщения, аудиофайла или видео, его звук будет отправлен в %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Не удалось изменить настройку</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Поиск сведений</string>
+    <string name="s_assistant_lookups">Может искать сведения</string>
+    <string name="s_assistant_lookups_explanation">Когда это включено, ассистент может искать сведения, если вопрос этого требует, — погоду, новости, факт, в котором он не уверен, — в %1$s. Туда уходит только короткий поисковый запрос или название места, которое ассистент составляет по вопросу, но никогда не сам разговор, и только если спрашивающий участник на это согласился. В ответах тогда указываются источники. Выключено, пока ты это не включишь.</string>
+    <string name="s_consent_lookups_with_history">Если владелец семьи включит поиск сведений, ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашему вопросу (в семейном чате — возможно, и по недавним сообщениям), и тогда в его ответе будут указаны источники.</string>
+    <string name="s_consent_lookups_alone">Если владелец семьи включит поиск сведений, ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашему вопросу, и тогда в его ответе будут указаны источники.</string>
+    <string name="s_agree_with_lookups">Согласиться вместе с поиском</string>
+    <string name="s_agree_without_lookups">Согласиться без поиска</string>
+    <string name="s_review_and_allow_lookups">Прочитать и разрешить поиск…</string>
+    <string name="s_stop_lookups">Отключить поиск</string>
+    <string name="s_lookups_until_you_allow">Пока вы не разрешите поиск, ассистент отвечает вам тем, что уже знает, и ничего из ваших вопросов не уходит в %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Ассистент может отправить в %1$s короткий поисковый запрос или название места, которое он составит по вашим вопросам. Остановка действует сразу; уже отправленное вернуть нельзя.</string>
+    <string name="s_list_two">%1$s и %2$s</string>
+    <string name="s_list_three">%1$s, %2$s и %3$s</string>
+    <string name="s_stats_web_searches">Поиски в интернете</string>
+    <string name="e_change_assistant_lookups_failed">Не удалось изменить настройку</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d поиск в интернете</item>
+        <item quantity="few">%1$d поиска в интернете</item>
+        <item quantity="many">%1$d поисков в интернете</item>
+        <item quantity="other">%1$d поиска в интернете</item>
+    </plurals>
+    <string name="s_greeting_weather">Погода в приветствии</string>
+    <string name="s_greeting_weather_place_placeholder">Город или посёлок</string>
+    <string name="s_greeting_weather_add_place">Добавить место</string>
+    <string name="s_greeting_weather_remove_place">Убрать место</string>
+    <string name="s_greeting_weather_limit">Не больше 3 мест.</string>
+    <string name="s_greeting_weather_footer">Ежедневное приветствие будет упоминать и сегодняшнюю погоду в этих местах. В Open-Meteo отправляются только названия мест, чтобы получить прогноз. Больше ничего не отправляется.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Голосовое сообщение не отправлено · %1$s</string>
+    <string name="s_send_voice_message">Отправить голосовое сообщение</string>
+    <string name="s_delete_recording">Удалить запись</string>
+    <string name="s_keep">Оставить</string>
+    <string name="s_delete_this_recording">Удалить эту запись?</string>
+    <string name="e_record_after_the_call">Записать сообщение можно будет после звонка.</string>
+    <string name="e_send_or_delete_the_unsent_first">Сначала отправь или удали неотправленное голосовое сообщение.</string>
+    <string name="s_recording_stopped_at_five_minutes">Запись остановлена: прошло пять минут.</string>
+    <string name="e_recording_stopped_unexpectedly">Запись неожиданно прервалась.</string>
+    <string name="s_voice_message_with_length">Голосовое сообщение · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Записать голосовое сообщение</string>
+    <string name="s_take_video">Снять видео</string>
+    <string name="s_open_settings">Открыть Настройки</string>
+    <string name="s_stop_recording">Остановить запись</string>
+    <string name="s_stop_and_listen_first">Остановить и сначала прослушать</string>
+    <string name="s_start_recording_action">начать запись</string>
+    <string name="s_play_after_recording">Это можно будет воспроизвести после записи.</string>
+    <string name="s_thirty_seconds_left">Осталось 30 секунд</string>
+    <string name="s_cant_hear_microphone_muted">Ничего не слышно. Может, микрофон выключен?</string>
+    <string name="s_announce_recording">Идёт запись</string>
+    <string name="s_announce_recording_deleted">Запись удалена</string>
+    <string name="s_announce_voice_message_sent">Голосовое сообщение отправлено</string>
+    <string name="s_announce_ready_to_review">Готово к проверке, %1$s</string>
+    <string name="e_wait_for_the_attachment">Подожди, пока текущее вложение будет готово.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Видеосообщение</string>
+    <string name="s_video_message_a11y">Видеосообщение, %1$s</string>
+    <string name="s_not_played">Не просмотрено</string>
+    <string name="s_open_full_screen">Открыть на весь экран</string>
+    <string name="s_couldnt_load_video_tap">Не удалось загрузить видео. Нажми, чтобы повторить.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Записать видеосообщение</string>
+    <string name="s_send_video_message">Отправить видеосообщение</string>
+    <string name="s_retake">Переснять</string>
+    <string name="s_record">Записать</string>
+    <string name="s_switch_camera">Сменить камеру</string>
+    <string name="s_video_message_with_length">Видеосообщение · %1$s</string>
+    <string name="s_not_recording">Запись не идёт</string>
+    <string name="s_only_you_can_see_this">Пока ты не начнёшь запись, это видишь только ты.</string>
+    <string name="s_starting_camera">Камера включается…</string>
+    <string name="s_cant_see_anything">Ничего не видно. Может, камера выключена или закрыта?</string>
+    <string name="s_ten_seconds_left">Осталось 10 секунд</string>
+    <string name="s_recording_stopped_at_one_minute">Запись остановлена: прошла минута.</string>
+    <string name="s_video_too_short">Видео слишком короткое.</string>
+    <string name="s_delete_video_message">Удалить видеосообщение?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Для видеосообщений нужны камера и микрофон.</string>
+    <string name="e_camera_permission_settings">Family нужно разрешение на доступ к камере. Включи его в Настройках.</string>
+    <string name="s_camera_in_use_by_another_app">Камера занята другим приложением.</string>
+    <string name="s_couldnt_make_it_round">Не удалось сделать видео круглым. Оно будет отправлено как обычное видео.</string>
+    <string name="s_too_big_for_video_message">Слишком большое для видеосообщения. Будет отправлено как обычное видео.</string>
+    <string name="s_announce_camera_ready">Камера готова</string>
+    <string name="s_announce_recording_video">Идёт видеозапись</string>
+    <string name="s_announce_video_message_sent">Видеосообщение отправлено</string>
+    <string name="s_announce_camera_turned_off">Камера выключена</string>
+    <string name="s_record_voice_message_instead">Записать голосовое сообщение вместо видео</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Голосовое сообщение, %1$s</string>
+    <string name="s_played">Воспроизведено</string>
+    <string name="s_playback_speed">Скорость воспроизведения</string>
+    <string name="s_playback_speed_a11y">Скорость воспроизведения, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Не отправлено</string>
+    <string name="s_switch">Сменить</string>
+    <string name="s_stop">Стоп</string>
 </resources>

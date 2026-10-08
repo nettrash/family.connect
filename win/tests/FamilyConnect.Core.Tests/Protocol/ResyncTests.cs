@@ -865,4 +865,378 @@ public class ResyncTests : IDisposable
         // Transient, so the caller knows to come back rather than to show a failure.
         Assert.True(report.Stopped.Transient);
     }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+    //
+    // The board's catch-up, one table over: a device that holds no pack reads the whole of it, one
+    // that does and is behind loops the change feed, and one that is level asks for nothing.
+
+    private const string Ceilings = """, "max_pack_items": 200, "max_pack_item_bytes": 524288""";
+
+    /// <summary>A family whose pack has been written to: the mark and both ceilings.</summary>
+    private static string FamilyWithPack(long mark) =>
+        FamilyWall($$""", "max_pack_seq": {{mark}}{{Ceilings}}""");
+
+    private static string PackItemJson(long id, long seq) =>
+        $$"""
+        {"id": {{id}}, "added_by": 7,
+         "attachment": {"id": {{70 + id}}, "kind": "photo", "mime": "image/webp", "size": 4096, "width": 512, "height": 512},
+         "created_at": "2026-09-13T10:00:00Z", "pack_seq": {{seq}}}
+        """;
+
+    private static PackItemDto PackItem(long id, long seq) =>
+        new(id, 7, new AttachmentDto(70 + id, "photo", "image/webp", 4096, 512, 512), "2026-09-13T10:00:00Z", seq);
+
+    private (Resync Resync, Server Handler, PackStore Pack) BuildWithPack(Server server)
+    {
+        var api = new ApiClient(
+            new HttpClient(server), ServerUrl.Normalise("chat.example.com")!,
+            new MemoryTokenStore("t0ken"));
+        var pack = new PackStore(database);
+        return (new Resync(api, new ChatStore(database), new BoardStore(database), pack: pack), server, pack);
+    }
+
+    private static Server PackServer(string family) => new Server()
+        .Always("/me", Me)
+        .Always("/families/mine", family)
+        .Always("/chats", """{"chats": []}""");
+
+    [Fact]
+    public async Task ADeviceThatHoldsNoPackReadsTheWholeOfIt()
+    {
+        var server = PackServer(FamilyWithPack(14))
+            .Always("/families/mine/pack", $$"""{"items": [{{PackItemJson(5, 12)}}, {{PackItemJson(6, 14)}}], "max_pack_seq": 14}""");
+        var (resync, handler, pack) = BuildWithPack(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Equal(2, report.PackItems);
+        Assert.Equal([5L, 6], pack.Items().Select(item => item.Id));
+        Assert.Equal(14, pack.Cursor);
+        Assert.True(pack.IsCaughtUp);
+        Assert.Equal(new PackLimits(200, 524_288), pack.Limits);
+        // After `GET /families/mine`, and the full read only — never the change feed from zero.
+        Assert.Equal(
+            ["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats", "/api/v1/families/mine/pack"],
+            handler.Asked);
+    }
+
+    /// <summary>
+    /// A device that HOLDS a pack and is behind loops the change feed from its own cursor — and
+    /// the feed carries TOMBSTONES, which is how a sticker removed while it slept leaves the panel.
+    /// </summary>
+    [Fact]
+    public async Task ADeviceBehindLoopsTheChangeFeedAndAppliesItsTombstones()
+    {
+        var server = PackServer(FamilyWithPack(16))
+            .Always("/families/mine/pack/changes",
+                $$"""{"items": [{{PackItemJson(7, 15)}}, {"id": 5, "deleted": true, "pack_seq": 16}]}""");
+        var (resync, handler, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 12), PackItem(6, 14)], 14);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Equal(2, report.PackItems);
+        Assert.Equal([6L, 7], pack.Items().Select(item => item.Id));
+        Assert.Equal(16, pack.Cursor);
+        Assert.True(pack.IsCaughtUp);
+        Assert.Equal("/api/v1/families/mine/pack/changes?after_seq=14&limit=50", handler.Asked[^1]);
+        Assert.DoesNotContain("/api/v1/families/mine/pack", handler.Asked);
+    }
+
+    [Fact]
+    public async Task TheChangeFeedIsLoopedUntilAShortPage()
+    {
+        var pages = new List<string>();
+        var server = PackServer(FamilyWithPack(80))
+            .On(path =>
+            {
+                if (!path.StartsWith("/api/v1/families/mine/pack/changes", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+                pages.Add(path);
+                // A full page of fifty (seqs 15..64), then a short one (65..80).
+                var from = pages.Count == 1 ? 15 : 65;
+                var to = pages.Count == 1 ? 64 : 80;
+                var items = string.Join(",", Enumerable.Range(from, to - from + 1).Select(seq => PackItemJson(100 + seq, seq)));
+                return (HttpStatusCode.OK, $$"""{"items": [{{items}}]}""");
+            });
+        var (resync, _, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 14)], 14);
+
+        var report = await resync.RunAsync();
+
+        Assert.Equal(66, report.PackItems);
+        Assert.Equal(
+            [
+                "/api/v1/families/mine/pack/changes?after_seq=14&limit=50",
+                "/api/v1/families/mine/pack/changes?after_seq=64&limit=50",
+            ],
+            pages);
+        Assert.Equal(80, pack.Cursor);
+        Assert.Equal(67, pack.Count());
+    }
+
+    [Fact]
+    public async Task ADeviceLevelWithTheServerAsksForNothing()
+    {
+        var (resync, handler, pack) = BuildWithPack(PackServer(FamilyWithPack(14)));
+        pack.Replace([PackItem(5, 14)], 14);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Equal(0, report.PackItems);
+        Assert.Equal(["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats"], handler.Asked);
+        // Level IS caught up: frames may move the cursor from here.
+        Assert.True(pack.IsCaughtUp);
+    }
+
+    /// <summary>
+    /// <c>max_pack_seq</c> is OMITTED while the pack has never been written to: there is nothing
+    /// to read, so nothing is asked for — but the ceilings are there, and the button is offered.
+    /// </summary>
+    [Fact]
+    public async Task AnUntouchedPackIsNotReadAndStillHasItsCeilings()
+    {
+        var (resync, handler, pack) = BuildWithPack(PackServer(FamilyWall(Ceilings)));
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Equal(["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats"], handler.Asked);
+        Assert.Equal(new PackLimits(200, 524_288), pack.Limits);
+        Assert.True(pack.IsCaughtUp);
+    }
+
+    /// <summary>
+    /// A SERVER THAT PREDATES THE PACK names no ceilings, and that absence is the whole signal: no
+    /// pack request is made — it would be a 404 — and a ceiling remembered from before is forgotten,
+    /// so no sticker button is offered there.
+    /// </summary>
+    [Fact]
+    public async Task AServerThatPredatesPacksIsAskedForNoneAndOffersNone()
+    {
+        // Even with a mark on the document: without the ceilings this is not a server with packs.
+        var (resync, handler, pack) = BuildWithPack(PackServer(FamilyWall(""", "max_pack_seq": 14""")));
+        pack.SetLimits(new PackLimits(200, 524_288));
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Null(pack.Limits);
+        Assert.Equal(["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats"], handler.Asked);
+    }
+
+    /// <summary>
+    /// A FRAME MAY NOT JUMP THE CATCH-UP. A connection opens, a live <c>pack_item</c> lands before
+    /// the pass reaches the pack, and the pass must still read everything between the cursor this
+    /// device held and that frame — which it can only do if the frame did not move the cursor.
+    /// </summary>
+    [Fact]
+    public async Task AFrameThatLandsBeforeThePassDoesNotSkipWhatWasMissed()
+    {
+        var server = PackServer(FamilyWithPack(20))
+            .Always("/families/mine/pack/changes",
+                $$"""{"items": [{{PackItemJson(7, 15)}}, {{PackItemJson(8, 17)}}, {{PackItemJson(9, 20)}}]}""");
+        var (resync, handler, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 14)], 14);
+        pack.CaughtUp(pack.Connection);
+
+        // The connection opens…
+        resync.Snapshot();
+        // …and the newest add arrives on it before the pass has asked for anything.
+        new FrameRouter(new ChatStore(database), new BoardStore(database), pack)
+            .Hear(new ServerFrame.PackItem(PackItem(9, 20)));
+        Assert.Equal(14, pack.Cursor);
+
+        await resync.RunAsync();
+
+        Assert.Equal("/api/v1/families/mine/pack/changes?after_seq=14&limit=50", handler.Asked[^1]);
+        Assert.Equal([5L, 7, 8, 9], pack.Items().Select(item => item.Id));
+        Assert.Equal(20, pack.Cursor);
+    }
+
+    /// <summary>
+    /// A PASS CATCHES UP THE CONNECTION IT BEGAN ON, AND NO OTHER. The socket drops and reopens
+    /// while a pass is waiting on the change feed; a change is committed after the server answered
+    /// that request and before the new socket was listening, so it is on neither. The overtaken
+    /// pass may not call the NEW connection caught up — if it did, the next frame would step the
+    /// cursor over that change, the following pass would find itself level with the server's mark
+    /// and ask for nothing, and the change would be lost until the cache was wiped.
+    /// </summary>
+    [Fact]
+    public async Task APassAReconnectOvertookDoesNotCatchUpTheNewConnection()
+    {
+        var mark = 19L;
+        Action reconnects = () => { };
+        var server = new Server()
+            .Always("/me", Me)
+            .On(path => path == "/api/v1/families/mine" ? (HttpStatusCode.OK, FamilyWithPack(mark)) : null)
+            .Always("/chats", """{"chats": []}""")
+            .On(path =>
+            {
+                if (path == "/api/v1/families/mine/pack/changes?after_seq=14&limit=50")
+                {
+                    // The answer is taken here, at 19 — and the socket reopens before it is applied.
+                    reconnects();
+                    return (HttpStatusCode.OK, $$"""{"items": [{{PackItemJson(7, 15)}}, {{PackItemJson(6, 19)}}]}""");
+                }
+                return path == "/api/v1/families/mine/pack/changes?after_seq=19&limit=50"
+                    ? (HttpStatusCode.OK, $$"""{"items": [{{PackItemJson(8, 20)}}, {{PackItemJson(9, 21)}}]}""")
+                    : null;
+            });
+        var (resync, handler, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 14)], 14);
+        resync.Snapshot();
+        reconnects = resync.Snapshot;
+
+        // The pass the FIRST connection started, overtaken by the second while it waited.
+        var overtaken = await resync.RunAsync();
+
+        Assert.True(overtaken.Complete);
+        Assert.Equal(19, pack.Cursor);
+        Assert.False(pack.IsCaughtUp);
+
+        // Item 8 (seq 20) was added while no socket was listening. Item 9 (seq 21) arrives on the new one, before the
+        // pass that connection started has reached the pack: drawn at once, and the cursor stays where the feed needs it.
+        mark = 21;
+        new FrameRouter(new ChatStore(database), new BoardStore(database), pack)
+            .Hear(new ServerFrame.PackItem(PackItem(9, 21)));
+        Assert.Equal(19, pack.Cursor);
+
+        await resync.RunAsync();
+
+        Assert.Equal("/api/v1/families/mine/pack/changes?after_seq=19&limit=50", handler.Asked[^1]);
+        Assert.Equal([5L, 6, 7, 8, 9], pack.Items().Select(item => item.Id));
+        Assert.Equal(21, pack.Cursor);
+        Assert.True(pack.IsCaughtUp);
+    }
+
+    /// <summary>
+    /// The same overtaking where the pass would have asked for NOTHING: it read a mark level with
+    /// its cursor before the socket reopened. "Level" is a fact about the connection the mark was
+    /// read on, and says nothing about one that opened afterwards.
+    /// </summary>
+    [Fact]
+    public async Task ALevelPassAReconnectOvertookDoesNotCatchUpTheNewConnectionEither()
+    {
+        Action reconnects = () => { };
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", FamilyWithPack(14))
+            .On(path =>
+            {
+                if (path == "/api/v1/chats")
+                {
+                    // After the family's document was read, and before the pass reaches the pack.
+                    reconnects();
+                    return (HttpStatusCode.OK, """{"chats": []}""");
+                }
+                return null;
+            });
+        var (resync, _, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 14)], 14);
+        resync.Snapshot();
+        reconnects = resync.Snapshot;
+
+        var overtaken = await resync.RunAsync();
+
+        Assert.True(overtaken.Complete);
+        Assert.False(pack.IsCaughtUp);
+        pack.Apply(PackItem(9, 21), SeqRoute.LiveFrame);
+        Assert.Equal(14, pack.Cursor);
+    }
+
+    /// <summary>
+    /// A pack read that fails stops the reads and leaves the connection NOT caught up — so a frame
+    /// still cannot move the cursor, and the next pass reads what this one could not.
+    /// </summary>
+    [Fact]
+    public async Task APackReadThatFailsLeavesTheCatchUpOwed()
+    {
+        var server = PackServer(FamilyWithPack(16))
+            .Always("/families/mine/pack/changes", """{"error": {"code": "internal", "message": "…"}}""",
+                HttpStatusCode.InternalServerError);
+        var (resync, _, pack) = BuildWithPack(server);
+        pack.Replace([PackItem(5, 14)], 14);
+        resync.Snapshot();
+
+        var report = await resync.RunAsync();
+
+        Assert.False(report.Complete);
+        Assert.True(report.Stopped!.Transient);
+        Assert.False(pack.IsCaughtUp);
+        pack.Apply(PackItem(9, 20), SeqRoute.LiveFrame);
+        Assert.Equal(14, pack.Cursor);
+    }
+
+    /// <summary>A resync built without a pack — every test above this section — asks for none.</summary>
+    [Fact]
+    public async Task APassWithNoPackToKeepAsksForNone()
+    {
+        var (resync, handler, _, _) = Build(PackServer(FamilyWithPack(14)));
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.Equal(["/api/v1/me", "/api/v1/families/mine", "/api/v1/chats"], handler.Asked);
+    }
+
+    // ---- video messages (docs/protocol.md, "Video messages", 2026-10-05) ---------------------------------
+
+    /// <summary>
+    /// The pass carries the video message's two limits OUT of the family's own document, as it carries the assistant — and
+    /// says that it read that document, so a pass that stopped before it is never taken for a server without them.
+    /// </summary>
+    [Fact]
+    public async Task APassCarriesTheVideoMessagesLimitsAndSaysItReadTheFamily()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", FamilyWall(""", "max_round_video_ms": 60000, "max_round_video_bytes": 12582912"""))
+            .Always("/chats", """{"chats": []}""");
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.Complete);
+        Assert.True(report.FamilyRead);
+        Assert.Equal(new RoundVideoLimits(60_000, 12_582_912), report.RoundVideo);
+    }
+
+    /// <summary>A server that predates video messages names neither: read, and nothing to record with.</summary>
+    [Fact]
+    public async Task AnOlderServerReadsAsNoVideoMessages()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", FamilyWithNoWall)
+            .Always("/chats", """{"chats": []}""");
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.True(report.FamilyRead);
+        Assert.Null(report.RoundVideo);
+    }
+
+    /// <summary>A pass that stopped at the family's document has not read it — which is not "no video messages".</summary>
+    [Fact]
+    public async Task APassThatStoppedAtTheFamilyDidNotReadIt()
+    {
+        var server = new Server()
+            .Always("/me", Me)
+            .Always("/families/mine", """{"error": {"code": "internal", "message": "no"}}""", HttpStatusCode.InternalServerError);
+        var (resync, _, _, _) = Build(server);
+
+        var report = await resync.RunAsync();
+
+        Assert.False(report.Complete);
+        Assert.False(report.FamilyRead);
+        Assert.Null(report.RoundVideo);
+    }
 }

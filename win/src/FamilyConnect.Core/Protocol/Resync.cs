@@ -31,7 +31,8 @@ public sealed class Resync(
     ApiClient api,
     ChatStore chats,
     BoardStore board,
-    SendPipeline? sending = null)
+    SendPipeline? sending = null,
+    PackStore? pack = null)
 {
     /// <summary>How many rows a catch-up page asks for. The server's own default.</summary>
     public const int PageSize = 50;
@@ -49,6 +50,10 @@ public sealed class Resync(
     /// </summary>
     public void Snapshot()
     {
+        // The pack's cursor is held still the other way round: rather than being copied out, it
+        // simply may not be moved by a frame until a pass that BEGAN after this has caught up — a
+        // pass already in flight read its answers before this connection was listening.
+        pack?.Reconnected();
         var now = chats.CatchUpCursors();
         lock (snapshotGate)
         {
@@ -91,6 +96,8 @@ public sealed class Resync(
         int Edits = 0,
         int Polls = 0,
         int Notes = 0,
+        /// <summary>Items of the sticker pack read or caught up on, tombstones included.</summary>
+        int PackItems = 0,
         /// <summary>
         /// The assistant this family advertises, or null where it has none. Carried OUT of the
         /// pass because `/families/mine` is the only read that names it and this is the only
@@ -101,7 +108,18 @@ public sealed class Resync(
         /// here rather than being applied.
         /// </summary>
         AssistantDto? Assistant = null,
-        ApiError? Stopped = null)
+        ApiError? Stopped = null,
+        /// <summary>Whether this pass read the family's own document — the only read that carries what follows.</summary>
+        bool FamilyRead = false,
+        /// <summary>
+        /// The video message's two limits, or null on a server that predates them (docs/protocol.md, "Video messages").
+        /// Carried out of the pass as the assistant is, and applied only when <see cref="FamilyRead"/>: a pass that
+        /// stopped before that read knows nothing about them, which is not the same as a server without them.
+        /// </summary>
+        RoundVideoLimits? RoundVideo = null,
+        /// <summary>How many cached sets an older build wrote without the sticker or video-message flag were read again
+        /// and changed (schema step 8).</summary>
+        int FlagsRepaired = 0)
     {
         /// <summary>Whether every read finished. A flush that ran anyway is not a failure.</summary>
         public bool Complete => Stopped is null;
@@ -144,6 +162,12 @@ public sealed class Resync(
     {
         var report = new Report();
 
+        // Which connection this pass is beginning on, before its first request: the pack may only
+        // be called caught up with THAT one. A socket that reopens while the pass is waiting makes
+        // everything the pass has already read older than the new connection, and its word on the
+        // pack is then dropped (PackStore.CaughtUp) — the pass that connection started says it.
+        var began = pack?.Connection ?? 0;
+
         // FIRST, and unconditionally: it costs one request per queued message, it is idempotent,
         // and an early flush is never wrong.
         if (sending is not null)
@@ -169,6 +193,8 @@ public sealed class Resync(
         // join policy, the cap and the family's language raise no frame at all, or one a sleeping
         // client did not get.
         long? boardMark = null;
+        long? packMark = null;
+        var hasPacks = false;
         if (me.Value.Family is not null)
         {
             var family = await api.Family(ct).ConfigureAwait(false);
@@ -187,7 +213,20 @@ public sealed class Resync(
                 chats.ReplaceBlocked(blocked);
             }
             boardMark = family.Value.MaxBoardSeq;
-            report = report with { Assistant = family.Value.Assistant };
+            packMark = family.Value.MaxPackSeq;
+            // The two ceilings are ALWAYS there on a server that has packs, so their absence is
+            // an older server — and is written down as that, because a ceiling remembered from
+            // before a downgrade would offer a sticker button that leads to a 404.
+            hasPacks = family.Value is { MaxPackItems: not null, MaxPackItemBytes: not null };
+            pack?.SetLimits(family.Value is { MaxPackItems: { } items, MaxPackItemBytes: { } bytes }
+                ? new PackLimits(items, bytes)
+                : null);
+            report = report with
+            {
+                Assistant = family.Value.Assistant,
+                FamilyRead = true,
+                RoundVideo = RoundVideoLimits.Of(family.Value),
+            };
         }
 
         // 2. The list: previews, the authoritative unread counts, and the caller's own marker.
@@ -223,8 +262,109 @@ public sealed class Resync(
         {
             var notes = await BoardAsync(boardMark, ct).ConfigureAwait(false);
             report = report with { Notes = notes.Notes, Stopped = notes.Stopped };
+            if (notes.Stopped is not null)
+            {
+                return report;
+            }
+        }
+
+        // The sticker pack, where this server has one: the board's catch-up, one table over.
+        if (me.Value.Family is not null && pack is not null && hasPacks)
+        {
+            var items = await PackAsync(pack, packMark, began, ct).ConfigureAwait(false);
+            report = report with { PackItems = items.PackItems, Stopped = items.Stopped };
+        }
+
+        // Last, and only on a pass that read everything: the stickers and circles an older build cached as plain photos
+        // and videos (schema step 8). Best effort — what it cannot finish waits for the next pass, and nothing it meets
+        // is a reason to call this pass failed.
+        if (report.Stopped is null)
+        {
+            report = report with { FlagsRepaired = await RepairFlagsAsync(ct).ConfigureAwait(false) };
         }
         return report;
+    }
+
+    /// <summary>How many possible stickers and circles one pass reads again at most — iOS's and Android's batch.</summary>
+    public const int FlagRepairBatch = 25;
+
+    /// <summary>What one failed read means to <see cref="RepairFlagsAsync"/>.</summary>
+    public enum FlagRepairOutcome
+    {
+        /// <summary>The server read the request and refused it, or answered what this build cannot read: asking again
+        /// changes nothing. Settled, never asked again.</summary>
+        Settled,
+
+        /// <summary>No answer about this message yet (a 5xx, a timeout): asked again next pass; the pass goes on.</summary>
+        AskAgainLater,
+
+        /// <summary>Nothing about this message at all — the network, the session, the server's patience: every other read
+        /// would fail the same way, so the rest wait for the next pass.</summary>
+        EndPass,
+    }
+
+    /// <summary>
+    /// iOS's <c>roundRepairOutcome</c> and Android's <c>repairUnknownRoundFlags</c>, in this client's error shape: a
+    /// transport failure, a 401 and a 429 end the pass; a 5xx, a 408 and <c>internal</c> are asked again; any other 4xx,
+    /// and a 2xx whose body would not decode (<see cref="ApiClient"/> calls that <c>validation</c> with the 2xx status),
+    /// settle the one message.
+    /// </summary>
+    public static FlagRepairOutcome RepairOutcome(ApiError error) =>
+        error.Code == ErrorCodes.Transport || error.Status == 401 || error.Status == 429
+            || error.Code == ErrorCodes.TooManyRequests || (error.Status == 0 && !error.Canonical)
+            ? FlagRepairOutcome.EndPass
+            : error.Status >= 500 || error.Status == 408 || error.Code == ErrorCodes.Internal
+                ? FlagRepairOutcome.AskAgainLater
+                : FlagRepairOutcome.Settled;
+
+    /// <summary>
+    /// Read again, once, the held messages that may be STICKERS or VIDEO MESSAGES but were cached by a build that did not
+    /// know the flag (#58, #79; docs/audio-video-messages-2026-10-04.md, S5.8) — iOS's
+    /// <c>ChatSyncCoordinator.repairUnknownRoundFlags</c> and Android's <c>MessageRepository.repairUnknownRoundFlags</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A build that predates a flag wrote the set back without it, and a chat held in sequence is never paged again — so
+    /// after the upgrade a sticker kept its grey tile and a circle stayed square, for good, while every other device drew
+    /// the same message right. Each candidate (<see cref="ChatStore.FlagRepairCandidates"/>) is read through
+    /// <c>before_id = id + 1, limit = 1</c> and its set written back (<see cref="ChatStore.RepairMedia"/>), newest first,
+    /// at most <see cref="FlagRepairBatch"/> per pass; a message the server no longer has is settled.
+    /// </para>
+    /// <para>
+    /// ONE FAILED READ IS ABOUT ONE MESSAGE, and the pass goes on past it (<see cref="RepairOutcome"/>): ending on it would
+    /// ask the same unreadable message FIRST on every pass and never reach the older ones.
+    /// </para>
+    /// </remarks>
+    /// <returns>How many held sets changed.</returns>
+    private async Task<int> RepairFlagsAsync(CancellationToken ct)
+    {
+        var repaired = 0;
+        foreach (var held in chats.FlagRepairCandidates(FlagRepairBatch))
+        {
+            var page = await api.Messages(held.ChatId, beforeId: held.Id + 1, limit: 1, ct: ct).ConfigureAwait(false);
+            if (!page.Ok || page.Value is null)
+            {
+                switch (RepairOutcome(page.Error ?? ApiError.Transport("no answer")))
+                {
+                    case FlagRepairOutcome.Settled:
+                        chats.SettleFlags(held.Id);
+                        continue;
+                    case FlagRepairOutcome.AskAgainLater:
+                        continue;
+                    default:
+                        return repaired;
+                }
+            }
+            if ((page.Value.Messages ?? []).FirstOrDefault(message => message.Id == held.Id) is { } server)
+            {
+                repaired += chats.RepairMedia(server) ? 1 : 0;
+            }
+            else
+            {
+                chats.SettleFlags(held.Id);
+            }
+        }
+        return repaired;
     }
 
     /// <summary>One chat's four loops: the messages, then the three sequence feeds.</summary>
@@ -444,6 +584,76 @@ public sealed class Resync(
                 break;
             }
         }
+        return report;
+    }
+
+    /// <summary>
+    /// The family's sticker pack: the WHOLE of it when this device holds none, the change feed
+    /// from where it left off otherwise (docs/protocol.md, "Sticker pack") — the board's rules,
+    /// which is the point of the design: no client learns a new sync idea.
+    /// </summary>
+    /// <remarks>
+    /// The cursor is the STORE's and is read from it on every turn of the loop, which is safe here
+    /// for a reason the message loop does not have: a <c>pack_item</c> frame may not move it until
+    /// this method says the connection has caught up, so nothing can step it past what was missed.
+    /// And it says so only for the connection the pass BEGAN on (<paramref name="began"/>): the
+    /// mark and the pages below were all read after that connection opened, and none of them is
+    /// known to be newer than a connection that opened since.
+    /// </remarks>
+    private async Task<Report> PackAsync(PackStore pack, long? mark, long began, CancellationToken ct)
+    {
+        var report = new Report();
+        // `max_pack_seq` is ABSENT while the pack is empty and untouched: there is nothing to
+        // read, so nothing is asked for. Checked against what is HELD as well — a pack this device
+        // holds items for cannot be one nobody has ever touched, and if the two disagree, reading
+        // wins.
+        if (mark is null && pack.Count() == 0)
+        {
+            pack.CaughtUp(began);
+            return report;
+        }
+        if (mark is not null && pack.Cursor != 0 && mark <= pack.Cursor)
+        {
+            // Level with the server: every change there has been is applied here.
+            pack.CaughtUp(began);
+            return report;
+        }
+        if (pack.Cursor == 0)
+        {
+            var whole = await api.Pack(ct).ConfigureAwait(false);
+            if (!whole.Ok || whole.Value is null)
+            {
+                return report with { Stopped = whole.Error };
+            }
+            var items = whole.Value.Items ?? [];
+            pack.Replace(items, whole.Value.MaxPackSeq);
+            pack.CaughtUp(began);
+            return report with { PackItems = items.Length };
+        }
+        while (true)
+        {
+            var was = pack.Cursor;
+            var page = await api.PackChanges(was, PageSize, ct).ConfigureAwait(false);
+            if (!page.Ok || page.Value is null)
+            {
+                return report with { Stopped = page.Error };
+            }
+            var items = page.Value.Items ?? [];
+            if (items.Length == 0)
+            {
+                break;
+            }
+            // The store advances the cursor as it applies: the feed INCLUDES tombstones, and a
+            // removal moves the seq like anything else.
+            pack.Apply(items);
+            report = report with { PackItems = report.PackItems + items.Length };
+            // A cursor that cannot move ends the loop, as it does for every other feed here.
+            if (pack.Cursor <= was || items.Length < PageSize)
+            {
+                break;
+            }
+        }
+        pack.CaughtUp(began);
         return report;
     }
 }

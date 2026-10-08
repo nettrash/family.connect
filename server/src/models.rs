@@ -267,6 +267,45 @@ pub struct Family {
     /// an absent key as false, which is the truth for every family that
     /// predates it.
     pub ai_faces: bool,
+
+    /// Whether a member may ask for the text of ANOTHER member's voice note,
+    /// audio file or video in the family chat (protocol.md, "Transcripts on
+    /// request"). A SIXTH switch, owner-set, **false** by default for every
+    /// family before and after it (migration 0049).
+    ///
+    /// Always serialized, like its neighbours, for the same reason. Bound to
+    /// none of them — it widens nothing the assistant is shown — and it is
+    /// only one of the keys: the asker's consent and the SENDER's consent
+    /// are asked beside it, and a member's own recordings need no switch at
+    /// all. A client that never heard of it reads an absent key as false,
+    /// which is the truth for every family that predates it.
+    pub ai_transcripts: bool,
+
+    /// Whether the assistant may LOOK THINGS UP for this family — send a
+    /// query it wrote to the web search, weather and Wikipedia providers the
+    /// operator configured (protocol.md, "Looking things up"). A SEVENTH
+    /// switch, owner-set, **false** by default for every family before and
+    /// after it (migration 0050).
+    ///
+    /// Always serialized, like its neighbours. Bound to none of them, and
+    /// only one of three keys: the server must have a source
+    /// (`assistant.lookups`), and each asking member must have given the
+    /// lookup consent. A client that never heard of it reads an absent key
+    /// as false, which is the truth for every family that predates it.
+    pub ai_lookups: bool,
+
+    /// The places, at most three, whose forecast for the day the daily
+    /// greeting mentions (protocol.md, "Today's weather, for places the
+    /// owner chose"), as the owner typed them and the server kept them.
+    /// Owner-set, `[]` by default for every family (migration 0051).
+    ///
+    /// ALWAYS serialized, `[]` when empty, and not an `Option`: the list has
+    /// no "unset" for an absent key to mean, and an empty one already says
+    /// "no weather". Every member reads it, because these names are what
+    /// leaves the server for the weather provider. `default` on the way in,
+    /// so an object written before it existed still reads.
+    #[serde(default)]
+    pub greeting_places: Vec<String>,
 }
 
 /// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
@@ -871,20 +910,65 @@ pub struct Attachment {
     /// not as "perfectly accurate".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accuracy_m: Option<i32>,
+    /// True when (and only when) the message carrying this photo was sent
+    /// as a chat STICKER (docs/protocol.md, "Sticker pack") — absent on the
+    /// wire otherwise, so an ordinary photo never carries `"sticker":
+    /// false`. Not to be confused with a board note, which this codebase
+    /// also calls a sticker: this is the flag a client reads to draw the
+    /// picture without a bubble, and a client that does not know it draws
+    /// the photo it still is.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub sticker: bool,
+    /// True when (and only when) the message carrying this video was sent
+    /// as a VIDEO MESSAGE (docs/protocol.md, "Video messages") — a square
+    /// H.264/AAC MP4 recorded to be drawn as a circle. Absent on the wire
+    /// otherwise, exactly as `sticker` is: an ordinary video never carries
+    /// `"round": false`, and a client that does not know the flag plays the
+    /// video it still is. Never true beside `sticker`, never on anything
+    /// that is not a video (0052's two CHECKs).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub round: bool,
+    /// Audio only, and only when the uploader sent one: the recording's
+    /// shape as 48 levels of 0..15, one lowercase hex digit each
+    /// (docs/protocol.md, "A voice note's waveform"). The sender computes
+    /// it; this server checks its form, stores it and echoes it, and never
+    /// decodes a byte to make one. Absent on the wire otherwise — never an
+    /// empty string — so an old client sees exactly the shape it always did.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub waveform: Option<String>,
 }
 
 impl Attachment {
+    /// How many levels a waveform carries, each one hex digit.
+    pub const WAVEFORM_LEVELS: usize = 48;
+
+    /// Whether `value` is a waveform as the wire spells one: EXACTLY
+    /// [`Self::WAVEFORM_LEVELS`] lowercase hex digits and nothing else —
+    /// the same test as 0053's CHECK, asked first so a malformed one is a
+    /// `validation` 400 rather than a 500 from the constraint.
+    pub fn is_waveform(value: &str) -> bool {
+        value.len() == Self::WAVEFORM_LEVELS
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
     /// The media types accepted for a photo, video or piece of audio,
     /// paired with the kind they belong to. HEIC/HEIF are here because that
     /// is what an iPhone actually produces.
     ///
     /// A file is not on this list and never will be: `kind=file` accepts any
     /// type and verifies none (protocol.md, "Files").
-    pub const ACCEPTED: [(&'static str, &'static str); 11] = [
+    pub const ACCEPTED: [(&'static str, &'static str); 12] = [
         ("image/jpeg", "photo"),
         ("image/png", "photo"),
         ("image/heic", "photo"),
         ("image/heif", "photo"),
+        // WebP arrived with the family's stickers — transparency and
+        // animation in one small file — and is a photo like the others:
+        // the upload does not know what it will become (protocol.md,
+        // "Sticker pack").
+        ("image/webp", "photo"),
         ("video/mp4", "video"),
         ("video/quicktime", "video"),
         // Audio. m4a/aac is what both phones record into, and mp3/wav/ogg
@@ -899,6 +983,7 @@ impl Attachment {
     /// The kinds a client and the board name by hand. `photo` is the one a
     /// board note may pin (docs/protocol.md, "Board").
     pub const KIND_PHOTO: &'static str = "photo";
+    pub const KIND_VIDEO: &'static str = "video";
     pub const KIND_FILE: &'static str = "file";
     pub const KIND_AUDIO: &'static str = "audio";
     pub const KIND_LOCATION: &'static str = "location";
@@ -911,6 +996,53 @@ impl Attachment {
     /// usable. Deliberately the least interesting type there is.
     pub const DEFAULT_FILE_MIME: &'static str = "application/octet-stream";
     pub const MAX_NAME_LEN: usize = 255;
+
+    /// What a chat sticker may be made of — a pack item's picture, and the
+    /// one attachment of a sticker message (docs/protocol.md, "Sticker
+    /// pack"). WebP for transparency and animation; PNG because an Apple
+    /// device can decode a WebP and cannot write one, and a pack only some
+    /// members could add to is not the family's.
+    pub const STICKER_MIMES: [&'static str; 2] = ["image/webp", "image/png"];
+
+    pub fn is_sticker_mime(mime: &str) -> bool {
+        Self::STICKER_MIMES.contains(&mime)
+    }
+
+    /// A video message's one media type (docs/protocol.md, "Video
+    /// messages"). `video/quicktime` is never within the recording profile,
+    /// even holding H.264: Firefox will not play the container.
+    pub const ROUND_VIDEO_MIME: &'static str = "video/mp4";
+    /// The longest video message, in milliseconds: FIXED, and sent as
+    /// `max_round_video_ms` on `GET /families/mine`. Clients stop 500 ms
+    /// short of it.
+    pub const ROUND_VIDEO_MAX_MS: i32 = 60_000;
+    /// The largest side a video message may DECLARE. The profile records
+    /// 480; 720 is the media profile's own ceiling on a short side, so a
+    /// later client may record larger without a server change.
+    pub const ROUND_VIDEO_MAX_SIDE: i32 = 720;
+
+    /// Whether this CLAIMED upload may be sent as a video message
+    /// (docs/protocol.md, "Video messages", check 5): a `kind=video` of
+    /// `video/mp4`; a declared square of 1 to 720 on a side; a declared
+    /// length of 1 ms to `ROUND_VIDEO_MAX_MS`; at most `max_bytes`. All of
+    /// it is the sender's DECLARATION — this server never decodes a video —
+    /// and anything missing is a no, because a circle needs to know its
+    /// shape and its length before a byte arrives.
+    pub fn fits_round_video(&self, max_bytes: usize) -> bool {
+        let side_ok = |side: Option<i32>| {
+            side.is_some_and(|side| (1..=Self::ROUND_VIDEO_MAX_SIDE).contains(&side))
+        };
+        self.kind == Self::KIND_VIDEO
+            && self.mime == Self::ROUND_VIDEO_MIME
+            && side_ok(self.width)
+            && side_ok(self.height)
+            && self.width == self.height
+            && self
+                .duration_ms
+                .is_some_and(|ms| (1..=Self::ROUND_VIDEO_MAX_MS).contains(&ms))
+            && self.size >= 0
+            && self.size as u64 <= max_bytes as u64
+    }
 
     pub fn kind_for(mime: &str) -> Option<&'static str> {
         Self::ACCEPTED
@@ -965,6 +1097,89 @@ impl Attachment {
             latitude: row.try_get("latitude").unwrap_or_default(),
             longitude: row.try_get("longitude").unwrap_or_default(),
             accuracy_m: row.try_get("accuracy_m").unwrap_or_default(),
+            // The same forgiveness, and for a better reason still: most
+            // SELECTs have no business with this column — a note's picture
+            // and a pack item's are never stickers — and those read false.
+            sticker: row.try_get("sticker").unwrap_or_default(),
+            // And again for the video message's flag (0052): a SELECT that
+            // has no business with it — a note's picture, a pack item's —
+            // reads false rather than failing.
+            round: row.try_get("round").unwrap_or_default(),
+            // And for the waveform (0053): only audio has one, and a SELECT
+            // that never asked for it — a note's picture, a pack item's, the
+            // assistant's history — reads "none" rather than failing.
+            waveform: row.try_get("waveform").unwrap_or_default(),
+        }
+    }
+}
+
+/// One sticker of a family's pack (docs/protocol.md, "Sticker pack").
+///
+/// NOT a board note, which this codebase also calls a sticker — hence
+/// `pack` in every name here. A tombstone is the same object with
+/// `deleted: true` and no content, for the reason a note's is: the change
+/// feed has to be able to say "this item is gone", and an absent row cannot
+/// say anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PackItem {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<i64>,
+    /// A few words for a screen reader, when whoever added the item gave
+    /// any. Never drawn over the picture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The picture: an ordinary `kind=photo` attachment, readable by every
+    /// member of the family. It never carries the `sticker` flag, which is
+    /// a message's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub created_at: Option<time::OffsetDateTime>,
+    pub pack_seq: i64,
+    /// Present and true ONLY on a tombstone; absent otherwise, so a live
+    /// item never carries `"deleted": false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub deleted: bool,
+}
+
+impl PackItem {
+    /// The longest label, in characters — a display name's length, because
+    /// it is read out the same way (protocol.md's Limits table).
+    pub const MAX_LABEL_CHARS: usize = 64;
+
+    /// Build from a `pack_items` row. A removed item keeps only its id and
+    /// seq: whatever it showed is gone, and sending the adder or the label
+    /// of something that no longer exists would be a small leak for no
+    /// reader. The picture is attached by the caller, which knows whether
+    /// it is reading one item or a page of them.
+    pub fn from_row(row: &PgRow) -> Self {
+        let deleted = row
+            .get::<Option<time::OffsetDateTime>, _>("deleted_at")
+            .is_some();
+        if deleted {
+            return Self {
+                id: row.get("id"),
+                added_by: None,
+                label: None,
+                attachment: None,
+                created_at: None,
+                pack_seq: row.get("pack_seq"),
+                deleted: true,
+            };
+        }
+        Self {
+            id: row.get("id"),
+            added_by: Some(row.get("added_by")),
+            label: row.get("label"),
+            attachment: None,
+            created_at: Some(row.get("created_at")),
+            pack_seq: row.get("pack_seq"),
+            deleted: false,
         }
     }
 }
@@ -1276,6 +1491,9 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
+            ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -1302,6 +1520,9 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
+            ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1309,7 +1530,9 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
-                "ai_greeting": false, "ai_faces": false
+                "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }
@@ -1329,6 +1552,9 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
+            ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1337,7 +1563,9 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z",
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
                 "ai_vision": false, "ai_history_photos": false,
-                "ai_greeting": false, "ai_faces": false
+                "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }
@@ -1360,6 +1588,9 @@ mod tests {
             ai_history_photos: false,
             ai_greeting: false,
             ai_faces: false,
+            ai_transcripts: false,
+            ai_lookups: false,
+            greeting_places: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1367,7 +1598,9 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "closed",
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
-                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false
+                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
+                "ai_transcripts": false, "ai_lookups": false,
+                "greeting_places": []
             })
         );
     }
@@ -1752,5 +1985,245 @@ mod tests {
             Attachment::ascii_filename(&long).len(),
             Attachment::MAX_NAME_LEN
         );
+    }
+
+    /// `sticker` is on the wire when — and only when — it is true: an
+    /// ordinary photo never carries `"sticker": false`, and a reader that
+    /// finds the key missing (every attachment a shipped server ever sent)
+    /// reads a photo (protocol.md, "Sticker pack").
+    #[test]
+    fn the_sticker_flag_is_absent_unless_true() {
+        let photo = Attachment {
+            id: 90,
+            kind: "photo".to_string(),
+            mime: "image/webp".to_string(),
+            size: 4096,
+            width: None,
+            height: None,
+            duration_ms: None,
+            has_preview: false,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+            waveform: None,
+        };
+        let json = serde_json::to_value(&photo).expect("serializes");
+        assert!(json.get("sticker").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert!(!back.sticker);
+
+        let sticker = Attachment {
+            sticker: true,
+            ..photo
+        };
+        let json = serde_json::to_value(&sticker).expect("serializes");
+        assert_eq!(json["sticker"], true);
+    }
+
+    /// WebP is a photo, and a sticker is WebP or PNG — not the JPEG and
+    /// HEIC a camera makes, which have no transparency to show the chat
+    /// through.
+    #[test]
+    fn webp_is_a_photo_and_stickers_are_webp_or_png() {
+        assert_eq!(Attachment::kind_for("image/webp"), Some("photo"));
+        assert!(Attachment::is_sticker_mime("image/webp"));
+        assert!(Attachment::is_sticker_mime("image/png"));
+        for other in ["image/jpeg", "image/heic", "image/gif", "video/mp4", ""] {
+            assert!(!Attachment::is_sticker_mime(other), "{other}");
+        }
+    }
+
+    /// `waveform` is on the wire when — and only when — the uploader sent
+    /// one, and an attachment without the key (every one a shipped server
+    /// ever sent) reads as having none (protocol.md, "A voice note's
+    /// waveform").
+    #[test]
+    fn the_waveform_is_absent_unless_given() {
+        let note = Attachment {
+            id: 77,
+            kind: "audio".to_string(),
+            mime: "audio/mp4".to_string(),
+            size: 113_402,
+            width: None,
+            height: None,
+            duration_ms: Some(14_200),
+            has_preview: false,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+            waveform: None,
+        };
+        let json = serde_json::to_value(&note).expect("serializes");
+        assert!(json.get("waveform").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert_eq!(back.waveform, None);
+
+        let shaped = Attachment {
+            waveform: Some("0124689abcddeeedcba987654321001245678aabbba98642".to_string()),
+            ..note
+        };
+        let json = serde_json::to_value(&shaped).expect("serializes");
+        assert_eq!(
+            json["waveform"],
+            "0124689abcddeeedcba987654321001245678aabbba98642"
+        );
+        let back: Attachment = serde_json::from_value(json).expect("parses");
+        assert_eq!(back, shaped);
+    }
+
+    /// The wire's spelling, exactly: 48 lowercase hex digits and nothing
+    /// else — the same test 0053's CHECK makes.
+    #[test]
+    fn a_waveform_is_48_lowercase_hex_digits() {
+        assert!(Attachment::is_waveform(&"0".repeat(48)));
+        assert!(Attachment::is_waveform(&"f".repeat(48)));
+        assert!(Attachment::is_waveform(
+            "0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        for refused in [
+            String::new(),
+            "0".repeat(47),
+            "0".repeat(49),
+            "0".repeat(96),
+            format!("{}F", "0".repeat(47)),
+            format!("{}g", "0".repeat(47)),
+            format!("{} ", "0".repeat(47)),
+            format!(" {}", "0".repeat(47)),
+            format!("{}\n", "0".repeat(47)),
+            format!("{},", "0".repeat(47)),
+            format!("{}-", "0".repeat(47)),
+            // 48 BYTES that are not 48 characters, and 48 characters that
+            // are not 48 bytes: neither is a waveform.
+            format!("{}é", "0".repeat(46)),
+            format!("{}٣", "0".repeat(47)),
+        ] {
+            assert!(!Attachment::is_waveform(&refused), "{refused:?}");
+        }
+    }
+
+    /// The video message as protocol.md draws it: a 480 x 480 MP4 of 23.4 s.
+    fn round_video() -> Attachment {
+        Attachment {
+            id: 91,
+            kind: "video".to_string(),
+            mime: "video/mp4".to_string(),
+            size: 1_649_700,
+            width: Some(480),
+            height: Some(480),
+            duration_ms: Some(23_400),
+            has_preview: true,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+            waveform: None,
+        }
+    }
+
+    /// `round` is on the wire when — and only when — it is true, the
+    /// sticker's rule: an ordinary video never carries `"round": false`,
+    /// and every attachment a shipped server ever sent, which has no key,
+    /// reads as an ordinary video (protocol.md, "Video messages").
+    #[test]
+    fn the_round_flag_is_absent_unless_true() {
+        let video = round_video();
+        let json = serde_json::to_value(&video).expect("serializes");
+        assert!(json.get("round").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert!(!back.round);
+
+        let circle = Attachment {
+            round: true,
+            ..video
+        };
+        let json = serde_json::to_value(&circle).expect("serializes");
+        assert_eq!(json["round"], true);
+        assert!(json.get("sticker").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses");
+        assert_eq!(back, circle);
+    }
+
+    /// Check 5 of "What the server checks", as a pure question about a
+    /// claimed row: the kind, the type, a declared square of 1..=720, a
+    /// declared length of 1..=60 000 ms, and the byte ceiling — every edge
+    /// inclusive, everything missing a no.
+    #[test]
+    fn what_may_be_sent_as_a_video_message() {
+        const CEILING: usize = 12 * 1024 * 1024;
+        assert_eq!(Attachment::ROUND_VIDEO_MAX_MS, 60_000);
+        assert_eq!(Attachment::ROUND_VIDEO_MAX_SIDE, 720);
+        assert!(round_video().fits_round_video(CEILING));
+
+        let with = |change: &dyn Fn(&mut Attachment)| {
+            let mut attachment = round_video();
+            change(&mut attachment);
+            attachment.fits_round_video(CEILING)
+        };
+        // The edges that ARE allowed.
+        assert!(with(&|a| {
+            a.width = Some(1);
+            a.height = Some(1);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(720);
+            a.height = Some(720);
+        }));
+        assert!(with(&|a| a.duration_ms = Some(1)));
+        assert!(with(&|a| a.duration_ms = Some(60_000)));
+        assert!(with(&|a| a.size = CEILING as i64));
+        assert!(with(&|a| a.size = 0));
+
+        // Not a video, or not an MP4.
+        for (kind, mime) in [
+            ("photo", "image/jpeg"),
+            ("audio", "audio/mp4"),
+            ("file", "video/mp4"),
+            ("location", Attachment::LOCATION_MIME),
+            ("video", "video/quicktime"),
+        ] {
+            assert!(
+                !with(&|a| {
+                    a.kind = kind.to_string();
+                    a.mime = mime.to_string();
+                }),
+                "{kind} {mime}"
+            );
+        }
+        // The shape: missing, out of range, or not a square.
+        assert!(!with(&|a| a.width = None));
+        assert!(!with(&|a| a.height = None));
+        assert!(!with(&|a| {
+            a.width = None;
+            a.height = None;
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(0);
+            a.height = Some(0);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(-480);
+            a.height = Some(-480);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(721);
+            a.height = Some(721);
+        }));
+        assert!(!with(&|a| a.height = Some(640)));
+        // The length: missing, nothing, or over the minute.
+        assert!(!with(&|a| a.duration_ms = None));
+        assert!(!with(&|a| a.duration_ms = Some(0)));
+        assert!(!with(&|a| a.duration_ms = Some(-1)));
+        assert!(!with(&|a| a.duration_ms = Some(60_001)));
+        // The bytes.
+        assert!(!with(&|a| a.size = CEILING as i64 + 1));
+        assert!(!with(&|a| a.size = -1));
     }
 }

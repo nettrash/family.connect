@@ -17,7 +17,19 @@ public sealed record SendRequest(
     [property: JsonPropertyName("reply_to_message_id")] long? ReplyToMessageId = null,
     [property: JsonPropertyName("attachment_ids")] long[]? AttachmentIds = null,
     PollRequest? Poll = null,
-    MentionDto[]? Mentions = null);
+    MentionDto[]? Mentions = null,
+    /// <summary>
+    /// <c>true</c> sends the message's one attachment as a STICKER (docs/protocol.md, "Sending
+    /// one"). Absent otherwise — never <c>false</c>, which is why it is nullable: an ordinary
+    /// message must go to a server that predates stickers exactly as it always went.
+    /// </summary>
+    bool? Sticker = null,
+    /// <summary>
+    /// <c>true</c> sends the message's one video as a VIDEO MESSAGE, drawn round (docs/protocol.md, "Video messages").
+    /// Absent otherwise — never <c>false</c> — and never sent to a server whose <c>GET /families/mine</c> does not name
+    /// <c>max_round_video_ms</c>, which would ignore it and deliver a square video.
+    /// </summary>
+    bool? Round = null);
 
 public sealed record PollRequest(string[] Options);
 
@@ -93,6 +105,20 @@ public sealed record BoardResponse(
     [property: JsonPropertyName("max_board_seq")] long MaxBoardSeq);
 
 public sealed record BoardChangesResponse(NoteDto[]? Notes);
+
+/// <summary>
+/// <c>GET /families/mine/pack</c>: the WHOLE pack as it now stands, tombstones excluded, in the
+/// order the items were added. <c>max_pack_seq</c> is read before the items, so it is a promise:
+/// every change at or below it is in the items that came with it.
+/// </summary>
+public sealed record PackResponse(
+    PackItemDto[]? Items,
+    [property: JsonPropertyName("max_pack_seq")] long MaxPackSeq);
+
+/// <summary>A page of the pack's catch-up, oldest sequence first, tombstones INCLUDED.</summary>
+public sealed record PackChangesResponse(PackItemDto[]? Items);
+
+public sealed record PackItemResponse(PackItemDto Item);
 
 public sealed record MessagesResponse(MessageDto[]? Messages);
 
@@ -181,7 +207,13 @@ public sealed record MeResponse(
     /// Read at step 1 of the resync, so the composer knows before it is drawn whether the next
     /// thing to show is the consent screen rather than a send.
     /// </remarks>
-    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null)
+    [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null,
+    /// <summary>
+    /// When this caller agreed that the assistant may send a query or place name it writes from their words to the
+    /// lookup providers, or null until they have — and null on a server with no lookup source (docs/protocol.md,
+    /// "Consenting to the assistant", amended 2026-10-03). Absent on an older server, which reads as null: no lookups.
+    /// </summary>
+    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null)
 {
     public bool IsOwner => Role == "owner";
 }
@@ -208,7 +240,27 @@ public sealed record FamilyDto(
     [property: JsonPropertyName("ai_history_photos")] bool AiHistoryPhotos = false,
     [property: JsonPropertyName("ai_greeting")] bool AiGreeting = false,
     [property: JsonPropertyName("ai_faces")] bool AiFaces = false,
-    string? Language = null);
+    string? Language = null,
+    /// <summary>
+    /// The owner's switch for OTHER members' recordings (docs/protocol.md, "Transcripts on request"): with it on, a
+    /// member may ask for the text of somebody else's voice note or audio in the family chat. Off by default, tied to no
+    /// other switch, and never needed for a member's OWN recordings.
+    /// </summary>
+    [property: JsonPropertyName("ai_transcripts")] bool AiTranscripts = false,
+    /// <summary>
+    /// The owner's switch for looking things up (docs/protocol.md, "Looking things up"): with it on — and only where the
+    /// server has a source and the asking member has given the lookup consent — the assistant may send a query or place
+    /// name it wrote to the providers <c>assistant.lookups</c> names. Off by default, tied to no other switch; an older
+    /// server omits it, which reads as false.
+    /// </summary>
+    [property: JsonPropertyName("ai_lookups")] bool AiLookups = false,
+    /// <summary>
+    /// The places the daily greeting gives today's weather for (docs/protocol.md, "Today's weather, for places the owner
+    /// chose"), in the owner's order and spelt as the server KEPT them: at most three, every member reads them, only the
+    /// owner sets them. <c>[]</c> by default; ABSENT on a server that predates them, which reads as none — read through
+    /// <c>GreetingWeather.Saved</c>, which treats null and a null inside as nothing.
+    /// </summary>
+    [property: JsonPropertyName("greeting_places")] string[]? GreetingPlaces = null);
 
 /// <summary>
 /// The family as the family screen needs it, with the assistant's capabilities.
@@ -226,12 +278,32 @@ public sealed record FamilyResponse(
     /// </summary>
     [property: JsonPropertyName("max_board_seq")] long? MaxBoardSeq = null,
     /// <summary>
+    /// The sticker pack's high-water mark, the board's mark one table over: ABSENT while the pack
+    /// is empty and untouched, and never lower than it was.
+    /// </summary>
+    [property: JsonPropertyName("max_pack_seq")] long? MaxPackSeq = null,
+    /// <summary>
+    /// The pack's two ceilings. ALWAYS present on a server that has packs — so their ABSENCE is
+    /// how a client knows this server predates them, and offers no sticker button and no pack
+    /// management rather than discovering a 404 when somebody taps one (docs/protocol.md, "What
+    /// old clients and old servers do").
+    /// </summary>
+    [property: JsonPropertyName("max_pack_items")] int? MaxPackItems = null,
+    [property: JsonPropertyName("max_pack_item_bytes")] long? MaxPackItemBytes = null,
+    /// <summary>
     /// Who would inherit the family if the owner left RIGHT NOW — the owner's answer only, and a
     /// PREDICTION with no frame of its own. Any join or leave changes it, so it is re-read
     /// immediately before the leave dialog and never named from a cached value; absent on a fresh
     /// read means the owner is the last member and leaving DELETES the family.
     /// </summary>
-    [property: JsonPropertyName("next_owner_user_id")] long? NextOwnerUserId = null)
+    [property: JsonPropertyName("next_owner_user_id")] long? NextOwnerUserId = null,
+    /// <summary>
+    /// The two limits of a VIDEO MESSAGE (docs/protocol.md, "Video messages", 2026-10-05): its length, fixed at 60 000,
+    /// and the byte ceiling in force. ALWAYS present on a server that has video messages, so their ABSENCE is how a
+    /// client knows to offer no way of recording one and never to send <c>round</c> (<see cref="RoundVideoLimits.Of"/>).
+    /// </summary>
+    [property: JsonPropertyName("max_round_video_ms")] long? MaxRoundVideoMs = null,
+    [property: JsonPropertyName("max_round_video_bytes")] long? MaxRoundVideoBytes = null)
 {
     /// <summary>
     /// Whether this server can draw at all — the whole of the capability check for the board's
@@ -244,6 +316,21 @@ public sealed record FamilyResponse(
     /// because typing it would produce nothing.
     /// </summary>
     public bool HasAssistant => Assistant is not null;
+}
+
+/// <summary>
+/// What a server that has video messages says about them on <c>GET /families/mine</c>: how long one may be and how many
+/// bytes (docs/protocol.md, "Video messages"). A client records to <see cref="MaxMs"/> − 500 and sends the flag only on a
+/// clip within <see cref="MaxBytes"/>.
+/// </summary>
+public sealed record RoundVideoLimits(long MaxMs, long MaxBytes)
+{
+    /// <summary>
+    /// Both keys, or nothing: one missing — or a number no server sends — is a server this client cannot record for, and
+    /// a video entry that leads to a refusal is worse than none.
+    /// </summary>
+    public static RoundVideoLimits? Of(FamilyResponse family) =>
+        family is { MaxRoundVideoMs: { } ms and > 0, MaxRoundVideoBytes: { } bytes and > 0 } ? new(ms, bytes) : null;
 }
 
 public sealed record AssistantDto(
@@ -259,7 +346,32 @@ public sealed record AssistantDto(
     /// assistant"). Absent on a server that predates the field, and a client that cannot name
     /// the recipient offers no assistant there at all.
     /// </summary>
-    string? Processor = null);
+    string? Processor = null,
+    /// <summary>
+    /// Whether this server can turn a recording into text — the whole of the capability check for "Show text"
+    /// (docs/protocol.md, "Transcripts on request"). Absent on an older server, which reads as false.
+    /// </summary>
+    bool Transcribe = false,
+    /// <summary>
+    /// The most bytes of sound one transcript request may send; present only while <see cref="Transcribe"/> is true.
+    /// 25 MiB by default and never more.
+    /// </summary>
+    [property: JsonPropertyName("transcribe_max_bytes")] long? TranscribeMaxBytes = null,
+    /// <summary>
+    /// The providers the assistant may look things up in, by NAME, in the server's order (web search, then
+    /// <c>"Open-Meteo"</c>, then <c>"Wikipedia"</c>) — named on the consent screen and beside the owner's
+    /// <c>ai_lookups</c> switch. ABSENT, never <c>[]</c>, on a server with no source, and on one that predates it
+    /// (docs/protocol.md, "Looking things up"); read through <c>Lookups.Providers</c>, which treats an empty or blank
+    /// list as absent too.
+    /// </summary>
+    string[]? Lookups = null,
+    /// <summary>
+    /// Whether the daily greeting can carry today's forecast for the family's <c>greeting_places</c>: true exactly when
+    /// this server posts greetings and has its weather source on (docs/protocol.md, "Today's weather, for places the owner
+    /// chose"). ALWAYS present on a server that knows it; absent on an older one, which reads as false — no places field.
+    /// Bound to no family switch, <c>ai_lookups</c> included.
+    /// </summary>
+    [property: JsonPropertyName("greeting_weather")] bool GreetingWeather = false);
 
 /// <summary>
 /// <c>POST /me/assistant-consent</c> — this member's own answer to the assistant question, and
@@ -271,6 +383,13 @@ public sealed record AssistantConsentRequest(bool Granted);
 /// <summary>What the server now holds: a stamp when granted, null when withdrawn.</summary>
 public sealed record AssistantConsentResponse(
     [property: JsonPropertyName("assistant_consent_at")] string? AssistantConsentAt = null);
+
+/// <summary>
+/// <c>POST /me/assistant-lookup-consent</c>'s answer: the lookup stamp the server now holds, null when withdrawn
+/// (docs/protocol.md, "Consenting to the assistant", amended 2026-10-03).
+/// </summary>
+public sealed record AssistantLookupConsentResponse(
+    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null);
 
 // ---- the family's own console --------------------------------------------
 
@@ -310,6 +429,20 @@ public sealed record FamilyPatch
 
     [JsonPropertyName("ai_faces")]
     public bool? AiFaces { get; init; }
+
+    [JsonPropertyName("ai_transcripts")]
+    public bool? AiTranscripts { get; init; }
+
+    [JsonPropertyName("ai_lookups")]
+    public bool? AiLookups { get; init; }
+
+    /// <summary>
+    /// The greeting's places, REPLACING the stored list: <c>[]</c> clears it and null (the default) leaves it alone. Not a
+    /// third place where <c>null</c> means something — the server refuses <c>"greeting_places": null</c>, so null here is
+    /// never sent at all (docs/protocol.md, "Today's weather, for places the owner chose").
+    /// </summary>
+    [JsonPropertyName("greeting_places")]
+    public IReadOnlyList<string>? GreetingPlaces { get; init; }
 
     /// <summary>Send <c>"max_members": null</c> — clear the cap, rather than leave it alone.</summary>
     [JsonIgnore]
@@ -441,8 +574,35 @@ public sealed record StatsMediaDto(
 /// share of <c>questions</c>: an image model reports no tokens, so a family reading only the token
 /// counts would see the expensive half of the assistant as free.
 /// </summary>
+/// <remarks>
+/// <c>transcripts</c> and <c>transcript_duration_ms</c> are the recordings turned into text and their length: billed by
+/// audio length, not tokens, and charged to the member who ASKED. A kept answer handed out again counts nothing.
+/// <para>
+/// <c>searches</c> counts the PAID web searches the assistant made that came back with an answer, charged to the member
+/// who asked (docs/protocol.md, "Family statistics", amended 2026-10-03). Weather and Wikipedia are free and not counted;
+/// an older server omits it, which reads as 0.
+/// </para>
+/// </remarks>
 public sealed record StatsAiDto(
     int Questions,
     [property: JsonPropertyName("prompt_tokens")] long PromptTokens = 0,
     [property: JsonPropertyName("completion_tokens")] long CompletionTokens = 0,
-    int Images = 0);
+    int Images = 0,
+    int Transcripts = 0,
+    [property: JsonPropertyName("transcript_duration_ms")] long TranscriptDurationMs = 0,
+    int Searches = 0);
+
+/// <summary>
+/// <c>POST /chats/{id}/messages/{mid}/attachments/{aid}/transcript</c>'s answer (docs/protocol.md, "Transcripts on
+/// request"). <c>text</c> is always present and <c>""</c> is SILENCE — an answer, drawn as "No speech", never an error;
+/// <c>language</c> only when the provider named one, spelled as the provider spells it.
+/// </summary>
+/// <remarks>
+/// <c>Text</c> is nullable because the DECODER can produce null — <see cref="Wire.Options"/> fills a missing key and a
+/// <c>"text": null</c> alike with null, and does not respect nullable annotations — not because the protocol allows it.
+/// The one reader (<c>TranscriptModel</c>) refuses such an answer as a failure; it is never read as <c>""</c>, which
+/// would keep a malformed answer on this device for ever and draw it as "No speech".
+/// </remarks>
+public sealed record TranscriptDto(string? Text = null, string? Language = null);
+
+public sealed record TranscriptResponse(TranscriptDto? Transcript = null);

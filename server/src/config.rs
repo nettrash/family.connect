@@ -7,7 +7,7 @@
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
 //!
-//! Unknown keys are IGNORED everywhere except under `[ai]` and its two
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its four
 //! sub-tables, where they fail the load by name (see
 //! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
 //! `[limits]` key costs a default, while a mistyped — or misplaced — key
@@ -342,6 +342,18 @@ pub struct AiConfig {
     #[serde(default = "default_ai_max_tokens")]
     pub max_tokens: u32,
 
+    /// How long ONE call to the provider may take, start to last byte, in
+    /// seconds — a text answer streaming, a picture being drawn, a picture
+    /// being fetched. 180 by default, which is what it was when it was a
+    /// constant: a large model streaming a long answer is slow by nature,
+    /// and cutting it off mid-sentence is worse than waiting. An operator
+    /// whose image deployment is slower than that raises it here; one who
+    /// would rather a stuck call gave up sooner lowers it. At least 10 —
+    /// below that every answer fails and the setting is a way to switch the
+    /// assistant off that does not say so.
+    #[serde(default = "default_ai_timeout_secs")]
+    pub timeout_secs: u64,
+
     /// How many earlier messages of that member's OWN assistant chat go
     /// with a question. Nothing else is ever included — not the family
     /// chat, not another member's thread (protocol.md).
@@ -364,6 +376,19 @@ pub struct AiConfig {
     /// offer the affordance.
     #[serde(default)]
     pub images: AiImagesConfig,
+
+    /// `[ai.transcribe]` — the deployment that turns a recording into text,
+    /// reached only by a member asking for a transcript (protocol.md,
+    /// "Transcripts on request"). Absent means no recording ever leaves for
+    /// a speech model and clients are told not to offer "Show text".
+    #[serde(default)]
+    pub transcribe: AiTranscribeConfig,
+
+    /// `[ai.lookups]` — the web search, weather and Wikipedia the assistant
+    /// may look things up in (protocol.md, "Looking things up"). Absent
+    /// means none: no tool is declared and every request is what it was.
+    #[serde(default)]
+    pub lookups: AiLookupsConfig,
 }
 
 /// How the key is presented to the provider.
@@ -387,6 +412,13 @@ pub enum AuthScheme {
     ApiKey,
     /// `Authorization: Bearer <key>`.
     Bearer,
+    /// `Ocp-Apim-Subscription-Key: <key>` — the Azure Speech contract's
+    /// header (`[ai.transcribe] api = "speech"`). NOT a value a config may
+    /// write: it is DERIVED from `api`, because that contract takes a key
+    /// in no other header, and an `auth` under a speech section is refused
+    /// at startup rather than obeyed or ignored.
+    #[serde(skip)]
+    SubscriptionKey,
 }
 
 /// A second deployment on the same provider: only what DIFFERS from `[ai]`.
@@ -492,6 +524,499 @@ pub struct AiImagesConfig {
     pub contextual: bool,
 }
 
+/// `[ai.transcribe]` — a deployment plus the knobs a transcription endpoint
+/// has that the others do not: how much sound one request may carry, and
+/// which of two contracts the provider speaks.
+///
+/// The same flattened [`AiDeployment`] the images section uses. Under
+/// `api = "openai"` (the default) it inherits the endpoint, key, auth and
+/// api-version of `[ai]` and is turned on by naming a deployment — the
+/// fourth deployment on what is, in practice, one resource. Under
+/// `api = "speech"` (Azure Speech, Microsoft's MAI-Transcribe models) it
+/// inherits only the key: the endpoint and `model` are required, the
+/// api-version defaults to [`SPEECH_API_VERSION`], and `deployment` and
+/// `auth` are refused — see [`AiTranscribeConfig::validate`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiTranscribeConfig {
+    #[serde(flatten)]
+    pub deployment: AiDeployment,
+
+    /// The most bytes of sound one transcript request may send — the stored
+    /// recording, or the sound track a device supplies. Sent to clients as
+    /// `assistant.transcribe_max_bytes` so they can choose BEFORE asking.
+    ///
+    /// 25 MiB by default and never more, under either contract (the speech
+    /// contract takes up to 250 MB, but the clients size the sound tracks
+    /// they supply to this one number, and it means one thing on the
+    /// wire). Azure OpenAI's transcription contract
+    /// refuses files over 25 MB, so a larger ceiling would only move the
+    /// refusal from this server, where a client is told
+    /// `not_transcribable`, to the provider, where it is an opaque failure
+    /// and a wasted upload. `validate` refuses a value above
+    /// [`TRANSCRIBE_MAX_BYTES_CEILING`] rather than clamping it, because a
+    /// config that says one thing and a server that does another is the
+    /// failure this file exists to prevent.
+    #[serde(default = "default_ai_transcribe_max_bytes")]
+    pub max_bytes: usize,
+
+    /// WHICH CONTRACT the provider speaks — see [`TranscribeApi`].
+    /// `"openai"` by default, so every config written before this key
+    /// existed sends the byte-identical request it always did.
+    #[serde(default)]
+    pub api: TranscribeApi,
+
+    /// `"clean"` or `"verbatim"`: the speech contract's
+    /// `modelOptions.transcribeStyle`. Read only under `api = "speech"`
+    /// (refused under `"openai"`, which has no such option), and `"clean"`
+    /// when absent — the provider's own default is verbatim, but this text
+    /// is read by a person in a chat, where "um, so, I — we'll be there at
+    /// six" is harder to read than what was meant.
+    #[serde(default)]
+    pub style: Option<TranscribeStyle>,
+
+    /// Whether the family's language goes with the request as a hint.
+    /// Absent means the contract's own default: ON for `"openai"` (what it
+    /// always did) and OFF for `"speech"`, whose provider documents a
+    /// locale as a very strong hint to give only when the language is
+    /// certain and its own detection fails. Even when on, the speech
+    /// contract never sends `sr` (`sr-Latn` included): MAI-Transcribe-2
+    /// does not list Serbian, so the hint would only buy a refusal.
+    #[serde(default)]
+    pub language_hint: Option<bool>,
+}
+
+/// The contract a transcription provider speaks.
+///
+/// Two, because the operator's two families of speech model are served by
+/// two different Azure services that agree on nothing but multipart: the
+/// Azure OpenAI `audio/transcriptions` surface (gpt-4o-transcribe,
+/// whisper), and Azure Speech's "Fast Transcription" / "LLM Speech" API,
+/// which is the only place Microsoft's own MAI-Transcribe models answer.
+/// CONFIGURED, never sniffed from the URL — for the reason [`AuthScheme`]
+/// gives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscribeApi {
+    /// `POST …/audio/transcriptions` with `file`, `model`,
+    /// `response_format=json` and `language`. THE DEFAULT.
+    #[default]
+    OpenAi,
+    /// `POST …/speechtotext/transcriptions:transcribe?api-version=2025-10-15`
+    /// with `audio` and a `definition` naming the model.
+    Speech,
+}
+
+/// `modelOptions.transcribeStyle` on the speech contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscribeStyle {
+    /// Fillers and false starts left out. The default HERE.
+    #[default]
+    Clean,
+    /// Every "um", as said.
+    Verbatim,
+}
+
+impl TranscribeStyle {
+    /// The provider's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Verbatim => "verbatim",
+        }
+    }
+}
+
+/// The dated api-version of the speech contract, used when `[ai.transcribe]`
+/// names none of its own. NOT inherited from `[ai]`: that date is Azure
+/// OpenAI's, a different service, and its value would be refused here.
+pub const SPEECH_API_VERSION: &str = "2025-10-15";
+
+/// The path the speech contract answers on, appended to a bare resource
+/// root.
+const SPEECH_PATH: &str = "/speechtotext/transcriptions:transcribe";
+
+/// Azure's own ceiling on one transcription file — "25 MB or smaller" —
+/// read as the binary unit the rest of this file uses. A deployment that
+/// meant decimal megabytes would refuse the last 1.2 MB of this; nobody's
+/// voice note is that close to the line, and a device sending its own
+/// sound track re-encodes far below it.
+pub const TRANSCRIBE_MAX_BYTES_CEILING: usize = 25 * 1024 * 1024;
+
+fn default_ai_transcribe_max_bytes() -> usize {
+    TRANSCRIBE_MAX_BYTES_CEILING
+}
+
+impl Default for AiTranscribeConfig {
+    fn default() -> Self {
+        Self {
+            deployment: AiDeployment::default(),
+            max_bytes: default_ai_transcribe_max_bytes(),
+            api: TranscribeApi::default(),
+            style: None,
+            language_hint: None,
+        }
+    }
+}
+
+impl AiTranscribeConfig {
+    /// What each contract requires and what it would only misread —
+    /// refused at startup by name, whether or not the assistant is on,
+    /// because a section that is wrong is wrong before somebody flips the
+    /// switch.
+    fn validate(&self) -> Result<()> {
+        match self.api {
+            TranscribeApi::OpenAi => {
+                if self.style.is_some() {
+                    anyhow::bail!(
+                        "ai.transcribe.style is read only with api = \"speech\" — the OpenAI \
+                         transcription contract has no style; remove it, or set api = \"speech\""
+                    );
+                }
+            }
+            TranscribeApi::Speech => {
+                if self.deployment.endpoint.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.endpoint is required with api = \"speech\": paste the \
+                         resource's Speech endpoint — https://YOUR-RESOURCE.cognitiveservices.azure.com, \
+                         or the full …/speechtotext/transcriptions:transcribe?api-version={SPEECH_API_VERSION} \
+                         URI. It is not inherited from [ai], whose endpoint is an Azure OpenAI one."
+                    );
+                }
+                if self.deployment.model.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.model is required with api = \"speech\": it is the model \
+                         the provider runs (for example \"MAI-Transcribe-2\") and is sent in the \
+                         request's definition"
+                    );
+                }
+                if !self.deployment.deployment.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.transcribe.deployment means nothing with api = \"speech\" — that \
+                         contract names its model in `model`; remove `deployment`"
+                    );
+                }
+                if self.deployment.auth.is_some() {
+                    anyhow::bail!(
+                        "ai.transcribe.auth is not read with api = \"speech\" — that contract \
+                         takes the key in the Ocp-Apim-Subscription-Key header and no other; \
+                         remove `auth`"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `[ai.lookups]` — where the assistant may LOOK THINGS UP (docs/protocol.md,
+/// "Looking things up").
+///
+/// The first section under `[ai]` that is not a deployment of `processor`:
+/// every source named here is a DIFFERENT party, and what it receives is the
+/// query the model wrote — at most [`AiLookupsConfig::max_query_chars`] —
+/// and nothing else. Each source is OFF until it is named, and with none
+/// named the whole feature does not exist: no tool is declared, no date line
+/// is added, and every request is byte for byte what it was before.
+///
+/// Inherits NOTHING from `[ai]`. Its keys are its own, they fail the load
+/// when unknown like every other `[ai.*]` key, and the combinations that make
+/// no sense (a Brave key with SearXNG chosen, a weather key with the weather
+/// off, a contact that is an email address) are refused at startup by
+/// [`AiLookupsConfig::validate`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiLookupsConfig {
+    /// A URL that says whose server this is, for the User-Agent every lookup
+    /// carries — Wikimedia's User-Agent policy requires contact information
+    /// and refuses generic agents. A URL and NEVER an email address: the
+    /// agent goes to three third parties on every lookup, and an address in
+    /// it is an address handed to them. Empty means the project's own page,
+    /// [`DEFAULT_LOOKUP_CONTACT`].
+    #[serde(default)]
+    pub contact: String,
+
+    /// The web search provider, or `None` for no web search at all.
+    #[serde(default)]
+    pub search: Option<SearchProvider>,
+
+    /// The Brave Search API subscription token — `search = "brave"` only.
+    #[serde(default)]
+    pub search_key: String,
+
+    /// The SearXNG instance's base URL — `search = "searxng"` only. Its JSON
+    /// output must be enabled in the instance's `settings.yml`, or it
+    /// answers 403 to every query.
+    #[serde(default)]
+    pub searxng_url: String,
+
+    /// Open-Meteo's geocoder and forecast.
+    #[serde(default)]
+    pub weather: bool,
+
+    /// Open-Meteo's commercial key, which switches both requests to its
+    /// keyed endpoints. Empty uses the free, non-commercial ones.
+    #[serde(default)]
+    pub weather_key: String,
+
+    /// Wikipedia's search, summaries and "on this day".
+    #[serde(default)]
+    pub wikipedia: bool,
+
+    /// The most web searches one family may make in a UTC day — the
+    /// operator's bill. Past it `web_search` is not declared.
+    #[serde(default = "default_daily_searches_per_family")]
+    pub daily_searches_per_family: i64,
+
+    /// The most lookups one reply may make, across all its rounds.
+    #[serde(default = "default_lookups_per_reply")]
+    pub lookups_per_reply: u32,
+
+    /// The most rounds of lookups before the final answer, which declares
+    /// no lookup tool at all.
+    #[serde(default = "default_lookup_rounds")]
+    pub rounds: u32,
+
+    /// How long ONE lookup request may take, in seconds — set on that
+    /// request, so it never inherits `[ai] timeout_secs`.
+    #[serde(default = "default_lookup_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// The longest query or place name, in characters. A longer one is
+    /// refused back to the model, never cut.
+    #[serde(default = "default_max_query_chars")]
+    pub max_query_chars: usize,
+
+    /// Where each provider answers. NOT a config key — the providers'
+    /// public URLs are fixed, and an operator pointing them somewhere else
+    /// would be sending a family's queries to a party the protocol does not
+    /// name. It exists so the integration tests can stand a stub on a local
+    /// listener; a config file cannot reach it.
+    #[serde(skip)]
+    pub endpoints: LookupEndpoints,
+}
+
+/// The two web search providers, interchangeable, one per server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProvider {
+    /// The Brave Search API.
+    Brave,
+    /// A SearXNG instance the operator runs.
+    Searxng,
+}
+
+impl SearchProvider {
+    /// The name a client shows on the consent screen (`assistant.lookups`).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Brave => "Brave Search",
+            Self::Searxng => "SearXNG",
+        }
+    }
+}
+
+/// The project's own page — the User-Agent's contact when the operator
+/// names none. A URL, never an address.
+pub const DEFAULT_LOOKUP_CONTACT: &str = "https://github.com/nettrash/family.connect";
+
+/// Where each lookup provider answers. See [`AiLookupsConfig::endpoints`].
+#[derive(Debug, Clone)]
+pub struct LookupEndpoints {
+    pub brave_web: String,
+    pub brave_news: String,
+    pub geocoding: String,
+    pub forecast: String,
+    pub geocoding_keyed: String,
+    pub forecast_keyed: String,
+    /// `{lang}` is replaced by the Wikipedia language code.
+    pub wikipedia: String,
+}
+
+impl Default for LookupEndpoints {
+    fn default() -> Self {
+        Self {
+            brave_web: "https://api.search.brave.com/res/v1/web/search".to_string(),
+            brave_news: "https://api.search.brave.com/res/v1/news/search".to_string(),
+            geocoding: "https://geocoding-api.open-meteo.com/v1/search".to_string(),
+            forecast: "https://api.open-meteo.com/v1/forecast".to_string(),
+            geocoding_keyed: "https://customer-geocoding-api.open-meteo.com/v1/search".to_string(),
+            forecast_keyed: "https://customer-api.open-meteo.com/v1/forecast".to_string(),
+            wikipedia: "https://{lang}.wikipedia.org".to_string(),
+        }
+    }
+}
+
+fn default_daily_searches_per_family() -> i64 {
+    100
+}
+
+fn default_lookups_per_reply() -> u32 {
+    3
+}
+
+fn default_lookup_rounds() -> u32 {
+    2
+}
+
+fn default_lookup_timeout_secs() -> u64 {
+    10
+}
+
+fn default_max_query_chars() -> usize {
+    200
+}
+
+impl Default for AiLookupsConfig {
+    fn default() -> Self {
+        Self {
+            contact: String::new(),
+            search: None,
+            search_key: String::new(),
+            searxng_url: String::new(),
+            weather: false,
+            weather_key: String::new(),
+            wikipedia: false,
+            daily_searches_per_family: default_daily_searches_per_family(),
+            lookups_per_reply: default_lookups_per_reply(),
+            rounds: default_lookup_rounds(),
+            timeout_secs: default_lookup_timeout_secs(),
+            max_query_chars: default_max_query_chars(),
+            endpoints: LookupEndpoints::default(),
+        }
+    }
+}
+
+impl AiLookupsConfig {
+    /// Any source at all. False means the feature does not exist.
+    pub fn is_configured(&self) -> bool {
+        self.search.is_some() || self.weather || self.wikipedia
+    }
+
+    /// The providers a question could reach, by the names clients show —
+    /// `assistant.lookups`, in a fixed order.
+    pub fn source_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if let Some(search) = self.search {
+            names.push(search.display_name());
+        }
+        if self.weather {
+            names.push("Open-Meteo");
+        }
+        if self.wikipedia {
+            names.push("Wikipedia");
+        }
+        names
+    }
+
+    /// The contact the User-Agent names.
+    pub fn contact(&self) -> &str {
+        let contact = self.contact.trim();
+        if contact.is_empty() {
+            DEFAULT_LOOKUP_CONTACT
+        } else {
+            contact
+        }
+    }
+
+    /// `family.connect/<version> (<contact>) reqwest` — the shape
+    /// Wikimedia's User-Agent policy asks for: the product, its version, a
+    /// way to reach whoever runs it, and the library underneath.
+    pub fn user_agent(&self) -> String {
+        format!(
+            "family.connect/{} ({}) reqwest",
+            env!("CARGO_PKG_VERSION"),
+            self.contact()
+        )
+    }
+
+    /// Refused at startup by name, whether or not the assistant is on —
+    /// a section that is wrong is wrong before somebody flips the switch.
+    fn validate(&self) -> Result<()> {
+        let contact = self.contact.trim();
+        if !contact.is_empty() {
+            let is_url = contact.starts_with("https://") || contact.starts_with("http://");
+            if !is_url
+                || contact.contains('@')
+                || contact.chars().any(char::is_whitespace)
+                || contact.chars().count() > 200
+            {
+                anyhow::bail!(
+                    "ai.lookups.contact must be an http(s) URL of at most 200 characters, with no \
+                     email address in it — it goes in the User-Agent of every lookup, to every \
+                     provider; leave it out to name {DEFAULT_LOOKUP_CONTACT}"
+                );
+            }
+        }
+        match self.search {
+            Some(SearchProvider::Brave) => {
+                if self.search_key.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.search_key is required with search = \"brave\": it is the \
+                         Brave Search API subscription token"
+                    );
+                }
+                if !self.searxng_url.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.searxng_url means nothing with search = \"brave\" — one web \
+                         search per server; remove it, or set search = \"searxng\""
+                    );
+                }
+            }
+            Some(SearchProvider::Searxng) => {
+                let url = self.searxng_url.trim();
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    anyhow::bail!(
+                        "ai.lookups.searxng_url is required with search = \"searxng\" and must be \
+                         the instance's http(s) base URL, e.g. https://searx.internal"
+                    );
+                }
+                if !self.search_key.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups.search_key means nothing with search = \"searxng\" — it is a \
+                         Brave token; remove it, or set search = \"brave\""
+                    );
+                }
+            }
+            None => {
+                if !self.search_key.trim().is_empty() || !self.searxng_url.trim().is_empty() {
+                    anyhow::bail!(
+                        "ai.lookups names a search key or a SearXNG URL but no `search` provider — \
+                         set search = \"brave\" or search = \"searxng\", or remove them"
+                    );
+                }
+            }
+        }
+        if !self.weather && !self.weather_key.trim().is_empty() {
+            anyhow::bail!(
+                "ai.lookups.weather_key is set but weather is off — set weather = true, or remove \
+                 the key"
+            );
+        }
+        if self.daily_searches_per_family < 1 || self.daily_searches_per_family > 1_000_000 {
+            anyhow::bail!(
+                "ai.lookups.daily_searches_per_family must be between 1 and 1000000 — leave \
+                 `search` out to have no web search at all"
+            );
+        }
+        if !(1..=10).contains(&self.lookups_per_reply) {
+            anyhow::bail!("ai.lookups.lookups_per_reply must be between 1 and 10");
+        }
+        if !(1..=5).contains(&self.rounds) {
+            anyhow::bail!("ai.lookups.rounds must be between 1 and 5");
+        }
+        if !(1..=60).contains(&self.timeout_secs) {
+            anyhow::bail!(
+                "ai.lookups.timeout_secs must be between 1 and 60 — it bounds ONE lookup, and \
+                 the reply waits for it"
+            );
+        }
+        if !(20..=500).contains(&self.max_query_chars) {
+            anyhow::bail!("ai.lookups.max_query_chars must be between 20 and 500");
+        }
+        Ok(())
+    }
+}
+
 /// One resolved provider call: where to POST it, which key opens it, what to
 /// name in the body, and the cap the server owns.
 ///
@@ -511,6 +1036,28 @@ pub struct ModelRoute {
     /// ignores.
     pub model: String,
     pub max_tokens: u32,
+}
+
+/// The transcription deployment, resolved: the route, plus what only a
+/// transcription request needs to know — which contract to speak, and
+/// whether the family's language may go with it.
+#[derive(Debug, Clone)]
+pub struct TranscribeRoute {
+    pub route: ModelRoute,
+    pub contract: TranscribeContract,
+    /// Resolved from [`AiTranscribeConfig::language_hint`] and the
+    /// contract's default. `ai.rs` still refuses to send `sr` to the speech
+    /// contract whatever this says.
+    pub language_hint: bool,
+}
+
+/// [`TranscribeApi`], with what each contract carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscribeContract {
+    /// `route.model` is the `model` form field (the DEPLOYMENT name).
+    OpenAi,
+    /// `route.model` is `enhancedMode.model` — the provider's model name.
+    Speech { style: TranscribeStyle },
 }
 
 /// Hand-written rather than derived, so `AiConfig::default()` agrees with
@@ -535,10 +1082,13 @@ impl Default for AiConfig {
             api_version: default_ai_api_version(),
             system_prompt: default_ai_system_prompt(),
             max_tokens: default_ai_max_tokens(),
+            timeout_secs: default_ai_timeout_secs(),
             history_messages: default_ai_history_messages(),
             title: default_ai_title(),
             vision: AiDeployment::default(),
             images: AiImagesConfig::default(),
+            transcribe: AiTranscribeConfig::default(),
+            lookups: AiLookupsConfig::default(),
         }
     }
 }
@@ -592,6 +1142,10 @@ fn default_ai_system_prompt() -> String {
 
 fn default_ai_max_tokens() -> u32 {
     1024
+}
+
+fn default_ai_timeout_secs() -> u64 {
+    180
 }
 
 fn default_ai_history_messages() -> i64 {
@@ -768,6 +1322,93 @@ impl AiConfig {
     pub fn images_usable(&self) -> bool {
         self.images_route().is_some()
     }
+
+    /// The deployment that turns a recording into text, or `None`.
+    ///
+    /// `max_tokens` means nothing to a transcription endpoint and is carried
+    /// for the reason [`AiConfig::images_route`] carries it; the cap that
+    /// binds here is [`AiTranscribeConfig::max_bytes`], on what is SENT.
+    /// The URL is built by the same [`azure_url`] as the other three, so a
+    /// pasted target URI, the `/openai/v1` surface and the classic shape
+    /// all behave exactly as they do for chat and pictures.
+    pub fn transcribe_route(&self) -> Option<TranscribeRoute> {
+        let transcribe = &self.transcribe;
+        if !self.is_usable() {
+            return None;
+        }
+        match transcribe.api {
+            TranscribeApi::OpenAi => {
+                if !transcribe.deployment.is_configured() {
+                    return None;
+                }
+                Some(TranscribeRoute {
+                    route: ModelRoute {
+                        url: azure_url(
+                            transcribe.deployment.endpoint_or(&self.endpoint),
+                            transcribe.deployment.deployment_or(&self.deployment),
+                            transcribe.deployment.api_version_or(&self.api_version),
+                            "audio/transcriptions",
+                        ),
+                        api_key: transcribe
+                            .deployment
+                            .api_key_or(&self.api_key)
+                            .trim()
+                            .to_string(),
+                        auth: transcribe.deployment.auth_or(self.auth),
+                        model: transcribe
+                            .deployment
+                            .request_model_or(&self.deployment)
+                            .to_string(),
+                        max_tokens: self.max_tokens,
+                    },
+                    contract: TranscribeContract::OpenAi,
+                    language_hint: transcribe.language_hint.unwrap_or(true),
+                })
+            }
+            // The section's OWN endpoint and model, or nothing: `validate`
+            // refuses a speech section without them, and this answers
+            // `None` for one that reached here some other way (a test's
+            // hand-built config) rather than send a request with no model.
+            TranscribeApi::Speech => {
+                let endpoint = transcribe.deployment.endpoint.trim();
+                let model = transcribe.deployment.model.trim();
+                if endpoint.is_empty() || model.is_empty() {
+                    return None;
+                }
+                let api_version = pick(&transcribe.deployment.api_version, SPEECH_API_VERSION);
+                Some(TranscribeRoute {
+                    route: ModelRoute {
+                        url: speech_url(endpoint, api_version.trim()),
+                        api_key: transcribe
+                            .deployment
+                            .api_key_or(&self.api_key)
+                            .trim()
+                            .to_string(),
+                        auth: AuthScheme::SubscriptionKey,
+                        model: model.to_string(),
+                        max_tokens: self.max_tokens,
+                    },
+                    contract: TranscribeContract::Speech {
+                        style: transcribe.style.unwrap_or_default(),
+                    },
+                    language_hint: transcribe.language_hint.unwrap_or(false),
+                })
+            }
+        }
+    }
+
+    /// Whether this server can transcribe at all — sent as
+    /// `assistant.transcribe`.
+    pub fn transcribe_usable(&self) -> bool {
+        self.transcribe_route().is_some()
+    }
+
+    /// Whether this server may look anything up at all: an assistant, and
+    /// at least one source in `[ai.lookups]`. The answer behind
+    /// `assistant.lookups` and behind every lookup tool ever declared.
+    pub fn lookups_usable(&self) -> bool {
+        self.is_usable() && self.lookups.is_configured()
+    }
 }
 
 impl AiDeployment {
@@ -867,6 +1508,30 @@ fn azure_url(endpoint: &str, deployment: &str, api_version: &str, path: &str) ->
     }
 
     format!("{base}/openai/deployments/{deployment}/{path}?api-version={api_version}")
+}
+
+/// The speech contract's URL, from what an operator pasted.
+///
+/// Three shapes, decided in this order:
+///
+/// - a URL that CARRIES ITS OWN QUERY is a finished target URI — the
+///   portal's `…/speechtotext/transcriptions:transcribe?api-version=…` —
+///   and is used exactly as pasted, as [`azure_url`] does;
+/// - one that already names the operation gets the api-version appended;
+/// - anything else is the resource ROOT
+///   (`https://YOUR-RESOURCE.cognitiveservices.azure.com`), and gets the
+///   path and the api-version both.
+///
+/// The key is never put in it: it travels in a header.
+fn speech_url(endpoint: &str, api_version: &str) -> String {
+    let base = endpoint.trim().trim_end_matches('/');
+    if base.contains('?') {
+        return base.to_string();
+    }
+    if base.ends_with(SPEECH_PATH) {
+        return format!("{base}?api-version={api_version}");
+    }
+    format!("{base}{SPEECH_PATH}?api-version={api_version}")
 }
 
 /// `[storage]` — where attachment bytes live.
@@ -1024,6 +1689,44 @@ pub struct LimitsConfig {
     /// (protocol.md, "Board").
     #[serde(default = "default_max_task_items")]
     pub max_task_items: i64,
+
+    /// Most stickers one family's pack may hold at once (tombstones
+    /// excluded). "Bigger than usual" was the ask, so the default is
+    /// generous; it is still a ceiling, because a panel nobody can scroll
+    /// to the end of is not a pack (protocol.md, "Sticker pack" — the chat
+    /// kind, not a board note).
+    ///
+    /// Lowering it removes nothing from a family already over it: their
+    /// pack is frozen until they remove some.
+    #[serde(default = "default_max_pack_items")]
+    pub max_pack_items: i64,
+
+    /// Largest single sticker, in bytes — a pack item's picture, and the
+    /// one attachment of a sticker message. 512 KiB by default: room for a
+    /// few seconds of animated WebP, and twice the profile-picture
+    /// ceiling. Checked when the picture is CLAIMED, because the upload
+    /// itself does not know what it will become. The 512 x 512 pixel rule
+    /// is the clients' — this server never decodes an image.
+    #[serde(default = "default_max_pack_item_bytes")]
+    pub max_pack_item_bytes: usize,
+
+    /// Largest VIDEO MESSAGE, in bytes (protocol.md, "Video messages").
+    /// Read it through `round_video_bytes()`, never directly: this is only
+    /// what the operator WROTE.
+    ///
+    /// An `Option` and not a number with a default, on purpose. Unset, the
+    /// ceiling is 12 MiB or `max_attachment_bytes`, whichever is lower —
+    /// CLAMPED, never refused, so a server whose attachment ceiling is
+    /// below 12 MiB starts exactly as it did before this key existed (the
+    /// sticker's bound, which refuses, made every server with an
+    /// attachment ceiling below 512 KiB fail to start). Set, it is bounded
+    /// like the pack's: 1 to `max_attachment_bytes`, because a video
+    /// message goes up as an attachment and a ceiling above that one is a
+    /// belief about the server that is not true. Checked when the video is
+    /// CLAIMED, like a sticker's size: the upload does not know what it
+    /// will become.
+    #[serde(default)]
+    pub max_round_video_bytes: Option<usize>,
 
     /// The CEILING on what a family owner may set as their own
     /// `max_members`, and the cap that binds at the join door for a family
@@ -1300,6 +2003,9 @@ impl Default for LimitsConfig {
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
             max_task_items: default_max_task_items(),
+            max_pack_items: default_max_pack_items(),
+            max_pack_item_bytes: default_max_pack_item_bytes(),
+            max_round_video_bytes: None,
             max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
@@ -1319,6 +2025,18 @@ impl Default for LimitsConfig {
     }
 }
 
+impl LimitsConfig {
+    /// The video-message byte ceiling IN FORCE (protocol.md, "Video
+    /// messages"): what the operator wrote, or else the default clamped to
+    /// the attachment ceiling. The one number the claim checks and
+    /// `GET /families/mine` reports as `max_round_video_bytes`, so the two
+    /// can never disagree.
+    pub fn round_video_bytes(&self) -> usize {
+        self.max_round_video_bytes
+            .unwrap_or_else(|| DEFAULT_MAX_ROUND_VIDEO_BYTES.min(self.max_attachment_bytes))
+    }
+}
+
 impl Default for PushConfig {
     fn default() -> Self {
         Self {
@@ -1331,7 +2049,7 @@ impl Default for PushConfig {
 }
 
 /// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
-/// TOML names, plus the two sub-tables. Held beside the struct rather than
+/// TOML names, plus the four sub-tables. Held beside the struct rather than
 /// derived from it because serde offers no way to list a struct's fields,
 /// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
 /// refuses it beside `flatten`). The tests hold each list to its struct:
@@ -1348,10 +2066,13 @@ const AI_KEYS: &[&str] = &[
     "api_version",
     "system_prompt",
     "max_tokens",
+    "timeout_secs",
     "history_messages",
     "title",
     "vision",
     "images",
+    "transcribe",
+    "lookups",
 ];
 
 /// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
@@ -1373,6 +2094,26 @@ const AI_IMAGES_OWN_KEYS: &[&str] = &[
     "response_format",
     "max_bytes",
     "contextual",
+];
+
+/// The fields [`AiTranscribeConfig`] adds beside its flattened deployment.
+const AI_TRANSCRIBE_OWN_KEYS: &[&str] = &["max_bytes", "api", "style", "language_hint"];
+
+/// The fields of [`AiLookupsConfig`] — what `[ai.lookups]` takes. Not a
+/// deployment, so none of [`AI_DEPLOYMENT_KEYS`].
+const AI_LOOKUPS_KEYS: &[&str] = &[
+    "contact",
+    "search",
+    "search_key",
+    "searxng_url",
+    "weather",
+    "weather_key",
+    "wikipedia",
+    "daily_searches_per_family",
+    "lookups_per_reply",
+    "rounds",
+    "timeout_secs",
+    "max_query_chars",
 ];
 
 /// Refuse a key the `[ai]` tables do not know, by name and by table.
@@ -1399,7 +2140,12 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
         .chain(AI_IMAGES_OWN_KEYS)
         .copied()
         .collect();
-    let tables: [(&str, Option<&toml::Table>, &[&str]); 3] = [
+    let transcribe_keys: Vec<&str> = AI_DEPLOYMENT_KEYS
+        .iter()
+        .chain(AI_TRANSCRIBE_OWN_KEYS)
+        .copied()
+        .collect();
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 5] = [
         ("[ai]", Some(ai), AI_KEYS),
         (
             "[ai.vision]",
@@ -1410,6 +2156,16 @@ fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
             "[ai.images]",
             ai.get("images").and_then(toml::Value::as_table),
             &images_keys,
+        ),
+        (
+            "[ai.transcribe]",
+            ai.get("transcribe").and_then(toml::Value::as_table),
+            &transcribe_keys,
+        ),
+        (
+            "[ai.lookups]",
+            ai.get("lookups").and_then(toml::Value::as_table),
+            AI_LOOKUPS_KEYS,
         ),
     ];
     for (name, table, known) in &tables {
@@ -1546,6 +2302,43 @@ impl Config {
         if self.limits.max_family_members < 1 {
             anyhow::bail!("limits.max_family_members must be at least 1");
         }
+        // Zero is not "stickers off": it is a pack that answers `pack_full`
+        // to the first sticker anybody adds, under a button every client
+        // still shows. There is no off switch, and a ceiling of 0 must not
+        // pretend to be one.
+        if self.limits.max_pack_items < 1 {
+            anyhow::bail!("limits.max_pack_items must be at least 1");
+        }
+        // A sticker goes up through `POST /attachments` like any photo, so
+        // a per-item ceiling above the attachment ceiling could never be
+        // reached — and an operator who wrote one believes something about
+        // their server that is not true.
+        if self.limits.max_pack_item_bytes < 1
+            || self.limits.max_pack_item_bytes > self.limits.max_attachment_bytes
+        {
+            anyhow::bail!(
+                "limits.max_pack_item_bytes ({}) must be between 1 and \
+                 limits.max_attachment_bytes ({}) — a sticker is uploaded as an attachment",
+                self.limits.max_pack_item_bytes,
+                self.limits.max_attachment_bytes
+            );
+        }
+        // The video message's ceiling, held to the attachment ceiling for
+        // the pack's reason — but ONLY when the operator wrote one. Unset,
+        // `round_video_bytes()` clamps the default instead, because an
+        // operator who never wrote the key believes nothing about it, and a
+        // server that refused to start over a default nobody chose is the
+        // mistake the pack's bound once made.
+        if let Some(bytes) = self.limits.max_round_video_bytes
+            && (bytes < 1 || bytes > self.limits.max_attachment_bytes)
+        {
+            anyhow::bail!(
+                "limits.max_round_video_bytes ({}) must be between 1 and \
+                 limits.max_attachment_bytes ({}) — a video message is uploaded as an attachment",
+                bytes,
+                self.limits.max_attachment_bytes
+            );
+        }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
         }
@@ -1607,6 +2400,28 @@ impl Config {
         }
         // Calls. Validated whether or not they are enabled: a section that
         // is wrong is wrong before somebody flips the switch.
+        if self.ai.timeout_secs < 10 {
+            anyhow::bail!(
+                "ai.timeout_secs must be at least 10 — below that every answer fails, \
+                 and `[ai] enabled = false` is the honest way to switch the assistant off"
+            );
+        }
+        // Refused rather than clamped, either way. Zero would make every
+        // recording `not_transcribable` — an off switch that does not say
+        // so — and above the provider's own ceiling the refusal only moves
+        // to where nobody can explain it (see `AiTranscribeConfig`).
+        if self.ai.transcribe.max_bytes == 0
+            || self.ai.transcribe.max_bytes > TRANSCRIBE_MAX_BYTES_CEILING
+        {
+            anyhow::bail!(
+                "ai.transcribe.max_bytes must be between 1 and {TRANSCRIBE_MAX_BYTES_CEILING} \
+                 (25 MiB, the OpenAI contract's ceiling on one file, which both contracts \
+                 share), got {}",
+                self.ai.transcribe.max_bytes
+            );
+        }
+        self.ai.transcribe.validate()?;
+        self.ai.lookups.validate()?;
         if self.calls.ring_timeout_secs < 5 {
             anyhow::bail!(
                 "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
@@ -1712,6 +2527,22 @@ fn default_max_board_notes() -> i64 {
 fn default_max_task_items() -> i64 {
     20
 }
+
+/// protocol.md's Limits table: 200 stickers in one family's pack.
+fn default_max_pack_items() -> i64 {
+    200
+}
+
+/// protocol.md's Limits table: 512 KiB for one sticker.
+fn default_max_pack_item_bytes() -> usize {
+    512 * 1024
+}
+
+/// protocol.md's Limits table: 12 MiB for one video message, before the
+/// clamp to `max_attachment_bytes` — room for a later client recording at
+/// the profile's 720 for a full minute, so the picture can grow without a
+/// server change.
+pub const DEFAULT_MAX_ROUND_VIDEO_BYTES: usize = 12 * 1024 * 1024;
 
 fn default_max_family_members() -> i64 {
     50
@@ -1876,6 +2707,22 @@ mod tests {
             !cfg.ai.enabled,
             "the example must ship with the assistant off"
         );
+        // The video-message ceiling is documented COMMENTED OUT, because
+        // unset is a different statement from any number: the clamped
+        // default (protocol.md, "Video messages").
+        assert_eq!(cfg.limits.max_round_video_bytes, None);
+        let documented = include_str!("../config.example.toml")
+            .lines()
+            .find_map(|line| line.strip_prefix("# max_round_video_bytes = "))
+            .expect("the example documents max_round_video_bytes");
+        let uncommented =
+            Config::from_toml_str(&format!("[limits]\nmax_round_video_bytes = {documented}\n"))
+                .expect("the documented value, uncommented, validates");
+        assert_eq!(
+            uncommented.limits.round_video_bytes(),
+            defaults.limits.round_video_bytes(),
+            "the documented value is the default"
+        );
     }
 
     /// The example's commented-out `[ai]` block, uncommented.
@@ -1949,6 +2796,23 @@ mod tests {
         );
         assert!(opted_out.ai.contextual_images_route().is_none());
         assert!(opted_out.ai.images_usable(), "`/draw` is untouched by it");
+
+        // The fourth deployment is documented, and documented working: its
+        // own table, its default ceiling, inheriting the rest from [ai].
+        assert!(
+            out.contains("\n[ai.transcribe]\n"),
+            "the example documents [ai.transcribe]: {out}"
+        );
+        assert!(cfg.ai.transcribe_usable(), "a named deployment is on");
+        assert_eq!(cfg.ai.transcribe.max_bytes, TRANSCRIBE_MAX_BYTES_CEILING);
+        let transcribe = cfg.ai.transcribe_route().expect("transcribe route").route;
+        assert!(
+            transcribe
+                .url
+                .ends_with("/audio/transcriptions?api-version=2024-10-21"),
+            "{}",
+            transcribe.url
+        );
     }
 
     /// THE SILENT OPT-OUT. `contextual = false` under `[ai.vision]` used to
@@ -2013,10 +2877,12 @@ deployment = "draws"
         let mut raw = String::from("[ai]\n");
         for key in AI_KEYS {
             let value = match *key {
-                "vision" | "images" => continue,
+                "vision" | "images" | "transcribe" | "lookups" => continue,
                 "enabled" => "true".to_string(),
                 "auth" => "\"bearer\"".to_string(),
                 "max_tokens" | "history_messages" => "7".to_string(),
+                // Its own floor is 10 (`validate`), so the sweep's 7 would be refused.
+                "timeout_secs" => "60".to_string(),
                 _ => format!("\"{key}\""),
             };
             raw.push_str(&format!("{key} = {value}\n"));
@@ -2040,8 +2906,49 @@ deployment = "draws"
             };
             raw.push_str(&format!("{key} = {value}\n"));
         }
+        raw.push_str("\n[ai.transcribe]\n");
+        for key in AI_DEPLOYMENT_KEYS.iter().chain(AI_TRANSCRIBE_OWN_KEYS) {
+            let value = match *key {
+                "auth" => "\"bearer\"".to_string(),
+                "max_bytes" => "2048".to_string(),
+                "api" => "\"openai\"".to_string(),
+                "language_hint" => "false".to_string(),
+                // Read only by the speech contract, and refused under this
+                // one: swept by the speech test below instead.
+                "style" => continue,
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        raw.push_str("\n[ai.lookups]\n");
+        for key in AI_LOOKUPS_KEYS {
+            let value = match *key {
+                "contact" => "\"https://example.org/contact\"".to_string(),
+                "search" => "\"brave\"".to_string(),
+                // One web search per server: swept by the SearXNG test below.
+                "searxng_url" => continue,
+                "weather" | "wikipedia" => "true".to_string(),
+                "daily_searches_per_family" => "7".to_string(),
+                "lookups_per_reply" | "rounds" | "timeout_secs" => "4".to_string(),
+                "max_query_chars" => "150".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
         let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
+        assert_eq!(cfg.ai.lookups.search, Some(SearchProvider::Brave));
+        assert_eq!(cfg.ai.lookups.search_key, "search_key");
+        assert_eq!(cfg.ai.lookups.weather_key, "weather_key");
+        assert_eq!(cfg.ai.lookups.daily_searches_per_family, 7);
+        assert_eq!(cfg.ai.lookups.rounds, 4);
+        assert_eq!(cfg.ai.lookups.max_query_chars, 150);
+        assert_eq!(cfg.ai.lookups.contact(), "https://example.org/contact");
         // And they were READ, not merely tolerated.
+        assert_eq!(cfg.ai.transcribe.max_bytes, 2048);
+        assert_eq!(cfg.ai.transcribe.deployment.model, "model");
+        assert_eq!(cfg.ai.transcribe.deployment.auth, Some(AuthScheme::Bearer));
+        assert_eq!(cfg.ai.transcribe.api, TranscribeApi::OpenAi);
+        assert_eq!(cfg.ai.transcribe.language_hint, Some(false));
         assert_eq!(cfg.ai.title, "title");
         assert_eq!(cfg.ai.history_messages, 7);
         assert_eq!(cfg.ai.vision.api_version, "api_version");
@@ -2163,6 +3070,304 @@ size = "1024x1024"
         assert_eq!(images.api_key, "secret");
         assert_eq!(vision.model, "nettrash-gpt-4o", "the DEPLOYMENT routes");
         assert_eq!(images.model, "nettrash-FLUX.2-pro");
+    }
+
+    /// The fourth deployment, as an operator writes it: three lines under
+    /// its own header, everything else inherited from `[ai]` — and OFF until
+    /// it is named, like the other two.
+    #[test]
+    fn the_transcription_deployment_inherits_and_is_off_until_named() {
+        let base = r#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
+api_version = "2024-10-21"
+"#;
+        let off = Config::from_toml_str(base).expect("valid");
+        assert!(!off.ai.transcribe_usable(), "unnamed is off");
+        assert!(off.ai.transcribe_route().is_none());
+        assert_eq!(off.ai.transcribe.max_bytes, 25 * 1024 * 1024);
+
+        let on = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\ndeployment = \"nettrash-whisper\"\nmodel = \"whisper\"\n"
+        ))
+        .expect("valid");
+        let route = on.ai.transcribe_route().expect("route").route;
+        assert_eq!(
+            route.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-whisper\
+             /audio/transcriptions?api-version=2024-10-21"
+        );
+        assert_eq!(route.api_key, "secret", "inherited, not retyped");
+        assert_eq!(route.auth, AuthScheme::ApiKey);
+        assert_eq!(route.model, "nettrash-whisper", "the DEPLOYMENT routes");
+
+        // A pasted target URI is used verbatim, as everywhere else.
+        let pasted = Config::from_toml_str(&format!(
+            "{base}\n[ai.transcribe]\nendpoint = \"https://x.openai.azure.com/openai/deployments/w/audio/transcriptions?api-version=2025-03-01-preview\"\n"
+        ))
+        .expect("valid");
+        assert_eq!(
+            pasted.ai.transcribe_route().expect("route").route.url,
+            "https://x.openai.azure.com/openai/deployments/w/audio/transcriptions\
+             ?api-version=2025-03-01-preview"
+        );
+
+        // And nothing without the assistant itself.
+        let mut disabled = on.ai.clone();
+        disabled.enabled = false;
+        assert!(!disabled.transcribe_usable());
+    }
+
+    const SPEECH_BASE: &str = r#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "secret"
+processor = "Microsoft - Azure OpenAI"
+api_version = "2024-10-21"
+"#;
+
+    /// The second contract, as an operator writes it for MAI-Transcribe-2:
+    /// its OWN endpoint (a root gets the path and the speech api-version,
+    /// never `[ai]`'s date), the key in the subscription header, the model
+    /// as written, `clean` and no hint by default.
+    #[test]
+    fn a_speech_section_resolves_to_its_own_endpoint_model_and_header() {
+        let on = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n\
+             endpoint = \"https://fc-speech.cognitiveservices.azure.com/\"\n\
+             model = \"MAI-Transcribe-2\"\n"
+        ))
+        .expect("valid");
+        let resolved = on.ai.transcribe_route().expect("route");
+        assert_eq!(
+            resolved.route.url,
+            "https://fc-speech.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe\
+             ?api-version=2025-10-15"
+        );
+        assert_eq!(resolved.route.api_key, "secret", "inherited from [ai]");
+        assert_eq!(resolved.route.auth, AuthScheme::SubscriptionKey);
+        assert_eq!(resolved.route.model, "MAI-Transcribe-2");
+        assert_eq!(
+            resolved.contract,
+            TranscribeContract::Speech {
+                style: TranscribeStyle::Clean
+            }
+        );
+        assert!(!resolved.language_hint, "no hint unless opted in");
+        assert!(on.ai.transcribe_usable());
+
+        // Every key it takes, set: its own key, date, style and the hint.
+        let all = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n\
+             endpoint = \"https://fc-speech.cognitiveservices.azure.com\"\n\
+             model = \"MAI-Transcribe-1.5\"\napi_key = \"speech-key\"\n\
+             api_version = \"2026-01-01\"\nstyle = \"verbatim\"\nlanguage_hint = true\n\
+             max_bytes = 1048576\n"
+        ))
+        .expect("valid");
+        let resolved = all.ai.transcribe_route().expect("route");
+        assert!(
+            resolved.route.url.ends_with("?api-version=2026-01-01"),
+            "{}",
+            resolved.route.url
+        );
+        assert_eq!(resolved.route.api_key, "speech-key");
+        assert_eq!(
+            resolved.contract,
+            TranscribeContract::Speech {
+                style: TranscribeStyle::Verbatim
+            }
+        );
+        assert!(resolved.language_hint);
+        assert_eq!(all.ai.transcribe.max_bytes, 1_048_576);
+
+        // A pasted full URI is used verbatim; a path without a query gets
+        // the date.
+        let pasted = "https://x.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe\
+                      ?api-version=2025-10-15";
+        assert_eq!(speech_url(pasted, "ignored"), pasted);
+        assert_eq!(
+            speech_url(
+                "https://x.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe",
+                SPEECH_API_VERSION
+            ),
+            pasted
+        );
+
+        // The OpenAI contract keeps its hint by default — what it always did
+        // — and may turn it off.
+        let openai = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\ndeployment = \"w\"\n"
+        ))
+        .expect("valid");
+        let resolved = openai.ai.transcribe_route().expect("route");
+        assert_eq!(resolved.contract, TranscribeContract::OpenAi);
+        assert!(resolved.language_hint);
+        let quiet = Config::from_toml_str(&format!(
+            "{SPEECH_BASE}\n[ai.transcribe]\ndeployment = \"w\"\nlanguage_hint = false\n"
+        ))
+        .expect("valid");
+        assert!(!quiet.ai.transcribe_route().expect("route").language_hint);
+
+        // And nothing without the assistant itself.
+        let mut disabled = on.ai.clone();
+        disabled.enabled = false;
+        assert!(disabled.transcribe_route().is_none());
+        // Nor for a hand-built section with no model.
+        let mut nameless = on.ai.clone();
+        nameless.transcribe.deployment.model = String::new();
+        assert!(nameless.transcribe_route().is_none());
+    }
+
+    /// What each contract requires and what it would misread, refused at
+    /// startup by name.
+    #[test]
+    fn a_speech_section_missing_or_misreading_a_key_is_refused_by_name() {
+        let speech = |extra: &str| {
+            Config::from_toml_str(&format!(
+                "{SPEECH_BASE}\n[ai.transcribe]\napi = \"speech\"\n{extra}"
+            ))
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+        };
+        let endpoint = "endpoint = \"https://x.cognitiveservices.azure.com\"\n";
+        let model = "model = \"MAI-Transcribe-2\"\n";
+        assert!(speech(&format!("{endpoint}{model}")).is_ok());
+
+        let err = speech(model).unwrap_err();
+        assert!(err.contains("ai.transcribe.endpoint is required"), "{err}");
+        assert!(err.contains("not inherited from [ai]"), "{err}");
+        let err = speech(endpoint).unwrap_err();
+        assert!(err.contains("ai.transcribe.model is required"), "{err}");
+        let err = speech(&format!("{endpoint}{model}deployment = \"w\"\n")).unwrap_err();
+        assert!(err.contains("ai.transcribe.deployment"), "{err}");
+        let err = speech(&format!("{endpoint}{model}auth = \"bearer\"\n")).unwrap_err();
+        assert!(err.contains("Ocp-Apim-Subscription-Key"), "{err}");
+        let err = speech(&format!("{endpoint}{model}style = \"tidy\"\n")).unwrap_err();
+        assert!(err.contains("tidy"), "{err}");
+
+        // A style under the OpenAI contract would set nothing.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\ndeployment = \"w\"\nstyle = \"clean\"\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("ai.transcribe.style"), "{err}");
+        // An api nobody speaks, and the derived header written by hand.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\napi = \"whisper\"\n").unwrap_err()
+        );
+        assert!(err.contains("whisper"), "{err}");
+        for table in ["[ai]", "[ai.transcribe]"] {
+            assert!(
+                Config::from_toml_str(&format!("{table}\nauth = \"subscription-key\"\n")).is_err(),
+                "{table}: the subscription header is derived, never written"
+            );
+        }
+        // And the strict-key check knows the new keys by table.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.images]\ndeployment = \"d\"\nlanguage_hint = true\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("belongs under [ai.transcribe]"), "{err}");
+    }
+
+    /// The example's worked MAI-Transcribe-2 block, put where it says to
+    /// go — in place of the OpenAI one — is a working speech section.
+    #[test]
+    fn the_examples_mai_block_is_a_working_speech_section() {
+        let example = include_str!("../config.example.toml");
+        let mut block = String::new();
+        let mut inside = false;
+        for line in example.lines() {
+            if line.trim() == "# # MAI-Transcribe-2 on Azure Speech" {
+                inside = true;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("# #     ") {
+                block.push_str(rest);
+                block.push('\n');
+            } else if !block.is_empty() {
+                break;
+            }
+        }
+        assert!(block.starts_with("[ai.transcribe]\n"), "{block}");
+        assert!(
+            block.contains("YOUR-SPEECH-RESOURCE"),
+            "placeholders only: {block}"
+        );
+        let cfg = Config::from_toml_str(&format!("{SPEECH_BASE}\n{block}"))
+            .unwrap_or_else(|err| panic!("{err:#}\n{block}"));
+        let resolved = cfg.ai.transcribe_route().expect("route");
+        assert_eq!(resolved.route.model, "MAI-Transcribe-2");
+        assert_eq!(
+            resolved.route.url,
+            "https://YOUR-SPEECH-RESOURCE.cognitiveservices.azure.com/speechtotext\
+             /transcriptions:transcribe?api-version=2025-10-15"
+        );
+        assert_eq!(resolved.route.api_key, "YOUR-SPEECH-RESOURCE-KEY");
+        assert_eq!(resolved.route.auth, AuthScheme::SubscriptionKey);
+        assert!(!resolved.language_hint);
+        assert_eq!(cfg.ai.transcribe.max_bytes, TRANSCRIBE_MAX_BYTES_CEILING);
+    }
+
+    /// The ceiling is the provider's, and a config above it — or at zero —
+    /// is refused at startup by name rather than clamped in silence.
+    #[test]
+    fn validate_holds_the_transcription_ceiling_to_the_providers() {
+        let ok = Config::from_toml_str("[ai.transcribe]\nmax_bytes = 1048576\n").expect("valid");
+        assert_eq!(ok.ai.transcribe.max_bytes, 1_048_576);
+        for bad in ["0", "26214401"] {
+            let err = format!(
+                "{:#}",
+                Config::from_toml_str(&format!("[ai.transcribe]\nmax_bytes = {bad}\n"))
+                    .unwrap_err()
+            );
+            assert!(err.contains("ai.transcribe.max_bytes"), "{err}");
+        }
+        assert!(Config::from_toml_str("[ai.transcribe]\nmax_bytes = 26214400\n").is_ok());
+    }
+
+    /// The strict-key check reads the fourth table too, and names a key from
+    /// a sibling table as such.
+    #[test]
+    fn a_misplaced_key_under_ai_transcribe_fails_the_load_by_name() {
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\ndeployment = \"w\"\nsize = \"1x1\"\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("`size`"), "{err}");
+        assert!(err.contains("[ai.transcribe]"), "{err}");
+        assert!(err.contains("belongs under [ai.images]"), "{err}");
+
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.transcribe]\nmax_byte = 1\n").unwrap_err()
+        );
+        assert!(err.contains("`max_byte`"), "{err}");
+        assert!(err.contains("max_bytes"), "the keys it takes: {err}");
+
+        // `max_bytes` under [ai.vision] belongs under either sibling.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.vision]\nmax_bytes = 1\n").unwrap_err()
+        );
+        assert!(
+            err.contains("belongs under [ai.images] or [ai.transcribe]"),
+            "{err}"
+        );
     }
 
     /// The default, and the one that matters most: a server that configured
@@ -2548,6 +3753,18 @@ height = 1024
         assert!(format!("{err:#}").contains("server.bind"));
     }
 
+    /// The provider timeout is the operator's: 180 by default — what it was
+    /// as a constant — settable, and refused below 10, where every answer
+    /// would fail and the setting would be a quiet off switch.
+    #[test]
+    fn the_provider_timeout_is_configurable_and_bounded() {
+        assert_eq!(Config::default().ai.timeout_secs, 180);
+        let cfg = Config::from_toml_str("[ai]\ntimeout_secs = 300\n").unwrap();
+        assert_eq!(cfg.ai.timeout_secs, 300);
+        let err = Config::from_toml_str("[ai]\ntimeout_secs = 5\n").unwrap_err();
+        assert!(format!("{err:#}").contains("ai.timeout_secs"));
+    }
+
     #[test]
     fn validate_rejects_an_idle_timeout_not_exceeding_the_ping_interval() {
         let err = Config::from_toml_str(
@@ -2723,6 +3940,169 @@ height = 1024
                 Config::from_toml_str(body).is_err(),
                 "expected rejection for {body:?}"
             );
+        }
+    }
+
+    /// The sticker pack's two ceilings (protocol.md's Limits table): the
+    /// defaults are the numbers the protocol states, zero is not an off
+    /// switch, and one sticker may not be larger than one attachment —
+    /// which is what it is uploaded as.
+    #[test]
+    fn the_sticker_pack_limits_default_and_are_held_to_the_attachment_ceiling() {
+        let cfg = Config::from_toml_str("").expect("defaults validate");
+        assert_eq!(cfg.limits.max_pack_items, 200);
+        assert_eq!(cfg.limits.max_pack_item_bytes, 512 * 1024);
+
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_pack_items = 1000\nmax_pack_item_bytes = 1048576\n",
+        )
+        .expect("an operator may raise both");
+        assert_eq!(cfg.limits.max_pack_items, 1000);
+        assert_eq!(cfg.limits.max_pack_item_bytes, 1024 * 1024);
+
+        for body in [
+            "[limits]\nmax_pack_items = 0\n",
+            "[limits]\nmax_pack_item_bytes = 0\n",
+            // Above the attachment ceiling a sticker could never be uploaded.
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65537\n",
+        ] {
+            assert!(
+                Config::from_toml_str(body).is_err(),
+                "expected rejection for {body:?}"
+            );
+        }
+        // Exactly at it is fine.
+        Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 65536\n",
+        )
+        .expect("the two ceilings may be equal");
+    }
+
+    /// The video message's byte ceiling (protocol.md, "Video messages"):
+    /// UNSET it is 12 MiB clamped to the attachment ceiling — never a
+    /// refusal, so the test servers' 64 KiB and every small production
+    /// ceiling still boot — and SET it is held to 1..=max_attachment_bytes.
+    #[test]
+    fn the_round_video_ceiling_clamps_its_default_and_bounds_a_written_value() {
+        // Unset, production attachment ceiling: the 12 MiB default.
+        let cfg = Config::from_toml_str("").expect("defaults validate");
+        assert_eq!(cfg.limits.max_round_video_bytes, None);
+        assert_eq!(cfg.limits.round_video_bytes(), 12 * 1024 * 1024);
+
+        // Unset under a SMALLER attachment ceiling: clamped, not refused.
+        // (The pack's own ceiling is lowered beside it in every 64 KiB case
+        // here, as the test servers do, because the pack's bound REFUSES a
+        // default above the attachment ceiling — which is exactly the
+        // mistake this key's clamp does not repeat.)
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\n",
+        )
+        .expect("an unset video ceiling never stops a server starting");
+        assert_eq!(cfg.limits.round_video_bytes(), 65536);
+        // …and under a LARGER one, still the 12 MiB default.
+        let cfg = Config::from_toml_str("[limits]\nmax_attachment_bytes = 209715200\n")
+            .expect("validates");
+        assert_eq!(cfg.limits.round_video_bytes(), 12 * 1024 * 1024);
+
+        // Set: what was written, even above the default…
+        let cfg = Config::from_toml_str("[limits]\nmax_round_video_bytes = 20971520\n")
+            .expect("an operator may raise it under the attachment ceiling");
+        assert_eq!(cfg.limits.round_video_bytes(), 20 * 1024 * 1024);
+        // …or below it.
+        let cfg = Config::from_toml_str("[limits]\nmax_round_video_bytes = 8192\n")
+            .expect("an operator may lower it");
+        assert_eq!(cfg.limits.round_video_bytes(), 8192);
+        // Exactly at the attachment ceiling is fine.
+        let cfg = Config::from_toml_str(
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 65536\n",
+        )
+        .expect("the two ceilings may be equal");
+        assert_eq!(cfg.limits.round_video_bytes(), 65536);
+
+        // Refused: zero, and one byte over the attachment ceiling.
+        for body in [
+            "[limits]\nmax_round_video_bytes = 0\n",
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 65537\n",
+            // The DEFAULT is above this attachment ceiling and clamps; a
+            // WRITTEN 12 MiB is a belief that is not true, and is told so.
+            "[limits]\nmax_attachment_bytes = 65536\nmax_pack_item_bytes = 8192\nmax_round_video_bytes = 12582912\n",
+        ] {
+            assert!(
+                Config::from_toml_str(body).is_err(),
+                "expected rejection for {body:?}"
+            );
+        }
+    }
+
+    /// `[ai.lookups]` (protocol.md, "Looking things up"): off unless a
+    /// source is named, its combinations checked at startup, and its
+    /// contact a URL — never an address.
+    #[test]
+    fn the_lookups_section_is_off_by_default_and_refuses_nonsense() {
+        let cfg = Config::from_toml_str("").expect("empty is valid");
+        assert!(!cfg.ai.lookups.is_configured());
+        assert!(cfg.ai.lookups.source_names().is_empty());
+        assert_eq!(cfg.ai.lookups.daily_searches_per_family, 100);
+        assert_eq!(cfg.ai.lookups.lookups_per_reply, 3);
+        assert_eq!(cfg.ai.lookups.rounds, 2);
+        assert_eq!(cfg.ai.lookups.timeout_secs, 10);
+        assert_eq!(cfg.ai.lookups.max_query_chars, 200);
+        assert_eq!(cfg.ai.lookups.contact(), DEFAULT_LOOKUP_CONTACT);
+        assert!(
+            cfg.ai
+                .lookups
+                .user_agent()
+                .contains("(https://github.com/nettrash/family.connect)"),
+            "{}",
+            cfg.ai.lookups.user_agent()
+        );
+
+        let searx = Config::from_toml_str(
+            "[ai.lookups]\nsearch = \"searxng\"\nsearxng_url = \"https://searx.internal\"\nwikipedia = true\n",
+        )
+        .expect("a SearXNG section");
+        assert_eq!(
+            searx.ai.lookups.source_names(),
+            vec!["SearXNG", "Wikipedia"]
+        );
+
+        for (raw, says) in [
+            ("search = \"brave\"\n", "search_key"),
+            (
+                "search = \"brave\"\nsearch_key = \"k\"\nsearxng_url = \"https://s\"\n",
+                "searxng_url",
+            ),
+            ("search = \"searxng\"\n", "searxng_url"),
+            (
+                "search = \"searxng\"\nsearxng_url = \"https://s\"\nsearch_key = \"k\"\n",
+                "search_key",
+            ),
+            ("search_key = \"k\"\n", "no `search` provider"),
+            ("search = \"bing\"\n", "unknown variant"),
+            ("weather_key = \"k\"\n", "weather_key"),
+            ("contact = \"ops@example.org\"\n", "contact"),
+            (
+                "contact = \"https://example.org/?mail=ops@example.org\"\n",
+                "contact",
+            ),
+            (
+                "daily_searches_per_family = 0\n",
+                "daily_searches_per_family",
+            ),
+            ("lookups_per_reply = 0\n", "lookups_per_reply"),
+            ("rounds = 9\n", "rounds"),
+            ("timeout_secs = 0\n", "timeout_secs"),
+            ("max_query_chars = 5\n", "max_query_chars"),
+            (
+                "serach = \"brave\"\n",
+                "unknown key `serach` under [ai.lookups]",
+            ),
+        ] {
+            let err = format!(
+                "{:#}",
+                Config::from_toml_str(&format!("[ai.lookups]\n{raw}")).expect_err(raw)
+            );
+            assert!(err.contains(says), "{raw:?} must say {says:?}: {err}");
         }
     }
 }

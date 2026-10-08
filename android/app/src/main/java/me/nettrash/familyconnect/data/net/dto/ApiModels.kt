@@ -210,7 +210,48 @@ data class FamilyDto(
      * same thing here (docs/protocol.md, `PATCH /families/mine`).
      */
     @SerialName("max_members") val maxMembers: Int? = null,
-)
+    /**
+     * Whether a member may ask for the text of ANOTHER member's voice note,
+     * audio or video in the family chat (docs/protocol.md, "Transcripts on
+     * request"). Your own recordings need only your own consent; this is
+     * the owner's switch for everybody else's.
+     *
+     * ALWAYS present on the wire, FALSE by default — for every family that
+     * predates it and for a server that predates the field, which has no
+     * transcripts at all. Bound to no other switch: `ai_vision` going off
+     * never clears it.
+     */
+    @SerialName("ai_transcripts") val aiTranscripts: Boolean = false,
+    /**
+     * Whether the assistant may LOOK THINGS UP for this family — send a
+     * short query or a place name it wrote from a question to the
+     * providers `assistant.lookups` names (docs/protocol.md, "Looking
+     * things up"). The OWNER's key of three: the server must have a source
+     * and each asking member must have given the lookup consent
+     * (`MeResponse.assistantLookupConsentAt`).
+     *
+     * ALWAYS present on a current server, FALSE by default — for every
+     * family that predates it and for a server that predates the field,
+     * which looks nothing up at all. Bound to no other switch.
+     */
+    @SerialName("ai_lookups") val aiLookups: Boolean = false,
+    /**
+     * The places whose weather today the daily greeting mentions, as the
+     * SERVER kept them — at most three, trimmed, whitespace folded,
+     * case-insensitive repeats dropped (docs/protocol.md, "Today's
+     * weather, for places the owner chose"). Every member can read it;
+     * only the owner can set it.
+     *
+     * ALWAYS present on a current server, `[]` by default. Nullable here
+     * only so that a server that predates the field — which sends nothing
+     * — and any unexpected `null` both decode as "no places" instead of
+     * failing the whole family read; read it through [places].
+     */
+    @SerialName("greeting_places") val greetingPlaces: List<String>? = null,
+) {
+    /** [greetingPlaces], with absent read as none. */
+    val places: List<String> get() = greetingPlaces.orEmpty()
+}
 
 @Serializable
 data class PendingJoinRequestDto(
@@ -578,8 +619,61 @@ data class AttachmentDto(
      * plain pin rather than as perfect precision.
      */
     @SerialName("accuracy_m") val accuracyM: Int? = null,
+    /**
+     * `true` when (and only when) the message carrying this was sent as a
+     * STICKER (docs/protocol.md, "Sticker pack"): still a `kind=photo` in
+     * every other respect, drawn without a bubble. Absent otherwise, never
+     * `false` — which is why it is nullable rather than defaulted to false:
+     * the house Json does not encode defaults, and a stored copy must
+     * round-trip exactly what the wire said. Set by the send and never
+     * changed; never on a pack item's or a board note's picture.
+     *
+     * NOT the board's "sticker": in this codebase that word has always
+     * meant a note on the wall. This one is the chat picture.
+     */
+    val sticker: Boolean? = null,
+    /**
+     * `true` when (and only when) the message carrying this was sent as a
+     * VIDEO MESSAGE (docs/protocol.md, "Video messages"; #79, S5): a square
+     * H.264/AAC MP4 recorded to be drawn round, still a `kind=video` in
+     * every other respect. The sticker flag's pattern exactly: absent
+     * otherwise and never `false`, nullable so a stored copy round-trips
+     * what the wire said, set by the send and never changed, never beside
+     * `sticker`.
+     *
+     * Rides INSIDE the attachments JSON a message row already stores. A row
+     * cached by a build from before the key was written back without it and
+     * would draw square for good; such rows are marked
+     * (`MessageEntity.attachmentsKnowRound`, MIGRATION_30_31) and read again
+     * on resync by `MessageRepository.repairUnknownRoundFlags` (S5.8).
+     */
+    val round: Boolean? = null,
+    /**
+     * A voice note's WAVEFORM (#79; docs/protocol.md, "A voice note's
+     * waveform"): 48 lowercase hex digits, one level 0–15 per equal slice of
+     * the recording, made by the sender's own meter — so the bubble draws its
+     * shape before anything is downloaded. Audio only; absent (never "" or
+     * null on the wire) when the sender sent none — a picked sound file, an
+     * older client, a server from before waveforms. Never changes after the
+     * upload. Read through [me.nettrash.familyconnect.data.repo.Waveform.levelsOrPlaceholder],
+     * which draws the flat placeholder for anything it cannot parse.
+     */
+    val waveform: String? = null,
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
+
+    /**
+     * Sent as a chat sticker. The kind is checked too, so a flag that ever
+     * strayed onto something that is not a picture draws as what it is.
+     */
+    val isSticker: Boolean get() = sticker == true && kind == KIND_PHOTO
+
+    /**
+     * Sent as a video message (#79, S5.1). The kind is checked too, as the
+     * sticker's is: the flag on a photo, an audio or a file draws as what
+     * that attachment otherwise is.
+     */
+    val isRound: Boolean get() = round == true && kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
     val isAudio: Boolean get() = kind == KIND_AUDIO
     val isLocation: Boolean get() = kind == KIND_LOCATION
@@ -598,11 +692,31 @@ data class AttachmentDto(
                 "image/png" -> "png"
                 "image/heic" -> "heic"
                 "image/heif" -> "heif"
+                // A sticker saved or shared keeps its own type: the extension
+                // is what tells the receiving app it may be animated.
+                "image/webp" -> "webp"
                 "video/mp4" -> "mp4"
                 "video/quicktime" -> "mov"
-                else -> if (isVideo) "mp4" else "jpg"
+                // A voice note saved or shared is a sound file, named as one
+                // (#79) — not "photo-34.jpg" with sound inside.
+                "audio/mp4", "audio/x-m4a", "audio/m4a" -> "m4a"
+                "audio/mpeg" -> "mp3"
+                "audio/ogg" -> "ogg"
+                "audio/aac" -> "aac"
+                "audio/wav", "audio/x-wav" -> "wav"
+                "audio/flac" -> "flac"
+                else -> when {
+                    isVideo -> "mp4"
+                    isAudio -> "m4a"
+                    else -> "jpg"
+                }
             }
-            return "${if (isVideo) "video" else "photo"}-$id.$ext"
+            val stem = when {
+                isVideo -> "video"
+                isAudio -> "voice"
+                else -> "photo"
+            }
+            return "$stem-$id.$ext"
         }
 
     /** What a bubble calls it: the name for a file, a word for the rest. */
@@ -790,6 +904,9 @@ data class PatchFamilyRequest(
     @SerialName("ai_greeting") val aiGreeting: Boolean? = null,
     @SerialName("ai_faces") val aiFaces: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
+    @SerialName("ai_transcripts") val aiTranscripts: Boolean? = null,
+    @SerialName("ai_lookups") val aiLookups: Boolean? = null,
+    @SerialName("greeting_places") val greetingPlaces: List<String>? = null,
 ) {
     companion object {
         fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
@@ -847,6 +964,30 @@ data class PatchFamilyRequest(
          * "Profile pictures of members").
          */
         fun aiFaces(enabled: Boolean) = PatchFamilyRequest(aiFaces = enabled)
+
+        /**
+         * The transcripts switch: whether members may ask for the text of
+         * OTHER members' recordings in the family chat (docs/protocol.md,
+         * "Transcripts on request"). Bound to nothing, like [aiGreeting]:
+         * no other switch refuses it or clears it.
+         */
+        fun aiTranscripts(enabled: Boolean) = PatchFamilyRequest(aiTranscripts = enabled)
+
+        /**
+         * The lookups switch: whether the assistant may look things up for
+         * this family (docs/protocol.md, "Looking things up"). Bound to
+         * nothing, like [aiTranscripts].
+         */
+        fun aiLookups(enabled: Boolean) = PatchFamilyRequest(aiLookups = enabled)
+
+        /**
+         * The greeting's weather places (docs/protocol.md, "Today's weather,
+         * for places the owner chose"). The list REPLACES the stored one and
+         * `[]` CLEARS it — an empty list is not the Kotlin default (null),
+         * so `encodeDefaults=false` still sends it. There is no `null` form:
+         * the server refuses one.
+         */
+        fun greetingPlaces(places: List<String>) = PatchFamilyRequest(greetingPlaces = places)
     }
 }
 
@@ -883,6 +1024,20 @@ data class SendMessageRequest(
     val poll: NewPollDto? = null,
     /** The members this message names — omitted when null, like the rest. */
     val mentions: List<MentionDto>? = null,
+    /**
+     * `true` sends the message's one attachment as a STICKER
+     * (docs/protocol.md, "Sticker pack"). Null — and therefore omitted —
+     * for every ordinary message, so their requests stay byte-identical to
+     * what they were; never sent as `false`.
+     */
+    val sticker: Boolean? = null,
+    /**
+     * `true` sends the message's one `kind=video` attachment as a VIDEO
+     * MESSAGE (docs/protocol.md, "Video messages"; #79). Null — and
+     * therefore omitted — for every other message, exactly as [sticker]
+     * is; never sent as `false`, and never beside it.
+     */
+    val round: Boolean? = null,
 )
 
 /**
@@ -1065,6 +1220,59 @@ data class BoardChangesResponse(val notes: List<NoteDto>)
 @Serializable
 data class NoteResponse(val note: NoteDto)
 
+/**
+ * One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+ *
+ * `pack` on the wire and in this file, because "sticker" in this codebase
+ * already means a board note — see [NoteDto]. The only thing spelled
+ * `sticker` is the flag on [AttachmentDto].
+ *
+ * A TOMBSTONE carries `deleted: true` INSTEAD of the content fields —
+ * `{"id": 5, "deleted": true, "pack_seq": 14}` — so every content field is
+ * nullable, exactly as on a note.
+ */
+@Serializable
+data class PackItemDto(
+    val id: Long,
+    @SerialName("added_by") val addedBy: Long? = null,
+    /**
+     * An ordinary `kind=photo` attachment whose bytes ARE the sticker. It
+     * never carries the `sticker` flag — that is a message's.
+     */
+    val attachment: AttachmentDto? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("pack_seq") val packSeq: Long,
+    /**
+     * A few words for a screen reader, present only when whoever added the
+     * item gave some. Never drawn over the picture.
+     */
+    val label: String? = null,
+    val deleted: Boolean? = null,
+) {
+    val isTombstone: Boolean get() = deleted == true
+}
+
+/** `GET /families/mine/pack` — the whole pack, tombstones excluded. */
+@Serializable
+data class PackResponse(
+    val items: List<PackItemDto>,
+    @SerialName("max_pack_seq") val maxPackSeq: Long,
+)
+
+/** `GET /families/mine/pack/changes` — tombstones INCLUDED. */
+@Serializable
+data class PackChangesResponse(val items: List<PackItemDto>)
+
+@Serializable
+data class PackItemResponse(val item: PackItemDto)
+
+@Serializable
+data class AddPackItemRequest(
+    @SerialName("attachment_id") val attachmentId: Long,
+    /** Omitted when nobody gave one — an empty label is no label. */
+    val label: String? = null,
+)
+
 @Serializable
 data class CreateNoteRequest(
     val text: String,
@@ -1134,6 +1342,9 @@ data class DeviceRequest(
     // config (no google-services.json) — the device row still registers,
     // it just can't be pushed to.
     @SerialName("push_token") val pushToken: String?,
+    // The language this device's pushes are written in (docs/protocol.md,
+    // "Devices"); left out when null, which leaves the server's copy alone.
+    @SerialName("language") val language: String? = null,
 )
 
 // -- Response envelopes -------------------------------------------------------
@@ -1237,6 +1448,18 @@ data class MeResponse(
      * than a send.
      */
     @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
+    /**
+     * When this caller agreed that the assistant may send a query it wrote
+     * from their words to the lookup providers, or null — null both when
+     * they have not and when this server has no lookup source
+     * (docs/protocol.md, "Consenting to the assistant", amended
+     * 2026-10-03). ALWAYS present on a current server; absent from an
+     * older one, which looks nothing up, so null is the truth there too.
+     *
+     * Never assumed from [assistantConsentAt]: the first consent names
+     * `processor` and nobody else.
+     */
+    @SerialName("assistant_lookup_consent_at") val assistantLookupConsentAt: String? = null,
 )
 
 @Serializable
@@ -1280,6 +1503,25 @@ data class FamilyMineResponse(
     @SerialName("former_members") val formerMembers: List<MemberDto> = emptyList(),
     // The board cursor, omitted while the board has never been written to.
     @SerialName("max_board_seq") val maxBoardSeq: Long? = null,
+    // The same mark for the family's sticker pack, omitted while the pack
+    // has never been written to (docs/protocol.md, "Sticker pack").
+    @SerialName("max_pack_seq") val maxPackSeq: Long? = null,
+    /**
+     * The pack's two ceilings — ALWAYS present on a server that has packs,
+     * so their ABSENCE is how this client knows the server predates them
+     * and offers no sticker button and no pack management there, rather
+     * than discovering a 404 when somebody taps one.
+     */
+    @SerialName("max_pack_items") val maxPackItems: Int? = null,
+    @SerialName("max_pack_item_bytes") val maxPackItemBytes: Long? = null,
+    /**
+     * Video messages' two limits (#79; docs/protocol.md, "Video messages") —
+     * ALWAYS present on a server that has them, so their ABSENCE is how this
+     * client knows the server predates video messages: no video entry is
+     * offered there at all, and `round` is never sent.
+     */
+    @SerialName("max_round_video_ms") val maxRoundVideoMs: Long? = null,
+    @SerialName("max_round_video_bytes") val maxRoundVideoBytes: Long? = null,
     // Absent when the server has no assistant configured, which is the
     // whole of the capability check (docs/protocol.md, "Mentioning the
     // assistant in the family chat").
@@ -1376,6 +1618,67 @@ data class AssistantDto(
      * no assistant there at all.
      */
     val processor: String? = null,
+    /**
+     * This server can turn a recording into text on request
+     * (docs/protocol.md, "Transcripts on request"). Present whenever this
+     * object is; false on a server that predates it, which is the honest
+     * answer there — "Show text" is not offered.
+     */
+    val transcribe: Boolean = false,
+    /**
+     * The largest stored recording the server will send for transcription,
+     * present only while [transcribe] is true. Absent then means the
+     * protocol's default, [DEFAULT_TRANSCRIBE_MAX_BYTES].
+     */
+    @SerialName("transcribe_max_bytes") val transcribeMaxBytes: Long? = null,
+    /**
+     * The providers the assistant may look things up in, as the server
+     * names them — `["Brave Search", "Open-Meteo", "Wikipedia"]` or
+     * `["SearXNG"]` — web search first, then weather, then Wikipedia
+     * (docs/protocol.md, "Looking things up").
+     *
+     * ABSENT, never `[]`, when the server has no source, and absent on a
+     * server that predates the field; null here for both. An empty list is
+     * read the same way, since there would be nobody to name. Shown on the
+     * consent screen and under the owner's switch, the way [processor] is.
+     */
+    val lookups: List<String>? = null,
+    /**
+     * Whether the daily greeting can carry today's forecast for the
+     * family's [FamilyDto.greetingPlaces]: true exactly when this server
+     * posts greetings AND has its weather source on (docs/protocol.md,
+     * "Today's weather, for places the owner chose"). The owner's places
+     * field is drawn only when this is true.
+     *
+     * Always present whenever this object is; false on a server that
+     * predates it, which is the honest answer there. Independent of the
+     * family's `ai_lookups` switch.
+     */
+    @SerialName("greeting_weather") val greetingWeather: Boolean = false,
+) {
+    companion object {
+        /** The protocol's default and maximum for `transcribe_max_bytes`: 25 MiB. */
+        const val DEFAULT_TRANSCRIBE_MAX_BYTES: Long = 26_214_400L
+    }
+}
+
+/**
+ * `POST …/attachments/{id}/transcript` → `{"transcript": {...}}`
+ * (docs/protocol.md, "Transcripts on request").
+ */
+@Serializable
+data class TranscriptResponse(val transcript: TranscriptDto)
+
+/**
+ * The text of one recording. [text] is always present, and `""` is an
+ * ANSWER — nothing was said — not a failure. [language] is the provider's
+ * own spelling when it names one (`ru`, or `russian`); shown at most,
+ * never relied on.
+ */
+@Serializable
+data class TranscriptDto(
+    val text: String,
+    val language: String? = null,
 )
 
 /**
@@ -1390,6 +1693,18 @@ data class AssistantConsentRequest(val granted: Boolean)
 @Serializable
 data class AssistantConsentResponse(
     @SerialName("assistant_consent_at") val assistantConsentAt: String? = null,
+)
+
+/**
+ * `POST /me/assistant-lookup-consent` answers with the lookup stamp the
+ * server now holds — a date when granted (the FIRST one, if granted twice),
+ * null when withdrawn (docs/protocol.md, "Consenting to the assistant",
+ * amended 2026-10-03). The request is [AssistantConsentRequest]: the same
+ * `{"granted": bool}`.
+ */
+@Serializable
+data class AssistantLookupConsentResponse(
+    @SerialName("assistant_lookup_consent_at") val assistantLookupConsentAt: String? = null,
 )
 
 @Serializable
@@ -1664,4 +1979,19 @@ data class AiStatsDto(
     val questions: Int = 0,
     @SerialName("prompt_tokens") val promptTokens: Int = 0,
     @SerialName("completion_tokens") val completionTokens: Int = 0,
+    /** Pictures the assistant made. 0 from a server that predates them. */
+    val images: Int = 0,
+    /**
+     * Recordings turned into text — one per provider call — which are NOT
+     * questions (docs/protocol.md, "Family statistics"). 0 from an older server.
+     */
+    val transcripts: Int = 0,
+    /** Their audio length: transcription is billed by length, not tokens. */
+    @SerialName("transcript_duration_ms") val transcriptDurationMs: Long = 0,
+    /**
+     * Paid web searches that came back with an answer, against the member
+     * who asked (docs/protocol.md, "Family statistics"). Weather and
+     * Wikipedia are free and not counted. 0 from an older server.
+     */
+    val searches: Int = 0,
 )

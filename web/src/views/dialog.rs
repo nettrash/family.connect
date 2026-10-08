@@ -155,6 +155,10 @@ pub struct ConfirmProps {
     pub message: AttrValue,
     /// The button that does it — named for what it does, never "OK".
     pub confirm: AttrValue,
+    /// The button that does not, when "Cancel" is not what it means — the
+    /// "Keep" of "Delete this recording?".
+    #[prop_or_default]
+    pub cancel: Option<AttrValue>,
     #[prop_or(true)]
     pub destructive: bool,
     #[prop_or_default]
@@ -191,7 +195,9 @@ pub fn confirm(props: &ConfirmProps) -> Html {
                 <p class="error" role="alert">{ error }</p>
             }
             <div class="dialog-actions">
-                <button class="secondary" disabled={props.busy} onclick={cancel}>{ t("Cancel") }</button>
+                <button class="secondary" disabled={props.busy} onclick={cancel}>
+                    { props.cancel.clone().unwrap_or_else(|| AttrValue::from(t("Cancel"))) }
+                </button>
                 <button
                     class={if props.destructive { "danger-button" } else { "primary" }}
                     disabled={props.busy}

@@ -117,15 +117,20 @@ jobs:
           # The Windows client's oracles are GENERATED from web/text, so a change there is a
           # change to what the C# port is held to — the fixture in win/ is only right while the
           # Rust it was printed from says the same thing, and no other job would notice.
-          if echo "$files" | grep -q -E '^web/text/'; then
-            echo "The shared text crate changed -- the Windows oracles are generated from it."
+          # The media-plan vectors, and the record and waveform vectors (issue #79), have a copy beside the iOS
+          # and Android tests as well, and the check that every copy still says what the oracle
+          # says runs in that same job — so an edit to any of those copies on its own has to run it
+          # too, or it is not a check. (The third copy of each lives under win/, which runs the job
+          # anyway.)
+          if echo "$files" | grep -q -E '^(web/text/|(ios/FamilyConnectTests/Fixtures|android/app/src/test/resources)/(media-plan|record|waveform)-vectors\.json$)'; then
+            echo "The shared text crate, or a copy of an oracle fixture, changed -- the Windows job checks them against the oracle."
             echo "win=true" >> "$GITHUB_OUTPUT"
-            web_text_changed=true
+            oracle_changed=true
           else
-            web_text_changed=false
+            oracle_changed=false
           fi
           for stack in server android ios win; do
-            if [ "$stack" = win ] && [ "$web_text_changed" = true ]; then
+            if [ "$stack" = win ] && [ "$oracle_changed" = true ]; then
               continue  # already decided above
             fi
             if echo "$files" | grep -q -E "^$stack/"; then
@@ -389,6 +394,31 @@ jobs:
             android/app/build/test-results/**
           if-no-files-found: ignore
           retention-days: 7
+
+  # Every string in every language (issue #82). Cheap — Python and rustfmt, no build — and run on
+  # EVERY push, because a string can go missing from any client and the catalogue that feeds all of
+  # them is shared: the apps' Localizable.xcstrings is also Windows' and the web's source.
+  strings:
+    name: Every string in every language
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Every literal the Apple apps show is in the catalogue, in all nine localisations.
+      - name: iOS and macOS
+        run: python3 ios/scripts/check-strings.py
+      # The Windows tables match the catalogue and win.json, and nothing is English-only that
+      # win.json does not name (CatalogueTests holds that list empty since #82).
+      - name: Windows
+        run: python3 win/i18n/generate.py . --check
+      # Nothing the web asks for is English-only or missing a language, no translation lost an
+      # argument, and the generated table is the one checked in.
+      - name: Web
+        run: python3 web/i18n/generate.py . --check
+      # The server's push sentences, in the language each device registered (docs/protocol.md, "The
+      # words of a push"): every one in all nine, from the apps' catalogue and server/i18n/push.json.
+      - name: Server push words
+        run: python3 server/i18n/generate.py . --check
 
   ios:
     name: iOS (unit tests)
@@ -734,19 +764,67 @@ jobs:
         # --check, so a stale table FAILS rather than being quietly rewritten under CI's feet.
         run: python3 win/i18n/generate.py . --check
 
-      # And the two ORACLE fixtures are printed by a Rust program that depends on web/text BY
+      # web/text is the crate every port is held to — the oracle below prints from it — and until
+      # issue #79 nothing in CI ran its own tests: the only `cargo test` in this file was the
+      # server's. It is pure Rust with no browser in it, so it runs natively in seconds, and this
+      # job already runs whenever it changes. Counted like every suite here: libtest exits 0 for a
+      # run that matched nothing. The floor is slack (430 against 477 on 2026-10-05) so that
+      # removing a test is maintenance, while losing a module is not. No `--locked`: web/.gitignore
+      # keeps Cargo.lock out of git for everything under web/, so a fresh checkout has none and
+      # `--locked` refuses to create one (exit 101) — the oracle step below resolves the same way.
+      - name: The shared text crate's own tests
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: web/text
+        run: |
+          set -o pipefail
+          cargo test 2>&1 | tee "$RUNNER_TEMP/web-text-tests.log"
+          awk '
+            /^test result:/ {
+              for (i = 1; i <= NF; i++) {
+                if ($(i+1) ~ /^passed/) p += $i
+                if ($(i+1) ~ /^failed/) f += $i
+              }
+              n++
+            }
+            END {
+              printf "targets=%d passed=%d failed=%d\n", n, p, f
+              if (f > 0)   { print "::error::" f+0 " tests failed"; exit 1 }
+              if (p < 430) { print "::error::only " p+0 " tests passed; expected ~477"; exit 1 }
+            }
+          ' "$RUNNER_TEMP/web-text-tests.log"
+
+      # And the ORACLE fixtures are printed by a Rust program that depends on web/text BY
       # PATH: "an oracle built on one machine proves nothing" (float-pow10-portability). If the
       # shared crate has moved, the fixture the C# suite is held to has to move with it, and the
       # only way to know is to print it again and look.
+      #
+      # The media-plan vectors (issue #74) and the record and waveform vectors (issue #79) are the fixtures held
+      # by three ports, so each lives in three places: beside the C# tests, in the iOS test bundle,
+      # and on Android's JVM test classpath. Each copy is compared byte for byte with a fresh print
+      # — not `git diff`, which says nothing about a copy that was never committed — and every
+      # mismatch is named before the step fails, so one run shows all of them.
       - name: The oracles still say what the fixtures say
         if: matrix.os == 'ubuntu-24.04'
         run: |
           cd win/tools/board-oracle
           cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
           cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
+          cargo run --quiet -- media-plan > "$RUNNER_TEMP/media-plan-vectors.json"
+          cargo run --quiet -- record > "$RUNNER_TEMP/record-vectors.json"
+          cargo run --quiet -- waveform > "$RUNNER_TEMP/waveform-vectors.json"
           cd ../../..
           git diff --exit-code -- win/tests/FamilyConnect.Core.Tests/Fixtures \
             || { echo "::error::the oracle fixtures are out of date -- regenerate them (win/README.md)"; exit 1; }
+          stale=0
+          for fixture in media-plan record waveform; do
+            for copy in "win/tests/FamilyConnect.Core.Tests/Fixtures/$fixture-vectors.json" \
+                        "ios/FamilyConnectTests/Fixtures/$fixture-vectors.json" \
+                        "android/app/src/test/resources/$fixture-vectors.json"; do
+              cmp -s "$RUNNER_TEMP/$fixture-vectors.json" "$copy" \
+                || { echo "::error::$copy is not what the oracle prints -- regenerate it (win/tools/board-oracle/Cargo.toml)"; stale=1; }
+            done
+          done
+          exit $stale
 
       # The WinUI app cannot build here (its XAML compiler is a .NET Framework executable), but
       # everything short of that compiler can be checked: every XAML element, attribute and handler
@@ -797,8 +875,8 @@ jobs:
       # number cannot be a date.
       #
       # Stamped into the working copy, never committed: the checked-in manifest stays at
-      # `1.1.0.0`, so a local build is visibly unstamped (Settings then says "1.1", not
-      # "1.1 (0)" — AppVersionText) and can never be mistaken for a Store build.
+      # `1.2.0.0`, so a local build is visibly unstamped (Settings then says "1.2", not
+      # "1.2 (0)" — AppVersionText) and can never be mistaken for a Store build.
       - name: Stamp the build number
         id: version
         shell: pwsh
@@ -909,11 +987,6 @@ jobs:
 #     same test is 16 for 16 green on a signed local build, so it earns its
 #     keep on a developer's machine today and here only if a signing identity
 #     is ever imported into the runner keychain.
-#   * ios/scripts/check-strings.py, which is written to be a gate and would
-#     catch strings that never reach Localizable.xcstrings. It exits 1 today
-#     (one uncatalogued and four untranslated strings), and shipping a
-#     permanently-yellow job is how a gate gets ignored. Add it once those are
-#     fixed.
 #   * assembleStandardRelease. It would cover R8 and lintVital, but AGP does
 #     not fall back to debug signing without keystore.properties (the comment
 #     at app/build.gradle.kts:163 is stale) -- it emits an unverifiable

@@ -59,6 +59,19 @@ interface ChatSocket {
     val state: StateFlow<SocketState>
 
     /**
+     * Which CONNECTION this is: a number that goes up by one every time the
+     * socket reaches [SocketState.Open], and never otherwise.
+     *
+     * Beside [state] because [state] cannot say it: a StateFlow conflates,
+     * so a drop and a reconnect between two looks read as `Open` both
+     * times. Whoever has to know that a catch-up belonged to THIS
+     * connection and not the one before it — the sticker pack's cursor
+     * (docs/protocol.md, "Sticker pack": a frame moves it "only once this
+     * connection has caught up") — compares this number instead.
+     */
+    val connectionSerial: Long
+
+    /**
      * The session this socket authenticated with is GONE — the server
      * closed with [SESSION_GONE_CLOSE_CODE], or refused the upgrade with
      * a `401` (docs/protocol.md, "WebSocket protocol").
@@ -100,6 +113,18 @@ class OkHttpChatSocket @Inject constructor(
 
     private val _state = MutableStateFlow(SocketState.Disconnected)
     override val state: StateFlow<SocketState> = _state
+
+    @Volatile
+    private var serial = 0L
+    override val connectionSerial: Long get() = serial
+
+    /** The one way to [SocketState.Open]: the state and the serial move together. */
+    private fun markOpen() {
+        synchronized(this) {
+            serial += 1
+            _state.value = SocketState.Open
+        }
+    }
 
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     override val sessionExpired: SharedFlow<Unit> = _sessionExpired
@@ -158,7 +183,7 @@ class OkHttpChatSocket @Inject constructor(
             synchronized(this@OkHttpChatSocket) {
                 if (webSocket !== this@OkHttpChatSocket.webSocket) return
                 outstandingPings = 0
-                _state.value = SocketState.Open
+                markOpen()
                 startPinging()
             }
         }
@@ -176,7 +201,7 @@ class OkHttpChatSocket @Inject constructor(
             // any frame answers a ping, not just a Pong.
             outstandingPings = 0
             synchronized(this@OkHttpChatSocket) {
-                if (_state.value == SocketState.Connecting) _state.value = SocketState.Open
+                if (_state.value == SocketState.Connecting) markOpen()
             }
             _frames.tryEmit(frame)
         }

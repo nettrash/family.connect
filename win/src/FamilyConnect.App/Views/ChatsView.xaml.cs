@@ -8,11 +8,14 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Animation = Microsoft.UI.Xaml.Media.Animation;
+using Ellipse = Microsoft.UI.Xaml.Shapes.Ellipse;
 using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
@@ -66,6 +69,36 @@ public sealed partial class ChatsView : UserControl
 
     private readonly Dictionary<string, BitmapImage> pictures = [];
 
+    /// <summary>
+    /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards, which this code also calls
+    /// stickers: the pack, the one timer that moves the animated ones, and what has been decoded so a redraw does not
+    /// decode (and flash) again — by attachment id at the conversation's size, by item id at the panel's, and by staging
+    /// handle for one still on its way.
+    /// </summary>
+    /// <remarks>
+    /// The conversation's are the only ones that MOVE, so they are the only ones with frames to account for: they sit
+    /// on a <see cref="StickerShelf{TPicture}"/>, which holds them to one budget between them, remembers a sticker
+    /// nothing here decodes, and keeps each one's clock across a redraw. The other two are still pictures at a cell's
+    /// size; a null in either is the same remembered "nothing here decodes it".
+    /// </remarks>
+    private readonly PackModel pack;
+    private readonly StickerAnimator stickers;
+    private readonly StickerShelf<StickerPicture> stickerPictures;
+    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
+    private readonly Dictionary<string, StickerPicture?> stagedStickers = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// One sticker is decoded at a time. Frames are decoded BEFORE the shelf can make room for them, so ten decodes
+    /// running side by side would hold ten stickers' frames over the budget at once — and two elements of the same
+    /// sticker (a conversation redrawn while the first was still decoding) would each decode it.
+    /// </summary>
+    private readonly SemaphoreSlim stickerDecoding = new(1, 1);
+
+    /// <summary>The sticker the viewer is showing, which nothing else keeps: given back when the viewer moves on.</summary>
+    private StickerPicture? viewerSticker;
+    private readonly Action<PackItemDto> onPack;
+    private bool sendingSticker;
+
     /// <summary>What each chat has staged for its next message, kept while the reader looks elsewhere.</summary>
     private readonly Dictionary<long, ComposerStaging> strips = [];
 
@@ -73,9 +106,76 @@ public sealed partial class ChatsView : UserControl
     private readonly ComposerDrafts drafts = new();
     private string? restoredDraft;
 
-    /// <summary>A voice note being recorded, and the clock that redraws its bar.</summary>
+    /// <summary>A voice note being recorded, the chat it belongs to — the one it was started in — and the clock that redraws its row.</summary>
     private VoiceRecorder? recorder;
+    private long recordingChat;
     private DispatcherQueueTimer? recordingTimer;
+
+    /// <summary>
+    /// Whether the recording began beside words or staged items — from the paperclip or the shortcut — so the slot is Stop and
+    /// Stop stages the note beside them (S1.3 row 3); otherwise the composer was empty and the slot is the Send arrow (row 2).
+    /// </summary>
+    private bool recordingBesideDraft;
+
+    /// <summary>
+    /// A start under way — Windows' permission prompt, a screen reader's second — so a second press starts nothing more,
+    /// nothing plays meanwhile (S1.7), and an interruption meanwhile lets go of the microphone once it is granted (S4).
+    /// </summary>
+    private readonly RecordingStart recordingStart = new();
+
+    /// <summary>"30 seconds left" said once a recording, as it is shown (S2.5).</summary>
+    private bool warnedThirtySeconds;
+
+    /// <summary>The live waveform's newest peaks, and whether it may move — not with Windows' animations off.</summary>
+    private readonly LiveLevels liveLevels = new(160);
+    private bool levelsMove;
+
+    /// <summary>The red dot's pulse while something records (S2.9), and whether the row's buttons are icons for want of room (S2.4).</summary>
+    private Animation.Storyboard? recordingPulse;
+    private bool? recordingRowNarrow;
+
+    /// <summary>
+    /// The trailing slot (S1.3, S8.6): its 600 ms guard and the press reaching it — the latest pointer's and key's, for their
+    /// ends — Ctrl+Shift+R's held-down repeats, and how the slot was drawn last, so a redraw on every keystroke changes
+    /// nothing that has not changed.
+    /// </summary>
+    private readonly SlotGuard slotGuard = new();
+    private long slotPointerPress;
+    private long slotKeyPress;
+    private readonly ShortcutPresses recordShortcut = new();
+    private int? slotGlyph;
+    private string? slotName;
+    private string? slotHelp;
+    private string? slotTooltip;
+
+    /// <summary>A finger or a pen is down on the slot, and its tooltip is taken away until it lifts (ComposerButton.TooltipDuring).</summary>
+    private bool slotTipHidden;
+    private Animation.Storyboard? slotFade;
+
+    /// <summary>How many voice messages that were not sent the open chat's rows show: the microphone's row 9 (S1.3).</summary>
+    private int notSentShown;
+
+    /// <summary>Takes the last thing said to a screen reader off the hidden status line a moment later.</summary>
+    private DispatcherQueueTimer? statusClear;
+
+    /// <summary>A recording stopped to ask "Delete this recording?", while the question is up: an interruption keeps it.</summary>
+    private AskedRecording? asking;
+
+    /// <summary>
+    /// Recordings stopped and not yet put anywhere — the moment between Stop and review, while Windows finishes the file —
+    /// which a real close waits for, so that what lands there is kept too.
+    /// </summary>
+    private readonly List<Task> settling = [];
+
+    /// <summary>The screen, kept on while something records (S1.7).</summary>
+    private readonly KeepAwake keepAwake = new();
+
+    /// <summary>
+    /// The voice messages that were not sent (docs/audio-video-messages-2026-10-04.md, S2.8) — this account's, on this
+    /// server — and whether what is recorded is still kept at all: not once the session has ended (<see cref="Detach"/>).
+    /// </summary>
+    private readonly ParkedRecordings parked;
+    private bool keepsRecordings = true;
     /// <summary>A link clicked a beat ago and waiting to open: a double click on it is the heart, which cancels it.</summary>
     private DispatcherQueueTimer? pendingLink;
     /// <summary>The album the viewer is showing, and a count that makes a load for an earlier page land nowhere.</summary>
@@ -83,17 +183,122 @@ public sealed partial class ChatsView : UserControl
     private int viewerShown;
     private long lastHeart;
 
+    /// <summary>The viewer's video, muted while something records and given back as it was (S1.7).</summary>
+    private readonly QuietWhileRecording viewerQuiet = new();
+
     /// <summary>
-    /// The one recording playing — one at a time — and the latest row drawn for each, which a redraw replaces; ended, it
-    /// sits at its end rather than looking paused at the start.
+    /// Video messages (docs/audio-video-messages-2026-10-04.md, S5): which ones this device has played — the dot's own
+    /// knowledge, kept in the cache and so this account's; whether the viewer is showing one in its circle, whether it has
+    /// played there yet, and whether it failed to load; the clock that keeps the circle's bar up to date and a guard for the
+    /// bar moving itself; the backdrop the viewer had before it went solid; and the posters of the reader's own circles
+    /// still on their way, by staging handle.
+    /// </summary>
+    private readonly PlayedRoundStore playedRounds;
+    private bool viewerRound;
+    private bool viewerRoundPlayed;
+    private bool viewerRoundStarted; // this opening has seen it playing: half of being played through (S5.3)
+    private bool viewerRoundFailed;
+    private bool movingRoundSeek;
+    private DispatcherQueueTimer? viewerRoundClock;
+    private Brush? viewerBackdrop;
+    private readonly Dictionary<string, BitmapImage?> stagedPosters = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// What each send on its way that carries one staged file turned out to be, read once from this device's own staging: a
+    /// voice note's shape and length — drawn as the bubble it will be — or null for anything else.
+    /// </summary>
+    private readonly Dictionary<string, PendingVoice?> stagedVoices = new(StringComparer.Ordinal);
+
+    /// <summary>A voice note on its way, as its staging has it: the waveform measured from it and its length.</summary>
+    private sealed record PendingVoice(string? Waveform, int? DurationMs);
+
+    /// <summary>The default output device changing — headphones pulled, a headset gone — which pauses what plays (S4).</summary>
+    private readonly Windows.Foundation.TypedEventHandler<object, Windows.Media.Devices.DefaultAudioRenderDeviceChangedEventArgs> onOutputChanged;
+
+    /// <summary>
+    /// Recording a video message (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3; Windows Phase 3d): where the window
+    /// lets the recorder lie and how it covers itself while it does, the recorder while it is open, whether this machine has a
+    /// camera (asked only where a video message could be recorded at all), the video button's own 600 ms guard, the field's
+    /// trailing room the button takes in it, a chat a notification asked for while the recorder was up, and the session
+    /// change that brings the server's limits. Every way in is drawn only where <see cref="RoundVideoRules.Available"/> —
+    /// never while <see cref="RoundVideoRules.RecordingEnabled"/> is off.
+    /// </summary>
+    private Grid? recorderHost;
+    private Action<bool>? coverWindow;
+    private Action? recorderClosed;
+    private RoundRecorderLayer? roundRecorder;
+    private bool hasCamera;
+    private bool askingForCamera;
+    private readonly DoorGuard doorGuard = new();
+    private bool fieldPadded;
+    private long? chatAfterRecorder;
+    private readonly Action<SessionState> onSession;
+
+    /// <summary>
+    /// The one recording playing — one at a time — and EVERY copy drawn of each (the conversation's and the thread panel's
+    /// bubble of the same note), each added as it is drawn and dropped as it leaves the screen; ended, it sits at its end
+    /// rather than looking paused at the start.
     /// </summary>
     private readonly Windows.Media.Playback.MediaPlayer audio = new();
-    private readonly Dictionary<long, AudioRow> audioRows = new();
+    private readonly DrawnCopies<long, AudioRow> audioRows = new();
     private long? playingAudio;
+
+    /// <summary>
+    /// The one VIDEO MESSAGE playing in place (S5.3): its machine, its frame-server player, EVERY copy drawn of each circle,
+    /// the copies whose brush has been handed the player's frames (each given its poster back before the player goes), and
+    /// whether this machine's frame server has failed — after which every circle opens the viewer instead.
+    /// </summary>
+    private readonly RoundPlayback roundPlayback = new();
+    private readonly DrawnCopies<long, RoundCopy> roundCopies = new();
+    private readonly List<RoundCopy> roundShowing = [];
+    private RoundFramePlayer? roundEngine;
+    private AttachmentDto? roundVideo;
+    private DispatcherQueueTimer? roundClock;
+    private bool roundReducedMotion;
+    private bool roundFallback;
+
+    /// <summary>
+    /// Voice messages (the approved design of 2026-10-05): which ones this device has played — the dot's own knowledge, kept
+    /// in the cache and so this account's — and the speed chosen on this device, 1×, 1.5× or 2×.
+    /// </summary>
+    private readonly PlayedVoiceStore playedVoice;
+    private double voiceRate = VoiceSpeedSetting.Rate;
+
+    /// <summary>The rate last asked of the player — given again once a new source has OPENED, which may reset it to 1×.</summary>
+    private double playerRate = 1.0;
+
+    /// <summary>
+    /// Where each idle bubble's waveform was SEEKED to (it shows that much lit and that time, and Play starts there), and where
+    /// the note just started is to begin once the player has opened it.
+    /// </summary>
+    private readonly Dictionary<long, double> seekedAudio = new();
+    private double? startAudioAt;
     private long fetchingAudio;
     private bool audioAtEnd;
     private bool movingTrack;
     private bool scrubbingAudio;
+
+    /// <summary>
+    /// A voice note playing from THIS DEVICE — a staged one (S2.7) or one that was not sent (S2.8) — through the same one
+    /// player, so it is never beside a bubble's recording; the rows drawn for them, by the note itself and by the not-sent
+    /// entry's id; and a count that makes a read for an earlier press land nowhere.
+    /// </summary>
+    private StagedMedia? playingStaged;
+    private string? playingParked;
+    private int fetchingLocal;
+    private readonly Dictionary<StagedMedia, LocalRow> stagedRows = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<string, LocalRow> parkedRows = new(StringComparer.Ordinal);
+
+    /// <summary>The waveforms of voice messages that were not sent, measured from their bytes once per run; null while measuring or when none could be.</summary>
+    private readonly Dictionary<string, string?> parkedShapes = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The place under each drawn recording where its text goes (docs/protocol.md, "Transcripts on request"), by
+    /// attachment — every one on screen, since the conversation and the thread panel can both draw the same recording —
+    /// and what tells this view that one of them changed. What is SHOWN is the model's, so a redraw draws it again.
+    /// </summary>
+    private readonly Dictionary<long, List<TranscriptHost>> transcriptHosts = [];
+    private readonly Action<long> onTranscript;
 
     /// <summary>A place being shared: the whole flow (one at a time), the part spent looking, and what ends that look.</summary>
     private bool locating;
@@ -116,6 +321,9 @@ public sealed partial class ChatsView : UserControl
 
     /// <summary>Whether a call is on — the window's to say — and where a call this chat asks for goes.</summary>
     private bool callBusy;
+
+    /// <summary>The call records' "Call back" links drawn in the conversation, switched off with the toolbar's call buttons.</summary>
+    private readonly List<HyperlinkButton> callBackLinks = [];
 
     internal event Action<long, long, bool>? CallRequested;
     private bool sendingMedia;
@@ -152,23 +360,73 @@ public sealed partial class ChatsView : UserControl
         this.services = services;
         this.connection = connection;
         InitializeComponent();
+        if (RoundCrashMark.DiedLastTime())
+        {
+            // This very build ended the app playing a circle in place: its circles open the viewer (RoundCrashGuard).
+            roundFallback = true;
+            Diagnostics.Write("round: this build ended the app playing a circle in place last time; circles open the viewer");
+        }
         faces = new AvatarFaces(connection);
+        pack = connection.Stickers;
+        stickers = new StickerAnimator(DispatcherQueue);
+        stickerPictures = new StickerShelf<StickerPicture>(
+            StickerAnimation.MaxHeldBytes, StickerAnimation.MaxKept,
+            stickers.IsShowing, stickers.MakeStill, stickers.Release);
         var say = services.Say;
         list = new ChatListModel(connection.Chats, () => connection.Session.State.Me?.Id ?? 0, say);
         typing = new TypingRoster(connection.Chats, words: say);
+        // The account is known by now: the chats are drawn only for a member, and `GET /me` said who that is.
+        parked = ParkedRecordings.For(AppFolders.ParkedPath, connection.Server, connection.Session.State.Me?.Id ?? 0);
+        try
+        {
+            // What a crash left half-written is no recording: it goes, and nothing an entry names does.
+            parked.Sweep();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sweeping voice messages that were not sent: {e.GetType().Name}");
+        }
+        playedRounds = new PlayedRoundStore(connection.Cache);
+        playedVoice = new PlayedVoiceStore(connection.Cache);
 
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
-        SendButton.Content = say.Get("Send");
         ComposerBox.PlaceholderText = say.Get("Message");
-        ToolTipService.SetToolTip(AttachButton, say.Get("Attach"));
-        AutomationProperties.SetName(AttachButton, say.Get("Attach"));
+        ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
+        AutomationProperties.SetName(AttachButton, say.Get("Attach a photo, video or file"));
         OpenPollsText.Text = say.Get("Open polls");
 
         ChatList.SelectionChanged += OnChatPicked;
-        SendButton.Click += (_, _) => Send();
-        ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync();
+        WireSlot();
+        AutomationProperties.SetName(VideoDoorButton, say.Get("Record video message"));
+        ToolTipService.SetToolTip(VideoDoorButton, say.Get("Record a video message"));
+        VideoDoorButton.Click += (_, _) => OnVideoDoorClick();
+        // The server's video-message limits arrive with the family's own document, after the chats are drawn.
+        onSession = _ => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                LearnCamera();
+                DrawSlot();
+            }
+        });
+        connection.Session.Changed += onSession;
+        ConsentReview.Click += (_, _) => _ = ReviewAssistantConsentAsync(Send);
         AttachButton.Click += (_, _) => ShowAttachMenu();
+        ToolTipService.SetToolTip(StickerButton, say.Get("Stickers"));
+        AutomationProperties.SetName(StickerButton, say.Get("Stickers"));
+        StickerButton.Click += (_, _) => ShowStickerPanel(StickerButton, inThread: null);
+        ToolTipService.SetToolTip(ThreadStickerButton, say.Get("Stickers"));
+        AutomationProperties.SetName(ThreadStickerButton, say.Get("Stickers"));
+        ThreadStickerButton.Click += (_, _) =>
+        {
+            if (thread is { } chain)
+            {
+                ShowStickerPanel(ThreadStickerButton, chain);
+            }
+        };
+        ViewerAddSticker.Content = say.Get("Add to family stickers");
+        ViewerAddSticker.Click += (_, _) => _ = AddViewedStickerAsync();
         AskAssistantButton.Content = "✨";
         AskPictureButton.Content = "🎨";
         ToolTipService.SetToolTip(AskAssistantButton, say.Get("Ask the assistant"));
@@ -177,6 +435,7 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(AskPictureButton, say.Get("Ask for a picture"));
         AskAssistantButton.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
         AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
+        PictureHintText.Text = PictureHint.Sentence(say);
 
         ViewerSave.Content = say.Get("Save…");
         ToolTipService.SetToolTip(ViewerSave, say.Get("Save a copy"));
@@ -216,6 +475,46 @@ public sealed partial class ChatsView : UserControl
         };
         ViewerScroller.SizeChanged += (_, _) => FitViewerImage();
         ViewerOverlay.PreviewKeyDown += OnViewerKey;
+        // A video message's own controls under its circle (S5.3, S5.4): play and pause, and scrubbing.
+        ViewerRoundPlay.Click += (_, _) => ToggleViewerRound();
+        // A click on the circle itself plays and pauses it, as the design's tile does: the play disc fades as it goes.
+        ViewerVideo.Tapped += (_, e) =>
+        {
+            if (viewerRound && !viewerRoundFailed)
+            {
+                e.Handled = true;
+                ToggleViewerRound();
+            }
+        };
+        AutomationProperties.SetName(ViewerRoundSeek, say.Get("Position"));
+        ViewerRoundSeek.ValueChanged += (_, e) =>
+        {
+            if (movingRoundSeek || !viewerRound)
+            {
+                return;
+            }
+            try
+            {
+                if (ViewerVideo.MediaPlayer is { } player)
+                {
+                    player.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue);
+                }
+            }
+            catch (Exception failure)
+            {
+                Diagnostics.Write($"moving a video message: {failure.GetType().Name}");
+            }
+        };
+        ViewerRoundRetryText.Text = say.Get("Couldn't load the video. Tap to try again.");
+        AutomationProperties.SetName(ViewerRoundRetry, say.Get("Couldn't load the video. Tap to try again."));
+        ViewerRoundRetry.Click += (_, _) => ShowViewerItem();
+        ViewerOverlay.SizeChanged += (_, _) =>
+        {
+            if (viewerRound)
+            {
+                SizeViewerRound();
+            }
+        };
         OpenPollsButton.Click += (_, _) => _ = ShowOpenPollsAsync();
         ComposerPanel.DragOver += OnDragOver;
         ComposerPanel.Drop += OnDrop;
@@ -234,14 +533,31 @@ public sealed partial class ChatsView : UserControl
             activeName = 0;
             DrawSuggestions();
             DrawPictureNotice();
+            // Words the person typed, deleted or pasted lift the slot's guard (S1.1, fc_text::record's OtherAction).
+            slotGuard.TextChanged(ComposerBox.Text, recording: recorder is not null);
+            // The first character makes the microphone Send, and the last one deleted makes it the microphone again.
+            DrawSlot();
         };
         MessageScroller.ViewChanged += OnScrolled;
         JumpButton.Click += (_, _) => JumpToNewest();
-        RecordingStop.Content = say.Get("Stop");
-        RecordingCancel.Content = say.Get("Cancel");
-        RecordingStop.Click += (_, _) => _ = StopRecordingAsync();
-        RecordingCancel.Click += (_, _) => CancelRecording();
+        // The recording row's own buttons (S2.4): real buttons, named for what they do to the recording (S6).
+        ToolTipService.SetToolTip(RecordingDelete, say.Get("Delete recording"));
+        AutomationProperties.SetName(RecordingDelete, say.Get("Delete recording"));
+        ToolTipService.SetToolTip(RecordingStop, say.Get("Stop recording"));
+        AutomationProperties.SetName(RecordingStop, say.Get("Stop recording"));
+        RecordingStop.Click += (_, _) => _ = EndRecordingAsync(RecordingEnd.Stopped);
+        RecordingDelete.Click += (_, _) => _ = DeleteRecordingAsync();
+        RecordingRow.SizeChanged += (_, _) => FitRecordingRow();
         LocationText.Text = say.Get("Finding your location…");
+        PreparingText.Text = say.Get("Preparing…");
+        PreparingCancel.Content = say.Get("Cancel");
+        PreparingCancel.Click += (_, _) =>
+        {
+            if (open is { } chat)
+            {
+                Staging(chat.ChatId).CancelPreparing();
+            }
+        };
         ThreadTitle.Text = say.Get("Thread");
         ThreadSend.Content = say.Get("Send");
         ThreadComposer.PlaceholderText = say.Get("Reply in thread");
@@ -275,6 +591,18 @@ public sealed partial class ChatsView : UserControl
         {
             if (!gone)
             {
+                if (recordingStart.Quiet(recorder is not null) && AudioRunning)
+                {
+                    // No app sound while something records (S1.7) — not even one the system's media keys start: every press
+                    // here is refused, and this is what a key outside the app reaches.
+                    audio.Pause();
+                }
+                if (AudioRunning)
+                {
+                    // One thing plays at a time (S5.3): a voice note starting — from its bubble, its review chip, a media
+                    // key — pauses a circle playing in place.
+                    YieldRound();
+                }
                 ShowPlayback();
             }
         });
@@ -285,6 +613,53 @@ public sealed partial class ChatsView : UserControl
                 AudioEnded();
             }
         });
+        // A new source may come up at 1× whatever was set before it opened: the speed is given again once it has, and a
+        // bubble seeked while idle starts where it was put.
+        audio.MediaOpened += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (gone)
+            {
+                return;
+            }
+            ApplyRate(playerRate);
+            if (startAudioAt is { } at && playingAudio is not null)
+            {
+                startAudioAt = null;
+                try
+                {
+                    audio.PlaybackSession.Position = TimeSpan.FromSeconds(at);
+                }
+                catch (Exception e)
+                {
+                    Diagnostics.Write($"starting a recording part way: {e.GetType().Name}");
+                }
+                ShowPlayback();
+            }
+        });
+        // Headphones pulled or a headset gone: what was playing in the ear must not carry on out of the speakers (S4). Raised on
+        // a thread of its own, and only the default role's device is the one this app plays through.
+        onOutputChanged = (_, args) =>
+        {
+            if (args.Role != Windows.Media.Devices.AudioDeviceRole.Default)
+            {
+                return;
+            }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!gone)
+                {
+                    PausePlayback(PlaybackEvent.OutputChanged);
+                }
+            });
+        };
+        try
+        {
+            Windows.Media.Devices.MediaDevice.DefaultAudioRenderDeviceChanged += onOutputChanged;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"listening for the output device: {e.GetType().Name}");
+        }
         ToolTipService.SetToolTip(JumpButton, say.Get("Jump to the newest message"));
         AutomationProperties.SetName(JumpButton, say.Get("Jump to the newest message"));
 
@@ -302,15 +677,48 @@ public sealed partial class ChatsView : UserControl
             typing.Heard(chatId, userId);
             DispatcherQueue.TryEnqueue(ShowTyping);
         };
-        onResync = _ => QueueRedraw();
+        onResync = report =>
+        {
+            if (report.FlagsRepaired > 0)
+            {
+                // Stickers and circles an older build cached as plain photos and videos, read again (schema step 8): the one
+                // line that says, in the owner's log, that the cache was not as empty as it looked.
+                Diagnostics.Write($"resync: {report.FlagsRepaired} cached sticker/video-message set(s) repaired");
+            }
+            QueueRedraw();
+        };
         onLink = link => DispatcherQueue.TryEnqueue(() => ShowLink(link));
         onRefused = (_, _) => QueueRedraw();
         // A peer's read marker and an answer mid-stream live outside the cache; they redraw all the same.
         onMarks = _ => QueueRedraw();
         connection.PeerReads.Changed += onMarks;
         connection.Answers.Changed += onMarks;
+        // A pack frame changes no conversation — a sent sticker is its own copy — but it can be what makes the button
+        // appear, and an item it removed must not be drawn from a stale thumbnail if its id ever came back.
+        onPack = item => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (gone)
+            {
+                return;
+            }
+            if (item.Deleted)
+            {
+                stickerThumbs.Remove(item.Id);
+            }
+            ShowStickerButton();
+        });
+        connection.Router.PackChanged += onPack;
         onPreviews = QueueRedraw;
         connection.Previews.Landed += onPreviews;
+        // A recording's text changed on its own clock — asked, answered, folded — and only its place under the player redraws.
+        onTranscript = attachmentId => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!gone)
+            {
+                DrawTranscripts(attachmentId);
+            }
+        });
+        connection.Transcripts.Changed += onTranscript;
         LinkPreviewSetting.Changed += onPreviews;
         MapPreviewSetting.Changed += onPreviews;
         connection.Router.Arrived += onArrived;
@@ -334,11 +742,23 @@ public sealed partial class ChatsView : UserControl
         Redraw();
     }
 
-    /// <summary>The window is going away from this connection: stop listening to it.</summary>
-    internal void Detach()
+    /// <summary>
+    /// The window is going away from this connection: stop listening to it. <paramref name="keep"/> is false when the
+    /// session itself ended — signed out, expired, the family left — which takes everything recorded and not sent with it
+    /// (S4's last row); otherwise, the window closing or another server, what is being recorded waits as "not sent".
+    /// </summary>
+    internal void Detach(bool keep)
     {
         typingTimer.Stop();
         pictures.Clear();
+        stickers.Stop();
+        // After the stop, so nothing is "showing" and every frame is given back rather than left to a finalizer.
+        ForgetViewerSticker();
+        stickerPictures.Clear();
+        stickerThumbs.Clear();
+        stagedStickers.Clear();
+        connection.Session.Changed -= onSession;
+        connection.Router.PackChanged -= onPack;
         connection.Router.Arrived -= onArrived;
         connection.Router.Edited -= onEdited;
         connection.Router.ChatChanged -= onChat;
@@ -352,15 +772,41 @@ public sealed partial class ChatsView : UserControl
         connection.PeerReads.Changed -= onMarks;
         connection.Answers.Changed -= onMarks;
         connection.Previews.Landed -= onPreviews;
+        connection.Transcripts.Changed -= onTranscript;
+        transcriptHosts.Clear();
         LinkPreviewSetting.Changed -= onPreviews;
         MapPreviewSetting.Changed -= onPreviews;
-        // A microphone nothing can reach is a microphone left on.
-        CancelRecording();
+        // A microphone nothing can reach is a microphone left on — let go of NOW, whatever becomes of what it recorded.
+        if (!keep)
+        {
+            keepsRecordings = false;
+        }
+        _ = Interrupt(keep ? RecordingEnd.WindowClosed : RecordingEnd.SignedOut);
+        if (!keep)
+        {
+            WipeParked();
+        }
         recordingTimer?.Stop();
+        keepAwake.Release();
         pendingLink?.Stop();
         pendingLink = null;
         StopAudio();
+        try
+        {
+            Windows.Media.Devices.MediaDevice.DefaultAudioRenderDeviceChanged -= onOutputChanged;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"letting go of the output device: {e.GetType().Name}");
+        }
+        stagedPosters.Clear();
+        stagedVoices.Clear();
         locationHunt?.Cancel();
+        // A transcode nobody is waiting for any more is minutes of an encoder for nothing: every chat's is called off.
+        foreach (var strip in strips.Values)
+        {
+            strip.CancelPreparing();
+        }
         CloseViewer();
         thread = null;
         // Gone BEFORE the player goes: a playback event already queued finds a view with nothing left to draw into.
@@ -373,6 +819,12 @@ public sealed partial class ChatsView : UserControl
     {
         if (open?.ChatId == chatId)
         {
+            return;
+        }
+        if (RecorderOpen)
+        {
+            // The recorder covers the window: the chat a notification named opens once it closes (S4).
+            chatAfterRecorder = chatId;
             return;
         }
         // The list is drawn again so the row the notification named is the one selected.
@@ -398,7 +850,12 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>The window came to the front: what is on screen may now count as read.</summary>
-    internal void ReaderReturned() => _ = ReportReadAsync();
+    internal void ReaderReturned()
+    {
+        _ = ReportReadAsync();
+        // A webcam plugged in while the window was behind others.
+        LearnCamera(again: true);
+    }
 
     private long Reader => connection.Chats.Reader;
 
@@ -450,6 +907,56 @@ public sealed partial class ChatsView : UserControl
         var (ask, picture) = AssistantButtons.Offered(kind, connection.Session.State.Assistant, editing is not null);
         AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
         AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
+        ShowStickerButton();
+        DrawPictureHint();
+    }
+
+    /// <summary>
+    /// The line under a picture request that says what the images model refuses (<see cref="PictureHint"/>): drawn with the
+    /// draft, and told to a screen reader as it appears — the member is typing, not looking for it — and as the composer's
+    /// help text for as long as it stands.
+    /// </summary>
+    private void DrawPictureHint()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var shown = PictureHint.ForComposer(kind, ComposerBox.Text, connection.Session.State.Assistant, editing is not null);
+        var appearing = shown && PictureHintText.Visibility != Visibility.Visible;
+        PictureHintText.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetHelpText(ComposerBox, shown ? PictureHintText.Text : string.Empty);
+        if (!appearing)
+        {
+            return;
+        }
+        try
+        {
+            FrameworkElementAutomationPeer.FromElement(PictureHintText)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+        catch (Exception e)
+        {
+            // An announcement is a courtesy: the line is on the screen and in the composer's help text either way.
+            Diagnostics.Write($"announcing the picture hint: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The sticker buttons: on a server that has packs (one that predates them names no ceilings, and is offered nothing
+    /// rather than a 404), in EVERY chat a message can be sent in — the family chat, a one-to-one chat, the assistant's
+    /// chat — and by the thread's composer wherever that composer can send (<see cref="PackSending"/>). Not while a
+    /// message is being edited: a sticker is its own message and an edit is somebody else's.
+    /// </summary>
+    /// <remarks>
+    /// IN THE ASSISTANT'S OWN CHAT TOO. To the assistant a sticker is a photo, so the one click that sends it is asked
+    /// about exactly as the Send button is there (<see cref="SendStickerAsync"/>) — through the consent question, never
+    /// around it.
+    /// </remarks>
+    private void ShowStickerButton()
+    {
+        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var offered = PackSending.Offered(kind, editing is not null, pack.Offered);
+        StickerButton.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
+        // The thread's composer is enabled exactly when there is a root to answer (DrawThread).
+        var inThread = PackSending.OfferedInThread(thread is not null && ThreadComposer.IsEnabled, pack.Offered);
+        ThreadStickerButton.Visibility = inThread ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
@@ -651,14 +1158,16 @@ public sealed partial class ChatsView : UserControl
 
     private async Task OpenAsync(long chatId)
     {
+        // Leaving: a recording belongs to the chat it was started in, and waits there as "not sent" — and so does a voice
+        // note still in review, taking the words in the field as its caption (S2.8, S4). BEFORE the draft is kept, so the
+        // words are not kept twice.
+        _ = Interrupt(RecordingEnd.LeftChat);
         if (open is { } leaving && editing is null)
         {
             // Half a thought stays with the chat it was written in.
             drafts.Save(leaving.ChatId, ComposerBox.Text);
         }
-        // A recording belongs to the chat it was started in, one playing goes quiet with its bubble, and a place being
-        // found was asked for there.
-        CancelRecording();
+        // One playing goes quiet with its bubble, and a place being found was asked for there.
         StopAudio();
         locationHunt?.Cancel();
         // What was being looked at belongs to the chat it came from.
@@ -682,6 +1191,7 @@ public sealed partial class ChatsView : UserControl
             ComposerBox.SelectionStart = draft.Length;
         }
         DrawStaging();
+        DrawNotSent();
         ComposerError.Visibility = Visibility.Collapsed;
         var held = connection.Chats.Chat(chatId);
         ConversationTitle.Text = held is { } row ? list.Title(row.Chat) : string.Empty;
@@ -724,6 +1234,7 @@ public sealed partial class ChatsView : UserControl
         if (open is not { } chat)
         {
             MessageStack.Children.Clear();
+            callBackLinks.Clear();
             conversationDrawn = string.Empty;
             return;
         }
@@ -731,6 +1242,7 @@ public sealed partial class ChatsView : UserControl
         var pending = chat.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq, bubble.Reads,
+            BubbleRules.MediaMark(bubble.Message),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn += Row + string.Join(Row, pending.Select(row => string.Join(Field, row.ClientMsgId, row.Failed)));
@@ -750,6 +1262,7 @@ public sealed partial class ChatsView : UserControl
         conversationDrawn = drawn;
         MessageStack.Children.Clear();
         balloons.Clear();
+        callBackLinks.Clear();
         if (bubbles.Count == 0 && pending.Count == 0)
         {
             MessageStack.Children.Add(new TextBlock
@@ -911,8 +1424,27 @@ public sealed partial class ChatsView : UserControl
         // The body as drawn: an answer still being written shows what has streamed so far.
         var body = connection.Answers.BodyOf(message);
         var awaited = BubbleRules.Awaited(message, body, Reader, assistantChat, assistantId);
-        var failed = connection.Answers.Failed(message);
+        // What a failed answer says, remembered with the failure: the provider's refusal, or "ask again".
+        var failure = connection.Answers.FailureSentence(message, say);
+        var failed = failure is not null;
         var shown = bubble with { Message = message with { Body = body } };
+        // A STICKER (docs/protocol.md, "How it is drawn"): one flagged photo and no words. A message from before stickers,
+        // or from a server that ignores the flag, is not one, and is drawn as the photo in a balloon it always was.
+        var sticker = bubble.Reads ? message.StickerPicture : null;
+        if (!bubble.Reads && message.StickerPicture is { } unseen)
+        {
+            // A HIDDEN ROW STILL FETCHES, AND DRAWS NONE OF IT (docs/protocol.md, "Blocking a member"): the bytes a
+            // visible sticker would have asked for are asked for here too, on the same schedule, and kept for the reveal.
+            _ = FetchHiddenStickerAsync(unseen);
+        }
+        // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; S5.1): one flagged video, drawn as a circle with no balloon.
+        // Anything else — two attachments, an old server that ignores the flag — is the ordinary message it otherwise is.
+        var round = bubble.Reads && sticker is null ? message.RoundVideo : null;
+        if (!bubble.Reads && message.RoundVideo is { } unseenRound)
+        {
+            // The same rule for a circle: its poster — all a visible one fetches — is fetched and drawn nowhere.
+            _ = FetchHiddenPosterAsync(unseenRound);
+        }
         // One to four emoji and nothing else: drawn large and bare — the apps' ladder, scaled to this window's 14-pixel body.
         var emojiSize = !awaited && bubble.Reads && message.Call is null && message.Poll is null && message.Media.Count == 0 && message.ReplyTo is null
             ? Emoji.DisplayFontSizeForBody(body, 14)
@@ -951,16 +1483,40 @@ public sealed partial class ChatsView : UserControl
             : chat.QuoteRevealed(message.Id, level);
         if (bubble.Reads && Quotes.Of(message, connection.Chats, say, Revealed) is { } quote)
         {
-            stack.Children.Add(QuoteElement(quote, mine, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
+            // Over a sticker there is no balloon for the quote to sit on, so it is tinted for the window's own ground —
+            // the reader's white-on-accent quote would be white on nothing.
+            stack.Children.Add(QuoteElement(quote, mine && sticker is null && round is null, say, () => QuoteClicked(chat, inThread, message.Id, quote)));
         }
-        if (bubble.Reads && message.Media.Count > 0)
+        if (sticker is not null)
         {
-            stack.Children.Add(MediaElement(message, mine));
+            stack.Children.Add(StickerElement(sticker));
+        }
+        else if (round is not null)
+        {
+            stack.Children.Add(RoundVideoElement(round, mine, () =>
+            {
+                CancelLinkForHeart();
+                _ = ActAsync(() => React(chat, inThread, message.Id, Reactions.DoubleTap));
+            }));
+            // "Show text" under the circle, outside its gestures (S5.5) — the sticker's branch has no footer, so this one
+            // adds its own — in the ink that reads on the chat background, since there is no balloon under it.
+            if (TranscriptPanel(round, mine: false, message, kind) is { } text)
+            {
+                if (mine)
+                {
+                    text.HorizontalAlignment = HorizontalAlignment.Right;
+                }
+                stack.Children.Add(text);
+            }
+        }
+        else if (bubble.Reads && message.Media.Count > 0)
+        {
+            stack.Children.Add(MediaElement(message, mine, kind));
         }
         var words = new TextBlock
         {
             // An answer not written yet is a cursor, not a blank bubble — or says it stopped.
-            Text = awaited ? (failed ? say.Get("Couldn't answer that. Ask again.") : "▍") : BubbleText.Words(shown, list, say),
+            Text = awaited ? (failure ?? "▍") : BubbleText.Words(shown, list, say),
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = bubble.Reads && !awaited,
             FontStyle = bubble.Reads && !(awaited && failed) ? Windows.UI.Text.FontStyle.Normal : Windows.UI.Text.FontStyle.Italic,
@@ -986,12 +1542,12 @@ public sealed partial class ChatsView : UserControl
         {
             stack.Children.Add(laidOut ?? words);
         }
-        if (bubble.Reads && !awaited && failed)
+        if (bubble.Reads && !awaited && failure is { } stoppedPartWay)
         {
             // It stopped part-way: what arrived stays, and the row says so.
             stack.Children.Add(new TextBlock
             {
-                Text = say.Get("Couldn't answer that. Ask again."),
+                Text = stoppedPartWay,
                 FontSize = 12,
                 FontStyle = Windows.UI.Text.FontStyle.Italic,
                 TextWrapping = TextWrapping.Wrap,
@@ -1002,7 +1558,7 @@ public sealed partial class ChatsView : UserControl
         // exactly what a visible one would and draws none of it (docs/protocol.md, "A hidden row still fetches") — and drawn
         // once its fetch has landed, never as a placeholder that would grow the bubble twice.
         if (!awaited && message.Call is null
-            && BubbleBody.PreviewLink(body, emojiOnly: emojiSize is not null) is { } previewLink
+            && PreviewLinkOf(message, body, emojiOnly: emojiSize is not null) is { } previewLink
             && connection.Previews.State(previewLink) is { Status: PreviewStatus.Loaded, Preview: { } preview }
             && bubble.Reads)
         {
@@ -1020,7 +1576,9 @@ public sealed partial class ChatsView : UserControl
 
         // Nothing but photos and videos, and nothing above them: the pictures ARE the message, and draw without a balloon — as
         // do a few emoji, which are themselves.
-        var bare = emojiSize is not null || (bubble.Reads
+        // A sticker has NO BUBBLE, a reply or not: the picture alone, its transparency showing the chat behind it. Nor has a
+        // video message: the circle alone on the chat background (S5.2).
+        var bare = emojiSize is not null || sticker is not null || round is not null || (bubble.Reads
             && !awaited
             && body.Length == 0
             && message.ReplyTo is null
@@ -1480,27 +2038,150 @@ public sealed partial class ChatsView : UserControl
         flyout.ShowAt(anchor);
     }
 
+    /// <summary>
+    /// A message's menu, in the order <see cref="MessageMenu.Actions"/> gives — then Safety. A voice or video message offers
+    /// what does something for a recording (the approved design of 2026-10-05): the reactions first, Reply, Show text where it
+    /// can be asked for, Playback speed for a voice message, Save…, Open Full Screen for a video message — and no Copy or
+    /// Edit, because there is no text. Every other message's menu is what it always was.
+    /// </summary>
     private MenuFlyout MenuFor(ConversationModel chat, Bubble bubble, bool assistantChat, long? assistantId, FrameworkElement anchor, ThreadModel? inThread = null)
+    {
+        var menu = new MenuFlyout();
+        FillMenu(menu, chat, bubble, assistantChat, assistantId, anchor, inThread);
+        // Filled again as it opens: whether "Show text" can be asked, and whether it would show or hide, is decided then —
+        // the place for a recording's text is registered only once it is on screen, after this menu was made.
+        menu.Opening += (_, _) => FillMenu(menu, chat, bubble, assistantChat, assistantId, anchor, inThread);
+        return menu;
+    }
+
+    private void FillMenu(MenuFlyout menu, ConversationModel chat, Bubble bubble, bool assistantChat, long? assistantId, FrameworkElement anchor, ThreadModel? inThread)
     {
         var say = services.Say;
         var message = bubble.Message;
-        var menu = new MenuFlyout();
-
-        var reply = new MenuFlyoutItem { Text = say.Get("Reply") };
-        // On the thread's panel a reply is its composer: whatever the row, a send from there answers the root.
-        reply.Click += (_, _) =>
+        menu.Items.Clear();
+        var recording = MessageMenu.Recording(message) is not null ? message.Media[0] : null;
+        var textHost = recording is not null && transcriptHosts.TryGetValue(recording.Id, out var hosts) && hosts.Count > 0
+            ? hosts[0]
+            : null;
+        var actions = MessageMenu.Actions(
+            message, ConversationModel.MayEdit(bubble), inThread is not null, offersText: textHost is not null);
+        foreach (var action in actions)
         {
-            if (inThread is not null)
+            switch (action)
             {
-                ThreadComposer.Focus(FocusState.Programmatic);
+                case MessageAction.Reply:
+                {
+                    var reply = new MenuFlyoutItem { Text = say.Get("Reply") };
+                    // On the thread's panel a reply is its composer: whatever the row, a send from there answers the root.
+                    reply.Click += (_, _) =>
+                    {
+                        if (inThread is not null)
+                        {
+                            ThreadComposer.Focus(FocusState.Programmatic);
+                        }
+                        else
+                        {
+                            StartReply(message);
+                        }
+                    };
+                    menu.Items.Add(reply);
+                    break;
+                }
+                case MessageAction.React:
+                    menu.Items.Add(ReactItem(chat, message, anchor, inThread));
+                    break;
+                case MessageAction.ShowText when textHost is not null
+                                                 && MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) is not TextItem.None:
+                {
+                    // "Show text" — or "Hide text" while it is shown — offered exactly where the words under the recording offer
+                    // it: not while it is being asked for, nor after a failure the row offers no "Try Again" for.
+                    var open = MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) == TextItem.Hide;
+                    var text = new MenuFlyoutItem { Text = say.Get(open ? "Hide text" : "Show text") };
+                    text.Click += (_, _) =>
+                    {
+                        if (open)
+                        {
+                            connection.Transcripts.Hide(textHost.Attachment.Id);
+                        }
+                        else
+                        {
+                            _ = AskTranscriptAsync(textHost);
+                        }
+                    };
+                    menu.Items.Add(text);
+                    break;
+                }
+                case MessageAction.PlaybackSpeed:
+                {
+                    // The device's one speed, the current one checked: what the chip on a playing bubble goes round.
+                    var speed = new MenuFlyoutSubItem { Text = say.Get("Playback speed") };
+                    foreach (var rate in VoiceSpeed.Rates)
+                    {
+                        var item = new RadioMenuFlyoutItem
+                        {
+                            Text = VoiceSpeed.Label(rate, say),
+                            GroupName = "voice-speed",
+                            IsChecked = rate == voiceRate,
+                        };
+                        var chosen = rate;
+                        item.Click += (_, _) => SetVoiceRate(chosen);
+                        speed.Items.Add(item);
+                    }
+                    menu.Items.Add(speed);
+                    break;
+                }
+                case MessageAction.Save when recording is not null:
+                {
+                    var save = new MenuFlyoutItem { Text = say.Get("Save…") };
+                    save.Click += (_, _) => _ = SaveAttachmentAsync(recording);
+                    menu.Items.Add(save);
+                    break;
+                }
+                case MessageAction.OpenFullScreen when message.RoundVideo is { } circle:
+                {
+                    // A circle opens full screen from its menu too (S5.4) — the viewer, with scrubbing.
+                    var full = new MenuFlyoutItem { Text = say.Get("Open Full Screen") };
+                    full.Click += (_, _) => OpenRound(circle);
+                    menu.Items.Add(full);
+                    break;
+                }
+                case MessageAction.Copy:
+                {
+                    var copy = new MenuFlyoutItem { Text = say.Get("Copy") };
+                    copy.Click += (_, _) =>
+                    {
+                        var package = new DataPackage();
+                        package.SetText(message.Body);
+                        Clipboard.SetContent(package);
+                    };
+                    menu.Items.Add(copy);
+                    break;
+                }
+                case MessageAction.ViewThread:
+                {
+                    // "View thread" on any member of a chain — the root and every reply — opens the same chain.
+                    var chain = new MenuFlyoutItem { Text = say.Get("View thread") };
+                    chain.Click += (_, _) => _ = OpenThreadAsync(message.Id);
+                    menu.Items.Add(chain);
+                    break;
+                }
+                case MessageAction.Edit:
+                {
+                    // Editing is the chat's, and not offered on the panel rather than offered inert.
+                    var edit = new MenuFlyoutItem { Text = say.Get("Edit") };
+                    edit.Click += (_, _) => StartEdit(message);
+                    menu.Items.Add(edit);
+                    break;
+                }
             }
-            else
-            {
-                StartReply(message);
-            }
-        };
-        menu.Items.Add(reply);
+        }
+        AddSafety(menu, message, assistantChat, assistantId, mayReport: inThread is null);
+    }
 
+    /// <summary>React ▸: the capsule's emoji, the reader's own checked, and "More reactions…" for any other.</summary>
+    private MenuFlyoutSubItem ReactItem(ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
+    {
+        var say = services.Say;
         var react = new MenuFlyoutSubItem { Text = say.Get("React") };
         var mine = Reactions.Mine(message.Reactions ?? [], Reader);
         foreach (var emoji in Reactions.Capsule(mine))
@@ -1519,35 +2200,7 @@ public sealed partial class ChatsView : UserControl
         // Any emoji of the catalogue — the one already held takes it off, as a tap on it anywhere does.
         more.Click += (_, _) => EmojiPicker.Show(anchor, say, emoji => _ = ActAsync(() => React(chat, inThread, message.Id, emoji)));
         react.Items.Add(more);
-        menu.Items.Add(react);
-
-        if (message.Body.Length > 0 && message.Call is null)
-        {
-            var copy = new MenuFlyoutItem { Text = say.Get("Copy") };
-            copy.Click += (_, _) =>
-            {
-                var package = new DataPackage();
-                package.SetText(message.Body);
-                Clipboard.SetContent(package);
-            };
-            menu.Items.Add(copy);
-        }
-        // "View thread" on any member of a chain — the root and every reply — opens the same chain.
-        if (inThread is null && (message.ThreadRootId is not null || message.ReplyCount is not null))
-        {
-            var chain = new MenuFlyoutItem { Text = say.Get("View thread") };
-            chain.Click += (_, _) => _ = OpenThreadAsync(message.Id);
-            menu.Items.Add(chain);
-        }
-        // Editing is the chat's, and not offered on the panel rather than offered inert.
-        if (inThread is null && ConversationModel.MayEdit(bubble))
-        {
-            var edit = new MenuFlyoutItem { Text = say.Get("Edit") };
-            edit.Click += (_, _) => StartEdit(message);
-            menu.Items.Add(edit);
-        }
-        AddSafety(menu, message, assistantChat, assistantId, mayReport: inThread is null);
-        return menu;
+        return react;
     }
 
     /// <summary>
@@ -1689,6 +2342,31 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private FrameworkElement PendingElement(ConversationModel chat, OutboxRow row)
     {
+        if (row.Sticker)
+        {
+            return PendingStickerElement(chat, row);
+        }
+        if (row.Round)
+        {
+            return PendingRoundElement(chat, row);
+        }
+        // One voice note with no words: drawn as the bubble it will be. Its staging says so — read once, and the plain
+        // balloon drawn meanwhile is put in its place as soon as it has.
+        string? lone = null;
+        if (row.Body.Length == 0 && row.PollOptions is null && (row.StagedFiles ?? row.PendingFiles) is [var handle])
+        {
+            if (stagedVoices.TryGetValue(handle, out var known))
+            {
+                if (known is { } voice)
+                {
+                    return PendingVoiceElement(chat, row, voice);
+                }
+            }
+            else
+            {
+                lone = handle;
+            }
+        }
         var say = services.Say;
         var resources = Application.Current.Resources;
         var stack = new StackPanel { Spacing = 4 };
@@ -1749,7 +2427,7 @@ public sealed partial class ChatsView : UserControl
                 Foreground = Palette.Ink(),
             });
         }
-        return new Border
+        var balloon = new Border
         {
             Child = stack,
             Padding = new Thickness(12, 8, 12, 8),
@@ -1760,6 +2438,108 @@ public sealed partial class ChatsView : UserControl
             Background = Palette.Surface(ActualTheme),
             Opacity = row.Failed ? 0.9 : 0.6,
         };
+        if (lone is not null)
+        {
+            _ = LearnPendingVoiceAsync(chat, row, lone, balloon);
+        }
+        return balloon;
+    }
+
+    /// <summary>
+    /// Whether the one file a send on its way carries is a voice note — read from this device's staging, never the server —
+    /// and, if it is, the plain balloon drawn meanwhile replaced by the voice bubble where it stands.
+    /// </summary>
+    private async Task LearnPendingVoiceAsync(ConversationModel chat, OutboxRow row, string handle, FrameworkElement drawn)
+    {
+        try
+        {
+            var store = connection.Staging;
+            var staged = await Task.Run(() => store.Read(handle));
+            if (gone)
+            {
+                return;
+            }
+            PendingVoice? voice = staged is not null && VoiceLook.IsPendingVoice(row.Body, [staged.Kind])
+                ? new PendingVoice(staged.Waveform, staged.DurationMs)
+                : null;
+            if (stagedVoices.Count >= 32)
+            {
+                stagedVoices.Clear();
+            }
+            stagedVoices[handle] = voice;
+            if (voice is not null && drawn.Parent is Panel parent && parent.Children.IndexOf(drawn) is var at and >= 0)
+            {
+                parent.Children[at] = PendingVoiceElement(chat, row, voice);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a voice message on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The reader's own voice note on its way: the bubble it will be — the balloon's white disc, the shape measured from the
+    /// recording (or the neutral one) and its length — fainter, and under it "Sending…" or, refused, Try Again and Delete.
+    /// Nothing to press in it yet: the note is not anywhere to be played from until it lands.
+    /// </summary>
+    private FrameworkElement PendingVoiceElement(ConversationModel chat, OutboxRow row, PendingVoice voice)
+    {
+        var say = services.Say;
+        var surface = Palette.Surface(ActualTheme);
+        var disc = new Grid { Width = VoiceLook.PlayDisc, Height = VoiceLook.PlayDisc, VerticalAlignment = VerticalAlignment.Center };
+        disc.Children.Add(new Ellipse { Fill = Palette.Ink() });
+        disc.Children.Add(new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 16,
+            Foreground = surface,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        AutomationProperties.SetAccessibilityView(disc, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        var rest = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0xFF, 0xFF, 0xFF));
+        var wave = WaveformBars(
+            VoiceLook.Bars(voice.Waveform, VoiceLook.BarCount(VoiceLook.WaveWidth)), VoiceLook.WaveHeight, rest, out _);
+        var length = MediaText.TimeLabel(VoiceNotes.TotalSeconds(voice.DurationMs));
+        var time = new TextBlock
+        {
+            Text = length,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xD9, 0xFF, 0xFF, 0xFF)),
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        var right = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        right.Children.Add(new Grid { Height = 32, Children = { wave } });
+        right.Children.Add(time);
+        Grid.SetColumn(right, 1);
+        var line = new Grid { ColumnSpacing = 10 };
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        line.Children.Add(disc);
+        line.Children.Add(right);
+        // One group Narrator meets as what it is: "Voice message, 0:42" — the foot under it says where it stands.
+        var balloon = new NamedGroup
+        {
+            Width = VoiceLook.Width,
+            Padding = new Thickness(8, 6, 12, 6),
+            CornerRadius = new CornerRadius(14),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Background = surface,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        balloon.Children.Add(line);
+        AutomationProperties.SetName(balloon, say.Format("Voice message, %@", length));
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        column.Children.Add(balloon);
+        column.Children.Add(PendingFoot(chat, row));
+        return column;
     }
 
     // ---- attachments ---------------------------------------------------------------------------
@@ -1768,7 +2548,7 @@ public sealed partial class ChatsView : UserControl
     /// What a message carries: the pictures first — one at its own shape, several as a grid of four with
     /// the rest counted — and then the rows that are read rather than looked at.
     /// </summary>
-    private FrameworkElement MediaElement(MessageDto message, bool mine)
+    private FrameworkElement MediaElement(MessageDto message, bool mine, string? chatKind)
     {
         var panel = new StackPanel { Spacing = 4 };
         var looked = message.Media.Where(attachment => MediaText.IsMedia(attachment.Kind)).ToList();
@@ -1796,12 +2576,34 @@ public sealed partial class ChatsView : UserControl
             }
             panel.Children.Add(grid);
         }
+        // A video's text goes under the pictures, one place per video; where there are several, each says which it is.
+        var videos = looked.Where(attachment => attachment.Kind == "video").ToList();
+        for (var at = 0; at < videos.Count; at++)
+        {
+            var video = videos[at];
+            if (TranscriptPanel(video, mine, message, chatKind) is not { } text)
+            {
+                continue;
+            }
+            if (videos.Count > 1)
+            {
+                var label = $"{services.Say.Get("Video")} {(at + 1).ToString(services.Culture)}";
+                var caption = new TextBlock { Text = label, FontSize = 11, Opacity = 0.75, Margin = new Thickness(4, 2, 4, 0) };
+                if (mine)
+                {
+                    caption.Foreground = Palette.Ink();
+                }
+                AutomationProperties.SetName(text, label);
+                panel.Children.Add(caption);
+            }
+            panel.Children.Add(text);
+        }
         foreach (var attachment in message.Media.Where(attachment => !MediaText.IsMedia(attachment.Kind)))
         {
             panel.Children.Add(attachment.Kind switch
             {
                 "location" => LocationElement(attachment, mine),
-                "audio" => AudioElement(attachment, mine),
+                "audio" => AudioElement(attachment, mine, message, chatKind),
                 _ => FileElement(attachment),
             });
         }
@@ -1917,9 +2719,11 @@ public sealed partial class ChatsView : UserControl
     // ---- the viewer ---------------------------------------------------------------------------------
 
     /// <summary>Open a message's photos and videos at full size, at the one clicked.</summary>
-    private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index)
+    private void OpenViewer(IReadOnlyList<AttachmentDto> items, int index, bool round = false)
     {
-        viewing = new MediaAlbum(items, index);
+        // A circle playing in place makes way for the viewer (one thing at a time, S5.3) — Open Full Screen included.
+        YieldRound();
+        viewing = new MediaAlbum(items, index, round);
         ViewerOverlay.Visibility = Visibility.Visible;
         ShowViewerItem();
         ViewerClose.Focus(FocusState.Programmatic);
@@ -1931,7 +2735,27 @@ public sealed partial class ChatsView : UserControl
         viewing = null;
         viewerShown++;
         StopViewerVideo();
-        ViewerImage.Source = null;
+        var played = viewerRoundPlayed;
+        SetViewerRound(false);
+        if (played)
+        {
+            // Played here: its dot goes (S5.2) — on the next turn, and never into a view the window has already let go of
+            // (Detach closes the viewer too).
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (gone)
+                {
+                    return;
+                }
+                conversationDrawn = string.Empty;
+                threadDrawn = string.Empty;
+                DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
+                DrawThread();
+            });
+        }
+        ForgetViewerSticker();
+        ViewerAddSticker.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
         ViewerOverlay.Visibility = Visibility.Collapsed;
     }
 
@@ -1990,12 +2814,17 @@ public sealed partial class ChatsView : UserControl
         ViewerPrevious.IsEnabled = album.HasPrevious;
         ViewerNext.IsEnabled = album.HasNext;
         ViewerProblem.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
+        // Offered once the page has loaded and the pack has been asked — never on a guess.
+        ViewerAddSticker.Visibility = Visibility.Collapsed;
         StopViewerVideo();
-        ViewerImage.Source = null;
+        ForgetViewerSticker();
         ViewerScroller.ChangeView(0, 0, 1, disableAnimation: true);
         ViewerScroller.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
         ViewerVideo.Visibility = album.IsVideo ? Visibility.Visible : Visibility.Collapsed;
         ViewerZoomBar.Visibility = album.IsVideo ? Visibility.Collapsed : Visibility.Visible;
+        // Only a video message — opened from its circle or its menu, S5.1's test of the whole message — is shown in its circle.
+        SetViewerRound(album.IsRound);
         ShowZoom();
         ViewerLoading.IsActive = true;
         _ = LoadViewerItemAsync(album.Current, album.IsVideo, token);
@@ -2005,6 +2834,11 @@ public sealed partial class ChatsView : UserControl
     {
         try
         {
+            if (item.Sticker)
+            {
+                await LoadViewerStickerAsync(item, token);
+                return;
+            }
             if (item.HasPreview && pictures.TryGetValue(AttachmentCache.KeyFor(item.Id, preview: true), out var small))
             {
                 if (video)
@@ -2043,8 +2877,21 @@ public sealed partial class ChatsView : UserControl
                     stream.Dispose();
                     return;
                 }
+                // Not by itself under a running microphone, and not at all until it stops (S1.7).
+                ViewerVideo.AutoPlay = recorder is null;
                 ViewerVideo.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, item.Mime ?? "video/mp4");
+                QuietViewerVideo();
                 ViewerLoading.IsActive = false;
+                if (viewerRound)
+                {
+                    // One thing plays at a time (S5.3): a voice note stops for the circle.
+                    if (AudioRunning)
+                    {
+                        audio.Pause();
+                        ShowPlayback();
+                    }
+                    ShowViewerRound();
+                }
                 return;
             }
             var picture = await DecodeAsync(bytes);
@@ -2071,9 +2918,150 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
+    /// <summary>
+    /// The viewer is about to show something else, or nothing: its image is emptied FIRST, and only then are the frames
+    /// of the sticker it was showing given back — the viewer's picture is kept nowhere else, and a moving one is the
+    /// largest thing this view decodes.
+    /// </summary>
+    private void ForgetViewerSticker()
+    {
+        stickers.Forget(ViewerImage);
+        try
+        {
+            ViewerImage.Source = null;
+        }
+        catch (Exception e)
+        {
+            // Still showing a frame, then: the frames are the collector's.
+            Diagnostics.Write($"emptying the viewer: {e.GetType().Name}");
+            viewerSticker = null;
+            return;
+        }
+        if (viewerSticker is { } shown)
+        {
+            viewerSticker = null;
+            stickers.Release(shown);
+        }
+    }
+
+    /// <summary>The size a STILL sticker is decoded for when it is looked at on its own: the pack's own 512.</summary>
+    private const double ViewerStickerBox = StickerFile.Edge;
+
+    /// <summary>
+    /// And a MOVING one: twice the conversation's box, in plain pixels. Every frame is held decoded, and at 512 a
+    /// two-second sticker would be past the budget — drawn still in the very place somebody opened it to watch.
+    /// </summary>
+    private const double ViewerMovingBox = StickerLook.Box * 2;
+
+    /// <summary>
+    /// A sticker shown larger (docs/protocol.md, "Tapping one shows it larger"): its ORIGINAL bytes, moving where this
+    /// machine can — and "Add to family stickers" when the family's pack does not hold it.
+    /// </summary>
+    private async Task LoadViewerStickerAsync(AttachmentDto item, int token)
+    {
+        var (bytes, _) = await connection.Attachments.BytesAsync(item, preview: false);
+        if (token != viewerShown)
+        {
+            return;
+        }
+        if (bytes is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        var moves = StickerFile.IsAnimated(bytes) && StickerImaging.AnimationsWanted();
+        var picture = moves
+            ? await StickerImaging.DecodeAsync(bytes, ViewerMovingBox, 1, animate: true)
+            : await StickerImaging.DecodeAsync(bytes, ViewerStickerBox, RasterScale(), animate: false);
+        if (token != viewerShown)
+        {
+            // The viewer moved on while this was decoding: nothing will ever draw it.
+            picture?.Release();
+            return;
+        }
+        if (picture is null)
+        {
+            ViewerFailed();
+            return;
+        }
+        ForgetViewerSticker();
+        viewerSticker = picture;
+        stickers.Show(ViewerImage, picture);
+        ViewerLoading.IsActive = false;
+        FitViewerImage();
+        // Decided HERE, from bytes this device already has: nothing on the wire names the item a message was sent from.
+        // A wrong "no" only offers what the pack already holds, and the server answers that with the item that was there.
+        if (pack.Offered && !await pack.HoldsAsync(item) && token == viewerShown)
+        {
+            ViewerAddSticker.IsEnabled = true;
+            ViewerAddSticker.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>"Add to family stickers": the pack's own flow, with the message's bytes — uploaded again, unprepared, and claimed.</summary>
+    private async Task AddViewedStickerAsync()
+    {
+        if (viewing is not { Current: { Sticker: true } item })
+        {
+            return;
+        }
+        var say = services.Say;
+        var token = viewerShown;
+        ViewerAddSticker.IsEnabled = false;
+        ViewerProblem.Visibility = Visibility.Collapsed;
+        ViewerNotice.Visibility = Visibility.Collapsed;
+        (PackAdded? Added, ApiError? Error) answer;
+        try
+        {
+            // The few words it may be given, as for a sticker added from disk: optional, and fixed once it is added.
+            var (add, label) = await Dialogs.StickerLabelAsync(XamlRoot, say);
+            if (!add || token != viewerShown)
+            {
+                if (token == viewerShown)
+                {
+                    ViewerAddSticker.IsEnabled = true;
+                }
+                return;
+            }
+            answer = await pack.AddFromMessageAsync(item, label);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"adding a sent sticker to the pack: {e.GetType().Name}");
+            answer = (null, ApiError.Transport(e.GetType().Name));
+        }
+        if (token != viewerShown)
+        {
+            return;
+        }
+        if (answer.Added is { } added)
+        {
+            // Either way the pack holds it now, so there is nothing left to offer.
+            ViewerAddSticker.Visibility = Visibility.Collapsed;
+            ViewerNotice.Text = PackText.Sentence(added, say);
+            ViewerNotice.Visibility = Visibility.Visible;
+            ShowStickerButton();
+            return;
+        }
+        ViewerAddSticker.IsEnabled = true;
+        ViewerProblem.Text = PackText.Sentence(answer.Error ?? ApiError.Transport("no answer"), say);
+        ViewerProblem.Visibility = Visibility.Visible;
+    }
+
     private void ViewerFailed()
     {
         ViewerLoading.IsActive = false;
+        if (viewerRound)
+        {
+            // Over its poster, with the way back (S5.3).
+            viewerRoundFailed = true;
+            // Its "Try again" stands where the disc is.
+            viewerDiscShown = false;
+            ViewerRoundDisc.Opacity = 0;
+            ViewerRoundRetry.Visibility = Visibility.Visible;
+            ViewerRoundBar.Visibility = Visibility.Collapsed;
+            return;
+        }
         ViewerProblem.Text = services.Say.Get("The file could not be downloaded.");
         ViewerProblem.Visibility = Visibility.Visible;
     }
@@ -2116,6 +3104,50 @@ public sealed partial class ChatsView : UserControl
         (ViewerVideo.Source as Windows.Media.Core.MediaSource)?.Dispose();
         ViewerVideo.Source = null;
         ViewerVideo.PosterSource = null;
+    }
+
+    /// <summary>
+    /// No app sound while something records (S1.7) — the viewer's video included. While a recording runs its controls go and
+    /// it says why, as every dimmed play button does, and its player is paused and muted, so nothing a key or the system's
+    /// media buttons start is heard in the note; once the recording ends the controls come back and the player is left muted,
+    /// or not, as it was before (<see cref="QuietWhileRecording"/>).
+    /// </summary>
+    private void QuietViewerVideo()
+    {
+        if (gone)
+        {
+            return;
+        }
+        var recording = recorder is not null;
+        // A circle has its own bar under it, which the same rule dims.
+        ViewerVideo.AreTransportControlsEnabled = !recording && !viewerRound;
+        ViewerRoundPlay.IsEnabled = !recording;
+        ViewerRoundSeek.IsEnabled = !recording;
+        try
+        {
+            if (ViewerVideo.MediaPlayer is { } player)
+            {
+                if (recording)
+                {
+                    player.Pause();
+                }
+                player.IsMuted = viewerQuiet.Muted(recording, player.IsMuted);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"quieting the viewer's video: {e.GetType().Name}");
+        }
+        var sentence = services.Say.Get("You can play this after recording.");
+        if (recording && viewing is { IsVideo: true })
+        {
+            ViewerNotice.Text = sentence;
+            ViewerNotice.Visibility = Visibility.Visible;
+        }
+        else if (!recording && ViewerNotice.Visibility == Visibility.Visible && ViewerNotice.Text == sentence)
+        {
+            ViewerNotice.Visibility = Visibility.Collapsed;
+        }
     }
 
     /// <summary>Share — Windows' own share window, as the Mac's viewer offers its sharing menu — with the original's bytes.</summary>
@@ -2163,20 +3195,36 @@ public sealed partial class ChatsView : UserControl
 
     // ---- calls --------------------------------------------------------------------------------------
 
-    /// <summary>A call from this chat, to its other member: the window places it and shows it (docs/protocol.md, "Voice calls").</summary>
+    /// <summary>
+    /// A call from this chat, to its other member: the window places it and shows it (docs/protocol.md, "Voice calls") — never
+    /// over a recording, whatever button asked (S1.7: the call buttons are off while something records).
+    /// </summary>
     private void RequestCall(bool video)
     {
+        if (!CallRecords.CanPlaceCall(callBusy, recorder is not null))
+        {
+            return;
+        }
         if (open is { } chat && connection.Chats.Chat(chat.ChatId)?.Chat is { Kind: "direct", PeerUserId: { } peer })
         {
             CallRequested?.Invoke(chat.ChatId, peer, video);
         }
     }
 
-    /// <summary>Whether a call is on: while one is, a second is not placed.</summary>
+    /// <summary>
+    /// Whether a call is on: while one is, a second is not placed — and nothing is recorded. A call in any phase stops what
+    /// is being recorded, which waits as "not sent", never sent (S4).
+    /// </summary>
     internal void ShowCallBusy(bool busy)
     {
         callBusy = busy;
+        if (busy)
+        {
+            _ = Interrupt(RecordingEnd.Call);
+        }
         ShowCallButtons();
+        // A call dims the microphone, and says so when it is pressed (S1.3 row 7).
+        DrawSlot();
         DrawConversation(keepFromBottom: atNewest ? null : DistanceFromBottom);
     }
 
@@ -2205,7 +3253,13 @@ public sealed partial class ChatsView : UserControl
         var (offered, video) = CallRecords.CallBack(call, direct, state.CallsEnabled, state.VideoCallsEnabled, inThread is not null);
         if (offered)
         {
-            var back = new HyperlinkButton { Content = say.Get("Call back"), Padding = new Thickness(0, 2, 0, 0), IsEnabled = !callBusy };
+            // Off with the toolbar's call buttons: while a call is on, and while something records (S1.7).
+            var back = new HyperlinkButton
+            {
+                Content = say.Get("Call back"),
+                Padding = new Thickness(0, 2, 0, 0),
+                IsEnabled = CallRecords.CanPlaceCall(callBusy, recorder is not null),
+            };
             if (mine)
             {
                 back.Foreground = ink;
@@ -2213,6 +3267,7 @@ public sealed partial class ChatsView : UserControl
             AutomationProperties.SetHelpText(back, say.Get("Calls back"));
             back.Click += (_, _) => RequestCall(video);
             lines.Children.Add(back);
+            callBackLinks.Add(back);
         }
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         row.Children.Add(glyph);
@@ -2231,8 +3286,15 @@ public sealed partial class ChatsView : UserControl
         var direct = open is { } chat && connection.Chats.Chat(chat.ChatId)?.Chat is { Kind: "direct", PeerUserId: not null };
         CallButton.Visibility = direct && state.CallsEnabled ? Visibility.Visible : Visibility.Collapsed;
         VideoCallButton.Visibility = direct && state.CallsEnabled && state.VideoCallsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        CallButton.IsEnabled = !callBusy;
-        VideoCallButton.IsEnabled = !callBusy;
+        // Off while something records too (S1.7): a call over a recording has no right answer — and so is every record's
+        // "Call back" already drawn, which a recording starting or ending does not redraw.
+        var live = CallRecords.CanPlaceCall(callBusy, recorder is not null);
+        CallButton.IsEnabled = live;
+        VideoCallButton.IsEnabled = live;
+        foreach (var link in callBackLinks)
+        {
+            link.IsEnabled = live;
+        }
     }
 
     // ---- threads ------------------------------------------------------------------------------------
@@ -2295,7 +3357,8 @@ public sealed partial class ChatsView : UserControl
         var pending = chain.Pending();
         var drawn = string.Join(Row, bubbles.Select(bubble => string.Join(Field,
             bubble.Message.Id, bubble.Message.EditSeq, bubble.Message.ReactionSeq, bubble.Message.Poll?.PollSeq,
-            bubble.Message.ReplyCount, bubble.Reads, connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
+            bubble.Message.ReplyCount, bubble.Reads, BubbleRules.MediaMark(bubble.Message),
+            connection.Chats.IsBlocked(bubble.Message.ReplyTo?.SenderId ?? 0),
             connection.Chats.IsBlocked(bubble.Message.ReplyTo?.Parent?.SenderId ?? 0))));
         drawn = $"{chain.RootId}{Field}{chain.Loaded}{Field}{chain.Failure?.Code}{Field}{string.Join(',', connection.Chats.Blocked())}" +
             $"{Field}{connection.Chats.Members().Count}{Field}{connection.Answers.Version}{Field}{DateOnly.FromDateTime(DateTime.Now)}" +
@@ -2349,6 +3412,7 @@ public sealed partial class ChatsView : UserControl
         // A reply needs a root to answer.
         ThreadComposer.IsEnabled = hasRoot;
         ThreadSend.IsEnabled = hasRoot;
+        ShowStickerButton();
         ThreadScroller.UpdateLayout();
         if (atEnd)
         {
@@ -2422,6 +3486,7 @@ public sealed partial class ChatsView : UserControl
         using var hunt = new CancellationTokenSource();
         locating = true;
         locationHunt = hunt;
+        DrawSlot();
         try
         {
             var permission = await LocationFinder.RequestPermissionAsync();
@@ -2446,7 +3511,8 @@ public sealed partial class ChatsView : UserControl
             LocationRing.IsActive = true;
             LocationBar.Visibility = Visibility.Visible;
             AttachButton.IsEnabled = false;
-            SendButton.IsEnabled = false;
+            // Send waits for the place: the words typed meanwhile are its caption.
+            DrawSlot();
             var (fix, denied) = await LocationFinder.CurrentFixAsync(hunt.Token);
             finding = false;
             if (gone || open != chat || hunt.IsCancellationRequested)
@@ -2473,7 +3539,7 @@ public sealed partial class ChatsView : UserControl
                 LocationRing.IsActive = false;
                 LocationBar.Visibility = Visibility.Collapsed;
                 AttachButton.IsEnabled = recorder is null;
-                SendButton.IsEnabled = !sendingMedia;
+                DrawSlot();
             }
         }
     }
@@ -2521,62 +3587,713 @@ public sealed partial class ChatsView : UserControl
         {
             store.Release(handles);
             sendingMedia = false;
+            DrawSlot();
         }
     }
 
-    // ---- voice notes ----------------------------------------------------------------------------
+    // ---- the Send slot ---------------------------------------------------------------------------
+    //
+    // Voice and video messages from the Send button (docs/audio-video-messages-2026-10-04.md, Phase 1; issue #79): the
+    // composer's trailing control is Send when there is something to send and a microphone when there is not, in one fixed
+    // place. Which it is, how it is drawn and what a press on it does are ComposerButton's; this only wires and draws.
 
     /// <summary>
-    /// Record a voice note (docs/protocol.md, "Audio"): the microphone into an M4A, a bar with the time so far, Cancel and
-    /// Stop — and staged when it stops, so a caption can be added and an accident thrown away.
+    /// The slot's presses (S8.6): a click of any length with any input; a mouse right-click, a pen tap with the barrel button
+    /// down, Shift+F10 or the Menu key for the microphone's menu — never a hold; the press that is reaching it, from its going
+    /// down to its end, for the 600 ms guard (<see cref="SlotGuard"/>); and Ctrl+Shift+R, the app's first keyboard accelerator,
+    /// once per press however long it is held, and Esc while something records.
     /// </summary>
-    private async Task StartRecordingAsync()
+    private void WireSlot()
     {
-        if (open is not { } chat || recorder is not null)
+        SendButton.Click += (_, _) => OnSlotClick();
+        SendButton.RightTapped += (_, e) =>
+        {
+            e.Handled = true;
+            OnSlotMenuPress(slotGuard.RightTapped(DeviceOf(e.PointerDeviceType), CurrentSlot().IsMicrophone));
+        };
+        SendButton.ContextRequested += (sender, e) =>
+        {
+            e.Handled = true;
+            // No position: the keyboard's Shift+F10 or Menu key. At a position: a pointer's, which RightTapped answers.
+            var press = e.TryGetPosition(SendButton, out _) ? SlotPress.ContextAtPointer : SlotPress.ContextKey;
+            OnSlotMenuPress(ComposerButton.Respond(press, SlotDevice.None, barrelAtPress: false, CurrentSlot().IsMicrophone));
+        };
+        // The button takes the pointer's press for itself; what it was — and when, and when it ended — is still read, after it.
+        SendButton.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(OnSlotPointerPressed), true);
+        SendButton.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(OnSlotPointerEnded), true);
+        SendButton.PreviewKeyDown += OnSlotKey;
+        SendButton.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(OnSlotKeyUp), true);
+        SendButton.LostFocus += (_, _) => EndSlotPress(slotKeyPress);
+        var record = new KeyboardAccelerator
+        {
+            Key = Windows.System.VirtualKey.R,
+            Modifiers = Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift,
+        };
+        record.Invoked += (_, args) =>
+        {
+            args.Handled = true;
+            if (recordShortcut.Fresh(Environment.TickCount64))
+            {
+                OnRecordShortcut();
+            }
+        };
+        ComposerPanel.KeyboardAccelerators.Add(record);
+        // An accelerator repeats while its key is held, and that cannot be changed: the chord's repeats are swallowed as they
+        // come in — PreviewKeyDown comes before any accelerator — so a held Ctrl+Shift+R starts a recording, or stops one, once.
+        AddHandler(UIElement.PreviewKeyDownEvent, new KeyEventHandler(OnShortcutKey), true);
+        // Inside the recording row Esc is Stop — never Delete (S2.4, decision 13).
+        ComposerPanel.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Escape && recorder is not null)
+            {
+                e.Handled = true;
+                _ = EndRecordingAsync(RecordingEnd.Stopped);
+            }
+        };
+        DrawSlot();
+    }
+
+    private static SlotDevice DeviceOf(Microsoft.UI.Input.PointerDeviceType type) => type switch
+    {
+        Microsoft.UI.Input.PointerDeviceType.Touch => SlotDevice.Touch,
+        Microsoft.UI.Input.PointerDeviceType.Pen => SlotDevice.Pen,
+        // A mouse — and a touchpad, whose two-finger click is the mouse's right one.
+        _ => SlotDevice.Mouse,
+    };
+
+    private static bool KeyHeld(Windows.System.VirtualKey key) =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    /// <summary>A press goes down on the slot: with what — and whether a pen's barrel button was held as it did (S8.6).</summary>
+    private void OnSlotPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var device = DeviceOf(e.Pointer.PointerDeviceType);
+        var barrel = device == SlotDevice.Pen && e.GetCurrentPoint(SendButton).Properties.IsBarrelButtonPressed;
+        slotPointerPress = slotGuard.PointerDown(Environment.TickCount64, device, barrel);
+        // A long press on the microphone shows nothing (2026-10-06): no tooltip opens under a finger or a pen while it is down.
+        if (!ComposerButton.TooltipDuring(device) && !slotTipHidden)
+        {
+            slotTipHidden = true;
+            ToolTipService.SetToolTip(SendButton, null);
+        }
+    }
+
+    /// <summary>The pointer's press is over — lifted, cancelled or its capture lost — with or without a click.</summary>
+    private void OnSlotPointerEnded(object sender, PointerRoutedEventArgs e)
+    {
+        if (slotTipHidden)
+        {
+            slotTipHidden = false;
+            ToolTipService.SetToolTip(SendButton, slotTooltip);
+        }
+        EndSlotPress(slotPointerPress);
+    }
+
+    /// <summary>
+    /// A press ends — after the click it made, if it made one: the button's own handling comes first, and this goes to the
+    /// back of the queue besides, so whatever that press raises in the same breath still reads it. A later press is not
+    /// touched (<see cref="SlotGuard.PressEnded"/>).
+    /// </summary>
+    private void EndSlotPress(long press) =>
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => slotGuard.PressEnded(press));
+
+    /// <summary>
+    /// Enter or Space on the focused slot: the press begins at the key's going down — and a key held down is ONE press, so its
+    /// repeats are swallowed rather than let through once the guard has run out.
+    /// </summary>
+    private void OnSlotKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is not (Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space))
+        {
+            return;
+        }
+        if (e.KeyStatus.WasKeyDown)
+        {
+            e.Handled = true;
+            return;
+        }
+        slotKeyPress = slotGuard.KeyDown(Environment.TickCount64);
+    }
+
+    private void OnSlotKeyUp(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space)
+        {
+            EndSlotPress(slotKeyPress);
+        }
+    }
+
+    /// <summary>Ctrl+Shift+R going down anywhere in the view: a repeat is swallowed before the accelerator sees it (S1.6).</summary>
+    private void OnShortcutKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.R && KeyHeld(Windows.System.VirtualKey.Control) && KeyHeld(Windows.System.VirtualKey.Shift)
+            && recordShortcut.KeyDown(Environment.TickCount64, e.KeyStatus.WasKeyDown))
+        {
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>A right-click, a barrel tap or the menu key reached the slot: the microphone's menu, or nothing (S1.6, S8.6).</summary>
+    private void OnSlotMenuPress(SlotResponse response)
+    {
+        if (response == SlotResponse.Menu && !gone && open is not null)
+        {
+            ShowSlotMenu();
+        }
+    }
+
+    /// <summary>
+    /// A click reached the slot. What it does is <see cref="SlotGuard.Click"/>'s (S8.6) and the row's (S1.3): the recording's
+    /// Send or Stop, today's Send or Save, a dimmed microphone's reason, or a hands-free recording — none of them while the
+    /// guard runs, or for a press that went down while it ran (S1.1).
+    /// </summary>
+    private void OnSlotClick()
+    {
+        var now = Environment.TickCount64;
+        // Asked even with nothing open: the press is used up either way, and the next click brings its own or none at all.
+        var slot = CurrentSlot();
+        var response = slotGuard.Click(now, slot, ComposerBox.Text);
+        if (gone || open is null)
+        {
+            return;
+        }
+        if (response == SlotResponse.Menu)
+        {
+            ShowSlotMenu();
+            return;
+        }
+        if (response == SlotResponse.Ignore)
+        {
+            return;
+        }
+        switch (slot.Kind)
+        {
+            case SlotKind.SendVoice:
+                slotGuard.Arm(now, ComposerBox.Text);
+                _ = EndRecordingAsync(RecordingEnd.Sent);
+                break;
+            case SlotKind.StopRecording:
+                slotGuard.Arm(now, ComposerBox.Text);
+                _ = EndRecordingAsync(RecordingEnd.Stopped);
+                break;
+            case SlotKind.Save or SlotKind.Send:
+                Send();
+                break;
+            case SlotKind.Dimmed:
+                Explain(ComposerButton.Notice(slot.Reason, services.Say)!);
+                break;
+            case SlotKind.Microphone:
+                _ = StartRecordingAsync(fromSlot: true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The microphone's secondary menu (S1.6): "Record Voice Message" — which, in rows 7 to 9, says why it cannot instead. Its
+    /// "Record Video Message" arrives with round video on Windows (Phase 3d).
+    /// </summary>
+    private void ShowSlotMenu()
+    {
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedRight };
+        var record = new MenuFlyoutItem
+        {
+            Text = services.Say.Get("Record Voice Message"),
+            Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
+            KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
+        };
+        record.Click += (_, _) =>
+        {
+            if (CurrentSlot() is { Kind: SlotKind.Dimmed } dimmed)
+            {
+                Explain(ComposerButton.Notice(dimmed.Reason, services.Say)!);
+                return;
+            }
+            _ = StartRecordingAsync(fromSlot: false);
+        };
+        menu.Items.Add(record);
+        // "Record Video Message" (S1.6), where one can be recorded: in rows 7 and 8 it says why not; in row 9 it opens the
+        // recorder, as the video button does — the not-sent rule is about voice.
+        if (RoundAvailable() && open is { } chat && Kind(chat) != "ai")
+        {
+            var video = new MenuFlyoutItem
+            {
+                Text = services.Say.Get("Record Video Message"),
+                Icon = new FontIcon { Glyph = ((char)RoundVideoGlyph).ToString() },
+            };
+            video.Click += (_, _) =>
+            {
+                if (CurrentSlot() is { Kind: SlotKind.Dimmed, Reason: Dimmed.Call or Dimmed.Busy } dimmed)
+                {
+                    Explain(ComposerButton.Notice(dimmed.Reason, services.Say)!);
+                    return;
+                }
+                _ = OpenRoundRecorderAsync(SendButton);
+            };
+            menu.Items.Add(video);
+        }
+        menu.ShowAt(SendButton);
+    }
+
+    /// <summary>
+    /// Ctrl+Shift+R (S1.6): records — beside the draft when there is one — and, pressed while a recording runs, stops it into
+    /// review. A shortcut never sends, and never opens a camera. Nothing in the assistant's chat, and nothing new under the
+    /// viewer, where the row could not be seen.
+    /// </summary>
+    private void OnRecordShortcut()
+    {
+        if (gone || open is not { } chat)
+        {
+            return;
+        }
+        if (recorder is not null)
+        {
+            _ = EndRecordingAsync(RecordingEnd.Stopped);
+            return;
+        }
+        // Not under the video recorder either: the composer is hidden while it is open (decision 41), and a voice recording
+        // started behind it would be one nobody can see, on the microphone the camera's recording holds.
+        if (recordingStart.Starting || asking is not null || ViewerOverlay.Visibility == Visibility.Visible || Kind(chat) == "ai"
+            || RecorderOpen)
+        {
+            return;
+        }
+        _ = StartRecordingAsync(fromSlot: false);
+    }
+
+    /// <summary>The composer's attachment guard (S1.2's <b>busy</b>): files being prepared or written down, or a place being found.</summary>
+    private bool Busy(ComposerStaging strip) => strip.Preparing || sendingMedia || locating;
+
+    /// <summary>Which row of S1.3 the open chat's slot is in, from what the composer is now.</summary>
+    private Slot CurrentSlot() =>
+        SlotInputsNow() is { } inputs ? ComposerButton.ComposerSlot(inputs) : new(SlotKind.SendDisabled);
+
+    /// <summary>What the open chat's composer is now, as S1.2 names it — or null with no chat open.</summary>
+    private SlotInputs? SlotInputsNow()
+    {
+        if (open is not { } chat)
+        {
+            return null;
+        }
+        var strip = Staging(chat.ChatId);
+        return new SlotInputs(
+            RecorderOpen: RecorderOpen,
+            Recording: recorder is null ? Recording.None : recordingBesideDraft ? Recording.HandsFreeBesideDraft : Recording.HandsFree,
+            Editing: editing is not null,
+            DraftBlank: string.IsNullOrWhiteSpace(ComposerBox.Text),
+            Staged: strip.Items.Count > 0,
+            AssistantChat: Kind(chat) == "ai",
+            // Whether this machine has a microphone at all is only learnt by trying: a press then says it could not start.
+            CanRecord: true,
+            Call: callBusy,
+            Busy: Busy(strip),
+            NotSent: notSentShown > 0);
+    }
+
+    /// <summary>
+    /// The slot as its row draws it (S8.6): the glyph, cross-faded over 150 ms when it changes (at once with Windows'
+    /// animations off), the name, the tooltip and Narrator's HelpText; dimmed is drawn faded and left enabled.
+    /// </summary>
+    private void DrawSlot()
+    {
+        if (gone)
+        {
+            return;
+        }
+        var slot = CurrentSlot();
+        var face = ComposerButton.Face(slot, sendHeld: sendingMedia || finding, services.Say);
+        // The microphone's video message is behind its menu (S6): Narrator says how to reach it, where there is one.
+        if (face.HelpText.Length == 0 && slot.Kind == SlotKind.Microphone && RoundAvailable())
+        {
+            face = face with { HelpText = services.Say.Get("Press Shift+F10 for a video message.") };
+        }
+        if (SendButton.IsEnabled != face.Enabled)
+        {
+            SendButton.IsEnabled = face.Enabled;
+        }
+        // Set only when they change: the slot is redrawn on every keystroke, and a screen reader is told of every setting.
+        if (slotName != face.Name)
+        {
+            slotName = face.Name;
+            AutomationProperties.SetName(SendButton, face.Name);
+        }
+        if (slotHelp != face.HelpText)
+        {
+            slotHelp = face.HelpText;
+            AutomationProperties.SetHelpText(SendButton, face.HelpText);
+        }
+        if (slotTooltip != face.Tooltip)
+        {
+            slotTooltip = face.Tooltip;
+            if (!slotTipHidden)
+            {
+                ToolTipService.SetToolTip(SendButton, face.Tooltip);
+            }
+        }
+        SlotLook.Opacity = face.Enabled && !face.LooksDimmed ? 1 : 0.4;
+        ShowSlotGlyph(face.Glyph);
+        DrawVideoDoor();
+    }
+
+    private void ShowSlotGlyph(int glyph)
+    {
+        if (slotGlyph == glyph)
+        {
+            return;
+        }
+        var before = slotGlyph;
+        slotGlyph = glyph;
+        slotFade?.Stop();
+        slotFade = null;
+        SlotGlyph.Glyph = ((char)glyph).ToString();
+        // At once the first time, before the view is on screen, and when Windows' animations are off (S1.3, S6).
+        if (before is not { } leaving || !SendButton.IsLoaded || !StickerImaging.AnimationsWanted())
+        {
+            SlotGlyph.Opacity = 1;
+            SlotGlyphLeaving.Opacity = 0;
+            return;
+        }
+        SlotGlyphLeaving.Glyph = ((char)leaving).ToString();
+        SlotGlyph.Opacity = 1;
+        SlotGlyphLeaving.Opacity = 0;
+        var length = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs));
+        var coming = new Animation.DoubleAnimation { From = 0, To = 1, Duration = length };
+        var going = new Animation.DoubleAnimation { From = 1, To = 0, Duration = length };
+        Animation.Storyboard.SetTarget(coming, SlotGlyph);
+        Animation.Storyboard.SetTargetProperty(coming, "Opacity");
+        Animation.Storyboard.SetTarget(going, SlotGlyphLeaving);
+        Animation.Storyboard.SetTargetProperty(going, "Opacity");
+        slotFade = new Animation.Storyboard();
+        slotFade.Children.Add(coming);
+        slotFade.Children.Add(going);
+        slotFade.Begin();
+    }
+
+    /// <summary>
+    /// A sentence on the composer's notice line, said as it appears: a dimmed control explaining itself (S1.3), a refusal —
+    /// shown but never said while a recording runs, when the app's own speech would be in the note (S6): a play button
+    /// pressed then has the sentence as its HelpText already.
+    /// </summary>
+    private void Explain(string sentence)
+    {
+        ShowProblem(sentence);
+        if (VoiceNotes.NoticeSaid(recording: recorder is not null))
+        {
+            Announce(ComposerError);
+        }
+    }
+
+    /// <summary>
+    /// Said to a screen reader and never drawn (S6): "Recording", "Recording deleted", "Voice message sent", "Ready to review,
+    /// 0:42", "30 seconds left" — on the hidden status line, a polite live region, which is emptied a moment later so a
+    /// reader walking the window does not come upon an old one.
+    /// </summary>
+    private void SayAloud(string sentence)
+    {
+        if (gone)
+        {
+            return;
+        }
+        RecordingStatus.Text = sentence;
+        Announce(RecordingStatus);
+        if (statusClear is null)
+        {
+            statusClear = DispatcherQueue.CreateTimer();
+            statusClear.Interval = TimeSpan.FromSeconds(5);
+            statusClear.IsRepeating = false;
+            statusClear.Tick += (_, _) =>
+            {
+                if (!gone)
+                {
+                    RecordingStatus.Text = string.Empty;
+                }
+            };
+        }
+        statusClear.Stop();
+        statusClear.Start();
+    }
+
+    /// <summary>
+    /// No app sound while something records (S1.7): every play button — a bubble's recording, a staged or not-sent note — is
+    /// drawn dimmed and says why, as HelpText and when pressed; it stays a button, because dimmed is not disabled.
+    /// </summary>
+    private void ShowPlayDimming()
+    {
+        foreach (var toggle in audioRows.All.Select(row => row.Toggle)
+                     .Concat(stagedRows.Values.Select(row => row.Toggle))
+                     .Concat(parkedRows.Values.Select(row => row.Toggle)))
+        {
+            DimPlay(toggle);
+        }
+        // A circle says the same in its HelpText while a recording runs.
+        foreach (var copy in roundCopies.All)
+        {
+            DrawRoundCopy(copy);
+        }
+    }
+
+    private void DimPlay(Button toggle)
+    {
+        var recording = recorder is not null;
+        toggle.Opacity = recording ? 0.4 : 1;
+        AutomationProperties.SetHelpText(toggle, recording ? services.Say.Get("You can play this after recording.") : string.Empty);
+    }
+
+    // ---- voice notes ----------------------------------------------------------------------------
+    //
+    // The recorder made safe (docs/audio-video-messages-2026-10-04.md, Phase 0) and put in the Send slot (Phase 1): whatever
+    // ends a recording lets go of the microphone at once; the person's Send sends it, their Stop stages it for review, their
+    // Delete deletes it; anything else STOPS AND KEEPS it as a voice message that was not sent, in its own row, never sent
+    // by anything but that row and deleted only by the person or a sign-out.
+
+    /// <summary>A recording stopped to ask "Delete this recording?": what it recorded, while the question is up.</summary>
+    private sealed class AskedRecording(long chatId, Recorded recorded, ContentDialog question)
+    {
+        public long ChatId { get; } = chatId;
+
+        public Recorded Recorded { get; } = recorded;
+
+        public ContentDialog Question { get; } = question;
+
+        /// <summary>Taken out of the question's hands by an interruption, which kept the recording: the answer is moot.</summary>
+        public bool Settled { get; set; }
+    }
+
+    /// <summary>
+    /// Whether something recorded is held only in memory: a recording running, one being asked about, a voice note in
+    /// review, or one not sent that the disk refused. A real close keeps them first (MainWindow), because nothing awaited
+    /// after the window goes would finish.
+    /// </summary>
+    internal bool HoldsRecordings =>
+        recorder is not null || asking is not null || settling.Count > 0 || strips.Values.Any(strip => strip.HoldsRecordings)
+        || parked.HoldsInMemory;
+
+    /// <summary>
+    /// Something other than the person ends what is being recorded — leaving the chat, a call, the window hidden, minimised
+    /// or closing, the session locking, the computer sleeping (S4). It STOPS AND KEEPS: the recording waits in its chat as a
+    /// voice message that was not sent; a question about deleting one is taken away and the recording kept; and where the
+    /// chat is left — or the window really closes — a voice note still in review goes the same way, taking the words in the
+    /// field as its caption. Everything that reads or changes the composer happens before this returns, so a caller that
+    /// goes on to change the composer changes it after.
+    /// </summary>
+    internal Task Interrupt(RecordingEnd why)
+    {
+        // The video recorder hears the same interruptions, its own way (S4's three video columns).
+        if (roundRecorder is { IsOpen: true } layer && RoundVideoRules.InterruptionOf(why) is { } heard)
+        {
+            layer.Interrupt(heard);
+        }
+        // What PLAYS hears the same interruptions (S4's last column): a call, a lock, a hidden window.
+        if (PlaybackPauses.Of(why) is { } happened)
+        {
+            PausePlayback(happened);
+        }
+        // A start still waiting on Windows' prompt or the lead-in has no recorder to stop: it lets go of the microphone
+        // once it is granted, rather than recording behind a lock screen (S4).
+        recordingStart.Interrupted();
+        var work = new List<Task>();
+        if (asking is { } question)
+        {
+            work.Add(KeepAskedAsync(question, why));
+        }
+        if (recorder is not null)
+        {
+            work.Add(EndRecordingAsync(why));
+        }
+        if (NotSent.ParksReview(why))
+        {
+            foreach (var chatId in strips.Keys.ToList())
+            {
+                work.Add(ParkReviewNotesAsync(chatId));
+            }
+            if (settling.Count > 0)
+            {
+                // A Stop or a Delete already under way lands in review after this: it is kept when it does.
+                work.Add(ParkReviewAfterAsync([.. settling]));
+            }
+        }
+        // The app is going: what the disk refused and memory held is offered to the disk once more, after the rest.
+        return why == RecordingEnd.WindowClosed ? WriteHeldAfterAsync(Task.WhenAll(work)) : Task.WhenAll(work);
+    }
+
+    /// <summary>
+    /// A real close: once everything else is kept, the voice messages the disk refused (S4) are tried on it again — the last
+    /// chance before the app goes and memory with it.
+    /// </summary>
+    private async Task WriteHeldAfterAsync(Task keeping)
+    {
+        try
+        {
+            await keeping;
+        }
+        finally
+        {
+            if (parked.HoldsInMemory)
+            {
+                var left = await Task.Run(parked.WriteHeld);
+                if (left > 0)
+                {
+                    Diagnostics.Write($"voice messages that were not sent and could not be written before closing: {left}");
+                }
+            }
+        }
+    }
+
+    /// <summary>What recordings still settling put in review, kept as "not sent" once they have landed.</summary>
+    private async Task ParkReviewAfterAsync(IReadOnlyList<Task> landing)
+    {
+        await Task.WhenAll(landing);
+        foreach (var chatId in strips.Keys.ToList())
+        {
+            await ParkReviewNotesAsync(chatId);
+        }
+    }
+
+    /// <summary>One stop's settling, from the microphone let go of until what it recorded is wherever it goes.</summary>
+    private TaskCompletionSource Settling()
+    {
+        var landed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        settling.Add(landed.Task);
+        return landed;
+    }
+
+    private void Settled(TaskCompletionSource landed)
+    {
+        settling.Remove(landed.Task);
+        landed.TrySetResult();
+    }
+
+    /// <summary>
+    /// Record a voice note (docs/protocol.md, "Audio"; docs/audio-video-messages-2026-10-04.md, S2.2): the microphone into an
+    /// M4A, the recording row in place of the field — Delete, the clock, Stop — and the slot beside it the Send arrow, or
+    /// Stop when it began beside words or staged items.
+    /// </summary>
+    /// <remarks>
+    /// Refused, with the reason, the way the Send slot's rows refuse (S1.3): in an edit, during a call, while an attachment
+    /// is on its way, and while this chat holds a voice message that was not sent — and never in the assistant's chat
+    /// (decision 24). Whatever is playing goes quiet first, so the app's own sound does not open the note; with a screen
+    /// reader running, "Recording" is said BEFORE the microphone records, and the recording and its clock start a second
+    /// later (S6); the screen is kept on and the call buttons are off until it ends.
+    /// </remarks>
+    /// <param name="fromSlot">The slot's own click (row 10), which arms its 600 ms guard (S1.1) — the menu and the shortcut do not.</param>
+    private async Task StartRecordingAsync(bool fromSlot)
+    {
+        // Not while the last one is still landing — a moment after its Send, Stop or Delete — so what that one says is never
+        // said into this one, and its review never arrives under this one's row.
+        if (open is not { } chat || recorder is not null || asking is not null || recordingStart.Starting || settling.Count > 0
+            || Kind(chat) == "ai")
         {
             return;
         }
         var say = services.Say;
         var strip = Staging(chat.ChatId);
-        if (strip.BusyReason(editing is not null, say) is { } busy)
+        if (VoiceNotes.Refusal(
+                editing is not null, callBusy, Busy(strip), HasNotSent(chat.ChatId), !strip.CanStage, say) is { } refused)
         {
-            ShowProblem(busy);
+            Explain(refused);
             return;
         }
-        if (!strip.CanStage)
+        recordingStart.Begin();
+        if (fromSlot)
         {
-            ShowProblem(ComposerStaging.CapSentence(say));
-            return;
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
         }
-        var (started, failure) = await VoiceRecorder.StartAsync();
-        if (started is null)
+        QuietForRecording();
+        try
         {
-            ShowProblem(failure == RecordingFailure.MicrophoneDenied
-                ? say.Get("Family needs permission to use your microphone. Turn it on in Settings.")
-                : say.Get("Couldn't start recording."));
-            return;
+            var leadIn = VoiceNotes.LeadIn(ScreenReader.Running());
+            var spoken = false;
+            Func<Task>? speakFirst = leadIn > TimeSpan.Zero
+                ? async () =>
+                {
+                    spoken = true;
+                    SayAloud(say.Get("Recording"));
+                    await Task.Delay(leadIn);
+                }
+                : null;
+            var (started, failure) = await VoiceRecorder.StartAsync(speakFirst);
+            if (started is null)
+            {
+                if (gone || open != chat)
+                {
+                    return;
+                }
+                if (failure != RecordingFailure.MicrophoneDenied)
+                {
+                    Explain(say.Get("Couldn't start recording."));
+                    return;
+                }
+                // Settings is offered only where a switch there can help — asked of Windows first (S2.2).
+                var (sentence, offersSettings) = VoiceNotes.MicrophoneRefusal(VoiceRecorder.MicrophoneAccess(), say);
+                if (sentence is not null)
+                {
+                    ShowProblem(sentence, offersSettings ? (say.Get("Open Settings"), OpenMicrophoneSettings) : null);
+                    Announce(ComposerError);
+                }
+                return;
+            }
+            // Granted after the chat went, beside one already running, while another is being asked about, with a call or an
+            // edit that began while Windows asked, behind a window minimised or hidden meanwhile, or after the session locked,
+            // the computer slept or the screen saver started (S4): let go of the microphone.
+            if (open != chat || gone || recorder is not null || asking is not null || callBusy || services.WindowAway || editing is not null
+                || recordingStart.WasInterrupted || SessionWatch.ScreenSaverRunning())
+            {
+                await started.DisposeAsync();
+                if (callBusy && !gone && open == chat)
+                {
+                    Explain(say.Get("You can record a message after the call."));
+                }
+                return;
+            }
+            recorder = started;
+            recordingChat = chat.ChatId;
+            // Whatever began playing while the microphone was being opened — the system's media keys reach the player
+            // whatever the app refuses — goes quiet before the recording does (S1.7).
+            QuietForRecording();
+            // Beside words or staged items — the paperclip, the menu, the shortcut — the words are hidden behind the row and
+            // must not leave unseen: the slot is Stop, and Stop stages the note beside them (row 3).
+            recordingBesideDraft = !string.IsNullOrWhiteSpace(ComposerBox.Text) || strip.Items.Count > 0;
+            warnedThirtySeconds = false;
+            // The microphone pulled out or taken away mid-recording: what can be read back is kept (S4).
+            started.Failed += () => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!gone && ReferenceEquals(recorder, started))
+                {
+                    _ = EndRecordingAsync(RecordingEnd.RecorderFailed);
+                }
+            });
+            keepAwake.Hold();
+            ComposerError.Visibility = Visibility.Collapsed;
+            recordingTimer ??= RecordingClock();
+            recordingTimer.Start();
+            if (fromSlot)
+            {
+                // The slot just turned into the Send arrow under the pointer: a double click on the microphone cannot send.
+                slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
+            }
+            ShowRecordingRow();
+            if (!spoken)
+            {
+                SayAloud(say.Get("Recording"));
+            }
         }
-        if (open != chat || gone || recorder is not null)
+        finally
         {
-            // Granted after the chat went, or beside one already running: let go of the microphone.
-            await started.DisposeAsync();
-            return;
+            recordingStart.End();
+            DrawSlot();
         }
-        recorder = started;
-        ComposerError.Visibility = Visibility.Collapsed;
-        recordingTimer ??= RecordingClock();
-        recordingTimer.Start();
-        ShowRecording();
-        RecordingBar.Visibility = Visibility.Visible;
-        AttachButton.IsEnabled = false;
-        RecordingStop.Focus(FocusState.Programmatic);
     }
 
-    /// <summary>The bar's clock — and the five-minute ceiling, which presses Stop by itself.</summary>
+    /// <summary>
+    /// The row's clock — and the five-minute ceiling, which stops into review by itself and says so; and the screen saver,
+    /// which says nothing to an app and so is asked about, and stops and keeps (S4).
+    /// </summary>
     private DispatcherQueueTimer RecordingClock()
     {
         var timer = DispatcherQueue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(250);
+        // An eighth of a second: the clock reads whole seconds, and the live waveform scrolls a bar a tick.
+        timer.Interval = TimeSpan.FromMilliseconds(125);
         timer.Tick += (_, _) =>
         {
             if (recorder is not { } running)
@@ -2584,9 +4301,18 @@ public sealed partial class ChatsView : UserControl
                 timer.Stop();
                 return;
             }
+            if (running.TakePeakDbfs() is { } peak)
+            {
+                liveLevels.Push(peak);
+            }
             if (VoiceNotes.IsDone(running.Elapsed))
             {
-                _ = StopRecordingAsync();
+                _ = EndRecordingAsync(RecordingEnd.Capped);
+                return;
+            }
+            if (SessionWatch.ScreenSaverRunning())
+            {
+                _ = EndRecordingAsync(RecordingEnd.SessionLocked);
                 return;
             }
             ShowRecording();
@@ -2594,136 +4320,1152 @@ public sealed partial class ChatsView : UserControl
         return timer;
     }
 
-    private void ShowRecording() =>
-        RecordingText.Text = VoiceNotes.RecordingLine(recorder?.Elapsed ?? TimeSpan.Zero, services.Say);
-
-    private async Task StopRecordingAsync()
+    /// <summary>
+    /// The clock, "0:42" — never announced (S6) — and from 4:30 "30 seconds left" beside it in orange, said once: words as well
+    /// as colour (S2.5, WCAG 1.4.1), in the live waveform's place — the line under it moves no more from there.
+    /// </summary>
+    private void ShowRecording()
     {
-        if (recorder is not { } stopping || open is not { } chat)
+        var elapsed = recorder?.Elapsed ?? TimeSpan.Zero;
+        RecordingTime.Text = VoiceNotes.Clock(elapsed);
+        DrawLevels();
+        if (!VoiceNotes.Warns(elapsed))
         {
             return;
         }
-        recorder = null;
-        recordingTimer?.Stop();
-        RecordingBar.Visibility = Visibility.Collapsed;
-        AttachButton.IsEnabled = true;
-        var recorded = await stopping.StopAsync();
-        if (recorded is not { } done || VoiceNotes.Staged(done.Bytes, done.Elapsed) is not { } staged)
+        if (RecordingWarning.Visibility != Visibility.Visible)
         {
-            ShowProblem(services.Say.Get("That recording was too short."));
-            return;
+            RecordingWarning.Text = services.Say.Get("30 seconds left");
+            RecordingWarning.Visibility = Visibility.Visible;
+            RecordingTime.Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
         }
-        if (open != chat || gone)
+        if (!warnedThirtySeconds)
         {
-            return;
+            warnedThirtySeconds = true;
+            SayAloud(services.Say.Get("30 seconds left"));
         }
-        Staging(chat.ChatId).Add(staged);
-        DrawStaging();
-        ComposerBox.Focus(FocusState.Programmatic);
     }
-
-    private void CancelRecording()
-    {
-        if (recorder is not { } abandoned)
-        {
-            return;
-        }
-        recorder = null;
-        recordingTimer?.Stop();
-        RecordingBar.Visibility = Visibility.Collapsed;
-        AttachButton.IsEnabled = true;
-        _ = abandoned.DisposeAsync().AsTask();
-    }
-
-    /// <summary>One recording's row as drawn, so playback can keep it up to date.</summary>
-    private sealed record AudioRow(long Id, Button Toggle, FontIcon Glyph, Slider Track, TextBlock Elapsed, double Total);
 
     /// <summary>
-    /// A recording, drawn the way the Apple apps draw one (ios <c>AudioPlayerView</c>): a round play button, a scrubber, and
-    /// where it is and how long it is under that — deliberately no waveform (docs/protocol.md, "Audio"). Downloaded rather
-    /// than streamed: a player here cannot put the session's Authorization on the requests it would make.
+    /// The live waveform (the approved design: it "scrolls in from the right"): the newest peaks the meter heard, a bar a tick,
+    /// in the recording red, as many as the row has room for — and none at all where there is no meter, where the row is too
+    /// narrow (the level meter goes first, S2.4), from 4:30 when "30 seconds left" takes its place, and with Windows'
+    /// animations off, where a line sweeping across the row is exactly the motion that was asked away.
     /// </summary>
-    private FrameworkElement AudioElement(AttachmentDto attachment, bool mine)
+    private void DrawLevels()
+    {
+        var room = RecordingLevels.Parent is Grid { ColumnDefinitions.Count: > 3 } row ? row.ColumnDefinitions[3].ActualWidth : 0;
+        var count = VoiceLook.BarCount(room);
+        var shown = recorder is not null && liveLevels.Heard > 0 && count >= 8
+            && RecordingWarning.Visibility != Visibility.Visible && levelsMove;
+        RecordingLevels.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+        if (!shown)
+        {
+            return;
+        }
+        var red = Palette.Themed("SystemFillColorCriticalBrush", 0xFF, 0xC4, 0x2B, 0x1C);
+        while (RecordingLevels.Children.Count > count)
+        {
+            RecordingLevels.Children.RemoveAt(0);
+        }
+        while (RecordingLevels.Children.Count < count)
+        {
+            RecordingLevels.Children.Insert(0, new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = VoiceLook.BarWidth,
+                RadiusX = VoiceLook.BarWidth / 2,
+                RadiusY = VoiceLook.BarWidth / 2,
+                Fill = red,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        var levels = liveLevels.Bars(count);
+        for (var i = 0; i < count; i++)
+        {
+            ((FrameworkElement)RecordingLevels.Children[i]).Height = VoiceLook.BarHeight(levels[i], RecordingLevels.Height);
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="element"/> fading in over the design's 150 ms — the recording row over the field and back, a chip
+    /// arriving — or simply there with Windows' animations off.
+    /// </summary>
+    private static void FadeIn(UIElement element)
+    {
+        if (!StickerImaging.AnimationsWanted())
+        {
+            element.Opacity = 1;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, element);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        var board = new Animation.Storyboard();
+        board.Children.Add(fade);
+        board.Begin();
+    }
+
+    /// <summary>
+    /// The recording row in place of the field and the buttons beside it (S2.4) — at the height the row had, so nothing above
+    /// it moves — with its middle Stop only when the slot is not Stop already, and focus on the slot, where it stays.
+    /// </summary>
+    private void ShowRecordingRow()
+    {
+        liveLevels.Clear();
+        levelsMove = StickerImaging.AnimationsWanted();
+        RecordingLevels.Children.Clear();
+        RecordingRow.MinHeight = Math.Max(ComposerBox.ActualHeight, ComposerTools.ActualHeight);
+        RecordingStop.Visibility = recordingBesideDraft ? Visibility.Collapsed : Visibility.Visible;
+        RecordingWarning.Visibility = Visibility.Collapsed;
+        RecordingTime.ClearValue(TextBlock.ForegroundProperty);
+        ShowRecording();
+        ComposerTools.Visibility = Visibility.Collapsed;
+        ComposerBox.Visibility = Visibility.Collapsed;
+        SuggestionScroller.Visibility = Visibility.Collapsed;
+        RecordingRow.Visibility = Visibility.Visible;
+        FadeIn(RecordingRow);
+        FitRecordingRow();
+        StartPulse();
+        AttachButton.IsEnabled = false;
+        ShowCallButtons();
+        ShowPlayDimming();
+        QuietViewerVideo();
+        DrawSlot();
+        SendButton.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Too narrow for words (S2.4): Delete and Stop become icons, with the same names.</summary>
+    private void FitRecordingRow()
+    {
+        var narrow = RecordingRow.ActualWidth is > 0 and < 300;
+        if (narrow == recordingRowNarrow)
+        {
+            return;
+        }
+        recordingRowNarrow = narrow;
+        var say = services.Say;
+        // Delete and Stop, in Segoe Fluent Icons.
+        RecordingDelete.Content = narrow ? new FontIcon { Glyph = ((char)0xE74D).ToString(), FontSize = 14 } : say.Get("Delete");
+        RecordingStop.Content = narrow ? new FontIcon { Glyph = ((char)ComposerButton.StopGlyph).ToString(), FontSize = 14 } : say.Get("Stop");
+    }
+
+    /// <summary>The red dot pulses between 100 % and 40 % once a second while it records — and stays still when Windows' animations are off (S2.9).</summary>
+    private void StartPulse()
+    {
+        StopPulse();
+        if (!StickerImaging.AnimationsWanted())
+        {
+            return;
+        }
+        var pulse = new Animation.DoubleAnimation
+        {
+            From = 1,
+            To = 0.4,
+            Duration = new Duration(TimeSpan.FromMilliseconds(500)),
+            AutoReverse = true,
+            RepeatBehavior = Animation.RepeatBehavior.Forever,
+        };
+        Animation.Storyboard.SetTarget(pulse, RecordingDot);
+        Animation.Storyboard.SetTargetProperty(pulse, "Opacity");
+        recordingPulse = new Animation.Storyboard();
+        recordingPulse.Children.Add(pulse);
+        recordingPulse.Begin();
+    }
+
+    private void StopPulse()
+    {
+        recordingPulse?.Stop();
+        recordingPulse = null;
+    }
+
+    /// <summary>
+    /// However a recording ends — Send, Stop, five minutes, Delete, or something that is not the person — the microphone is
+    /// let go of at once, and what it recorded goes where <see cref="NotSent.Ended"/> says: sent, review, its not-sent row,
+    /// or nowhere. What the person did is said to a screen reader (S6), and their own ending gives the keyboard back to the
+    /// field, so a second Enter cannot open the microphone again (S2.4).
+    /// </summary>
+    private async Task EndRecordingAsync(RecordingEnd why)
+    {
+        if (recorder is not { } stopping)
+        {
+            return;
+        }
+        var chatId = recordingChat;
+        // Read NOW, before leaving the chat ends the composer's mode: the reply it was recorded under goes with it — and the
+        // slot's Send carries the reply the composer is primed with at the moment it is pressed, shown above the row.
+        var take = TakeForInterrupted(chatId, why);
+        var sending = why == RecordingEnd.Sent && open?.ChatId == chatId ? open : null;
+        var replyTo = sending is not null && editing is null ? replyingTo?.Id : null;
+        RecordingStopped();
+        if (!gone && open?.ChatId == chatId && NotSent.GivesFocusBack(why))
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        var landed = Settling();
+        try
+        {
+            var recorded = await stopping.StopAsync();
+            var outcome = NotSent.Ended(keepsRecordings ? why : RecordingEnd.SignedOut, recorded.Elapsed, recorded.Bytes?.Length, services.Say);
+            ReleaseReply(chatId, take, outcome.Fate);
+            var fate = outcome.Fate == RecordingFate.Send
+                ? await SendRecordedAsync(sending, chatId, recorded, replyTo)
+                : await SettleAsync(chatId, recorded, outcome.Fate, take.ReplyTo, caption: null);
+            if (gone || open?.ChatId != chatId)
+            {
+                return;
+            }
+            if (outcome.Sentence is { } sentence)
+            {
+                Explain(sentence);
+            }
+            else if (NotSent.Said(why, fate, VoiceNotes.DurationMs(recorded.Elapsed), services.Say) is { } said)
+            {
+                SayAloud(said);
+            }
+        }
+        finally
+        {
+            Settled(landed);
+        }
+    }
+
+    /// <summary>
+    /// The slot's Send in row 2 (S2.5): the note goes through the outbox like any media send — its row written before its
+    /// first byte, its bytes kept until the ack — with the reply the composer was primed with. The person pressed Send, so a
+    /// chat switched in the same breath does not stop it. A note that cannot be written down lands in review with the
+    /// error, and one the window let go of meanwhile waits as not sent: never lost. Answers where it went.
+    /// </summary>
+    /// <param name="chat">The conversation the Send was pressed in, or null when it was not open — kept as not sent instead.</param>
+    private async Task<RecordingFate> SendRecordedAsync(ConversationModel? chat, long chatId, Recorded recorded, long? replyTo)
+    {
+        if (!keepsRecordings || recorded.Bytes is not { } bytes || VoiceNotes.Staged(bytes, recorded.Elapsed) is not { } note)
+        {
+            return RecordingFate.Discard;
+        }
+        if (chat is null || gone)
+        {
+            await ParkAsync(chatId, bytes, note.DurationMs ?? 0, replyTo, caption: null);
+            return RecordingFate.Park;
+        }
+        var store = connection.Staging;
+        string? handle = null;
+        sendingMedia = true;
+        DrawSlot();
+        try
+        {
+            // Its shape goes up with it (docs/protocol.md, "A voice note's waveform"), measured from the note itself.
+            note = await VoiceShape.ShapedAsync(note);
+            handle = await Task.Run(() => store.Stage(note));
+            chat.Send(
+                string.Empty, replyToMessageId: replyTo, pendingFiles: [handle],
+                mentions: ComposerMentions.ForSend(string.Empty, connection.Chats.Members(), IsFamily(chat)));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a voice message: {e.GetType().Name}");
+            var kept = await SettleAsync(chatId, recorded, RecordingFate.Review, replyTo, caption: null);
+            if (!gone && open?.ChatId == chatId)
+            {
+                Explain(services.Say.Get("Something went wrong. Try again."));
+            }
+            return kept;
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingMedia = false;
+            DrawSlot();
+        }
+        // Written down: from here it is the outbox's, whatever the window does next.
+        if (!gone && open == chat && replyTo is not null && editing is null && replyingTo?.Id == replyTo)
+        {
+            // The reply went with the note: the composer is primed for nothing now.
+            EndComposerMode(clear: false);
+        }
+        if (!gone && open == chat)
+        {
+            Queued();
+        }
+        else
+        {
+            _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+        }
+        return RecordingFate.Send;
+    }
+
+    /// <summary>
+    /// The reply went with a recording an interruption kept, and nothing else in the composer was going to carry it: the
+    /// composer, empty, is primed for nothing now — unless it has been primed for something else since.
+    /// </summary>
+    private void ReleaseReply(long chatId, ComposerTake take, RecordingFate fate)
+    {
+        if (fate == RecordingFate.Park && take.ClearsReply && !gone && open?.ChatId == chatId
+            && editing is null && replyingTo?.Id == take.ReplyTo)
+        {
+            EndComposerMode(clear: false);
+        }
+    }
+
+    /// <summary>What a recording an interruption keeps takes from the composer — nothing, when the person ended it.</summary>
+    private ComposerTake TakeForInterrupted(long chatId, RecordingEnd why) =>
+        why is RecordingEnd.Stopped or RecordingEnd.Sent or RecordingEnd.Capped or RecordingEnd.Deleted or RecordingEnd.SignedOut
+        || !keepsRecordings || gone || open?.ChatId != chatId
+            ? ComposerTake.Nothing
+            : NotSent.ForRecording(ComposerBox.Text, replyingTo?.Id, editing is not null, Staging(chatId).Items.Count > 0);
+
+    /// <summary>
+    /// The microphone's part of every ending: the row gives the field and its buttons back, and the clock, the screen, the
+    /// call buttons, the play buttons, the viewer's video and the slot go back to how they were.
+    /// </summary>
+    private void RecordingStopped()
+    {
+        recorder = null;
+        recordingTimer?.Stop();
+        keepAwake.Release();
+        if (gone)
+        {
+            return;
+        }
+        StopPulse();
+        RecordingRow.Visibility = Visibility.Collapsed;
+        RecordingLevels.Visibility = Visibility.Collapsed;
+        RecordingLevels.Children.Clear();
+        ComposerBox.Visibility = Visibility.Visible;
+        ComposerTools.Visibility = Visibility.Visible;
+        FadeIn(ComposerBox);
+        FadeIn(ComposerTools);
+        AttachButton.IsEnabled = !finding;
+        DrawSuggestions();
+        ShowCallButtons();
+        ShowPlayDimming();
+        QuietViewerVideo();
+        DrawSlot();
+    }
+
+    /// <summary>
+    /// The row's Delete (S2.5). Under ten seconds the recording is deleted at once; from ten seconds it STOPS FIRST — nothing
+    /// more is recorded while the question is up — and then asks "Delete this recording?" [Delete] [Keep], and Keep stages it
+    /// for review. An interruption meanwhile takes the question away and keeps the recording as "not sent".
+    /// </summary>
+    private async Task DeleteRecordingAsync()
+    {
+        if (recorder is not { } running)
+        {
+            return;
+        }
+        if (running.Elapsed < VoiceNotes.DeleteAsksFrom)
+        {
+            await EndRecordingAsync(RecordingEnd.Deleted);
+            return;
+        }
+        var chatId = recordingChat;
+        RecordingStopped();
+        var landed = Settling();
+        try
+        {
+            await AskBeforeDeletingAsync(chatId, await running.StopAsync());
+        }
+        finally
+        {
+            Settled(landed);
+        }
+    }
+
+    /// <summary>The question itself, about a recording that has stopped and been read back.</summary>
+    private async Task AskBeforeDeletingAsync(long chatId, Recorded recorded)
+    {
+        var outcome = NotSent.Ended(RecordingEnd.Stopped, recorded.Elapsed, recorded.Bytes?.Length, services.Say);
+        if (outcome.Fate != RecordingFate.Review)
+        {
+            // Nothing that could be read back: nothing to ask about, and the composer says what happened.
+            if (outcome.Sentence is { } sentence && !gone && open?.ChatId == chatId)
+            {
+                ShowProblem(sentence);
+                Announce(ComposerError);
+            }
+            return;
+        }
+        if (gone || !keepsRecordings || open?.ChatId != chatId)
+        {
+            // Left, closed or signed out while it stopped: an interruption's rule, not a question nobody is there to answer.
+            await SettleAsync(chatId, recorded, keepsRecordings ? RecordingFate.Park : RecordingFate.Discard, replyTo: null, caption: null);
+            return;
+        }
+        var question = new AskedRecording(chatId, recorded, Dialogs.DeleteRecording(XamlRoot, services.Say));
+        asking = question;
+        ContentDialogResult answer;
+        try
+        {
+            answer = await question.Question.ShowAsync();
+        }
+        catch (Exception e)
+        {
+            // Another dialog was up: nothing was asked, so nothing is deleted — it goes to review.
+            Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+            answer = ContentDialogResult.None;
+        }
+        if (question.Settled)
+        {
+            return;
+        }
+        asking = null;
+        // Delete: gone. Keep: to review, as the person's Stop would have put it. Either is said (S6).
+        var (why, went) = answer == ContentDialogResult.Primary
+            ? (RecordingEnd.Deleted, RecordingFate.Discard)
+            : (RecordingEnd.Stopped, await SettleAsync(chatId, recorded, RecordingFate.Review, replyTo: null, caption: null));
+        if (gone || open?.ChatId != chatId)
+        {
+            return;
+        }
+        if (NotSent.GivesFocusBack(why))
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        if (NotSent.Said(why, went, VoiceNotes.DurationMs(recorded.Elapsed), services.Say) is { } said)
+        {
+            SayAloud(said);
+        }
+    }
+
+    /// <summary>An interruption while "Delete this recording?" is up: the question goes, and the recording is kept as "not sent".</summary>
+    private async Task KeepAskedAsync(AskedRecording question, RecordingEnd why)
+    {
+        asking = null;
+        question.Settled = true;
+        var take = TakeForInterrupted(question.ChatId, why);
+        try
+        {
+            question.Question.Hide();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"taking a question away: {e.GetType().Name}");
+        }
+        var outcome = NotSent.Ended(keepsRecordings ? why : RecordingEnd.SignedOut, question.Recorded.Elapsed, question.Recorded.Bytes?.Length, services.Say);
+        ReleaseReply(question.ChatId, take, outcome.Fate);
+        await SettleAsync(question.ChatId, question.Recorded, outcome.Fate, take.ReplyTo, caption: null);
+    }
+
+    /// <summary>
+    /// A stopped recording, put where it goes, and where it went answered. REVIEW is the strip of the chat it was recorded in
+    /// while that chat is open — and its not-sent row when it is not: a note in review in a chat somebody left is exactly a
+    /// note not sent (S2.8).
+    /// </summary>
+    private async Task<RecordingFate> SettleAsync(long chatId, Recorded recorded, RecordingFate fate, long? replyTo, string? caption)
+    {
+        // A send is SendRecordedAsync's, never this; anything else that is not a discard is kept somewhere.
+        if (fate == RecordingFate.Discard || recorded.Bytes is not { } bytes || !keepsRecordings)
+        {
+            return RecordingFate.Discard;
+        }
+        if (fate == RecordingFate.Review && !gone && open?.ChatId == chatId
+            && VoiceNotes.Staged(bytes, recorded.Elapsed) is { } note
+            // Measured before it is shown, so its chip draws its own shape and a Send from review carries it.
+            && await VoiceShape.ShapedAsync(note) is var staged
+            && !gone && open?.ChatId == chatId && keepsRecordings && Staging(chatId).Add(staged))
+        {
+            DrawStaging();
+            // The field comes back, focused, for an optional caption (S2.7).
+            ComposerBox.Focus(FocusState.Programmatic);
+            return RecordingFate.Review;
+        }
+        await ParkAsync(chatId, bytes, VoiceNotes.DurationMs(recorded.Elapsed), replyTo, caption);
+        return RecordingFate.Park;
+    }
+
+    /// <summary>
+    /// Leaving a chat — or the window really closing — with a voice note still in review (S2.8): it waits as "not sent",
+    /// taking the words in the field as its caption and the reply with them, and the field is left empty. Taken NOW, before
+    /// the composer is handed to another chat or its draft is kept; only the writing waits.
+    /// </summary>
+    private Task ParkReviewNotesAsync(long chatId)
+    {
+        if (!keepsRecordings || !strips.TryGetValue(chatId, out var strip) || !strip.HoldsRecordings)
+        {
+            return Task.CompletedTask;
+        }
+        var here = !gone && open?.ChatId == chatId;
+        var take = here ? NotSent.ForReview(ComposerBox.Text, replyingTo?.Id, editing is not null) : ComposerTake.Nothing;
+        var notes = strip.TakeRecordings();
+        if (take.ClearsWords)
+        {
+            ComposerBox.Text = string.Empty;
+        }
+        if (take.ClearsReply)
+        {
+            EndComposerMode(clear: false);
+        }
+        if (here)
+        {
+            DrawStaging();
+        }
+        return ParkNotesAsync(chatId, notes, take);
+    }
+
+    /// <summary>Several notes in review, one row each: every one keeps the reply, and only the first the words — one message's words, never two.</summary>
+    private async Task ParkNotesAsync(long chatId, IReadOnlyList<StagedMedia> notes, ComposerTake take)
+    {
+        for (var at = 0; at < notes.Count; at++)
+        {
+            await ParkAsync(chatId, notes[at].Bytes.ToArray(), notes[at].DurationMs ?? 0, take.ReplyTo, at == 0 ? take.Caption : null);
+        }
+    }
+
+    /// <summary>
+    /// Written down as a voice message that was not sent. Where it cannot be written — a full disk (S4) — it is held in
+    /// memory instead, as the same row with the same reply and caption, never carried by another Send (S2.8): kept for as
+    /// long as the app runs, and the disk tried again as the window really closes.
+    /// </summary>
+    private async Task ParkAsync(long chatId, byte[] bytes, int durationMs, long? replyTo, string? caption)
+    {
+        try
+        {
+            await Task.Run(() => parked.Park(chatId, bytes, durationMs, replyTo, caption, DateTimeOffset.UtcNow));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"keeping a voice message that was not sent: {e.GetType().Name}");
+            if (!keepsRecordings)
+            {
+                return;
+            }
+            parked.Hold(chatId, bytes, durationMs, replyTo, caption, DateTimeOffset.UtcNow);
+            if (!gone && open?.ChatId == chatId)
+            {
+                DrawNotSent();
+            }
+            return;
+        }
+        if (!keepsRecordings)
+        {
+            // The session ended while it was being written: it goes with everything else recorded and not sent.
+            WipeParked();
+            return;
+        }
+        if (!gone && open?.ChatId == chatId)
+        {
+            DrawNotSent();
+        }
+    }
+
+    /// <summary>Whether this chat holds a voice message that was not sent; a disk that cannot be read blocks nothing.</summary>
+    private bool HasNotSent(long chatId)
+    {
+        try
+        {
+            return parked.Any(chatId);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            return false;
+        }
+    }
+
+    /// <summary>Everything recorded and not sent, gone with the session — written, or held in memory for want of a disk.</summary>
+    private void WipeParked()
+    {
+        parked.ForgetHeld();
+        try
+        {
+            ParkedRecordings.WipeAll(AppFolders.ParkedPath);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"wiping voice messages that were not sent: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Starting a recording pauses whatever is playing (S1.7) — the one recording player, and a video in the viewer — and a
+    /// recording on its way to playing is called off, so its bytes landing do not start it under the microphone.
+    /// </summary>
+    private void QuietForRecording()
+    {
+        QuietBesidesRound();
+        // And a circle playing in place: a recording starting pauses playback (S5.3).
+        YieldRound();
+    }
+
+    /// <summary>Everything that plays, but a circle in place: what a recording quiets, and what a circle starting quiets.</summary>
+    private void QuietBesidesRound()
+    {
+        fetchingAudio = 0;
+        fetchingLocal++;
+        if (AudioRunning)
+        {
+            audio.Pause();
+        }
+        ShowPlayback();
+        try
+        {
+            ViewerVideo.MediaPlayer?.Pause();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"pausing the viewer's video: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>Windows' own microphone page — offered only after <c>AppCapability</c> said a switch there can help.</summary>
+    private void OpenMicrophoneSettings()
+    {
+        try
+        {
+            _ = Windows.System.Launcher.LaunchUriAsync(new Uri(VoiceNotes.MicrophoneSettingsPage));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening the microphone settings: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The open chat's voice messages that were not sent (S2.8), a row each above the composer: "Voice message not sent ·
+    /// 0:42", the reply it was recorded under and its caption, then ▶, Send and ✕.
+    /// </summary>
+    private void DrawNotSent()
+    {
+        NotSentPanel.Children.Clear();
+        parkedRows.Clear();
+        IReadOnlyList<ParkedRecording> waiting = [];
+        if (!gone && open is { } chat)
+        {
+            try
+            {
+                waiting = parked.Of(chat.ChatId);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            }
+            foreach (var entry in waiting)
+            {
+                NotSentPanel.Children.Add(NotSentRow(chat, entry));
+            }
+        }
+        NotSentPanel.Visibility = waiting.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // While one waits, the microphone is dimmed and says so (S1.3 row 9).
+        notSentShown = waiting.Count;
+        ReconcileLocal();
+        DrawSlot();
+    }
+
+    private FrameworkElement NotSentRow(ConversationModel chat, ParkedRecording entry)
     {
         var say = services.Say;
-        var resources = Application.Current.Resources;
-        var total = VoiceNotes.TotalSeconds(attachment.DurationMs);
-        // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
-        var ink = mine ? Palette.Ink() : (Brush)resources["AccentFillColorDefaultBrush"];
-        var glyph = new FontIcon
+        var secondary = Palette.SecondaryText();
+        // The approved design's not-sent chip: "Not sent" in the caution colour, ▶, the note's mini waveform, its length,
+        // Send and ✕ — and under them the reply it was recorded under and its caption, when it has them.
+        var notSent = new TextBlock
         {
-            FontSize = 14,
-            Foreground = mine ? Palette.Surface(ActualTheme) : (Brush)resources["TextOnAccentFillColorPrimaryBrush"],
+            Text = say.Get("Not sent"),
+            FontSize = 12.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Palette.Themed("SystemFillColorCautionBrush", 0xFF, 0x9D, 0x5D, 0x00),
+            VerticalAlignment = VerticalAlignment.Center,
         };
-        var disc = new Grid { Width = 32, Height = 32 };
-        disc.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = ink });
-        disc.Children.Add(glyph);
-        // The disc is 32; the target around it is 44.
-        var toggle = new Button
+        // Its ▶ (S2.8): the note as it would be sent, from this device.
+        var shape = parkedShapes.TryGetValue(entry.Id, out var known) ? known : null;
+        var player = ChipPlayer(shape, entry.DurationMs, NotSentChipBars);
+        player.Toggle.Click += (_, _) => _ = ToggleLocalAsync(null, entry);
+        parkedRows[entry.Id] = new LocalRow(
+            player.Toggle, player.Glyph, player.Time, player.Time.Text, VoiceNotes.TotalSeconds(entry.DurationMs),
+            player.Bars, player.Played, player.Quiet);
+        DimPlay(player.Toggle);
+        if (!parkedShapes.ContainsKey(entry.Id))
         {
-            Content = disc,
-            Width = 44,
-            Height = 44,
-            Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(22),
+            _ = MeasureParkedAsync(entry);
+        }
+        var send = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = say.Get("Send"),
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Palette.Themed("AccentTextFillColorPrimaryBrush", 0xFF, 0x1E, 0x5B, 0xC6),
+            },
+            Padding = new Thickness(8, 4, 8, 4),
+            // A 44 target (S1.1) that reaches past the chip's line rather than making it taller.
+            MinHeight = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(0, VoiceLook.Reach(32), 0, VoiceLook.Reach(32)),
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        ToolTipService.SetToolTip(send, say.Get("Send voice message"));
+        AutomationProperties.SetName(send, say.Get("Send voice message"));
+        send.Click += (_, _) => _ = SendParkedAsync(chat, entry);
+        var delete = ChipCross(say.Get("Delete recording"));
+        delete.Click += (_, _) => _ = DeleteParkedAsync(entry);
+        var line = new Grid { ColumnSpacing = 10 };
+        // The mini waveform's place: its bars are drawn again, fewer, when the chip is narrower than the mockup's.
+        var wave = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        wave.Children.Add(player.Wave);
+        var lines = new StackPanel { Spacing = 2 };
+        lines.Children.Add(line);
+        ChipFit? laid = null;
+        void Lay(ChipFit fit)
+        {
+            if (laid is { } was && was.LabelAbove == fit.LabelAbove && was.Bars == fit.Bars)
+            {
+                return;
+            }
+            if (laid?.LabelAbove != fit.LabelAbove)
+            {
+                // "Not sent" on the line, or — in a longer language or at a large text size — on a line of its own above it.
+                line.Children.Clear();
+                line.ColumnDefinitions.Clear();
+                lines.Children.Remove(notSent);
+                var columns = new List<FrameworkElement>();
+                if (fit.LabelAbove)
+                {
+                    lines.Children.Insert(0, notSent);
+                }
+                else
+                {
+                    columns.Add(notSent);
+                }
+                columns.AddRange([player.Toggle, wave, player.Time, send, delete]);
+                for (var at = 0; at < columns.Count; at++)
+                {
+                    line.ColumnDefinitions.Add(new ColumnDefinition
+                    {
+                        Width = ReferenceEquals(columns[at], wave) ? new GridLength(1, GridUnitType.Star) : GridLength.Auto,
+                    });
+                    Place(line, columns[at], at);
+                }
+            }
+            if (laid?.Bars != fit.Bars && parkedRows.TryGetValue(entry.Id, out var row) && row.Toggle == player.Toggle)
+            {
+                // The WHOLE shape at the bars that fit, never the mockup's 22 cut off at the column's edge.
+                var known = parkedShapes.TryGetValue(entry.Id, out var measured) ? measured : null;
+                wave.Children.Clear();
+                wave.Children.Add(WaveformBars(VoiceLook.Bars(known, fit.Bars), VoiceLook.ChipWaveHeight, row.RestInk, out var bars));
+                row.Bars = bars;
+                ShowLocal();
+            }
+            laid = fit;
+        }
+        Lay(new ChipFit(LabelAbove: false, NotSentChipBars));
+        // The reply it was recorded under — which is the one it goes with, whatever the composer is primed with now.
+        if (entry.ReplyToMessageId is { } replyId && connection.Chats.Message(replyId) is { } answered)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = Quotes.Banner(answered, connection.Chats, say),
+                FontSize = 12,
+                Foreground = secondary,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+        }
+        if (entry.Caption is { } caption)
+        {
+            lines.Children.Add(new TextBlock
+            {
+                Text = caption,
+                FontSize = 12,
+                Foreground = secondary,
+                TextWrapping = TextWrapping.Wrap,
+                MaxLines = 2,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+        }
+        var chip = VoiceChipBox(lines, warning: true);
+        // Said as one: "Voice message not sent · 0:42".
+        AutomationProperties.SetName(chip, NotSent.Line(entry.DurationMs, say));
+        // The mockup's min(360, 100%): as wide as the room up to 360, and laid out for that width — again whenever the room
+        // or the text size changes (the length's own size follows the text size).
+        var host = new Grid();
+        host.Children.Add(chip);
+        void Fit()
+        {
+            var room = host.ActualWidth;
+            if (gone || !double.IsFinite(room) || room <= 0)
+            {
+                return;
+            }
+            var width = Math.Min(VoiceLook.ChipWidth, room);
+            chip.Width = width;
+            var inner = width - chip.Padding.Left - chip.Padding.Right - chip.BorderThickness.Left - chip.BorderThickness.Right;
+            var natural = new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity);
+            double Natural(FrameworkElement element)
+            {
+                element.Measure(natural);
+                return element.DesiredSize.Width;
+            }
+            var others = Natural(player.Toggle) + Natural(player.Time) + Natural(send) + Natural(delete);
+            Lay(VoiceLook.FitNotSent(inner, others, Natural(notSent), line.ColumnSpacing, NotSentChipBars));
+        }
+        host.SizeChanged += (_, _) => Fit();
+        player.Time.SizeChanged += (_, _) => Fit();
+        return host;
+    }
+
+    /// <summary>
+    /// The shape of a voice message that was not sent: kept with nothing but its bytes, so it is measured from them once per
+    /// run (<see cref="VoiceShape"/>) and the bars its row draws now — however many fit the chip — are given it.
+    /// </summary>
+    private async Task MeasureParkedAsync(ParkedRecording entry)
+    {
+        parkedShapes[entry.Id] = null;
+        try
+        {
+            var media = await Task.Run(() => parked.Staged(entry));
+            var shape = media is null ? null : await VoiceShape.MeasureAsync(media.Bytes);
+            parkedShapes[entry.Id] = shape;
+            // The bars its row draws NOW — fitted to the chip's width, perhaps drawn again since this began.
+            if (gone || shape is null || !parkedRows.TryGetValue(entry.Id, out var row))
+            {
+                return;
+            }
+            Reshape(row.Bars, shape, VoiceLook.ChipWaveHeight);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"measuring a voice message that was not sent: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// A not-sent row's Send: THAT recording, with THAT reply and caption, and nothing else — never the composer's words,
+    /// staged items or reply, and never carried by another Send (S2.8). Asked about exactly as the Send button is where the
+    /// assistant would hear it, and written down in the outbox BEFORE it leaves the store, so a crash in between can never
+    /// lose it.
+    /// </summary>
+    private async Task SendParkedAsync(ConversationModel chat, ParkedRecording entry)
+    {
+        if (gone || open != chat || sendingMedia || !HasEntry(chat.ChatId, entry))
+        {
+            return;
+        }
+        var say = services.Say;
+        var caption = entry.Caption ?? string.Empty;
+        var session = connection.Session.State;
+        var chatKind = Kind(chat);
+        if (AssistantConsent.IsRequired(chatKind, caption, session.Assistant?.Processor, session.AssistantConsentAt))
+        {
+            _ = ReviewAssistantConsentAsync(() =>
+            {
+                // A yes is for the chat it was asked in.
+                if (!gone && open == chat)
+                {
+                    _ = SendParkedAsync(chat, entry);
+                }
+            });
+            return;
+        }
+        if (AssistantConsent.IsWithheldFromAnUnnamedAssistant(chatKind, caption, session.Assistant is not null, session.Assistant?.Processor))
+        {
+            ShowProblem(say.Get("This server hasn't said which service answers, so nothing can be sent to the assistant here."));
+            return;
+        }
+        var store = connection.Staging;
+        string? handle = null;
+        sendingMedia = true;
+        DrawSlot();
+        ComposerError.Visibility = Visibility.Collapsed;
+        try
+        {
+            var media = await Task.Run(() => parked.Staged(entry));
+            if (media is null)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+                return;
+            }
+            // Its shape goes up with it: the one its row drew, or measured now from the same bytes.
+            media = parkedShapes.TryGetValue(entry.Id, out var shape) && shape is not null
+                ? media with { Waveform = shape }
+                : await VoiceShape.ShapedAsync(media);
+            handle = await Task.Run(() => store.Stage(media));
+            if (gone || open != chat)
+            {
+                // Not sent after all: it stays in its row.
+                return;
+            }
+            chat.Send(
+                caption, replyToMessageId: entry.ReplyToMessageId, pendingFiles: [handle],
+                mentions: ComposerMentions.ForSend(caption, connection.Chats.Members(), IsFamily(chat)));
+            if (!await Task.Run(() => parked.Remove(entry)))
+            {
+                Diagnostics.Write("a voice message that was sent could not be taken out of the not-sent store");
+            }
+            DrawNotSent();
+            Queued();
+            if (!gone && open == chat)
+            {
+                // Its Send went with its row: the keyboard goes back to the field, and a screen reader hears what happened.
+                RowEnded(sent: true, entry.DurationMs);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a voice message that was not sent: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingMedia = false;
+            DrawSlot();
+        }
+    }
+
+    private bool HasEntry(long chatId, ParkedRecording entry)
+    {
+        try
+        {
+            return parked.Of(chatId).Any(held => held.Id == entry.Id);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Diagnostics.Write($"reading voice messages that were not sent: {e.GetType().Name}");
+            return false;
+        }
+    }
+
+    /// <summary>A not-sent row's ✕: deleted — after "Delete this recording?" from ten seconds, because it cannot be made again.</summary>
+    private async Task DeleteParkedAsync(ParkedRecording entry)
+    {
+        if (VoiceNotes.AsksBeforeDeleting(entry.DurationMs))
+        {
+            ContentDialogResult answer;
+            try
+            {
+                answer = await Dialogs.DeleteRecording(XamlRoot, services.Say).ShowAsync();
+            }
+            catch (Exception e)
+            {
+                // Only one dialog may be up at a time: nothing was asked, so nothing is deleted.
+                Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+                return;
+            }
+            if (answer != ContentDialogResult.Primary || gone)
+            {
+                return;
+            }
+        }
+        await Task.Run(() => parked.Remove(entry));
+        if (!gone)
+        {
+            DrawNotSent();
+            // Its ✕ went with its row: the keyboard goes back to the field, and a screen reader hears what happened (S6).
+            RowEnded(sent: false, entry.DurationMs);
+        }
+    }
+
+    /// <summary>
+    /// A not-sent row's own Send or ✕ took it, and its focused button with it: the keyboard goes back to the field — never left
+    /// nowhere, which loses a screen reader's place — and what happened is said (<see cref="NotSent.RowEnded"/>).
+    /// </summary>
+    private void RowEnded(bool sent, int durationMs)
+    {
+        var (focusField, said) = NotSent.RowEnded(sent, durationMs, services.Say);
+        if (focusField)
+        {
+            ComposerBox.Focus(FocusState.Programmatic);
+        }
+        SayAloud(said);
+    }
+
+    /// <summary>A sentence on the composer's notice line, said to a screen reader as it appears (S6): the line is a polite live region.</summary>
+    private static void Announce(FrameworkElement line)
+    {
+        try
+        {
+            (FrameworkElementAutomationPeer.FromElement(line) ?? FrameworkElementAutomationPeer.CreatePeerForElement(line))
+                ?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+        catch (Exception e)
+        {
+            // An announcement is a courtesy: the sentence is on the screen either way.
+            Diagnostics.Write($"announcing a notice: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>One recording's bubble as drawn, so playback can keep it up to date: its button, its seek, its bars and its words.</summary>
+    private sealed record AudioRow(
+        long Id,
+        Button Toggle,
+        FontIcon Glyph,
+        Slider Track,
+        TextBlock Time,
+        double Total,
+        Microsoft.UI.Xaml.Shapes.Rectangle[] Bars,
+        Brush PlayedInk,
+        Brush RestInk,
+        Button Speed,
+        TextBlock SpeedText,
+        Ellipse? Dot,
+        FrameworkElement Card,
+        bool Mine);
+
+    /// <summary>
+    /// A recording, drawn as the approved design of 2026-10-05 draws a voice message: a round accent play button, the waveform
+    /// the sender measured (docs/protocol.md, "A voice note's waveform" — the neutral placeholder when there is none), its
+    /// played bars in the accent as it plays, the time in tabular digits — where it is while it plays, its length at rest —
+    /// a speed chip while it plays, and a dot until this device has played someone else's. Downloaded rather than streamed:
+    /// a player here cannot put the session's Authorization on the requests it would make.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THE WAVEFORM IS THE SEEK.</b> A slider lies over the bars with its own track and thumb drawn in nothing, so a click
+    /// or a drag on the waveform seeks, the arrow keys step it, and Narrator hears an adjustable "Position" — a control every
+    /// assistive technology already knows, rather than a picture of one. Its focus rectangle is Windows' own.
+    /// </para>
+    /// <para>
+    /// <b>NOTHING IN THE READER'S OWN BALLOON IS DRAWN IN THE ACCENT</b>, which is the balloon: there the button is white with
+    /// the balloon's colour in it, the played bars white and the rest white at 45 %.
+    /// </para>
+    /// </remarks>
+    private FrameworkElement AudioElement(AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var total = VoiceNotes.TotalSeconds(attachment.DurationMs);
+        var accent = Palette.Themed("AccentFillColorDefaultBrush", 0xFF, 0x1E, 0x5B, 0xC6);
+        var white = Palette.Ink();
+        var played = mine || HasPlayedVoice(attachment.Id);
+
+        // The round play button: a 40 disc in a 44 target.
+        var glyph = new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 16,
+            Foreground = mine ? Palette.Surface(ActualTheme) : Palette.Themed("TextOnAccentFillColorPrimaryBrush", 0xFF, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var disc = new Grid { Width = VoiceLook.PlayDisc, Height = VoiceLook.PlayDisc };
+        disc.Children.Add(new Ellipse { Fill = mine ? white : accent });
+        disc.Children.Add(glyph);
+        var toggle = new Button
+        {
+            Content = disc,
+            Width = ComposerButton.MinTargetWindowsEpx,
+            Height = ComposerButton.MinTargetWindowsEpx,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetRowSpan(toggle, 2);
+
+        // The waveform, and the invisible slider over it that makes it the seek.
+        var restInk = mine
+            ? new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0xFF, 0xFF, 0xFF))
+            : Palette.Themed("TextFillColorDisabledBrush", 0x5C, 0x80, 0x80, 0x80);
+        var playedInk = mine ? white : accent;
+        var barsPanel = WaveformBars(
+            VoiceLook.Bars(attachment.Waveform, VoiceLook.BarCount(VoiceLook.WaveWidth)), VoiceLook.WaveHeight, restInk, out var bars);
         var track = new Slider
         {
             Minimum = 0,
             Maximum = total,
             StepFrequency = 0.1,
+            SmallChange = 1,
+            LargeChange = 5,
             IsThumbToolTipEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(-2, 0, -2, 0),
         };
+        InvisibleTrack(track);
         AutomationProperties.SetName(track, say.Get("Position"));
-        if (mine)
+        var wave = new Grid { Height = 32, Width = VoiceLook.WaveWidth, VerticalAlignment = VerticalAlignment.Bottom };
+        wave.Children.Add(barsPanel);
+        wave.Children.Add(track);
+        Grid.SetColumn(wave, 1);
+
+        // Under it: the time, the dot, and the speed chip at the end.
+        var time = new TextBlock
         {
-            foreach (var key in new[] { "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed", "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed" })
+            Text = MediaText.TimeLabel(total),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = mine ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xD9, 0xFF, 0xFF, 0xFF)) : Palette.SecondaryText(),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        Ellipse? dot = null;
+        var meta = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 2, 0, 0) };
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        meta.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        meta.Children.Add(time);
+        if (VoiceLook.ShowsDot(mine, played))
+        {
+            // THIS DEVICE's own knowledge, kept per account and never sent — and never on the reader's own.
+            dot = new Ellipse
             {
-                track.Resources[key] = ink;
-            }
+                Width = VoiceLook.Dot,
+                Height = VoiceLook.Dot,
+                Fill = accent,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            AutomationProperties.SetAccessibilityView(dot, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+            Grid.SetColumn(dot, 1);
+            meta.Children.Add(dot);
         }
-        var elapsed = new TextBlock { FontSize = 11, Opacity = 0.75 };
-        var length = new TextBlock { FontSize = 11, Opacity = 0.75, Text = MediaText.TimeLabel(total), HorizontalAlignment = HorizontalAlignment.Right };
-        if (mine)
-        {
-            elapsed.Foreground = ink;
-            length.Foreground = ink;
-        }
-        var times = new Grid();
-        times.Children.Add(elapsed);
-        times.Children.Add(length);
-        var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        lines.Children.Add(track);
-        lines.Children.Add(times);
-        var row = new Grid { ColumnSpacing = 10 };
+        var (speed, speedText) = SpeedChip(mine);
+        Grid.SetColumn(speed, 2);
+        meta.Children.Add(speed);
+        Grid.SetColumn(meta, 1);
+        Grid.SetRow(meta, 1);
+
+        var row = new Grid { ColumnSpacing = 10 - (ComposerButton.MinTargetWindowsEpx - VoiceLook.PlayDisc) / 2 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         row.Children.Add(toggle);
-        Grid.SetColumn(lines, 1);
-        row.Children.Add(lines);
-        var card = new Border
+        row.Children.Add(wave);
+        row.Children.Add(meta);
+        // The balloon is the bubble: the card adds no fill of its own, and reaches into the balloon's 12-wide padding so the
+        // disc sits 8 from its edge and the whole balloon is VoiceLook.Width across.
+        // A group Narrator meets — "Voice message, 0:42", "Not played" — which a Border, with no automation peer, never is.
+        var card = new NamedGroup
         {
-            Child = row,
-            Width = 260,
-            Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(12),
-            BorderThickness = new Thickness(1),
-            Background = mine
-                ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0x24, 0xFF, 0xFF, 0xFF))
-                : (Brush)resources["SubtleFillColorSecondaryBrush"],
-            BorderBrush = mine
-                ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(0x29, 0xFF, 0xFF, 0xFF))
-                : (Brush)resources["CardStrokeColorDefaultBrush"],
+            Width = VoiceLook.Width - 14,
+            Margin = new Thickness(-6, -2, -4, -2),
         };
-        AutomationProperties.SetName(card, say.Format("Audio, %@", MediaText.TimeLabel(total)));
+        card.Children.Add(row);
+        AutomationProperties.SetName(card, VoiceLook.Name(attachment, say));
+        if (VoiceLook.Status(mine, played, say) is { } status)
+        {
+            AutomationProperties.SetItemStatus(card, status);
+        }
 
-        var drawn = new AudioRow(attachment.Id, toggle, glyph, track, elapsed, total);
-        audioRows[attachment.Id] = drawn;
+        var drawn = new AudioRow(attachment.Id, toggle, glyph, track, time, total, bars, playedInk, restInk, speed, speedText, dot, card, mine);
+        // Every copy on the screen is kept up to date — this one from now, and whenever it comes back — and none once it goes.
+        audioRows.Add(attachment.Id, drawn);
+        card.Loaded += (_, _) =>
+        {
+            if (!gone)
+            {
+                audioRows.Add(drawn.Id, drawn);
+            }
+        };
+        card.Unloaded += (_, _) => audioRows.Remove(drawn.Id, drawn);
+        DimPlay(toggle);
         toggle.Click += (_, _) => _ = ToggleAudioAsync(attachment);
-        // While the thumb is held, playback does not fight it for the position.
+        speed.Click += (_, _) => SetVoiceRate(VoiceSpeed.Next(voiceRate));
+        // While the waveform is held, playback does not fight it for the position.
         track.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => scrubbingAudio = true), true);
         track.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => scrubbingAudio = false), true);
         track.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => scrubbingAudio = false), true);
@@ -2733,15 +5475,482 @@ public sealed partial class ChatsView : UserControl
             {
                 return;
             }
-            elapsed.Text = MediaText.TimeLabel(e.NewValue);
             if (playingAudio == drawn.Id)
             {
                 audioAtEnd = false;
                 audio.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue);
+                PaintVoice(drawn, active: true, e.NewValue);
+                return;
             }
+            // Seeked while idle: the bars light to there and the time says it — on every copy — and Play starts there.
+            seekedAudio[drawn.Id] = e.NewValue;
+            ShowAudio(drawn.Id);
         };
         ShowAudio(drawn.Id);
-        return card;
+        return WithTranscript(card, attachment, mine, message, chatKind);
+    }
+
+    /// <summary>
+    /// A waveform's bars, left to right, each <see cref="VoiceLook.BarWidth"/> wide with rounded ends and as tall as its level
+    /// says, centred on the line — drawn in <paramref name="ink"/> and handed back so playback can light them.
+    /// </summary>
+    private static StackPanel WaveformBars(byte[] levels, double height, Brush ink, out Microsoft.UI.Xaml.Shapes.Rectangle[] bars)
+    {
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = VoiceLook.BarGap,
+            Height = height,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            IsHitTestVisible = false,
+        };
+        AutomationProperties.SetAccessibilityView(panel, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        bars = new Microsoft.UI.Xaml.Shapes.Rectangle[levels.Length];
+        for (var i = 0; i < levels.Length; i++)
+        {
+            bars[i] = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = VoiceLook.BarWidth,
+                Height = VoiceLook.BarHeight(levels[i], height),
+                RadiusX = VoiceLook.BarWidth / 2,
+                RadiusY = VoiceLook.BarWidth / 2,
+                Fill = ink,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            panel.Children.Add(bars[i]);
+        }
+        return panel;
+    }
+
+    /// <summary>New levels for bars already drawn — a waveform measured after its row was — at the same count and height.</summary>
+    private static void Reshape(Microsoft.UI.Xaml.Shapes.Rectangle[] bars, string? waveform, double height)
+    {
+        var levels = VoiceLook.Bars(waveform, bars.Length);
+        for (var i = 0; i < bars.Length; i++)
+        {
+            bars[i].Height = VoiceLook.BarHeight(levels[i], height);
+        }
+    }
+
+    /// <summary>A slider whose track and thumb are drawn in nothing: the waveform under it is what is seen, its focus rectangle Windows' own.</summary>
+    private static void InvisibleTrack(Slider track)
+    {
+        var none = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (var key in new[]
+                 {
+                     "SliderTrackFill", "SliderTrackFillPointerOver", "SliderTrackFillPressed", "SliderTrackFillDisabled",
+                     "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed", "SliderTrackValueFillDisabled",
+                     "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed", "SliderThumbBackgroundDisabled",
+                     "SliderThumbBorderBrush", "SliderThumbBorderBrushPointerOver", "SliderThumbBorderBrushPressed", "SliderThumbBorderBrushDisabled",
+                     "SliderOuterThumbBackground", "SliderTickBarFill", "SliderTickBarFillDisabled",
+                 })
+        {
+            track.Resources[key] = none;
+        }
+    }
+
+    /// <summary>
+    /// The speed chip (1×, 1.5×, 2×): the accent's own soft capsule with the accent's text, or white on white in the reader's
+    /// balloon — hidden until its bubble plays.
+    /// </summary>
+    private (Button Chip, TextBlock Text) SpeedChip(bool mine)
+    {
+        var accentColour = Palette.ThemeAccent();
+        var text = new TextBlock
+        {
+            Text = VoiceSpeed.Label(voiceRate, services.Say),
+            FontSize = 11.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = mine ? Palette.Ink() : Palette.Themed("AccentTextFillColorPrimaryBrush", 0xFF, 0x1E, 0x5B, 0xC6),
+        };
+        Typography.SetNumeralAlignment(text, FontNumeralAlignment.Tabular);
+        // The capsule is what is drawn; the button round it is the 44 target S1.1 asks for, reaching past the capsule (and
+        // leftwards, so the capsule stays at the end of the line) rather than making the time's line any taller.
+        var capsule = new Border
+        {
+            Child = text,
+            Padding = new Thickness(7, 1, 7, 2),
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(mine
+                ? Windows.UI.Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF)
+                : Windows.UI.Color.FromArgb(0x2E, accentColour.R, accentColour.G, accentColour.B)),
+        };
+        var reach = VoiceLook.Reach(SpeedCapsuleHeight);
+        var chip = new Button
+        {
+            Content = capsule,
+            Padding = new Thickness(0),
+            MinHeight = ComposerButton.MinTargetWindowsEpx,
+            MinWidth = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(0, reach, 0, reach),
+            HorizontalContentAlignment = HorizontalAlignment.Right,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Visibility = Visibility.Collapsed,
+        };
+        TargetOnly(chip);
+        AutomationProperties.SetName(chip, VoiceSpeed.Name(voiceRate, services.Say));
+        ToolTipService.SetToolTip(chip, services.Say.Get("Playback speed"));
+        return (chip, text);
+    }
+
+    /// <summary>The speed chip's capsule as drawn at 100 % text: 11.5-px digits and their padding.</summary>
+    private const double SpeedCapsuleHeight = 19;
+
+    /// <summary>
+    /// A button that is only a TARGET round something drawn smaller inside it: nothing of its own is painted as the pointer
+    /// passes or presses, so the 44 square never shows — what is drawn is the capsule or glyph it carries.
+    /// </summary>
+    private static void TargetOnly(Button button)
+    {
+        var none = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (var key in new[]
+                 {
+                     "ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBackgroundPressed", "ButtonBackgroundDisabled",
+                     "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled",
+                 })
+        {
+            button.Resources[key] = none;
+        }
+    }
+
+    /// <summary>The speed chosen — by the chip or the menu — kept on this device, applied to what plays, and every chip told.</summary>
+    private void SetVoiceRate(double rate)
+    {
+        voiceRate = VoiceSpeed.Normal(rate);
+        VoiceSpeedSetting.Rate = voiceRate;
+        if (playingAudio is not null)
+        {
+            ApplyRate(voiceRate);
+        }
+        foreach (var row in audioRows.All)
+        {
+            row.SpeedText.Text = VoiceSpeed.Label(voiceRate, services.Say);
+            AutomationProperties.SetName(row.Speed, VoiceSpeed.Name(voiceRate, services.Say));
+        }
+    }
+
+    /// <summary>
+    /// A bubble's look at <paramref name="at"/> seconds: its played bars lit, the time where it is — or, at rest, every bar
+    /// quiet and its whole length — and the speed chip only while it is the one playing.
+    /// </summary>
+    private void PaintVoice(AudioRow row, bool active, double at, bool seeked = false)
+    {
+        var shown = active || seeked;
+        var lit = shown ? VoiceLook.PlayedBars(at, row.Total, row.Bars.Length) : 0;
+        for (var i = 0; i < row.Bars.Length; i++)
+        {
+            var ink = i < lit ? row.PlayedInk : row.RestInk;
+            if (!ReferenceEquals(row.Bars[i].Fill, ink))
+            {
+                row.Bars[i].Fill = ink;
+            }
+        }
+        row.Time.Text = VoiceLook.Time(shown, at, row.Total);
+        var speed = VoiceLook.ShowsSpeed(active) ? Visibility.Visible : Visibility.Collapsed;
+        if (row.Speed.Visibility != speed)
+        {
+            row.Speed.Visibility = speed;
+        }
+    }
+
+    /// <summary>Whether this device has played this voice message; a cache that cannot be read draws no dot rather than a wrong one.</summary>
+    private bool HasPlayedVoice(long attachmentId)
+    {
+        try
+        {
+            return playedVoice.Played(attachmentId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading what was played: {e.GetType().Name}");
+            return true;
+        }
+    }
+
+    /// <summary>A voice message starts playing here: remembered, and its dot goes — on every copy drawn of it.</summary>
+    private void MarkVoicePlayed(long attachmentId)
+    {
+        try
+        {
+            if (!playedVoice.MarkPlayed(attachmentId))
+            {
+                return;
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+            return;
+        }
+        foreach (var row in audioRows.Of(attachmentId).Where(row => !row.Mine))
+        {
+            if (row.Dot is { } dot)
+            {
+                dot.Visibility = Visibility.Collapsed;
+            }
+            AutomationProperties.SetItemStatus(row.Card, VoiceLook.Status(mine: false, played: true, services.Say) ?? string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// One recording's place for its text, and what it needs to ask: the chat and the message it is on, and the form the
+    /// rules chose with the ceiling the device's own sound must fit.
+    /// </summary>
+    private sealed record TranscriptHost(
+        StackPanel Panel, long ChatId, long MessageId, AttachmentDto Attachment, bool Mine, TranscriptForm Form, long MaxBytes);
+
+    /// <summary>
+    /// Media Foundation is how this machine takes a sound track out of a file it holds (<see cref="SoundTracks"/>), and
+    /// every Windows this app runs on has it — the player beside "Show text" is Media Foundation too. A file it cannot
+    /// read is "Couldn't read the sound in this file.", and one too long to fit "This recording is too long to turn into
+    /// text.", decided per file once the click lands (<see cref="TranscriptSound"/>).
+    /// </summary>
+    private const bool ExtractsSound = true;
+
+    /// <summary>
+    /// The player with "Show text" under it, where this member may ask (docs/protocol.md, "Transcripts on request").
+    /// </summary>
+    private FrameworkElement WithTranscript(
+        FrameworkElement player, AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
+    {
+        if (TranscriptPanel(attachment, mine, message, chatKind) is not { } panel)
+        {
+            return player;
+        }
+        var both = new StackPanel { Spacing = 2 };
+        both.Children.Add(player);
+        both.Children.Add(panel);
+        return both;
+    }
+
+    /// <summary>
+    /// The place for one recording's text — a voice note's, an audio file's or a video's — where this member may ask:
+    /// a server that transcribes, the rule for this member and this message, and a form to ask in (the server's stored
+    /// copy, or sound this device makes) — <see cref="TranscriptRules.Offers"/> decides, and text this device already
+    /// holds is always shown. Null where nothing is offered.
+    /// </summary>
+    private StackPanel? TranscriptPanel(AttachmentDto attachment, bool mine, MessageDto message, string? chatKind)
+    {
+        var state = connection.Session.State;
+        if (message.Id <= 0
+            || !TranscriptRules.Offers(
+                state.Assistant, state.Family, chatKind, message.SenderId, Reader, attachment,
+                held: connection.Transcripts.Holds(attachment.Id), extracts: ExtractsSound))
+        {
+            return null;
+        }
+        // Held text with no server to ask any more is still shown; it is then never asked for again.
+        var form = state.Assistant is { } assistant && TranscriptRules.IsAvailable(assistant)
+            ? TranscriptRules.Form(attachment, assistant, ExtractsSound)
+            : TranscriptForm.None;
+        var maxBytes = state.Assistant is { } stated ? TranscriptRules.MaxBytes(stated) : TranscriptRules.CeilingBytes;
+        var panel = new StackPanel { Spacing = 2, Margin = new Thickness(4, 2, 4, 0), MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Left };
+        var host = new TranscriptHost(panel, message.ChatId, message.Id, attachment, mine, form, maxBytes);
+        // Registered while it is on screen, so a change redraws every copy of this recording that is showing, and none
+        // that a redraw has already thrown away.
+        panel.Loaded += (_, _) =>
+        {
+            if (!transcriptHosts.TryGetValue(attachment.Id, out var hosts))
+            {
+                transcriptHosts[attachment.Id] = hosts = [];
+            }
+            if (!hosts.Contains(host))
+            {
+                hosts.Add(host);
+            }
+            DrawTranscript(host);
+        };
+        panel.Unloaded += (_, _) =>
+        {
+            if (transcriptHosts.TryGetValue(attachment.Id, out var hosts) && hosts.Remove(host) && hosts.Count == 0)
+            {
+                transcriptHosts.Remove(attachment.Id);
+            }
+        };
+        DrawTranscript(host);
+        return panel;
+    }
+
+    private void DrawTranscripts(long attachmentId)
+    {
+        if (transcriptHosts.TryGetValue(attachmentId, out var hosts))
+        {
+            foreach (var host in hosts.ToList())
+            {
+                DrawTranscript(host);
+            }
+        }
+    }
+
+    /// <summary>
+    /// What is under one player: "Show text"; "Getting the text…" while it is asked for; the text itself — selectable, so
+    /// it can be copied — with "Hide text"; "No speech" for silence; or why it could not be had, with "Try Again" only
+    /// where trying again could help.
+    /// </summary>
+    private void DrawTranscript(TranscriptHost host)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var panel = host.Panel;
+        var id = host.Attachment.Id;
+        // An own balloon is filled with the accent, so nothing in it may be drawn in the accent too.
+        var actionInk = host.Mine ? Palette.Ink() : (Brush)resources["AccentTextFillColorPrimaryBrush"];
+        Brush? quietInk = host.Mine ? Palette.Ink() : null;
+        var look = connection.Transcripts.Look(id);
+        panel.Children.Clear();
+        switch (look.Phase)
+        {
+            case TranscriptPhase.Asking:
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                row.Children.Add(new ProgressRing { IsActive = true, Width = 14, Height = 14 });
+                var line = new TextBlock { Text = say.Get("Getting the text…"), FontSize = 12, Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center };
+                if (quietInk is not null)
+                {
+                    line.Foreground = quietInk;
+                }
+                row.Children.Add(line);
+                panel.Children.Add(row);
+                break;
+            }
+            case TranscriptPhase.Open:
+            {
+                var words = new TextBlock
+                {
+                    Text = TranscriptRules.Shown(look.Text, say),
+                    TextWrapping = TextWrapping.Wrap,
+                    // The words of a recording, as words: selectable, and so copyable. Silence is a label, not text to copy.
+                    IsTextSelectionEnabled = !look.NoSpeech,
+                    FontStyle = look.NoSpeech ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal,
+                };
+                if (quietInk is not null)
+                {
+                    words.Foreground = quietInk;
+                }
+                // A screen reader hears what this block IS, so it is not read as the message itself.
+                AutomationProperties.SetLocalizedControlType(words, say.Get("Text of the recording"));
+                panel.Children.Add(words);
+                panel.Children.Add(TranscriptAction(say.Get("Hide text"), actionInk, () => connection.Transcripts.Hide(id)));
+                break;
+            }
+            case TranscriptPhase.Failed:
+            {
+                var error = look.Error ?? ApiError.Transport("no answer");
+                var line = new TextBlock
+                {
+                    Text = TranscriptRules.FailureSentence(error, say),
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    Opacity = 0.85,
+                };
+                if (quietInk is not null)
+                {
+                    line.Foreground = quietInk;
+                }
+                panel.Children.Add(line);
+                if (TranscriptRules.MayRetry(error))
+                {
+                    panel.Children.Add(TranscriptAction(say.Get("Try Again"), actionInk, () => _ = AskTranscriptAsync(host)));
+                }
+                break;
+            }
+            default:
+                panel.Children.Add(TranscriptAction(say.Get("Show text"), actionInk, () => _ = AskTranscriptAsync(host)));
+                break;
+        }
+    }
+
+    /// <summary>A small text button under the player, in the balloon's own ink.</summary>
+    private static Button TranscriptAction(string label, Brush ink, Action click)
+    {
+        var button = new Button
+        {
+            Content = new TextBlock { Text = label, FontSize = 12, Foreground = ink },
+            Padding = new Thickness(0, 2, 0, 2),
+            MinHeight = 0,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(button, label);
+        button.Click += (_, _) => click();
+        return button;
+    }
+
+    /// <summary>
+    /// "Show text" pressed: the kept text at once, or the question when <c>/me</c> says this member has not agreed, then
+    /// the request — and the question again, once, if the server says agree first (the board backdrop's order). The
+    /// recording's sound is the ASKER's to send, so it is the asker who is asked.
+    /// </summary>
+    private async Task AskTranscriptAsync(TranscriptHost host)
+    {
+        try
+        {
+            var attachment = host.Attachment;
+            // The device's own sound, made only after the consent question — and, for the stored form, only if the server
+            // then says it cannot send its copy.
+            var sound = ExtractsSound
+                ? new SoundSource(
+                    host.MaxBytes,
+                    ct => SoundTracks.MakeAsync(connection.Attachments, attachment, host.MaxBytes, ct),
+                    attachment.DurationMs)
+                : null;
+            await connection.Transcripts.ShowAsync(
+                host.ChatId, host.MessageId, attachment.Id, host.Form, sound,
+                () => BackdropConsent.AsksFirst(
+                    connection.Session.State.Assistant?.Processor, connection.Session.State.AssistantConsentAt),
+                AgreeToTheAssistantAsync);
+        }
+        catch (Exception e)
+        {
+            // The type only: never the text of anybody's recording.
+            Diagnostics.Write($"asking for a recording's text: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The assistant question, asked for something other than a send — a recording's text — with the same disclosure the
+    /// composer shows, the answer written to the server and <c>/me</c> read again. True only on a yes the server kept.
+    /// </summary>
+    private async Task<bool> AgreeToTheAssistantAsync()
+    {
+        var state = connection.Session.State;
+        if (state.Assistant?.Processor is not { } processor || !AssistantConsent.IsAvailable(processor) || XamlRoot is null)
+        {
+            return false;
+        }
+        ConsentAnswer agreed;
+        try
+        {
+            agreed = await Dialogs.AssistantConsentAsync(
+                XamlRoot, services.Say, processor,
+                state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true,
+                Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
+        }
+        catch (Exception e)
+        {
+            // Another dialog already open: nothing was asked, so nothing is sent.
+            Diagnostics.Write($"asking about the assistant: {e.GetType().Name}");
+            return false;
+        }
+        if (agreed == ConsentAnswer.NotNow)
+        {
+            return false;
+        }
+        var error = await Lookups.RecordAsync(connection.Api, agreed, assistantAgreed: false);
+        await connection.Session.RefreshAsync();
+        DrawConsentBar();
+        if (error is not null)
+        {
+            ShowProblem(services.Say.Get("Couldn't save your answer. Try again."));
+        }
+        // What was asked for is the recording's text, which needs the assistant's consent and nothing more.
+        return !string.IsNullOrWhiteSpace(connection.Session.State.AssistantConsentAt);
     }
 
     private bool AudioRunning => audio.PlaybackSession.PlaybackState is Windows.Media.Playback.MediaPlaybackState.Playing
@@ -2749,6 +5958,12 @@ public sealed partial class ChatsView : UserControl
 
     private async Task ToggleAudioAsync(AttachmentDto attachment)
     {
+        // No app sound while something records (S1.7): it would be in the recording.
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
         if (playingAudio == attachment.Id)
         {
             if (AudioRunning)
@@ -2769,8 +5984,9 @@ public sealed partial class ChatsView : UserControl
             ShowPlayback();
             return;
         }
-        // One at a time: whatever was playing stops, and says so.
+        // One at a time: whatever was playing stops, and says so — a staged or not-sent note too.
         fetchingAudio = attachment.Id;
+        fetchingLocal++;
         audio.Pause();
         audioAtEnd = false;
         if (playingAudio is { } stopped)
@@ -2778,6 +5994,7 @@ public sealed partial class ChatsView : UserControl
             playingAudio = null;
             ShowAudio(stopped);
         }
+        ReleaseLocal();
         byte[]? bytes;
         try
         {
@@ -2815,17 +6032,51 @@ public sealed partial class ChatsView : UserControl
         (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
         audio.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, attachment.Mime ?? VoiceNotes.Mime);
         playingAudio = attachment.Id;
+        // Where its waveform was put while it was idle, once the player has opened it (MediaOpened), or the start.
+        var from = VoiceLook.StartAt(
+            seekedAudio.Remove(attachment.Id, out var seeked) ? seeked : null, VoiceNotes.TotalSeconds(attachment.DurationMs));
+        startAudioAt = from > 0 ? from : null;
+        ApplyRate(voiceRate);
         audio.Play();
+        // Played here: its dot goes now, as the mockup's does, and stays gone on this device.
+        MarkVoicePlayed(attachment.Id);
         ShowPlayback();
     }
 
-    /// <summary>The row for one recording: its glyph, and where it is — the start unless it is the one playing.</summary>
+    /// <summary>The player's speed: the device's choice for a voice message in the chat, 1× for a note of one's own being reviewed.</summary>
+    private void ApplyRate(double rate)
+    {
+        playerRate = rate;
+        try
+        {
+            audio.PlaybackSession.PlaybackRate = rate;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"setting the playback speed: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Every copy drawn of one recording: its glyph, and where it is — where it plays, where it was seeked to while idle, or
+    /// its start.
+    /// </summary>
     private void ShowAudio(long id)
     {
-        if (gone || !audioRows.TryGetValue(id, out var row))
+        if (gone)
         {
             return;
         }
+        foreach (var row in audioRows.Of(id))
+        {
+            ShowAudio(row);
+        }
+    }
+
+    /// <summary>One copy of a recording's row: its glyph, and where it is.</summary>
+    private void ShowAudio(AudioRow row)
+    {
+        var id = row.Id;
         var active = playingAudio == id;
         var running = active && AudioRunning;
         // Play and Pause, in Segoe Fluent Icons.
@@ -2833,13 +6084,18 @@ public sealed partial class ChatsView : UserControl
         AutomationProperties.SetName(row.Toggle, running ? services.Say.Get("Pause") : services.Say.Get("Play"));
         if (active && scrubbingAudio)
         {
+            // The waveform under the pointer is drawn by the seek itself.
             return;
         }
-        var at = !active ? 0 : audioAtEnd ? row.Total : Math.Min(audio.PlaybackSession.Position.TotalSeconds, row.Total);
+        // Played through, it is at rest again — every bar quiet and its whole length — and Play starts it from the top.
+        var inProgress = active && !audioAtEnd;
+        // Not playing, it shows where its waveform was seeked to, if it was — or rests at its start.
+        var seeked = !active && seekedAudio.TryGetValue(id, out var put) ? Math.Clamp(put, 0, row.Total) : 0;
+        var at = inProgress ? Math.Min(audio.PlaybackSession.Position.TotalSeconds, row.Total) : seeked;
         movingTrack = true;
         row.Track.Value = at;
         movingTrack = false;
-        row.Elapsed.Text = MediaText.TimeLabel(at);
+        PaintVoice(row, inProgress, at, seeked: seeked > 0);
     }
 
     private void ShowPlayback()
@@ -2848,9 +6104,13 @@ public sealed partial class ChatsView : UserControl
         {
             ShowAudio(id);
         }
+        ShowLocal();
     }
 
-    /// <summary>Played to the end: it stops there, showing its whole length, and Play starts it again.</summary>
+    /// <summary>
+    /// Played to the end: a bubble's recording stops there, showing its whole length, and Play starts it again; a staged or
+    /// not-sent note goes back to its name.
+    /// </summary>
     private void AudioEnded()
     {
         if (gone)
@@ -2858,6 +6118,11 @@ public sealed partial class ChatsView : UserControl
             return;
         }
         audio.Pause();
+        if (LocalActive)
+        {
+            ReleaseLocal();
+            return;
+        }
         audioAtEnd = true;
         ShowPlayback();
     }
@@ -2866,13 +6131,193 @@ public sealed partial class ChatsView : UserControl
     private void StopAudio()
     {
         fetchingAudio = 0;
+        fetchingLocal++;
         playingAudio = null;
+        playingStaged = null;
+        playingParked = null;
         audioAtEnd = false;
         scrubbingAudio = false;
+        seekedAudio.Clear();
+        startAudioAt = null;
         audio.Pause();
         (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
         audio.Source = null;
         audioRows.Clear();
+        stagedRows.Clear();
+        parkedRows.Clear();
+        // And a circle playing in place stops with its chat (S5.3).
+        StopRound();
+        roundCopies.Clear();
+    }
+
+    /// <summary>
+    /// A staged or not-sent note's chip as drawn — its ▶, its time (the length at rest, where it is while it plays), its mini
+    /// waveform and the inks its bars are lit and quiet in — so playback can keep it up to date.
+    /// </summary>
+    private sealed record LocalRow(
+        Button Toggle, FontIcon Glyph, TextBlock Line, string Idle, double Total,
+        Microsoft.UI.Xaml.Shapes.Rectangle[] Bars, Brush PlayedInk, Brush RestInk)
+    {
+        /// <summary>The bars as drawn now: a not-sent chip draws them again, fewer, when it is narrower than the mockup's.</summary>
+        public Microsoft.UI.Xaml.Shapes.Rectangle[] Bars { get; set; } = Bars;
+    }
+
+    private bool LocalActive => playingStaged is not null || playingParked is not null;
+
+    private LocalRow? ActiveLocalRow() =>
+        playingStaged is { } staged && stagedRows.TryGetValue(staged, out var review) ? review
+        : playingParked is { } id && parkedRows.TryGetValue(id, out var waiting) ? waiting
+        : null;
+
+    /// <summary>
+    /// ▶ on a voice note in review (S2.7) or one that was not sent (S2.8): it plays the note from this device — the local
+    /// bytes, the very ones a Send would upload — through the one player, so whatever else plays stops first; ❚❚ pauses it.
+    /// Nothing plays while something records (S1.7).
+    /// </summary>
+    private async Task ToggleLocalAsync(StagedMedia? staged, ParkedRecording? entry)
+    {
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
+        var same = staged is not null ? ReferenceEquals(playingStaged, staged) : entry is not null && playingParked == entry.Id;
+        if (same)
+        {
+            if (AudioRunning)
+            {
+                audio.Pause();
+            }
+            else
+            {
+                audio.Play();
+            }
+            ShowLocal();
+            return;
+        }
+        // One at a time: a bubble's recording, or another note, stops — and says so.
+        fetchingAudio = 0;
+        audio.Pause();
+        audioAtEnd = false;
+        if (playingAudio is { } stopped)
+        {
+            playingAudio = null;
+            ShowAudio(stopped);
+        }
+        ReleaseLocal();
+        var token = ++fetchingLocal;
+        byte[]? bytes;
+        try
+        {
+            bytes = staged is not null
+                ? staged.Bytes.ToArray()
+                : await Task.Run(() => parked.Staged(entry!)?.Bytes.ToArray());
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a voice message to play: {e.GetType().Name}");
+            bytes = null;
+        }
+        if (gone || token != fetchingLocal)
+        {
+            // Gone, or something else was pressed meanwhile: that one plays.
+            return;
+        }
+        if (bytes is null)
+        {
+            Explain(services.Say.Get("Something went wrong. Try again."));
+            return;
+        }
+        var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+            await writer.FlushAsync();
+            writer.DetachStream();
+        }
+        stream.Seek(0);
+        if (gone || token != fetchingLocal || recordingStart.Quiet(recorder is not null))
+        {
+            stream.Dispose();
+            return;
+        }
+        (audio.Source as Windows.Media.Core.MediaSource)?.Dispose();
+        audio.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, VoiceNotes.Mime);
+        playingStaged = staged;
+        playingParked = staged is null ? entry?.Id : null;
+        startAudioAt = null;
+        ApplyRate(1.0);
+        audio.Play();
+        ShowLocal();
+    }
+
+    /// <summary>The playing note's row: ❚❚ or ▶, named for what a press does next, and "0:12 / 0:42" while it is the one.</summary>
+    private void ShowLocal()
+    {
+        if (gone || ActiveLocalRow() is not { } row)
+        {
+            return;
+        }
+        var running = AudioRunning;
+        // Pause and Play, in Segoe Fluent Icons.
+        row.Glyph.Glyph = ((char)(running ? 0xE769 : 0xE768)).ToString();
+        var name = running ? services.Say.Get("Pause") : services.Say.Get("Play");
+        AutomationProperties.SetName(row.Toggle, name);
+        ToolTipService.SetToolTip(row.Toggle, name);
+        var at = audio.PlaybackSession.Position.TotalSeconds;
+        row.Line.Text = VoiceLook.Time(active: true, at, row.Total);
+        LightBars(row.Bars, VoiceLook.PlayedBars(at, row.Total, row.Bars.Length), row.PlayedInk, row.RestInk);
+    }
+
+    /// <summary>The first <paramref name="lit"/> bars in the played ink, the rest quiet.</summary>
+    private static void LightBars(Microsoft.UI.Xaml.Shapes.Rectangle[] bars, int lit, Brush played, Brush rest)
+    {
+        for (var i = 0; i < bars.Length; i++)
+        {
+            var ink = i < lit ? played : rest;
+            if (!ReferenceEquals(bars[i].Fill, ink))
+            {
+                bars[i].Fill = ink;
+            }
+        }
+    }
+
+    /// <summary>The note that was playing is not the one any more — ended, or something else pressed: its row goes back to ▶ and its name.</summary>
+    private void ReleaseLocal()
+    {
+        var row = ActiveLocalRow();
+        playingStaged = null;
+        playingParked = null;
+        if (row is null || gone)
+        {
+            return;
+        }
+        row.Glyph.Glyph = ((char)0xE768).ToString();
+        AutomationProperties.SetName(row.Toggle, services.Say.Get("Play"));
+        ToolTipService.SetToolTip(row.Toggle, services.Say.Get("Play"));
+        row.Line.Text = row.Idle;
+        LightBars(row.Bars, 0, row.PlayedInk, row.RestInk);
+    }
+
+    /// <summary>
+    /// After the strip or the not-sent rows were drawn again: a note still there goes on showing that it plays; one that went
+    /// — sent, deleted, kept as not sent, another chat opened — goes quiet with it.
+    /// </summary>
+    private void ReconcileLocal()
+    {
+        var drawn = playingStaged is { } staged ? stagedRows.ContainsKey(staged)
+            : playingParked is { } id ? parkedRows.ContainsKey(id)
+            : true;
+        if (drawn)
+        {
+            ShowLocal();
+            return;
+        }
+        fetchingLocal++;
+        audio.Pause();
+        playingStaged = null;
+        playingParked = null;
     }
 
     /// <summary>A document: its name and its size, and a click that saves it. A recording plays in <see cref="AudioElement"/>.</summary>
@@ -3159,9 +6604,24 @@ public sealed partial class ChatsView : UserControl
         }
     }
 
-    private void ShowProblem(string sentence)
+    private void ShowProblem(string sentence) => ShowProblem(sentence, null);
+
+    /// <summary>
+    /// A sentence on the composer's notice line, with a link after it that does something about it — Settings, for a
+    /// refused microphone (S2.2). The link lives in the line itself, so the next sentence, which replaces the text,
+    /// takes it away, and hiding the line hides it.
+    /// </summary>
+    private void ShowProblem(string sentence, (string Words, Action Act)? link)
     {
         ComposerError.Text = sentence;
+        if (link is { } action)
+        {
+            var hyperlink = new Hyperlink();
+            hyperlink.Inlines.Add(new Run { Text = action.Words });
+            hyperlink.Click += (_, _) => action.Act();
+            ComposerError.Inlines.Add(new Run { Text = " " });
+            ComposerError.Inlines.Add(hyperlink);
+        }
         ComposerError.Visibility = Visibility.Visible;
     }
 
@@ -3242,7 +6702,7 @@ public sealed partial class ChatsView : UserControl
         BannerText.Text = Quotes.Banner(message, connection.Chats, services.Say);
         BannerCancel.Content = services.Say.Get("Cancel reply");
         BannerPanel.Visibility = Visibility.Visible;
-        SendButton.Content = services.Say.Get("Send");
+        DrawSlot();
         ComposerBox.Focus(FocusState.Programmatic);
         // A photo being replied to may now go to the assistant with the draft.
         DrawPictureNotice();
@@ -3255,11 +6715,12 @@ public sealed partial class ChatsView : UserControl
         BannerText.Text = services.Say.Get("Editing message");
         BannerCancel.Content = services.Say.Get("Cancel editing");
         BannerPanel.Visibility = Visibility.Visible;
-        SendButton.Content = services.Say.Get("Save");
         ShowAssistantButtons();
         ComposerBox.Text = message.Body;
         ComposerBox.SelectionStart = ComposerBox.Text.Length;
         ComposerBox.Focus(FocusState.Programmatic);
+        // Save — never a microphone, even with the field cleared (S1.3 row 4) — whether or not the words changed.
+        DrawSlot();
     }
 
     /// <summary>Back to writing a new message. An abandoned edit takes its words with it.</summary>
@@ -3268,13 +6729,13 @@ public sealed partial class ChatsView : UserControl
         replyingTo = null;
         editing = null;
         BannerPanel.Visibility = Visibility.Collapsed;
-        SendButton.Content = services.Say.Get("Send");
         ShowAssistantButtons();
         if (clear)
         {
             ComposerBox.Text = string.Empty;
         }
         DrawPictureNotice();
+        DrawSlot();
     }
 
     // ---- polls ---------------------------------------------------------------------------------------
@@ -3634,6 +7095,21 @@ public sealed partial class ChatsView : UserControl
         return card;
     }
 
+    /// <summary>
+    /// The link a bubble's card would describe, or null where it draws none: the first https link its body draws, except
+    /// under an assistant answer still being written or one carrying the server's sources footer, whose links stay out of
+    /// preview cards (<see cref="Lookups.MayPreview"/>; design decision 7 of docs/information-streams-2026-10-03.md). The
+    /// one place both the drawing and its signature ask, so the two cannot disagree.
+    /// </summary>
+    private string? PreviewLinkOf(MessageDto message, string body, bool emojiOnly)
+    {
+        var assistantChat = connection.Chats.Chat(message.ChatId)?.Chat.Kind == "ai";
+        return Lookups.MayPreview(
+            message, body, Reader, assistantChat, connection.Session.State.Assistant?.UserId, connection.Answers.IsWriting(message))
+            ? BubbleBody.PreviewLink(body, emojiOnly)
+            : null;
+    }
+
     /// <summary>Card pictures that turned out not to decode: a redraw draws those cards without one.</summary>
     private int previewPicturesRefused;
 
@@ -3649,7 +7125,7 @@ public sealed partial class ChatsView : UserControl
         }
         var marks = bubbles.Select(bubble =>
             bubble.Message.Call is null
-            && BubbleBody.PreviewLink(connection.Answers.BodyOf(bubble.Message), emojiOnly: false) is { } link
+            && PreviewLinkOf(bubble.Message, connection.Answers.BodyOf(bubble.Message), emojiOnly: false) is { } link
             && connection.Previews.State(link) is { } state
                 ? (int)state.Status
                 : -1);
@@ -3715,7 +7191,14 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>Open a link a beat late — the Mac's 350 ms — unless the click was the second half of a heart.</summary>
-    private void OpenLinkSoon(Uri uri)
+    private void OpenLinkSoon(Uri uri) => Soon(() => _ = Windows.System.Launcher.LaunchUriAsync(uri));
+
+    /// <summary>
+    /// Do what a click asked a beat late, unless the click was the first half of a double click — which is the heart, and
+    /// calls it off (<see cref="CancelLinkForHeart"/>): a link opening, or a circle (S5.3: the single tap waits out the
+    /// double-tap window).
+    /// </summary>
+    private void Soon(Action act)
     {
         pendingLink?.Stop();
         pendingLink = null;
@@ -3735,7 +7218,7 @@ public sealed partial class ChatsView : UserControl
                 return;
             }
             pendingLink = null;
-            _ = Windows.System.Launcher.LaunchUriAsync(uri);
+            act();
         };
         pendingLink = timer;
         timer.Start();
@@ -3797,10 +7280,16 @@ public sealed partial class ChatsView : UserControl
                     return;
             }
         }
+        // A key held down is ONE press (S2.4): its first may have been Esc stopping a recording, Enter on the slot's Stop or
+        // Send, or on the recording row's Stop or Delete — each of which hands focus to this field — and its repeats here must
+        // neither drop the reply the note was recorded under nor send what that first press staged or uncovered.
         if (e.Key == Windows.System.VirtualKey.Escape && BannerPanel.Visibility == Visibility.Visible)
         {
             e.Handled = true;
-            EndComposerMode(clear: editing is not null);
+            if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: false, ComposerBox.Text))
+            {
+                EndComposerMode(clear: editing is not null);
+            }
             return;
         }
         if (e.Key != Windows.System.VirtualKey.Enter)
@@ -3813,7 +7302,13 @@ public sealed partial class ChatsView : UserControl
         if (!shift)
         {
             e.Handled = true;
-            Send();
+            // Enter is the slot's activation in rows 2 to 5 (S1.3), so it waits out the slot's guard as a click does: a second
+            // Enter after the slot's Stop in row 3 must not send the words the note is being staged beside (S1.1). Words typed
+            // since are never guarded, so "ok" sent at once still goes.
+            if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: true, ComposerBox.Text))
+            {
+                Send();
+            }
         }
     }
 
@@ -3834,6 +7329,8 @@ public sealed partial class ChatsView : UserControl
             }
             var words = ComposerBox.Text;
             EndComposerMode(clear: true);
+            // The slot was Save and is the microphone now: a second click in the same breath must not record (S1.1).
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
             _ = ActAsync(() => chat.EditAsync(target.Id, words));
             return;
         }
@@ -3850,7 +7347,7 @@ public sealed partial class ChatsView : UserControl
         if (AssistantConsent.IsRequired(
             chatKind, ComposerBox.Text, session.Assistant?.Processor, session.AssistantConsentAt))
         {
-            _ = ReviewAssistantConsentAsync();
+            _ = ReviewAssistantConsentAsync(Send);
             return;
         }
         // And a server that will not say WHO answers gets nothing at all: there is no honest way
@@ -3869,7 +7366,9 @@ public sealed partial class ChatsView : UserControl
         var replyTo = replyingTo?.Id;
         if (strip.Items.Count > 0)
         {
+            // Its first steps empty the composer before it awaits anything: the slot is the microphone from here.
             _ = SendWithMediaAsync(chat, strip, body, replyTo);
+            slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
             return;
         }
         // Written down first; the outbox owns it from here, and a send interrupted by anything at
@@ -3878,6 +7377,9 @@ public sealed partial class ChatsView : UserControl
         chat.Send(body, replyToMessageId: replyTo, mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
         drafts.Sent(chat.ChatId);
         EndComposerMode(clear: true);
+        // A send that empties the composer turns Send into the microphone under the pointer: a double click on Send cannot
+        // start a recording (S1.1). Typing never arms it, so "ok" followed at once by Send still sends.
+        slotGuard.Arm(Environment.TickCount64, ComposerBox.Text);
         Queued();
     }
 
@@ -3895,7 +7397,6 @@ public sealed partial class ChatsView : UserControl
         var handles = new List<string>();
         // One at a time: a second send while these are written would be queued in front of them.
         sendingMedia = true;
-        SendButton.IsEnabled = false;
         EndComposerMode(clear: true);
         DrawStaging();
         try
@@ -3931,7 +7432,7 @@ public sealed partial class ChatsView : UserControl
         {
             store.Release(handles);
             sendingMedia = false;
-            SendButton.IsEnabled = true;
+            DrawSlot();
         }
     }
 
@@ -3946,8 +7447,11 @@ public sealed partial class ChatsView : UserControl
     // ---- attaching -----------------------------------------------------------------------------
 
     /// <summary>
-    /// The composer's menu of what a message can carry, in the Mac's order: a photo for the assistant where all three locks
-    /// allow it, a file, the clipboard, a recording, a place — and, in the family chat alone, a poll.
+    /// The paperclip's menu, the same lines in the same three groups as every other client (docs/attachment-menu-2026-10-07.md,
+    /// issue #78), top to bottom: a photo or video — or, in the assistant's chat, a photo for the assistant where all three
+    /// locks allow it — a file and the clipboard; then a recording; then a place and, in the family chat alone, a poll. Which
+    /// lines show is AttachMenu.Groups; whether each is enabled is decided here. No Camera line: Windows has no system camera
+    /// to hand off to.
     /// </summary>
     private void ShowAttachMenu()
     {
@@ -3955,39 +7459,2179 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        var say = services.Say;
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
         var state = connection.Session.State;
-        // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
-        if (AssistantPictures.OffersPictureAttach(
-                connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true))
+        var kind = Kind(chat);
+        var strip = Staging(chat.ChatId);
+        var groups = AttachMenu.Groups(
+            assistantChat: kind == "ai",
+            // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
+            offersPictureAttach: AssistantPictures.OffersPictureAttach(kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true),
+            familyChat: kind == "family",
+            roundAvailable: RoundAvailable());
+        foreach (var group in groups)
         {
-            var pictures = new MenuFlyoutItem { Text = say.Get("Show the Assistant a Photo…"), Icon = new SymbolIcon(Symbol.Pictures) };
-            pictures.Click += (_, _) => _ = PickPicturesAsync();
-            menu.Items.Add(pictures);
-        }
-        var file = new MenuFlyoutItem { Text = say.Get("Attach a File…"), Icon = new SymbolIcon(Symbol.Attach) };
-        file.Click += (_, _) => _ = PickAsync();
-        menu.Items.Add(file);
-        var paste = new MenuFlyoutItem { Text = say.Get("Paste"), Icon = new SymbolIcon(Symbol.Paste) };
-        paste.Click += (_, _) => _ = PasteAsync(fromMenu: true);
-        menu.Items.Add(paste);
-        // A microphone, in Segoe Fluent Icons.
-        var record = new MenuFlyoutItem { Text = say.Get("Record Audio"), Icon = new FontIcon { Glyph = ((char)0xE720).ToString() } };
-        record.Click += (_, _) => _ = StartRecordingAsync();
-        menu.Items.Add(record);
-        // A map pin, in Segoe Fluent Icons.
-        var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
-        place.Click += (_, _) => _ = ShareLocationAsync();
-        menu.Items.Add(place);
-        if (IsFamily(chat))
-        {
-            // A bulleted list, in Segoe Fluent Icons.
-            var poll = new MenuFlyoutItem { Text = say.Get("Poll"), Icon = new FontIcon { Glyph = ((char)0xE8FD).ToString() } };
-            poll.Click += (_, _) => _ = AskPollAsync();
-            menu.Items.Add(poll);
+            // Between groups only: a group that would be empty is not in the list, so it draws no line.
+            if (menu.Items.Count > 0)
+            {
+                menu.Items.Add(new MenuFlyoutSeparator());
+            }
+            foreach (var line in group)
+            {
+                menu.Items.Add(AttachMenuItem(line, chat, strip));
+            }
         }
         menu.ShowAt(AttachButton);
+    }
+
+    /// <summary>One line of the paperclip's menu, with its icon, its action and the rules that dim it.</summary>
+    private MenuFlyoutItem AttachMenuItem(AttachItem line, ConversationModel chat, ComposerStaging strip)
+    {
+        var say = services.Say;
+        switch (line)
+        {
+            case AttachItem.PhotoOrVideo:
+            {
+                var media = new MenuFlyoutItem { Text = say.Get("Photo or Video"), Icon = new SymbolIcon(Symbol.Pictures) };
+                media.Click += (_, _) => _ = PickAsync(AttachMenu.PhotoOrVideoTypes);
+                return media;
+            }
+            case AttachItem.AssistantPhoto:
+            {
+                var pictures = new MenuFlyoutItem { Text = say.Get("Show the Assistant a Photo…"), Icon = new SymbolIcon(Symbol.Pictures) };
+                pictures.Click += (_, _) => _ = PickPicturesAsync();
+                return pictures;
+            }
+            case AttachItem.File:
+            {
+                var file = new MenuFlyoutItem { Text = say.Get("File"), Icon = new SymbolIcon(Symbol.Document) };
+                file.Click += (_, _) => _ = PickAsync(null);
+                return file;
+            }
+            case AttachItem.Paste:
+            {
+                var paste = new MenuFlyoutItem { Text = say.Get("Paste"), Icon = new SymbolIcon(Symbol.Paste) };
+                paste.Click += (_, _) => _ = PasteAsync(fromMenu: true);
+                return paste;
+            }
+            case AttachItem.RecordVoice:
+            {
+                // "Record Voice Message" (S1.5): in a family or a direct chat — never the assistant's, where every message is a
+                // consented model call (decision 24). Off while an attachment is on its way, in an edit, during a call, and while
+                // this chat holds a voice message that was not sent — its row is right there. With words typed or items staged it
+                // records beside them, and the slot is Stop (S1.3 row 3).
+                var record = new MenuFlyoutItem
+                {
+                    Text = say.Get("Record Voice Message"),
+                    Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
+                    KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
+                    IsEnabled = !Busy(strip) && editing is null && !callBusy && !HasNotSent(chat.ChatId),
+                };
+                record.Click += (_, _) => _ = StartRecordingAsync(fromSlot: false);
+                return record;
+            }
+            case AttachItem.RecordVideo:
+            {
+                // "Record Video Message" (S1.5), right below, where one can be recorded: off while an attachment is on its way,
+                // in an edit and during a call. It works beside words or staged items — a video message travels alone, and they
+                // stay in the composer.
+                var video = new MenuFlyoutItem
+                {
+                    Text = say.Get("Record Video Message"),
+                    Icon = new FontIcon { Glyph = ((char)RoundVideoGlyph).ToString() },
+                    IsEnabled = !Busy(strip) && editing is null && !callBusy && recorder is null,
+                };
+                video.Click += (_, _) => _ = OpenRoundRecorderAsync(AttachButton);
+                return video;
+            }
+            case AttachItem.Location:
+            {
+                // A map pin, in Segoe Fluent Icons.
+                var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
+                place.Click += (_, _) => _ = ShareLocationAsync();
+                return place;
+            }
+            default:
+            {
+                // A bulleted list, in Segoe Fluent Icons.
+                var poll = new MenuFlyoutItem { Text = say.Get("Poll"), Icon = new FontIcon { Glyph = ((char)0xE8FD).ToString() } };
+                poll.Click += (_, _) => _ = AskPollAsync();
+                return poll;
+            }
+        }
+    }
+
+    // ---- video messages, recorded -----------------------------------------------------------------
+    //
+    // Phase 3d (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3, S4, S8.6): the video button inside the empty field,
+    // "Record Video Message" in the paperclip's menu and the microphone's, and the recorder they open over the window. All of
+    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, off until the
+    // owner's trials T1–T3), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
+    // circles shows no way of recording one (Decision 40).
+
+    /// <summary>The video button's glyph: Segoe Fluent E714, a video camera (S1.4).</summary>
+    private const int RoundVideoGlyph = 0xE714;
+
+    /// <summary>
+    /// Where the recorder lies — over the rail and the page, under the call card — and how the window under it is covered
+    /// while it does; and what the window does once it has gone (a share that waited for it).
+    /// </summary>
+    internal void UseRecorderHost(Grid host, Action<bool> cover, Action closed)
+    {
+        recorderHost = host;
+        coverWindow = cover;
+        recorderClosed = closed;
+        LearnCamera();
+        DrawSlot();
+    }
+
+    /// <summary>The recorder is up: it owns the composer's row (S1.3 row 1), and a notification's chat waits for it.</summary>
+    internal bool RecorderOpen => roundRecorder?.IsOpen == true;
+
+    /// <summary>A take running or a clip in REVIEW: a real close asks "Delete video message?" first (S4, S8.6).</summary>
+    internal bool HoldsRoundClip => roundRecorder?.HoldsClip == true;
+
+    /// <summary>The ask before a real close (S4): true when the close may go ahead, false when the person kept the clip.</summary>
+    internal Task<bool> AskBeforeClosingAsync() => roundRecorder?.AskBeforeClosingAsync() ?? Task.FromResult(true);
+
+    /// <summary>The window lost focus and is still visible: PREVIEW closes — but not to a prompt it raised; a take goes on (S4).</summary>
+    internal void WindowDeactivated() => roundRecorder?.Interrupt(RecorderInterruption.FocusLost);
+
+    /// <summary>S1.2's <b>round available</b> on Windows, and somewhere for the recorder to lie.</summary>
+    private bool RoundAvailable() =>
+        recorderHost is not null && RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, connection.Session.State.RoundVideo, hasCamera);
+
+    /// <summary>
+    /// Whether this machine has a camera — asked of Windows only where a video message could otherwise be recorded, so a build
+    /// with recording switched off never enumerates a camera at all.
+    /// </summary>
+    private void LearnCamera(bool again = false)
+    {
+        if (askingForCamera || (hasCamera && !again) || recorderHost is null
+            || !RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, connection.Session.State.RoundVideo, hasCamera: true))
+        {
+            return;
+        }
+        askingForCamera = true;
+        _ = LearnCameraAsync();
+    }
+
+    private async Task LearnCameraAsync()
+    {
+        try
+        {
+            var found = (await VideoMessageRecorder.CamerasAsync()).Count > 0;
+            if (!gone && found != hasCamera)
+            {
+                hasCamera = found;
+                DrawSlot();
+            }
+        }
+        finally
+        {
+            askingForCamera = false;
+        }
+    }
+
+    /// <summary>The video button as S1.4 has it for the open chat's composer now.</summary>
+    private Door CurrentDoor()
+    {
+        if (open is not { } chat || SlotInputsNow() is not { } inputs)
+        {
+            return Door.Hidden;
+        }
+        return ComposerButton.VideoDoor(new DoorInputs(
+            inputs,
+            FamilyOrDirectChat: Kind(chat) is "family" or "direct",
+            ServerOffersRound: connection.Session.State.RoundVideo is not null,
+            HasCamera: hasCamera,
+            EncoderProbePasses: true,
+            RecordsRoundVideo: RoundVideoRules.RecordingEnabled && recorderHost is not null));
+    }
+
+    /// <summary>
+    /// The video button inside the empty field (S1.4): drawn — dimmed with the slot's sentence in rows 7 and 8 — or not, and
+    /// the field given trailing room while it is, so a placeholder never runs under it. Its 600 ms guard starts when it appears.
+    /// </summary>
+    private void DrawVideoDoor()
+    {
+        var door = CurrentDoor();
+        var showing = door.Kind != DoorKind.Hidden && ComposerBox.Visibility == Visibility.Visible;
+        doorGuard.Showing(showing, Environment.TickCount64);
+        var shown = showing ? Visibility.Visible : Visibility.Collapsed;
+        if (VideoDoorButton.Visibility != shown)
+        {
+            VideoDoorButton.Visibility = shown;
+        }
+        // Room for it at the field's trailing edge while it shows; the style's own padding back when it goes.
+        if (showing && !fieldPadded)
+        {
+            var padding = ComposerBox.Padding;
+            ComposerBox.Padding = new Thickness(padding.Left, padding.Top, padding.Right + ComposerButton.MinTargetWindowsEpx, padding.Bottom);
+            fieldPadded = true;
+        }
+        else if (!showing && fieldPadded)
+        {
+            ComposerBox.ClearValue(Control.PaddingProperty);
+            fieldPadded = false;
+        }
+        if (!showing)
+        {
+            return;
+        }
+        var dimmed = door.Kind == DoorKind.Dimmed;
+        VideoDoorButton.Opacity = dimmed ? 0.4 : 1;
+        AutomationProperties.SetHelpText(VideoDoorButton, dimmed ? ComposerButton.Notice(door.Reason, services.Say) ?? string.Empty : string.Empty);
+    }
+
+    /// <summary>The video button clicked: nothing for 600 ms after it appeared; its sentence when dimmed; else the recorder.</summary>
+    private void OnVideoDoorClick()
+    {
+        if (!doorGuard.Accepts(Environment.TickCount64))
+        {
+            return;
+        }
+        var door = CurrentDoor();
+        if (door.Kind == DoorKind.Dimmed)
+        {
+            Explain(ComposerButton.Notice(door.Reason, services.Say)!);
+            return;
+        }
+        if (door.Kind == DoorKind.Shown)
+        {
+            _ = OpenRoundRecorderAsync(VideoDoorButton);
+        }
+    }
+
+    /// <summary>
+    /// The recorder, over the window (S3): never in the assistant's chat, during a call, while an attachment is on its way, in
+    /// an edit or beside a voice recording — those say why where they are reachable at all. Words typed and items staged stay
+    /// in the composer; the primed reply goes with the video (S1.5).
+    /// </summary>
+    private async Task OpenRoundRecorderAsync(UIElement opener)
+    {
+        if (gone || open is not { } chat || RecorderOpen || recorderHost is not { } host || coverWindow is not { } cover
+            || connection.Session.State.RoundVideo is not { } limits || !RoundAvailable() || Kind(chat) == "ai"
+            || editing is not null || recorder is not null || recordingStart.Starting || asking is not null)
+        {
+            return;
+        }
+        if (callBusy || Busy(Staging(chat.ChatId)))
+        {
+            Explain(ComposerButton.Notice(callBusy ? Dimmed.Call : Dimmed.Busy, services.Say)!);
+            return;
+        }
+        RoundRecorderLayer? layer = null;
+        layer = new RoundRecorderLayer(
+            services,
+            host,
+            ConversationPane,
+            ComposerPanel,
+            SendButton,
+            DispatcherQueue,
+            limits,
+            new RoundRecorderLayer.Hooks(
+                ReplyText: () => replyingTo is not null && BannerPanel.Visibility == Visibility.Visible ? BannerText.Text : null,
+                DropReply: () => EndComposerMode(clear: false),
+                NotSentWaits: () => open is { } here && HasNotSent(here.ChatId),
+                QuietEverything: QuietForRecording,
+                StartVoice: () => _ = StartRecordingAsync(fromSlot: false),
+                SendAsync: (media, round) => SendVideoMessageAsync(chat, media, round),
+                Cover: covered => cover(covered),
+                Closed: () =>
+                {
+                    if (ReferenceEquals(roundRecorder, layer))
+                    {
+                        roundRecorder = null;
+                    }
+                    if (gone)
+                    {
+                        return;
+                    }
+                    DrawSlot();
+                    recorderClosed?.Invoke();
+                    if (chatAfterRecorder is { } waiting)
+                    {
+                        chatAfterRecorder = null;
+                        OpenChat(waiting);
+                    }
+                }));
+        roundRecorder = layer;
+        DrawSlot();
+        await layer.OpenAsync(opener);
+    }
+
+    /// <summary>
+    /// A video message's Send (S3.4): the clip staged and queued as one message — with <c>round</c>, or as the regular video
+    /// REVIEW said it would be (S3.6) — carrying the primed reply, the row written before the first byte moves, the bytes kept
+    /// until the ack; the circle shows in the conversation at once from this device's own poster (S5.6). The words in the
+    /// field stay where they are.
+    /// </summary>
+    private async Task SendVideoMessageAsync(ConversationModel chat, StagedMedia media, bool round)
+    {
+        var replyTo = replyingTo?.Id;
+        var store = connection.Staging;
+        string? handle = null;
+        try
+        {
+            handle = await Task.Run(() => store.Stage(media));
+            if (round)
+            {
+                chat.SendRound(handle, replyTo);
+            }
+            else
+            {
+                chat.Send(string.Empty, replyTo, pendingFiles: [handle]);
+            }
+            if (gone)
+            {
+                return;
+            }
+            if (open == chat)
+            {
+                if (replyTo is not null && replyingTo?.Id == replyTo)
+                {
+                    EndComposerMode(clear: false);
+                }
+                Queued();
+            }
+            else
+            {
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a video message: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(services.Say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+        }
+    }
+
+    // ---- video messages ------------------------------------------------------------------------
+    //
+    // A VIDEO MESSAGE (docs/protocol.md, "Video messages"; docs/audio-video-messages-2026-10-04.md, S5): one square video
+    // sent to be drawn round. A click plays it IN PLACE (S5.3, 2026-10-06): inside its own circle, at the same size, with
+    // sound — the frames of a frame-server MediaPlayer copied into the very ellipse that draws its poster, so it is round by
+    // construction (RoundFramePlayer). Open Full Screen — its menu, or the expand control while it plays — is the viewer,
+    // with its ring painted over the square clip's corners. RoundInline.PlaysInPlace false puts back the viewer on a click.
+
+    /// <summary>One circle as drawn, so the circle that plays in place can keep every copy of itself up to date.</summary>
+    private sealed class RoundCopy(
+        AttachmentDto video, bool mine, Button circle, ImageBrush brush, Grid disc, Microsoft.UI.Xaml.Shapes.Path spinner,
+        Microsoft.UI.Xaml.Shapes.Path ring, Button expand, TextBlock? length, Ellipse? dot, TextBlock failure)
+    {
+        public AttachmentDto Video { get; } = video;
+
+        public bool Mine { get; } = mine;
+
+        public Button Circle { get; } = circle;
+
+        /// <summary>The ellipse's one brush: the poster at rest, the player's frames while it plays.</summary>
+        public ImageBrush Brush { get; } = brush;
+
+        public Grid Disc { get; } = disc;
+
+        /// <summary>The loading ring: a three-quarter arc, turned while it shows (and standing still with animations off).</summary>
+        public Microsoft.UI.Xaml.Shapes.Path Spinner { get; } = spinner;
+
+        public Animation.Storyboard? SpinnerTurn { get; set; }
+
+        public Microsoft.UI.Xaml.Shapes.Path Ring { get; } = ring;
+
+        public Button Expand { get; } = expand;
+
+        public TextBlock? Length { get; } = length;
+
+        public Ellipse? Dot { get; } = dot;
+
+        public TextBlock Failure { get; } = failure;
+
+        /// <summary>The poster, once it has landed.</summary>
+        public ImageSource? Poster { get; set; }
+
+        /// <summary>Whether any of it is on the screen (assumed until its scroller says otherwise).</summary>
+        public bool InView { get; set; } = true;
+
+        /// <summary>Whether its play disc shows, and the fade that is taking it there.</summary>
+        public bool DiscShown { get; set; } = true;
+
+        public Animation.Storyboard? DiscFade { get; set; }
+    }
+
+    /// <summary>
+    /// A circle in a conversation (S5.2): NO BALLOON, the square poster filling an ellipse of the one size — a neutral
+    /// disc of that size until the poster lands, so the row never changes height — a play disc in the middle, the
+    /// duration in a capsule at the bottom and, until this device has played it, an accent dot beside it. Only the poster
+    /// is fetched to draw it; the video itself only when it is tapped. A click plays it in place a beat late, because a
+    /// double click on it is the heart (S5.3); while it plays the same ellipse shows its frames, ONE accent ring runs round
+    /// the outside of the edge, and an expand control at the top trailing edge opens it full screen (S5.4).
+    /// </summary>
+    private FrameworkElement RoundVideoElement(AttachmentDto video, bool mine, Action heart)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        const double Diameter = RoundLook.Diameter;
+        var played = HasPlayed(video.Id);
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        var face = new Grid { Width = Diameter, Height = Diameter };
+        // The approved design's soft shadow, cast by the circle itself — a drop shadow masked by the disc's own shape.
+        // It is hung OUTSIDE the button, whose rounded corners would clip it to the circle. The mask takes the disc's ALPHA,
+        // so the disc is a SOLID neutral: a translucent control fill (about 50 % in light, 8 % in dark) would cast a shadow
+        // of half or a twelfth of the design's strength — next to none in the dark theme it was made deeper for.
+        var ground = new Ellipse { Fill = Palette.Themed("SolidBackgroundFillColorTertiaryBrush", 0xFF, 0xF9, 0xF9, 0xF9) };
+        var shadow = new Grid { Width = Diameter, Height = Diameter, IsHitTestVisible = false };
+        face.Children.Add(ground);
+        CastShadow(shadow, ground, Diameter);
+        // THE circle: one ellipse, one brush — the poster's picture at rest and the player's frames while it plays.
+        var brush = new ImageBrush { Stretch = Stretch.UniformToFill };
+        var poster = new Ellipse { Fill = brush };
+        face.Children.Add(poster);
+        var disc = new Grid
+        {
+            Width = RoundLook.PlayDisc,
+            Height = RoundLook.PlayDisc,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        disc.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, 0, 0, 0)) });
+        // Play, in Segoe Fluent Icons — a glyph, not a sentence; nudged right so the triangle looks centred.
+        disc.Children.Add(new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 18,
+            Foreground = white,
+            Margin = new Thickness(3, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        face.Children.Add(disc);
+        // While it loads — from the tap until it plays, and in a stall — a loading ring over the poster (S5.3). Drawn here, a
+        // turning arc, and not a ProgressRing: that is a Lottie player started and stopped in code, one more native piece in
+        // the path a circle's click took when the app ended inside XAML (2026-10-06).
+        var spinner = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Width = RoundLook.PlayDisc,
+            Height = RoundLook.PlayDisc,
+            Data = RingArc(0.75, RoundLook.PlayDisc / 2, RoundLook.PlayDisc / 2 - 2),
+            Stroke = white,
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = new RotateTransform(),
+            Visibility = Visibility.Collapsed,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+        AutomationProperties.SetAccessibilityView(spinner, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        face.Children.Add(spinner);
+        // The badge, at the bottom centre on a dark capsule: the length — how far it has played, once it has started — and,
+        // until this device has played someone else's circle, a white dot beside it, inside the capsule (the approved design).
+        var badge = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        TextBlock? words = null;
+        if (RoundLook.Capsule(video) is { } length)
+        {
+            words = new TextBlock { Text = length, FontSize = 12, Foreground = white, VerticalAlignment = VerticalAlignment.Center };
+            Typography.SetNumeralAlignment(words, FontNumeralAlignment.Tabular);
+            badge.Children.Add(words);
+        }
+        Ellipse? dot = null;
+        if (RoundLook.ShowsDot(mine, played))
+        {
+            // THIS DEVICE's own knowledge: kept per account, never sent, wiped at sign-out (S5.2) — and never on the
+            // reader's own circles.
+            dot = new Ellipse
+            {
+                Width = RoundLook.Dot,
+                Height = RoundLook.Dot,
+                Fill = white,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            badge.Children.Add(dot);
+        }
+        if (badge.Children.Count > 0)
+        {
+            face.Children.Add(new Border
+            {
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(8, 2, 8, 3),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x8C, 0, 0, 0)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 14),
+                Child = badge,
+            });
+        }
+        // A button, so Tab reaches it and Enter or Space plays and pauses it like a click; drawn as nothing but the circle.
+        var circle = new Button
+        {
+            Content = face,
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            CornerRadius = new CornerRadius(Diameter / 2),
+            HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(circle, RoundLook.Name(video, say));
+        if (RoundLook.Value(mine, played, say) is { } status)
+        {
+            AutomationProperties.SetItemStatus(circle, status);
+        }
+        circle.Click += (_, _) => Soon(() => TapRound(video));
+        // The heart, here and handled: a button may keep the gesture from the balloon, and it must not land twice.
+        circle.DoubleTapped += (_, e) =>
+        {
+            e.Handled = true;
+            heart();
+        };
+        // ONE accent ring, OUTSIDE the edge — never over a face — as far as it has played (S5.3); nothing at rest.
+        var outer = Diameter + 2 * RoundInline.RingReach;
+        var ring = new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Width = outer,
+            Height = outer,
+            Margin = new Thickness(-RoundInline.RingReach),
+            Stroke = (Brush)resources["AccentFillColorDefaultBrush"],
+            StrokeThickness = RoundLook.Ring,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetAccessibilityView(ring, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        // While it plays, an expand control at the top trailing edge: a 28 glyph disc in a 44 target — Open Full Screen (S5.4).
+        var glyph = new Grid { Width = RoundInline.ExpandGlyph, Height = RoundInline.ExpandGlyph };
+        glyph.Children.Add(new Ellipse { Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0x8C, 0, 0, 0)) });
+        glyph.Children.Add(new FontIcon
+        {
+            // FullScreen, in Segoe Fluent Icons.
+            Glyph = ((char)0xE740).ToString(),
+            FontSize = 14,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var expand = new Button
+        {
+            Content = glyph,
+            Width = RoundInline.ExpandTarget,
+            Height = RoundInline.ExpandTarget,
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            CornerRadius = new CornerRadius(RoundInline.ExpandTarget / 2),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetName(expand, say.Get("Open Full Screen"));
+        ToolTipService.SetToolTip(expand, say.Get("Open Full Screen"));
+        expand.Click += (_, _) => OpenRound(video);
+        expand.DoubleTapped += (_, e) => e.Handled = true;
+        // A failure leaves the poster, and says so under it (S5.3).
+        var failure = new TextBlock
+        {
+            Text = say.Get("Couldn't load the video. Tap to try again."),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            MaxWidth = Diameter,
+            Opacity = 0.8,
+            HorizontalAlignment = circle.HorizontalAlignment,
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetLiveSetting(failure, AutomationLiveSetting.Polite);
+        // The ring reaches past the circle: the room for it is kept on every side, so nothing ever clips it and the row is
+        // the same height whether it plays or not.
+        var standing = new Grid { HorizontalAlignment = circle.HorizontalAlignment, Margin = new Thickness(RoundInline.RingReach) };
+        AutomationProperties.SetAccessibilityView(shadow, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        standing.Children.Add(shadow);
+        standing.Children.Add(circle);
+        standing.Children.Add(ring);
+        standing.Children.Add(expand);
+        var column = new StackPanel { Spacing = 4, HorizontalAlignment = circle.HorizontalAlignment };
+        column.Children.Add(standing);
+        column.Children.Add(failure);
+
+        var copy = new RoundCopy(video, mine, circle, brush, disc, spinner, ring, expand, words, dot, failure);
+        // Every copy on the screen is kept up to date — this one from now, and whenever it comes back — and none once it goes.
+        roundCopies.Add(video.Id, copy);
+        standing.Loaded += (_, _) =>
+        {
+            if (!gone)
+            {
+                roundCopies.Add(video.Id, copy);
+                DrawRoundCopy(copy);
+            }
+        };
+        standing.Unloaded += (_, _) =>
+        {
+            roundCopies.Remove(video.Id, copy);
+            // A turning ring off the screen turns for nobody; the next Loaded draws it again.
+            TurnRoundSpinner(copy, loading: false);
+            if (roundPlayback.Id == video.Id && roundCopies.Of(video.Id).Count == 0)
+            {
+                // Its last copy is gone — the message went, the thread panel closed. A redraw puts a new copy up first, so
+                // this looks again once the redraw has settled before it stops anything.
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!gone && roundPlayback.Id == video.Id && roundCopies.Of(video.Id).Count == 0)
+                    {
+                        StopRound();
+                    }
+                });
+            }
+        };
+        // Scrolled wholly out of view, it stops (S5.3) — unless another copy of it is still on the screen.
+        standing.EffectiveViewportChanged += (_, args) =>
+        {
+            var seen = args.EffectiveViewport;
+            copy.InView = RoundInline.InView(seen.X, seen.Y, seen.Width, seen.Height, Diameter, Diameter);
+            if (!copy.InView && !gone && roundPlayback.Id == video.Id && roundCopies.Of(video.Id).All(other => !other.InView))
+            {
+                StopRound();
+            }
+        };
+        DrawRoundCopy(copy);
+        _ = ShowPosterAsync(copy);
+        return column;
+    }
+
+    /// <summary>The square poster, filling its ellipse — the same small copy the viewer shows while the video loads.</summary>
+    private async Task ShowPosterAsync(RoundCopy copy)
+    {
+        var video = copy.Video;
+        if (!video.HasPreview)
+        {
+            // No poster was ever made: the neutral disc stays, and the video is never downloaded to draw one.
+            return;
+        }
+        try
+        {
+            var key = AttachmentCache.KeyFor(video.Id, preview: true);
+            if (!pictures.TryGetValue(key, out var picture))
+            {
+                var (bytes, error) = await connection.Attachments.BytesAsync(video, preview: true);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a video message's poster: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                if (await DecodeAsync(bytes) is not { } decoded)
+                {
+                    return;
+                }
+                picture = pictures[key] = decoded;
+            }
+            if (gone)
+            {
+                return;
+            }
+            // Kept by the copy, and drawn now unless its frames are showing — they give it back when they go.
+            copy.Poster = picture;
+            DrawRoundCopy(copy);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message: {e.GetType().Name}");
+        }
+    }
+
+    // ---- a circle playing in place ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A click on a circle (the single click, after the heart's double-click window): what <see cref="RoundPlayback.Tap"/>
+    /// says — play, pause, give up a load, try again — or, on a machine whose frame server failed (or with
+    /// <see cref="RoundInline.PlaysInPlace"/> off), the viewer.
+    /// </summary>
+    private void TapRound(AttachmentDto video)
+    {
+        if (gone)
+        {
+            return;
+        }
+        if (!RoundInline.PlaysInPlace || roundFallback)
+        {
+            OpenRound(video);
+            return;
+        }
+        var step = roundPlayback.Tap(video.Id, recordingStart.Quiet(recorder is not null));
+        Diagnostics.Write($"round: tap, {step.Tap} → {step.Act}");
+        if (step.Tap == RoundTap.Refused)
+        {
+            // No app sound while something records (S1.7).
+            Explain(services.Say.Get("You can play this after recording."));
+            return;
+        }
+        ApplyRound(step.Act, video);
+        if (step.Replaced is { } other)
+        {
+            DrawRound(other);
+        }
+        DrawRound(video.Id);
+    }
+
+    /// <summary>Do to the one player what the machine said.</summary>
+    private void ApplyRound(RoundAct act, AttachmentDto? video = null)
+    {
+        switch (act)
+        {
+            case RoundAct.Load when video is not null:
+                LetGoOfRoundEngine();
+                // Cleared when the player is let go; still there at the next launch, it says this build died playing in place.
+                RoundCrashMark.Arm();
+                // One thing plays at a time: a voice note — and the viewer's video — stop for the circle (S5.3).
+                QuietBesidesRound();
+                _ = LoadRoundAsync(video, roundPlayback.Load);
+                break;
+            case RoundAct.Play:
+                QuietBesidesRound();
+                roundEngine?.Play();
+                break;
+            case RoundAct.Pause:
+                roundEngine?.Pause();
+                break;
+            case RoundAct.Stop:
+                LetGoOfRoundEngine();
+                break;
+        }
+        RunRoundClock();
+    }
+
+    /// <summary>
+    /// The tapped circle's video: the whole MP4 through the attachment cache — the session's header, kept on disk, exactly
+    /// what the viewer fetches — opened in a frame-server player whose frames go into the circle's own ellipse.
+    /// </summary>
+    private async Task LoadRoundAsync(AttachmentDto video, int load)
+    {
+        byte[]? bytes;
+        try
+        {
+            var (got, error) = await connection.Attachments.BytesAsync(video);
+            bytes = got;
+            if (error is not null)
+            {
+                Diagnostics.Write($"a video message's video: {error.Code} {error.Status}");
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a video message: {e.GetType().Name}");
+            bytes = null;
+        }
+        // Given up, replaced or stopped meanwhile: the bytes land on nothing.
+        if (gone || roundPlayback.Load != load || roundPlayback.Phase != RoundPhase.Loading)
+        {
+            return;
+        }
+        if (bytes is null)
+        {
+            FailRound(load);
+            return;
+        }
+        Diagnostics.Write("round: video fetched");
+        RoundFramePlayer engine;
+        try
+        {
+            engine = new RoundFramePlayer(DispatcherQueue, RoundFrames.Side(RoundLook.Diameter, XamlRoot?.RasterizationScale ?? 1));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"making a video message's player: {e.GetType().Name}");
+            FailRound(load);
+            return;
+        }
+        roundEngine = engine;
+        bool Current() => !gone && ReferenceEquals(roundEngine, engine) && roundPlayback.Load == load;
+        engine.Opened += total =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            if (roundPlayback.Opened(load, total))
+            {
+                Diagnostics.Write("round: playing");
+                if (recordingStart.Quiet(recorder is not null))
+                {
+                    // A recording began while it loaded: it does not start under it (S1.7).
+                    YieldRound();
+                    return;
+                }
+                QuietBesidesRound();
+                engine.Play();
+            }
+            DrawRound(video.Id);
+        };
+        engine.StateChanged += state =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            switch (state)
+            {
+                case Windows.Media.Playback.MediaPlaybackState.Playing:
+                    roundPlayback.Playing(load);
+                    if (recordingStart.Quiet(recorder is not null))
+                    {
+                        YieldRound();
+                        return;
+                    }
+                    break;
+                case Windows.Media.Playback.MediaPlaybackState.Paused:
+                    roundPlayback.PausedByPlayer(load);
+                    break;
+                case Windows.Media.Playback.MediaPlaybackState.Buffering:
+                    roundPlayback.Waiting(load);
+                    break;
+            }
+            RunRoundClock();
+            DrawRound(video.Id);
+        };
+        engine.FirstFrame += () =>
+        {
+            if (Current())
+            {
+                roundPlayback.FirstFrame(load);
+                DrawRound(video.Id);
+            }
+        };
+        engine.Ended += () =>
+        {
+            if (!Current())
+            {
+                return;
+            }
+            var (act, through) = roundPlayback.Ended(load);
+            ApplyRound(act);
+            if (through)
+            {
+                MarkRoundPlayed(video);
+            }
+            DrawRound(video.Id);
+        };
+        engine.Failed += () =>
+        {
+            if (Current())
+            {
+                FailRound(load);
+            }
+        };
+        engine.FramesFailed += () =>
+        {
+            if (Current())
+            {
+                RoundToViewer(video, "its frames cannot be copied");
+            }
+        };
+        roundVideo = video;
+        engine.Open(bytes, video.Mime ?? "video/mp4");
+    }
+
+    /// <summary>
+    /// The player plays but its frames cannot be had on this machine: from now on every circle opens the viewer, which plays
+    /// it in its MediaPlayerElement as before — this one at once.
+    /// </summary>
+    private void RoundToViewer(AttachmentDto video, string why)
+    {
+        Diagnostics.Write($"a video message played in place: {why}; circles open the viewer from now on");
+        roundFallback = true;
+        StopRound();
+        OpenRound(video);
+    }
+
+    /// <summary>It could not be fetched or played: the poster, with "Couldn't load the video. Tap to try again." under it.</summary>
+    private void FailRound(int load)
+    {
+        if (roundPlayback.Id is not { } id)
+        {
+            return;
+        }
+        ApplyRound(roundPlayback.Failed(load));
+        DrawRound(id);
+        foreach (var copy in roundCopies.Of(id).Where(copy => copy.InView))
+        {
+            Announce(copy.Failure);
+        }
+    }
+
+    /// <summary>Something else plays — a voice note, the viewer, a recording: a circle playing in place makes way (S5.3).</summary>
+    private void YieldRound()
+    {
+        if (roundPlayback.Id is not { } id)
+        {
+            return;
+        }
+        ApplyRound(roundPlayback.Yield());
+        DrawRound(id);
+    }
+
+    /// <summary>Its row left the screen, its chat closed, the window let go: back to its poster, the player let go (S5.3).</summary>
+    private void StopRound()
+    {
+        var id = roundPlayback.Stop();
+        LetGoOfRoundEngine();
+        RunRoundClock();
+        if (id is { } stopped)
+        {
+            DrawRound(stopped);
+        }
+    }
+
+    /// <summary>Played through here: its dot goes, now and on every redraw, and Narrator hears "Played" (S5.3, S6).</summary>
+    private void MarkRoundPlayed(AttachmentDto video)
+    {
+        try
+        {
+            playedRounds.MarkPlayed(video.Id);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+        }
+        foreach (var copy in roundCopies.Of(video.Id))
+        {
+            if (copy.Dot is { } dot)
+            {
+                dot.Visibility = Visibility.Collapsed;
+            }
+            if (RoundLook.Value(copy.Mine, played: true, services.Say) is { } status)
+            {
+                AutomationProperties.SetItemStatus(copy.Circle, status);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The player goes: every circle its frames were drawn in gets its poster back FIRST — the frames are a surface outside
+    /// the managed heap, closed with the player, and must not be closed under a brush still drawing them.
+    /// </summary>
+    private void LetGoOfRoundEngine()
+    {
+        if (roundEngine is not { } engine)
+        {
+            RoundCrashMark.Disarm();
+            return;
+        }
+        roundEngine = null;
+        foreach (var copy in roundShowing)
+        {
+            if (ReferenceEquals(copy.Brush.ImageSource, engine.Picture))
+            {
+                copy.Brush.ImageSource = copy.Poster;
+            }
+        }
+        roundShowing.Clear();
+        engine.Dispose();
+        RoundCrashMark.Disarm();
+    }
+
+    /// <summary>The circle's clock: the ring and the time move while it plays, and stand still otherwise.</summary>
+    private void RunRoundClock()
+    {
+        if (roundPlayback.Phase != RoundPhase.Playing || roundEngine is null || gone)
+        {
+            roundClock?.Stop();
+            return;
+        }
+        if (roundClock is null)
+        {
+            roundClock = DispatcherQueue.CreateTimer();
+            roundClock.Interval = TimeSpan.FromMilliseconds(RoundInline.TickMs);
+            roundClock.Tick += (_, _) => TickRound();
+        }
+        if (!roundClock.IsRunning)
+        {
+            // Asked once per play, not ten times a second: Windows' animations off steps the ring once a second (S6).
+            roundReducedMotion = !StickerImaging.AnimationsWanted();
+            roundClock.Start();
+        }
+    }
+
+    private void TickRound()
+    {
+        if (gone || roundEngine is not { } engine || roundPlayback.Id is not { } id || roundPlayback.Phase != RoundPhase.Playing)
+        {
+            roundClock?.Stop();
+            return;
+        }
+        roundPlayback.Progress(roundPlayback.Load, engine.Position, engine.Duration);
+        if (RoundFrames.Starved(roundPlayback.Phase, roundPlayback.HasFrames, roundPlayback.Position) && roundVideo is { } video
+            && video.Id == id)
+        {
+            // Sound with a still poster is not playing a video.
+            RoundToViewer(video, "no frame in two seconds of playing");
+            return;
+        }
+        DrawRound(id);
+    }
+
+    /// <summary>Every copy of one circle, as the machine has it now.</summary>
+    private void DrawRound(long id)
+    {
+        if (gone)
+        {
+            return;
+        }
+        foreach (var copy in roundCopies.Of(id))
+        {
+            DrawRoundCopy(copy);
+        }
+    }
+
+    /// <summary>
+    /// One copy: its ellipse's picture (the frames once one is in, the poster otherwise), the play disc, the loading ring, the
+    /// ONE accent ring, the capsule's time, the expand control, the failure line, and what a press does next for Narrator.
+    /// </summary>
+    private void DrawRoundCopy(RoundCopy copy)
+    {
+        try
+        {
+            var id = copy.Video.Id;
+            var phase = roundPlayback.PhaseOf(id);
+            var current = roundPlayback.Id == id;
+            var hasFrames = current && roundPlayback.HasFrames;
+            var seen = current && roundPlayback.SeenPlaying;
+            var position = current ? roundPlayback.Position : 0;
+            var total = current && roundPlayback.Total > 0 ? roundPlayback.Total : (copy.Video.DurationMs ?? 0) / 1000.0;
+
+            var frames = RoundInline.ShowsFrames(phase, hasFrames) ? roundEngine?.Picture : null;
+            var picture = frames ?? copy.Poster;
+            if (!ReferenceEquals(copy.Brush.ImageSource, picture))
+            {
+                if (frames is not null)
+                {
+                    Diagnostics.Write("round: the circle shows its frames");
+                }
+                copy.Brush.ImageSource = picture;
+            }
+            if (frames is not null && !roundShowing.Contains(copy))
+            {
+                roundShowing.Add(copy);
+            }
+
+            FadeRoundDisc(copy, RoundInline.ShowsDisc(phase));
+            TurnRoundSpinner(copy, RoundInline.ShowsSpinner(phase));
+
+            var fraction = RoundInline.Ring(phase, seen, position, total, roundReducedMotion);
+            if (fraction <= 0)
+            {
+                copy.Ring.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                var outer = RoundLook.Diameter + 2 * RoundInline.RingReach;
+                copy.Ring.Data = RingArc(fraction, outer / 2, RoundLook.Diameter / 2 + RoundInline.RingGap + RoundLook.Ring / 2);
+                copy.Ring.Visibility = Visibility.Visible;
+            }
+
+            if (copy.Length is { } length && RoundInline.Capsule(copy.Video, phase, seen, position) is { } said
+                && !string.Equals(length.Text, said, StringComparison.Ordinal))
+            {
+                length.Text = said;
+            }
+            copy.Expand.Visibility = RoundInline.ShowsExpand(phase, hasFrames) ? Visibility.Visible : Visibility.Collapsed;
+            copy.Failure.Visibility = RoundInline.ShowsFailure(phase) ? Visibility.Visible : Visibility.Collapsed;
+
+            // Its name stays "Video message, 0:23" and its status Played or Not played; what a press does next — Play or
+            // Pause, the default action (S6) — is its help, or why nothing plays while something records (S1.7).
+            var help = recorder is not null && phase is not (RoundPhase.Playing or RoundPhase.Loading)
+                ? services.Say.Get("You can play this after recording.")
+                : RoundInline.Action(phase, services.Say);
+            if (!string.Equals(AutomationProperties.GetHelpText(copy.Circle), help, StringComparison.Ordinal))
+            {
+                AutomationProperties.SetHelpText(copy.Circle, help);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message as it plays: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>A copy's loading ring, shown and turning once a second — or shown standing still with Windows' animations off.</summary>
+    private static void TurnRoundSpinner(RoundCopy copy, bool loading)
+    {
+        var shown = copy.Spinner.Visibility == Visibility.Visible;
+        if (loading == shown)
+        {
+            return;
+        }
+        copy.SpinnerTurn?.Stop();
+        copy.SpinnerTurn = null;
+        copy.Spinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+        if (!loading || !StickerImaging.AnimationsWanted() || copy.Spinner.RenderTransform is not RotateTransform turn)
+        {
+            return;
+        }
+        var spin = new Animation.DoubleAnimation
+        {
+            From = 0,
+            To = 360,
+            Duration = new Duration(TimeSpan.FromSeconds(1)),
+            RepeatBehavior = Animation.RepeatBehavior.Forever,
+        };
+        Animation.Storyboard.SetTarget(spin, turn);
+        Animation.Storyboard.SetTargetProperty(spin, "Angle");
+        copy.SpinnerTurn = new Animation.Storyboard();
+        copy.SpinnerTurn.Children.Add(spin);
+        copy.SpinnerTurn.Begin();
+    }
+
+    /// <summary>A copy's play disc, faded in or out over 150 ms — or simply there or not with Windows' animations off.</summary>
+    private static void FadeRoundDisc(RoundCopy copy, bool shown)
+    {
+        if (shown == copy.DiscShown)
+        {
+            return;
+        }
+        copy.DiscShown = shown;
+        copy.DiscFade?.Stop();
+        copy.DiscFade = null;
+        var to = shown ? 1.0 : 0.0;
+        if (!StickerImaging.AnimationsWanted())
+        {
+            copy.Disc.Opacity = to;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, copy.Disc);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        copy.DiscFade = new Animation.Storyboard();
+        copy.DiscFade.Children.Add(fade);
+        copy.DiscFade.Begin();
+    }
+
+    /// <summary>
+    /// A ring's arc, clockwise from 12 o'clock to <paramref name="fraction"/> of the way round a circle of
+    /// <paramref name="radius"/> about (<paramref name="centre"/>, <paramref name="centre"/>) — the whole circle as it reaches the end.
+    /// </summary>
+    private static Geometry RingArc(double fraction, double centre, double radius)
+    {
+        if (fraction >= 0.999)
+        {
+            return new EllipseGeometry { Center = new Windows.Foundation.Point(centre, centre), RadiusX = radius, RadiusY = radius };
+        }
+        var (x, y) = RoundVideoRules.RingPoint(fraction, radius, centre);
+        var figure = new PathFigure { StartPoint = new Windows.Foundation.Point(centre, centre - radius), IsClosed = false };
+        figure.Segments.Add(new ArcSegment
+        {
+            Point = new Windows.Foundation.Point(x, y),
+            Size = new Windows.Foundation.Size(radius, radius),
+            IsLargeArc = fraction > 0.5,
+            SweepDirection = SweepDirection.Clockwise,
+        });
+        var path = new PathGeometry();
+        path.Figures.Add(figure);
+        return path;
+    }
+
+
+    /// <summary>What a visible circle fetches — its poster — fetched for a hidden one and drawn nowhere.</summary>
+    private async Task FetchHiddenPosterAsync(AttachmentDto video)
+    {
+        try
+        {
+            if (video.HasPreview && !pictures.ContainsKey(AttachmentCache.KeyFor(video.Id, preview: true)))
+            {
+                await connection.Attachments.BytesAsync(video, preview: true);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a hidden video message: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>Whether this device has played it; a cache that cannot be read draws no dot rather than a wrong one.</summary>
+    private bool HasPlayed(long attachmentId)
+    {
+        try
+        {
+            return playedRounds.Played(attachmentId);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading what was played: {e.GetType().Name}");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A soft shadow under a disc (the approved design's <c>0 6px 18px</c>): a composition drop shadow masked by the disc's own
+    /// alpha, hung on <paramref name="host"/> behind it — deeper in the dark theme, where a light one would not show. A
+    /// machine where composition cannot do it simply draws the circle without one.
+    /// </summary>
+    private void CastShadow(Grid host, Ellipse shape, double diameter)
+    {
+        try
+        {
+            var compositor = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(host).Compositor;
+            var drop = compositor.CreateDropShadow();
+            drop.BlurRadius = 18;
+            drop.Offset = new System.Numerics.Vector3(0, 6, 0);
+            // The mockup's rgba(20,24,40,.16) in light and rgba(0,0,0,.5) in dark — at full strength, the mask being opaque.
+            drop.Color = ActualTheme == ElementTheme.Dark
+                ? Windows.UI.Color.FromArgb(0x80, 0x00, 0x00, 0x00)
+                : Windows.UI.Color.FromArgb(0x29, 0x14, 0x18, 0x28);
+            drop.Mask = shape.GetAlphaMask();
+            var sprite = compositor.CreateSpriteVisual();
+            sprite.Size = new System.Numerics.Vector2((float)diameter, (float)diameter);
+            sprite.Shadow = drop;
+            Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetElementChildVisual(host, sprite);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"a video message's shadow: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>A circle, in the viewer: its circle, and its own bar under it.</summary>
+    /// <remarks>Only ever handed what <see cref="MessageDto.RoundVideo"/> found — S5.1's test of the whole message.</remarks>
+    private void OpenRound(AttachmentDto video) => OpenViewer([video], 0, round: true);
+
+    /// <summary>
+    /// The viewer shows a video message, or stops showing one: a SOLID backdrop, the player square and filled, the ring
+    /// and its corner mask over it — painted in that same backdrop — and the bar under it in place of the player's own
+    /// controls, which would sit in the corners the ring covers.
+    /// </summary>
+    private void SetViewerRound(bool on)
+    {
+        viewerRound = on;
+        viewerRoundPlayed = false;
+        viewerRoundStarted = false;
+        viewerRoundFailed = false;
+        viewerRoundClock?.Stop();
+        // A new opening: no ring yet, and the play disc in the middle until it plays.
+        viewerDiscFade?.Stop();
+        viewerDiscShown = true;
+        ViewerRoundDisc.Opacity = 1;
+        DrawViewerRing(0);
+        ViewerRoundRetry.Visibility = Visibility.Collapsed;
+        ViewerRoundBar.Visibility = Visibility.Collapsed;
+        ViewerRoundFrame.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        ViewerVideo.AreTransportControlsEnabled = !on && recorder is null;
+        if (on)
+        {
+            viewerBackdrop ??= ViewerOverlay.Background;
+            var solid = new SolidColorBrush(Microsoft.UI.Colors.Black);
+            ViewerOverlay.Background = solid;
+            ViewerRoundMask.Fill = solid;
+            ViewerVideo.Stretch = Stretch.UniformToFill;
+            ViewerVideo.Margin = new Thickness(0);
+            ViewerVideo.HorizontalAlignment = HorizontalAlignment.Center;
+            ViewerVideo.VerticalAlignment = VerticalAlignment.Center;
+            SizeViewerRound();
+            return;
+        }
+        if (viewerBackdrop is { } before)
+        {
+            ViewerOverlay.Background = before;
+            viewerBackdrop = null;
+        }
+        ViewerVideo.Stretch = Stretch.Uniform;
+        ViewerVideo.Margin = new Thickness(24);
+        ViewerVideo.Width = double.NaN;
+        ViewerVideo.Height = double.NaN;
+        ViewerVideo.HorizontalAlignment = HorizontalAlignment.Stretch;
+        ViewerVideo.VerticalAlignment = VerticalAlignment.Stretch;
+    }
+
+    /// <summary>What the viewer's bars above and below the circle take of its height.</summary>
+    private const double ViewerRoundChrome = 140;
+
+    /// <summary>The circle at the size the viewer has room for (<see cref="RoundLook.ViewerDiameter"/>), its mask cut to it.</summary>
+    private void SizeViewerRound()
+    {
+        var diameter = RoundLook.ViewerDiameter(ViewerOverlay.ActualWidth, ViewerOverlay.ActualHeight, ViewerRoundChrome);
+        ViewerVideo.Width = diameter;
+        ViewerVideo.Height = diameter;
+        // The frame reaches past the circle by the ring and its gap: the ring runs OUTSIDE the edge, never over the picture.
+        viewerRoundDiameter = diameter;
+        var outer = diameter + 2 * (ViewerRingGap + RoundLook.Ring);
+        ViewerRoundFrame.Width = outer;
+        ViewerRoundFrame.Height = outer;
+        ViewerRoundMask.Width = diameter;
+        ViewerRoundMask.Height = diameter;
+        DrawViewerRing(viewerRingAt);
+        ViewerRoundRetryText.MaxWidth = Math.Max(120, diameter - 60);
+        // Everything in the square that is not the circle: the corners, filled with the backdrop.
+        var corners = new GeometryGroup { FillRule = FillRule.EvenOdd };
+        corners.Children.Add(new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, diameter, diameter) });
+        corners.Children.Add(new EllipseGeometry
+        {
+            Center = new Windows.Foundation.Point(diameter / 2, diameter / 2),
+            RadiusX = diameter / 2,
+            RadiusY = diameter / 2,
+        });
+        ViewerRoundMask.Data = corners;
+    }
+
+    /// <summary>The gap between the viewer's circle and the ring round it.</summary>
+    private const double ViewerRingGap = 3;
+
+    /// <summary>The viewer circle's size, how far round its ring is drawn, and whether its play disc is showing.</summary>
+    private double viewerRoundDiameter;
+    private double viewerRingAt;
+    private bool viewerDiscShown = true;
+    private Animation.Storyboard? viewerDiscFade;
+
+    /// <summary>
+    /// The ring outside the viewer's circle, clockwise from 12 o'clock to <paramref name="fraction"/> — whole as it reaches the
+    /// end, nothing before it starts or once it has finished (<see cref="RoundLook.ViewerRing"/>): exactly one ring, the
+    /// accent, and only while it has something to say.
+    /// </summary>
+    private void DrawViewerRing(double fraction)
+    {
+        viewerRingAt = fraction;
+        var diameter = viewerRoundDiameter;
+        if (fraction <= 0 || diameter <= 0)
+        {
+            ViewerRoundRing.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var outer = diameter + 2 * (ViewerRingGap + RoundLook.Ring);
+        var centre = outer / 2;
+        var radius = diameter / 2 + ViewerRingGap + RoundLook.Ring / 2;
+        ViewerRoundRing.Data = RingArc(fraction, centre, radius);
+        ViewerRoundRing.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>The viewer circle's play disc, faded in or out over 150 ms — or simply there or not with Windows' animations off.</summary>
+    private void ShowViewerDisc(bool shown)
+    {
+        if (shown == viewerDiscShown)
+        {
+            return;
+        }
+        viewerDiscShown = shown;
+        viewerDiscFade?.Stop();
+        viewerDiscFade = null;
+        var to = shown ? 1.0 : 0.0;
+        if (!StickerImaging.AnimationsWanted())
+        {
+            ViewerRoundDisc.Opacity = to;
+            return;
+        }
+        var fade = new Animation.DoubleAnimation
+        {
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(ComposerButton.SlotCrossfadeMs)),
+        };
+        Animation.Storyboard.SetTarget(fade, ViewerRoundDisc);
+        Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+        viewerDiscFade = new Animation.Storyboard();
+        viewerDiscFade.Children.Add(fade);
+        viewerDiscFade.Begin();
+    }
+
+    /// <summary>The clip is in: its bar comes up, and a clock keeps it — and the played dot — up to date.</summary>
+    private void ShowViewerRound()
+    {
+        if (viewerRoundFailed)
+        {
+            return;
+        }
+        ViewerRoundBar.Visibility = Visibility.Visible;
+        if (viewerRoundClock is null)
+        {
+            viewerRoundClock = DispatcherQueue.CreateTimer();
+            viewerRoundClock.Interval = TimeSpan.FromMilliseconds(250);
+            viewerRoundClock.Tick += (_, _) => TickViewerRound();
+        }
+        viewerRoundClock.Start();
+        TickViewerRound();
+    }
+
+    /// <summary>Where the circle is: the bar's position and time, Play or Pause — and, once played through here, no dot.</summary>
+    private void TickViewerRound()
+    {
+        if (gone || !viewerRound || viewing is not { } album)
+        {
+            viewerRoundClock?.Stop();
+            return;
+        }
+        if (ViewerVideo.MediaPlayer is not { } player)
+        {
+            return;
+        }
+        try
+        {
+            var session = player.PlaybackSession;
+            var total = session.NaturalDuration.TotalSeconds;
+            if (total <= 0)
+            {
+                total = (album.Current.DurationMs ?? 0) / 1000.0;
+            }
+            var at = Math.Clamp(session.Position.TotalSeconds, 0, Math.Max(total, 0));
+            var playing = session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing;
+            viewerRoundStarted |= playing;
+            // Its dot goes at the END, not at the start (S5.3), as on every other client.
+            if (!viewerRoundPlayed && RoundLook.PlayedThrough(viewerRoundStarted, at, total))
+            {
+                viewerRoundPlayed = true;
+                try
+                {
+                    playedRounds.MarkPlayed(album.Current.Id);
+                }
+                catch (Exception e)
+                {
+                    Diagnostics.Write($"remembering what was played: {e.GetType().Name}");
+                }
+            }
+            movingRoundSeek = true;
+            try
+            {
+                ViewerRoundSeek.Maximum = Math.Max(total, 0.1);
+                ViewerRoundSeek.Value = at;
+            }
+            finally
+            {
+                movingRoundSeek = false;
+            }
+            ViewerRoundTime.Text = $"{MediaText.TimeLabel(at)} / {MediaText.TimeLabel(total)}";
+            ViewerRoundGlyph.Glyph = ((char)(playing ? 0xE769 : 0xE768)).ToString();
+            // The one accent ring round the edge, as far as it has played — none before it starts — and the disc out of the
+            // way while it plays.
+            // Finished, it goes with the rest of the playback look: the circle is back to its poster and disc (the mockup).
+            DrawViewerRing(RoundLook.ViewerRing(viewerRoundStarted, playing, at, total));
+            ShowViewerDisc(!playing);
+            var label = services.Say.Get(playing ? "Pause" : "Play");
+            if (!string.Equals(AutomationProperties.GetName(ViewerRoundPlay), label, StringComparison.Ordinal))
+            {
+                AutomationProperties.SetName(ViewerRoundPlay, label);
+                ToolTipService.SetToolTip(ViewerRoundPlay, label);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"following a video message: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>The circle's Play and Pause: played through, Play starts it again; and one thing plays at a time.</summary>
+    private void ToggleViewerRound()
+    {
+        if (ViewerVideo.MediaPlayer is not { } player)
+        {
+            return;
+        }
+        // No app sound while something records (S1.7); the button is dimmed then too.
+        if (recordingStart.Quiet(recorder is not null))
+        {
+            return;
+        }
+        try
+        {
+            var session = player.PlaybackSession;
+            if (session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing)
+            {
+                player.Pause();
+            }
+            else
+            {
+                if (session.NaturalDuration > TimeSpan.Zero
+                    && session.Position >= session.NaturalDuration - TimeSpan.FromMilliseconds(250))
+                {
+                    session.Position = TimeSpan.Zero;
+                }
+                if (AudioRunning)
+                {
+                    audio.Pause();
+                    ShowPlayback();
+                }
+                player.Play();
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"playing a video message: {e.GetType().Name}");
+        }
+        TickViewerRound();
+    }
+
+    /// <summary>
+    /// Something happened that pauses what plays (S4's last column; <see cref="PlaybackPauses"/>): the one recording
+    /// player, and the viewer's video when the rule says so — a circle on a hidden window, but a voice note plays on.
+    /// </summary>
+    private void PausePlayback(PlaybackEvent happened)
+    {
+        try
+        {
+            if (PlaybackPauses.Pauses(happened, Playing.VoiceNote) && AudioRunning)
+            {
+                audio.Pause();
+                ShowPlayback();
+            }
+            if (viewing is { IsVideo: true }
+                && PlaybackPauses.Pauses(happened, viewerRound ? Playing.RoundVideo : Playing.Video))
+            {
+                ViewerVideo.MediaPlayer?.Pause();
+            }
+            // A circle playing in place, by the same rule as the viewer's circle.
+            if (roundPlayback.Id is { } circle)
+            {
+                ApplyRound(roundPlayback.Interrupt(happened));
+                DrawRound(circle);
+            }
+            // And the clip the recorder is playing back in REVIEW, which is a circle like any other.
+            roundRecorder?.PausePlayback(happened);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"pausing for {happened}: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The reader's own circle on its way (S5.6): drawn round at once from the poster this device made, fainter, with a
+    /// thin neutral ring while it goes up and "Sending…" — and, refused, the failed row's Try Again and Delete.
+    /// </summary>
+    private FrameworkElement PendingRoundElement(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        var resources = Application.Current.Resources;
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        var face = new Grid
+        {
+            Width = RoundLook.Diameter,
+            Height = RoundLook.Diameter,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        face.Children.Add(new Ellipse { Fill = (Brush)resources["ControlFillColorSecondaryBrush"] });
+        var poster = new Ellipse();
+        face.Children.Add(poster);
+        face.Children.Add(new Ellipse
+        {
+            Stroke = (Brush)resources["ControlStrongStrokeColorDefaultBrush"],
+            StrokeThickness = RoundLook.Ring,
+        });
+        AutomationProperties.SetName(face, say.Get("Video message"));
+        if ((row.StagedFiles ?? row.PendingFiles) is [var handle, ..])
+        {
+            _ = ShowStagedPosterAsync(poster, handle);
+        }
+        column.Children.Add(face);
+        column.Children.Add(PendingFoot(chat, row));
+        return column;
+    }
+
+    /// <summary>The poster staged with a circle on its way — this device's own JPEG, never asked of the server.</summary>
+    private async Task ShowStagedPosterAsync(Ellipse poster, string handle)
+    {
+        try
+        {
+            if (!stagedPosters.TryGetValue(handle, out var picture))
+            {
+                var store = connection.Staging;
+                var staged = await Task.Run(() => store.Read(handle));
+                if (gone || staged?.Preview is not { IsEmpty: false } jpeg)
+                {
+                    return;
+                }
+                picture = await DecodeAsync(jpeg.ToArray());
+                if (gone)
+                {
+                    return;
+                }
+                if (stagedPosters.Count >= 16)
+                {
+                    stagedPosters.Clear();
+                }
+                // A null is kept as well: bytes nothing here decodes will not decode on the next redraw either.
+                stagedPosters[handle] = picture;
+            }
+            if (picture is not null)
+            {
+                poster.Fill = new ImageBrush { ImageSource = picture, Stretch = Stretch.UniformToFill };
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a video message on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Under a bare send on its way — a sticker, a circle — with no balloon to sit in: "Sending…" in the window's own caption
+    /// colour, or, refused, the two things a person can do about it.
+    /// </summary>
+    private FrameworkElement PendingFoot(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        if (row.Failed)
+        {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            var retry = new HyperlinkButton { Content = say.Get("Try Again") };
+            retry.Click += (_, _) =>
+            {
+                chat.Retry(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.UserRetried);
+            };
+            var discard = new HyperlinkButton { Content = say.Get("Delete") };
+            discard.Click += (_, _) =>
+            {
+                chat.Discard(row.ClientMsgId);
+                conversationDrawn = string.Empty;
+                DrawConversation(keepFromBottom: null);
+                threadDrawn = string.Empty;
+                DrawThread();
+            };
+            actions.Children.Add(retry);
+            actions.Children.Add(discard);
+            return actions;
+        }
+        return new TextBlock
+        {
+            Text = say.Get("Sending…"),
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(4, 0, 4, 0),
+            // No balloon under it, so the window's own caption colour — not the white a balloon carries.
+            Foreground = Palette.SecondaryText(),
+        };
+    }
+
+    // ---- stickers ------------------------------------------------------------------------------
+    //
+    // The CHAT sticker: a small picture sent as its own message (docs/protocol.md, "Sticker pack"). Nothing here is
+    // about the board, whose cards this code also calls stickers (StickerFace).
+
+    /// <summary>The screen's own scale, for decoding a picture at the pixels it will be drawn with; 1 where it cannot be asked.</summary>
+    private double RasterScale()
+    {
+        try
+        {
+            return XamlRoot?.RasterizationScale ?? 1;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading the screen's scale: {e.GetType().Name}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// A sticker in a conversation: NO BUBBLE, in the one box every sticker on this client gets — fitted whole, never
+    /// cropped, never at its own pixel size — and the shape taken from metadata, so the row does not jump when the
+    /// picture lands. A click shows it larger.
+    /// </summary>
+    private FrameworkElement StickerElement(AttachmentDto picture)
+    {
+        var say = services.Say;
+        var (width, height) = StickerLook.Fit(picture.Width, picture.Height);
+        var frame = new Grid
+        {
+            Width = width,
+            Height = height,
+            // Transparent, not absent: the whole box answers a click, not just the pixels that happen to be opaque.
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+        };
+        // Until the bytes land — and for good where nothing on this machine decodes them — the word says what is here.
+        var word = new TextBlock
+        {
+            Text = say.Get("Sticker"),
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        frame.Children.Add(word);
+        var image = new Image { Stretch = Stretch.Uniform };
+        frame.Children.Add(image);
+        AutomationProperties.SetName(frame, say.Get("Sticker"));
+        _ = ShowStickerAsync(image, word, picture);
+        IReadOnlyList<AttachmentDto> album = [picture];
+        frame.Tapped += (_, _) => OpenViewer(album, 0);
+        return frame;
+    }
+
+    /// <summary>
+    /// A sent sticker's picture: its ORIGINAL bytes, never the preview, whatever <c>has_preview</c> says — a preview is a
+    /// JPEG, and the flag can be inherited through dedup. Animated where this machine can, frame zero where it cannot.
+    /// </summary>
+    private async Task ShowStickerAsync(Image image, TextBlock word, AttachmentDto picture)
+    {
+        try
+        {
+            if (!stickerPictures.TryGet(picture.Id, out var decoded))
+            {
+                var (bytes, error) = await connection.Attachments.BytesAsync(picture, preview: false);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    // NOT remembered: the bytes may well arrive next time, and then there is a sticker to draw.
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a sticker: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                await stickerDecoding.WaitAsync();
+                try
+                {
+                    if (gone)
+                    {
+                        return;
+                    }
+                    // Asked again: another element of this same sticker may have decoded it while this one waited.
+                    if (!stickerPictures.TryGet(picture.Id, out decoded))
+                    {
+                        decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.Box, RasterScale(), StickerImaging.AnimationsWanted());
+                        if (gone)
+                        {
+                            decoded?.Release();
+                            return;
+                        }
+                        // Frames are memory, and the shelf holds every sticker here to one budget: what was drawn longest
+                        // ago makes room for this one. A null is kept too — "nothing on this machine decodes it" is an
+                        // answer, and asking again on every redraw would read the file and fail the decode every time.
+                        stickerPictures.Put(picture.Id, decoded, decoded?.Bytes ?? 0);
+                    }
+                }
+                finally
+                {
+                    stickerDecoding.Release();
+                }
+            }
+            if (decoded is null)
+            {
+                // The word stays: it is what says a sticker is here.
+                return;
+            }
+            // The clock is the STICKER's: an image made by a redraw joins the animation where it was.
+            stickers.Show(image, decoded, stickerPictures.Started(picture.Id, stickers.Now));
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a sticker: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>What a visible sticker fetches, fetched for a hidden one and drawn nowhere.</summary>
+    private async Task FetchHiddenStickerAsync(AttachmentDto picture)
+    {
+        try
+        {
+            if (!stickerPictures.TryGet(picture.Id, out _))
+            {
+                await connection.Attachments.BytesAsync(picture, preview: false);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"fetching a hidden sticker: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// A sticker on its way: drawn as the sticker it will be, fainter, from the bytes staged for it — so one click in
+    /// the panel puts it in the conversation at once, whatever the network is doing — and, refused, with the two things
+    /// a person can do about it.
+    /// </summary>
+    private FrameworkElement PendingStickerElement(ConversationModel chat, OutboxRow row)
+    {
+        var say = services.Say;
+        var column = new StackPanel
+        {
+            Spacing = 3,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(72, 8, 0, 0),
+        };
+        var frame = new Grid
+        {
+            Width = StickerLook.Box,
+            Height = StickerLook.Box,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Opacity = row.Failed ? 0.9 : 0.6,
+        };
+        var word = new TextBlock
+        {
+            Text = say.Get("Sticker"),
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        frame.Children.Add(word);
+        var image = new Image { Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Right };
+        frame.Children.Add(image);
+        AutomationProperties.SetName(frame, say.Get("Sticker"));
+        if ((row.StagedFiles ?? row.PendingFiles) is [var handle, ..])
+        {
+            _ = ShowStagedStickerAsync(image, word, handle);
+        }
+        column.Children.Add(frame);
+        column.Children.Add(PendingFoot(chat, row));
+        return column;
+    }
+
+    private async Task ShowStagedStickerAsync(Image image, TextBlock word, string handle)
+    {
+        try
+        {
+            if (!stagedStickers.TryGetValue(handle, out var decoded))
+            {
+                var store = connection.Staging;
+                var staged = await Task.Run(() => store.Read(handle));
+                if (staged is null || gone)
+                {
+                    return;
+                }
+                // Still: it is on screen for as long as a send takes, and the message that replaces it moves.
+                decoded = await StickerImaging.DecodeAsync(staged.Bytes.ToArray(), StickerLook.Box, RasterScale(), animate: false);
+                if (gone)
+                {
+                    return;
+                }
+                if (stagedStickers.Count >= 16)
+                {
+                    stagedStickers.Clear();
+                }
+                // A null is kept as well: bytes nothing here decodes will not decode on the next redraw either.
+                stagedStickers[handle] = decoded;
+            }
+            if (decoded is null)
+            {
+                return;
+            }
+            stickers.Show(image, decoded);
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a sticker on its way: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// The panel over the composer: what this device sent lately, then the family's whole pack in the order it was
+    /// added — and ONE CLICK SENDS. No caption and no confirmation: the sticker is the message.
+    /// </summary>
+    /// <param name="anchor">The button that opened it: the conversation's, or the thread's.</param>
+    /// <param name="inThread">The chain whose composer asked, or null for the conversation's own. A sticker sent from it answers the chain's ROOT.</param>
+    private void ShowStickerPanel(FrameworkElement anchor, ThreadModel? inThread)
+    {
+        if (open is not { } chat || !pack.Offered)
+        {
+            return;
+        }
+        if (inThread is null ? editing is not null : thread != inThread || inThread.ChatId != chat.ChatId || !ThreadComposer.IsEnabled)
+        {
+            return;
+        }
+        try
+        {
+            var say = services.Say;
+            var panel = pack.Panel();
+            var flyout = new Flyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
+            var content = new StackPanel { Spacing = 8, Width = StickerLook.PanelColumns * StickerLook.PanelCell };
+            content.Children.Add(new TextBlock { Text = say.Get("Stickers"), FontWeight = FontWeights.SemiBold });
+            if (panel.IsEmpty)
+            {
+                content.Children.Add(new TextBlock { Text = say.Get("No stickers yet"), TextWrapping = TextWrapping.Wrap });
+                // Where they come from: the pack is managed on the Family screen, by anybody in the family.
+                content.Children.Add(new TextBlock
+                {
+                    Text = say.Get("Add a picture and everyone in the family can send it as a sticker."),
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Palette.SecondaryText(),
+                });
+            }
+            else
+            {
+                if (panel.Recent.Count > 0)
+                {
+                    // What THIS DEVICE sent lately, first. Never on the wire, and gone with this device's cache.
+                    content.Children.Add(PanelHeading(say.Get("Recently used")));
+                    content.Children.Add(StickerCells(chat, panel.Recent, flyout, inThread));
+                    content.Children.Add(new Border
+                    {
+                        Height = 1,
+                        Background = Palette.Themed("DividerStrokeColorDefaultBrush", 0x30, 0x80, 0x80, 0x80),
+                    });
+                    content.Children.Add(PanelHeading(say.Get("All stickers")));
+                }
+                content.Children.Add(StickerCells(chat, panel.All, flyout, inThread));
+            }
+            flyout.Content = new ScrollViewer
+            {
+                Content = content,
+                MaxHeight = 380,
+                HorizontalScrollMode = ScrollMode.Disabled,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            };
+            flyout.ShowAt(anchor);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening the sticker panel: {e.GetType().Name}");
+            ShowProblem(services.Say.Get("Something went wrong. Try again."));
+        }
+    }
+
+    private static TextBlock PanelHeading(string words) => new()
+    {
+        Text = words,
+        FontSize = 12,
+        Foreground = Palette.SecondaryText(),
+    };
+
+    /// <summary>One grid of the panel: a cell per item, each a button a screen reader and the keyboard can reach.</summary>
+    private FrameworkElement StickerCells(ConversationModel chat, IReadOnlyList<PackItemDto> items, Flyout flyout, ThreadModel? inThread)
+    {
+        var say = services.Say;
+        var cells = new VariableSizedWrapGrid
+        {
+            Orientation = Orientation.Horizontal,
+            MaximumRowsOrColumns = StickerLook.PanelColumns,
+            ItemWidth = StickerLook.PanelCell,
+            ItemHeight = StickerLook.PanelCell,
+        };
+        foreach (var item in items)
+        {
+            // Still in the panel, whatever the file is: two hundred cells each cycling frames is a panel nobody can read.
+            var image = new Image { Stretch = Stretch.Uniform };
+            // ONE CLICK SENDS, so a cell may never be a blank square: until its picture lands — and for good where
+            // nothing on this machine decodes it (WebP without its extension) — it says what it would send, in the
+            // words whoever added it gave, or "Sticker". Under the picture, never over it.
+            var word = new TextBlock
+            {
+                Text = item.Label is { Length: > 0 } given ? given : say.Get("Sticker"),
+                FontSize = 11,
+                Opacity = 0.6,
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxLines = 3,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var face = new Grid();
+            face.Children.Add(word);
+            face.Children.Add(image);
+            var cell = new Button
+            {
+                Content = face,
+                Width = StickerLook.PanelCell,
+                Height = StickerLook.PanelCell,
+                Padding = new Thickness(6),
+                BorderThickness = new Thickness(0),
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            // The few words whoever added it gave — for a screen reader, whether or not the picture drew.
+            var name = PackText.Name(item, say);
+            AutomationProperties.SetName(cell, name);
+            // One click sends, with no second step to catch a slip: a screen reader is told so before the click.
+            AutomationProperties.SetHelpText(cell, say.Get("Sends this sticker"));
+            if (item.Label is { Length: > 0 } label)
+            {
+                ToolTipService.SetToolTip(cell, label);
+            }
+            var chosen = item;
+            cell.Click += (_, _) =>
+            {
+                flyout.Hide();
+                _ = SendStickerAsync(chat, chosen, inThread);
+            };
+            _ = ShowStickerThumbAsync(image, word, item);
+            cells.Children.Add(cell);
+        }
+        return cells;
+    }
+
+    /// <summary>
+    /// A pack item in a panel cell: the item's ORIGINAL bytes, fetched once and kept under its attachment id. The cell's
+    /// word goes only when there is a picture to put in its place.
+    /// </summary>
+    private async Task ShowStickerThumbAsync(Image image, TextBlock word, PackItemDto item)
+    {
+        try
+        {
+            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            {
+                var (bytes, error) = await pack.BytesAsync(item);
+                if (gone)
+                {
+                    return;
+                }
+                if (bytes is null)
+                {
+                    if (error is not null)
+                    {
+                        Diagnostics.Write($"a pack item: {error.Code} {error.Status}");
+                    }
+                    return;
+                }
+                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.PanelCell, RasterScale(), animate: false);
+                if (gone)
+                {
+                    return;
+                }
+                // A null is kept: the panel is opened again and again, and a codec that is not there is still not there.
+                stickerThumbs[item.Id] = decoded;
+            }
+            if (decoded is null)
+            {
+                return;
+            }
+            stickers.Show(image, decoded);
+            word.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a pack item: {e.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// One click in the panel: the item's bytes AS CACHED, staged as one photo with no preview, and a row queued with
+    /// the sticker flag — a message from there on, so it is written down before anything moves and lands whenever the
+    /// network lets it (docs/protocol.md, "Sending one"). The words in the box are left alone: a sticker carries none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// NEVER THROUGH <see cref="MediaPreparing"/>. Everything that does to a photograph — the downscale, the JPEG, the
+    /// preview — would cost a sticker its transparency and its animation.
+    /// </para>
+    /// <para>
+    /// NOTHING REACHES THE MODEL UNASKED, and one click is no exception. In the assistant's chat the sticker goes through
+    /// the same question the Send button does (docs/protocol.md, "Consenting to the assistant"): asked first, sent only
+    /// on a yes the server has recorded, and not sent at all to an assistant whose owner this server will not name.
+    /// </para>
+    /// </remarks>
+    /// <param name="inThread">The chain whose composer it was sent from: the sticker answers that chain's ROOT, as every reply from there does.</param>
+    private async Task SendStickerAsync(ConversationModel chat, PackItemDto item, ThreadModel? inThread = null)
+    {
+        if (sendingSticker)
+        {
+            return;
+        }
+        var say = services.Say;
+        var session = connection.Session.State;
+        switch (PackSending.For(Kind(chat), session.Assistant is not null, session.Assistant?.Processor, session.AssistantConsentAt))
+        {
+            case PackSending.Gate.Ask:
+                _ = ReviewAssistantConsentAsync(() =>
+                {
+                    // A yes is for the chat it was asked in: somebody who walked away while reading has not sent.
+                    if (!gone && open == chat)
+                    {
+                        _ = SendStickerAsync(chat, item, inThread);
+                    }
+                });
+                return;
+            case PackSending.Gate.Withheld:
+                ShowProblem(say.Get("This server hasn't said which service answers, so nothing can be sent to the assistant here."));
+                return;
+        }
+        sendingSticker = true;
+        ComposerError.Visibility = Visibility.Collapsed;
+        // A sticker may be a reply — which is how one answers something with a sticker. Taken now: the banner is the
+        // reader's to cancel while the bytes are fetched. From a thread it answers the ROOT, whatever was being looked at.
+        var replyTo = inThread is not null ? inThread.RootId : replyingTo?.Id;
+        var store = connection.Staging;
+        string? handle = null;
+        try
+        {
+            var (media, error) = await pack.ToSendAsync(item);
+            if (media is null)
+            {
+                if (!gone)
+                {
+                    var refused = error ?? ApiError.Transport("no answer");
+                    // A sticker is a COPY of the item's bytes, and this device has not fetched them yet.
+                    ShowProblem(refused.Transient
+                        ? say.Get("Couldn't send that sticker. Check your connection and try again.")
+                        : PackText.Sentence(refused, say));
+                }
+                return;
+            }
+            handle = await Task.Run(() => store.Stage(media));
+            chat.SendSticker(handle, replyTo);
+            pack.Sent(item.Id);
+            if (gone)
+            {
+                return;
+            }
+            if (open == chat)
+            {
+                if (inThread is not null)
+                {
+                    // Drawn under the chain it answers, as a reply typed there is (SendInThread).
+                    if (thread == inThread)
+                    {
+                        threadDrawn = string.Empty;
+                        DrawThread(scrollToEnd: true);
+                    }
+                }
+                else if (replyTo is not null && replyingTo?.Id == replyTo)
+                {
+                    // The reply has been sent; what is typed in the box stays, for the message it belongs to.
+                    EndComposerMode(clear: false);
+                }
+                Queued();
+            }
+            else
+            {
+                _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"sending a sticker: {e.GetType().Name}");
+            if (!gone)
+            {
+                ShowProblem(say.Get("Something went wrong. Try again."));
+            }
+        }
+        finally
+        {
+            if (handle is not null)
+            {
+                // The row that names it is in the outbox now (or never will be): the sweep may judge it.
+                store.Release([handle]);
+            }
+            sendingSticker = false;
+        }
     }
 
     private ComposerStaging Staging(long chatId)
@@ -4000,7 +9644,14 @@ public sealed partial class ChatsView : UserControl
         return strip;
     }
 
-    private async Task PickAsync()
+    /// <summary>What "File" offers: everything.</summary>
+    private static readonly string[] AllFiles = ["*"];
+
+    /// <summary>
+    /// The pickers behind "Photo or Video" (<paramref name="types"/>: AttachMenu.PhotoOrVideoTypes) and "File" (null: every
+    /// file). Both open on the Pictures library and stage what is picked the same way.
+    /// </summary>
+    private async Task PickAsync(IReadOnlyList<string>? types)
     {
         if (open is not { } chat)
         {
@@ -4025,7 +9676,10 @@ public sealed partial class ChatsView : UserControl
                 SuggestedStartLocation = PickerLocationId.PicturesLibrary,
                 ViewMode = PickerViewMode.Thumbnail,
             };
-            picker.FileTypeFilter.Add("*");
+            foreach (var type in types ?? AllFiles)
+            {
+                picker.FileTypeFilter.Add(type);
+            }
             // A desktop app must name the window that owns the picker, or it throws.
             WinRT.Interop.InitializeWithWindow.Initialize(picker, services.WindowHandle);
             files = await picker.PickMultipleFilesAsync();
@@ -4144,6 +9798,7 @@ public sealed partial class ChatsView : UserControl
         }
         PictureNoticeText.Text = said ?? string.Empty;
         PictureNoticeText.Visibility = said is null ? Visibility.Collapsed : Visibility.Visible;
+        DrawPictureHint();
         DrawConsentBar();
     }
 
@@ -4190,7 +9845,11 @@ public sealed partial class ChatsView : UserControl
     /// Ask the assistant question, and finish the send it interrupted. The draft never left the
     /// box, so agreeing completes what the person already asked for; "Not Now" leaves it there.
     /// </summary>
-    private async Task ReviewAssistantConsentAsync()
+    /// <param name="then">
+    /// The send that was interrupted, run only on a yes the server has recorded: the composer's own, or the sticker
+    /// somebody clicked in the panel.
+    /// </param>
+    private async Task ReviewAssistantConsentAsync(Action then)
     {
         var state = connection.Session.State;
         if (state.Assistant?.Processor is not { } processor || string.IsNullOrWhiteSpace(processor))
@@ -4199,19 +9858,21 @@ public sealed partial class ChatsView : UserControl
         }
         var agreed = await Dialogs.AssistantConsentAsync(
             XamlRoot, services.Say, processor,
-            state.Family?.AiHistory == true, state.Family?.AiVision == true);
-        if (!agreed)
+            state.Family?.AiHistory == true, state.Family?.AiVision == true, state.Assistant?.Transcribe == true,
+            Lookups.Offered(state.Assistant) ? Lookups.Providers(state.Assistant) : null);
+        if (agreed == ConsentAnswer.NotNow)
         {
             return;
         }
-        var answer = await connection.Api.SetAssistantConsent(true);
-        if (answer.Ok)
+        var error = await Lookups.RecordAsync(connection.Api, agreed, assistantAgreed: false);
+        // The session is the state: `/me` is what the composer reads, so it is re-read rather
+        // than patched here, and the strip and the send follow from what the server says — also
+        // after a failed lookup write, when the assistant's own consent may already have landed.
+        await connection.Session.RefreshAsync();
+        DrawConsentBar();
+        if (error is null)
         {
-            // The session is the state: `/me` is what the composer reads, so it is re-read rather
-            // than patched here, and the strip and the send follow from what the server says.
-            await connection.Session.RefreshAsync();
-            DrawConsentBar();
-            Send();
+            then();
         }
         else
         {
@@ -4323,11 +9984,15 @@ public sealed partial class ChatsView : UserControl
             ShowProblem(busy);
             return;
         }
-        ShowProblem(services.Say.Get("Preparing…"));
+        ComposerError.Visibility = Visibility.Collapsed;
+        var stagedBefore = strip.Items.Count;
         string? said;
         try
         {
-            said = await strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+            // The strip is marked as preparing before its first await, so the bar can be drawn from it straight away.
+            var ingest = strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+            ShowPreparing();
+            said = await ingest;
         }
         catch (Exception e)
         {
@@ -4338,9 +10003,16 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        ShowPreparing();
         ComposerError.Visibility = Visibility.Collapsed;
-        if (open == chat)
+        // By its id: a chat left and come back to while a video was transcoded is a new model over the same strip.
+        if (open?.ChatId == chat.ChatId)
         {
+            if (strip.Items.Count > stagedBefore)
+            {
+                // The person's staging is never guarded (S1.1): a picture pasted just after a send goes at the next Send.
+                slotGuard.Changed(recording: recorder is not null);
+            }
             if (said is not null)
             {
                 ShowProblem(said);
@@ -4350,19 +10022,41 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>What the open chat has staged, each with its own ✕.</summary>
+    /// <summary>
+    /// "Preparing…" and its Cancel, for the chat that is OPEN: a batch goes on for the chat it was dropped into whichever
+    /// chat is looked at meanwhile, so the bar follows the open chat's own strip rather than whoever started last.
+    /// </summary>
+    private void ShowPreparing()
+    {
+        var preparing = open is { } chat && strips.TryGetValue(chat.ChatId, out var strip) && strip.Preparing;
+        PreparingRing.IsActive = preparing;
+        PreparingBar.Visibility = preparing ? Visibility.Visible : Visibility.Collapsed;
+        // An attachment on its way dims the microphone (S1.3 row 8).
+        DrawSlot();
+    }
+
     private void DrawStaging()
     {
+        ShowPreparing();
         DrawPictureNotice();
         StagingStrip.Children.Clear();
+        stagedRows.Clear();
         if (open is not { } chat || Staging(chat.ChatId) is not { Items.Count: > 0 } strip)
         {
             StagingScroller.Visibility = Visibility.Collapsed;
+            ReconcileLocal();
+            DrawSlot();
             return;
         }
         var say = services.Say;
         for (var index = 0; index < strip.Items.Count; index++)
         {
             var item = strip.Items[index];
+            if (VoiceNotes.IsRecorded(item))
+            {
+                StagingStrip.Children.Add(StagedNoteChip(strip, item));
+                continue;
+            }
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             row.Children.Add(Thumb(item));
             row.Children.Add(new TextBlock
@@ -4379,18 +10073,201 @@ public sealed partial class ChatsView : UserControl
             remove.Click += (_, _) =>
             {
                 strip.Remove(at);
+                // Taken off by the person: a change of theirs, never guarded (S1.1, fc_text::record's OtherAction).
+                slotGuard.Changed(recording: recorder is not null);
                 DrawStaging();
             };
             row.Children.Add(remove);
-            StagingStrip.Children.Add(new Border
-            {
-                Child = row,
-                Padding = new Thickness(6, 4, 4, 4),
-                CornerRadius = new CornerRadius(8),
-                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
-            });
+            StagingStrip.Children.Add(ChipBox(row));
         }
         StagingScroller.Visibility = Visibility.Visible;
+        ReconcileLocal();
+        DrawSlot();
+    }
+
+    private static Border ChipBox(FrameworkElement row) => new()
+    {
+        Child = row,
+        Padding = new Thickness(6, 4, 4, 4),
+        CornerRadius = new CornerRadius(8),
+        Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+    };
+
+    /// <summary>
+    /// A voice note in review (S2.7), as the approved design draws it: a chip of its own above the field — a round ▶, the note's
+    /// mini waveform, its length, and ✕ ("Delete recording"). ▶ plays it from this device and lights the bars as it goes,
+    /// the time counting up; ✕ deletes it, asking first from ten seconds, because it cannot be made again.
+    /// </summary>
+    private FrameworkElement StagedNoteChip(ComposerStaging strip, StagedMedia item)
+    {
+        var say = services.Say;
+        var player = ChipPlayer(item.Waveform, item.DurationMs, StagedChipBars);
+        var remove = ChipCross(say.Get("Delete recording"));
+        player.Toggle.Click += (_, _) => _ = ToggleLocalAsync(item, null);
+        remove.Click += (_, _) => _ = DeleteStagedNoteAsync(strip, item);
+        stagedRows[item] = new LocalRow(
+            player.Toggle, player.Glyph, player.Time, player.Time.Text, VoiceNotes.TotalSeconds(item.DurationMs),
+            player.Bars, player.Played, player.Quiet);
+        DimPlay(player.Toggle);
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Place(row, player.Toggle, 0);
+        Place(row, player.Wave, 1);
+        Place(row, player.Time, 2);
+        Place(row, remove, 3);
+        var chip = VoiceChipBox(row, warning: false);
+        // What it is, said as one: "Voice message · 0:42".
+        AutomationProperties.SetName(chip, ComposerStaging.Label(item, say, services.Culture));
+        return chip;
+    }
+
+    /// <summary>How many bars a review chip's mini waveform has, and a not-sent row's: the mockup's 34 and 22.</summary>
+    private const int StagedChipBars = 34;
+
+    private const int NotSentChipBars = 22;
+
+    /// <summary>One child into one column of a one-row grid.</summary>
+    private static void Place(Grid grid, FrameworkElement child, int column)
+    {
+        Grid.SetColumn(child, column);
+        grid.Children.Add(child);
+    }
+
+    /// <summary>
+    /// A chip's player: a 30 accent disc with ▶ (❚❚ while it plays) in a 44 target that reaches past the chip rather than
+    /// making it taller, the mini waveform — the note's own shape, or the neutral one until it is known — and its length in
+    /// tabular digits.
+    /// </summary>
+    private (Button Toggle, FontIcon Glyph, FrameworkElement Wave, Microsoft.UI.Xaml.Shapes.Rectangle[] Bars, TextBlock Time, Brush Played, Brush Quiet)
+        ChipPlayer(string? waveform, int? durationMs, int barCount)
+    {
+        var say = services.Say;
+        var accent = Palette.Themed("AccentFillColorDefaultBrush", 0xFF, 0x1E, 0x5B, 0xC6);
+        // Play, in Segoe Fluent Icons.
+        var glyph = new FontIcon
+        {
+            Glyph = ((char)0xE768).ToString(),
+            FontSize = 12,
+            Foreground = Palette.Themed("TextOnAccentFillColorPrimaryBrush", 0xFF, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var disc = new Grid { Width = 30, Height = 30 };
+        disc.Children.Add(new Ellipse { Fill = accent });
+        disc.Children.Add(glyph);
+        var target = ComposerButton.MinTargetWindowsEpx;
+        var toggle = new Button
+        {
+            Content = disc,
+            Width = target,
+            Height = target,
+            Margin = new Thickness(-(target - 30) / 2.0),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(target / 2.0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(toggle, say.Get("Play"));
+        AutomationProperties.SetName(toggle, say.Get("Play"));
+        var rest = Palette.Themed("TextFillColorDisabledBrush", 0x5C, 0x80, 0x80, 0x80);
+        var wave = WaveformBars(VoiceLook.Bars(waveform, barCount), VoiceLook.ChipWaveHeight, rest, out var bars);
+        var time = new TextBlock
+        {
+            Text = MediaText.TimeLabel(VoiceNotes.TotalSeconds(durationMs)),
+            FontSize = 12.5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Palette.SecondaryText(),
+        };
+        Typography.SetNumeralAlignment(time, FontNumeralAlignment.Tabular);
+        return (toggle, glyph, wave, bars, time, accent, rest);
+    }
+
+    /// <summary>A chip's ✕ as the line holds it: the mockup's 28.</summary>
+    private const double ChipCrossSize = 28;
+
+    /// <summary>A chip's ✕: a small round button with the name it is given, its target 44.</summary>
+    private static Button ChipCross(string name)
+    {
+        var cross = new Button
+        {
+            // Cancel, in Segoe Fluent Icons.
+            Content = new FontIcon { Glyph = ((char)0xE711).ToString(), FontSize = 11 },
+            // The mockup's 28 in the line, a 44 target (S1.1) reaching past it.
+            Width = ComposerButton.MinTargetWindowsEpx,
+            Height = ComposerButton.MinTargetWindowsEpx,
+            Margin = new Thickness(VoiceLook.Reach(ChipCrossSize)),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(ComposerButton.MinTargetWindowsEpx / 2.0),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(cross, name);
+        AutomationProperties.SetName(cross, name);
+        return cross;
+    }
+
+    /// <summary>
+    /// A voice note's chip: the card's own fill with a hairline round it, 14 round — and, for one that was not sent, that
+    /// hairline taken towards the caution colour, which its "Not sent" is written in.
+    /// </summary>
+    private static NamedGroup VoiceChipBox(FrameworkElement content, bool warning)
+    {
+        var stroke = Palette.Themed("CardStrokeColorDefaultBrush", 0x0F, 0x00, 0x00, 0x00);
+        if (warning && Palette.Themed("SystemFillColorCautionBrush", 0xFF, 0x9D, 0x5D, 0x00) is SolidColorBrush caution)
+        {
+            stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(0x73, caution.Color.R, caution.Color.G, caution.Color.B));
+        }
+        // A group Narrator meets by its name ("Voice message not sent · 0:42"), which a Border never is.
+        var chip = new NamedGroup
+        {
+            MaxWidth = VoiceLook.ChipWidth,
+            Padding = new Thickness(8, 6, 8, 6),
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(1),
+            BorderBrush = stroke,
+            Background = Palette.Themed("CardBackgroundFillColorDefaultBrush", 0xB3, 0xFF, 0xFF, 0xFF),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        chip.Children.Add(content);
+        return chip;
+    }
+
+    /// <summary>A note in review's ✕: gone — after "Delete this recording?" from ten seconds — and said (S2.7, S6).</summary>
+    private async Task DeleteStagedNoteAsync(ComposerStaging strip, StagedMedia item)
+    {
+        if (VoiceNotes.AsksBeforeDeleting(item.DurationMs ?? 0))
+        {
+            ContentDialogResult answer;
+            try
+            {
+                answer = await Dialogs.DeleteRecording(XamlRoot, services.Say).ShowAsync();
+            }
+            catch (Exception e)
+            {
+                // Only one dialog may be up at a time: nothing was asked, so nothing is deleted.
+                Diagnostics.Write($"asking before deleting a recording: {e.GetType().Name}");
+                return;
+            }
+            if (answer != ContentDialogResult.Primary || gone)
+            {
+                return;
+            }
+        }
+        // By reference: it may have been sent, kept as not sent or moved meanwhile, and then this deletes nothing.
+        if (!strip.Remove(item))
+        {
+            return;
+        }
+        // Taken off by the person, as any staged item's ✕ (S1.1): the guard lifts.
+        slotGuard.Changed(recording: recorder is not null);
+        DrawStaging();
+        ComposerBox.Focus(FocusState.Programmatic);
+        SayAloud(NotSent.Said(RecordingEnd.Deleted, RecordingFate.Discard, item.DurationMs ?? 0, services.Say)!);
     }
 
     /// <summary>A staged item's picture — its preview — or its kind's glyph.</summary>

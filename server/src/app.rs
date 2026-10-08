@@ -11,8 +11,8 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
-    handlers_chat, handlers_device, handlers_family, handlers_poll, handlers_report,
-    handlers_stats, ws,
+    handlers_chat, handlers_device, handlers_family, handlers_pack, handlers_poll, handlers_report,
+    handlers_stats, handlers_transcript, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -29,6 +29,10 @@ pub fn build_router(state: AppState) -> Router {
     // can explain. The layer is the backstop against an endless body.
     let attachment_limit = state.cfg.limits.max_attachment_bytes + 65_536;
     let preview_limit = state.cfg.limits.max_preview_bytes + 4096;
+    // The sound a device may send with a transcript request, with the same
+    // slack and for the same reason: the handler counts the part itself and
+    // answers `not_transcribable`, and the layer is only the backstop.
+    let transcript_limit = state.cfg.ai.transcribe.max_bytes + 65_536;
     Router::new()
         // Auth
         .route("/api/v1/auth/register", post(handlers_auth::register))
@@ -40,6 +44,13 @@ pub fn build_router(state: AppState) -> Router {
             // model (docs/protocol.md, "Consenting to the assistant").
             "/api/v1/me/assistant-consent",
             post(handlers_auth::set_assistant_consent),
+        )
+        .route(
+            // The member's own permission for queries written from their
+            // words to reach the lookup providers — a second consent, on
+            // top of the first (docs/protocol.md, "Looking things up").
+            "/api/v1/me/assistant-lookup-consent",
+            post(handlers_auth::set_assistant_lookup_consent),
         )
         .route("/api/v1/me/password", post(handlers_auth::change_password))
         // A POST rather than a DELETE /me: the request carries a body, and
@@ -156,6 +167,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/chats/{id}/reactions",
             get(handlers_chat::get_reactions),
         )
+        // The text of one recording, for the caller only (protocol.md,
+        // "Transcripts on request"). Its own body limit: the one JSON-API
+        // route that may carry sound.
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/attachments/{attachment_id}/transcript",
+            post(handlers_transcript::transcript).layer(DefaultBodyLimit::max(transcript_limit)),
+        )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
         // A chain of replies, read on its own (protocol.md, "Threads").
         .route(
@@ -235,6 +253,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/families/mine/board/notes/{note_id}/tasks/{item_id}",
             put(handlers_board::put_task_done),
+        )
+        // Sticker pack — CHAT stickers, one pack per family; not the board's
+        // notes, which the code also calls stickers (docs/protocol.md,
+        // "Sticker pack"). Any member may add; whoever added an item, or
+        // the owner, may remove it.
+        .route(
+            "/api/v1/families/mine/pack",
+            get(handlers_pack::get_pack).post(handlers_pack::add_pack_item),
+        )
+        .route(
+            "/api/v1/families/mine/pack/changes",
+            get(handlers_pack::get_pack_changes),
+        )
+        .route(
+            "/api/v1/families/mine/pack/{item_id}",
+            delete(handlers_pack::remove_pack_item),
         )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))

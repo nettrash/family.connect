@@ -10,7 +10,8 @@
  *   Ok(value)                        — 2xx, decoded
  *   HttpError(status, code, message) — non-2xx, error body parsed per
  *                                      docs/protocol.md ("Error shape")
- *   NetworkError(cause)              — transport / decode failure
+ *   NetworkError(cause)              — transport / decode failure (a decode
+ *                                      failure is `isUndecodable`)
  *
  * A 401 on an *authenticated* call means the session is gone (protocol:
  * "A 401 means the session is gone"). It is broadcast on `unauthorized`
@@ -55,6 +56,9 @@ import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** A 2xx body that would not decode into the expected type; see [ApiResult.NetworkError.isUndecodable]. */
+class UndecodableResponseException(cause: Throwable) : Exception("Unreadable response body", cause)
+
 sealed class ApiResult<out T> {
     data class Ok<T>(val value: T) : ApiResult<T>()
     data class HttpError(
@@ -65,7 +69,18 @@ sealed class ApiResult<out T> {
         val retryAfterSeconds: Long? = null,
     ) : ApiResult<Nothing>()
 
-    data class NetworkError(val cause: Throwable) : ApiResult<Nothing>()
+    data class NetworkError(val cause: Throwable) : ApiResult<Nothing>() {
+        /**
+         * The server ANSWERED, 2xx, with a body this build cannot read
+         * ([ApiClient.decode]) — not a dead network. Most callers treat the
+         * two alike; a caller walking many items one request at a time
+         * cannot: a dead network fails every further request the same way,
+         * while an unreadable answer is about the one item asked for
+         * (`MessageRepository.repairUnknownRoundFlags`; iOS's
+         * `APIError.decoding`).
+         */
+        val isUndecodable: Boolean get() = cause is UndecodableResponseException
+    }
 
     /** The success value, or null for any failure. */
     fun okOrNull(): T? = (this as? Ok<T>)?.value
@@ -123,9 +138,18 @@ class ApiClient @Inject constructor(
         auth: Boolean = true,
     ): ApiResult<T> = decode(raw("POST", path, json.encodeToString(body), auth))
 
-    /** POST with an empty body (approve / reject / rotate / leave / logout). */
-    suspend inline fun <reified T> postEmpty(path: String): ApiResult<T> =
-        decode(raw("POST", path, null))
+    /**
+     * POST with an empty body (approve / reject / rotate / leave / logout).
+     *
+     * [timeout] is the upload's lever, for the one empty POST that waits on
+     * a model — an event's backdrop ([BACKDROP_TIMEOUT]), a transcript
+     * ([TRANSCRIPT_TIMEOUT]). ZERO, the default,
+     * keeps the shared client's ordinary budget.
+     */
+    suspend inline fun <reified T> postEmpty(
+        path: String,
+        timeout: Duration = Duration.ZERO,
+    ): ApiResult<T> = decode(raw("POST", path, null, timeout = timeout))
 
     suspend inline fun <reified B, reified T> put(
         path: String,
@@ -151,8 +175,10 @@ class ApiClient @Inject constructor(
                     ApiResult.Ok(json.decodeFromString<T>(result.value))
                 } catch (e: Exception) {
                     // A 2xx we can't decode is a server/client mismatch,
-                    // not an HTTP error — surface it as transport-level.
-                    ApiResult.NetworkError(e)
+                    // not an HTTP error — surface it as transport-level,
+                    // marked so a caller can still tell it from a dead
+                    // network (NetworkError.isUndecodable).
+                    ApiResult.NetworkError(UndecodableResponseException(e))
                 }
             }
         }
@@ -172,6 +198,8 @@ class ApiClient @Inject constructor(
         jsonBody: String?,
         auth: Boolean = true,
         overrideBase: String? = null,
+        /** ZERO keeps the shared client's budget; see [send]. */
+        timeout: Duration = Duration.ZERO,
     ): ApiResult<String> {
         val body = when {
             jsonBody != null -> jsonBody.toRequestBody(JSON_MEDIA_TYPE)
@@ -180,7 +208,7 @@ class ApiClient @Inject constructor(
             // endpoint takes none.
             else -> ByteArray(0).toRequestBody(null)
         }
-        return send(method, path, body, auth, overrideBase) { it.body.string() }
+        return send(method, path, body, auth, overrideBase, timeout) { it.body.string() }
     }
 
     /**
@@ -197,6 +225,19 @@ class ApiClient @Inject constructor(
         send(method, path, bytes.toRequestBody(contentType.toMediaType()), auth = true, overrideBase = null) {
             it.body.string()
         }
+
+    /**
+     * Send a body built elsewhere — the transcript request's multipart
+     * sound (TranscriptApi) — with its own [timeout]. The response is JSON,
+     * so it comes back as text for `decode`.
+     */
+    suspend fun rawBody(
+        method: String,
+        path: String,
+        body: RequestBody,
+        timeout: Duration,
+    ): ApiResult<String> =
+        send(method, path, body, auth = true, overrideBase = null, timeout = timeout) { it.body.string() }
 
     /** Fetch a binary response body (profile pictures, previews). */
     suspend fun rawDownload(path: String): ApiResult<ByteArray> =
@@ -232,8 +273,13 @@ class ApiClient @Inject constructor(
      * off half-way can never be mistaken for a cached photo — the same
      * trick the server uses on the way in (server/src/storage.rs).
      */
-    suspend fun rawDownloadToFile(path: String, destination: File): ApiResult<Unit> =
-        send("GET", path, null, auth = true, overrideBase = null) { response ->
+    suspend fun rawDownloadToFile(
+        path: String,
+        destination: File,
+        /** ZERO keeps the shared client's budget; see [send] and [DOWNLOAD_TIMEOUT]. */
+        timeout: Duration = Duration.ZERO,
+    ): ApiResult<Unit> =
+        send("GET", path, null, auth = true, overrideBase = null, timeout = timeout) { response ->
             val part = File(destination.parentFile, destination.name + ".part")
             part.parentFile?.mkdirs()
             try {
@@ -297,8 +343,10 @@ class ApiClient @Inject constructor(
         builder.method(method, body)
 
         // An upload of up to 100 MB over a home connection outlives the
-        // default read/write timeouts; ZERO leaves the shared client's
-        // own values in place for every other call.
+        // default read/write timeouts, and so does an event's backdrop,
+        // whose answer waits on up to three model calls in a row; ZERO
+        // leaves the shared client's own values in place for every other
+        // call.
         val call = if (timeout == Duration.ZERO) {
             client
         } else {
@@ -382,6 +430,38 @@ class ApiClient @Inject constructor(
 
         /** Long enough for a 100 MB video on a slow upstream link. */
         val UPLOAD_TIMEOUT: Duration = Duration.ofMinutes(10)
+
+        /**
+         * An event's backdrop: the one request whose answer waits on the
+         * model — a picture, or a picture, a rewrite and a second picture
+         * one after another — so it gets a budget of its own, never the
+         * ordinary 20 s. The protocol's floor is 90 s, the reference
+         * proxy's read timeout on `/api/v1/`; waiting past it lets the
+         * proxy's own answer arrive rather than racing it. A request whose
+         * connection closes first draws nothing (docs/protocol.md, "Board").
+         */
+        val BACKDROP_TIMEOUT: Duration = Duration.ofSeconds(120)
+
+        /**
+         * An attachment's ORIGINAL bytes coming down — a video of up to
+         * 100 MB for "Save", "Open" or the sound of a transcript request.
+         * The shared client's 20 s wall clock cut such a download off however
+         * well it was going; this gives up only when no byte has moved for a
+         * minute, as the upload's budget does.
+         */
+        val DOWNLOAD_TIMEOUT: Duration = Duration.ofSeconds(60)
+
+        /**
+         * A recording turned into text (docs/protocol.md, "Transcripts on
+         * request"): the answer waits on the provider listening to up to
+         * 25 MB of sound, so it gets a budget of its own, never the
+         * ordinary 20 s. The protocol's floor is 90 s; the reference proxy
+         * waits 300 s on this route, and waiting a little past it lets the
+         * proxy's own answer arrive rather than racing it. Giving up early
+         * costs nothing on the server — a request for the stored copy is
+         * finished and kept anyway, so asking again returns it at once.
+         */
+        val TRANSCRIPT_TIMEOUT: Duration = Duration.ofSeconds(310)
     }
     /**
      * The app's own resolved locale as an IETF tag, e.g. `ru-RU`.

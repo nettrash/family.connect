@@ -53,8 +53,15 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
         .first()
         .map(|attachment| attachment.kind.as_str())
     {
+        // A sticker says so, where a photo's row says so of a photo
+        // (docs/protocol.md, "How it is drawn") — the `last_message`
+        // preview carries the flag for exactly this.
+        Some("photo") if message.sticker().is_some() => t("Sticker").to_string(),
         Some("photo") if attachments.len() > 1 => tn("%lld Photos", attachments.len() as i64),
         Some("photo") => t("Photo").to_string(),
+        // A video message says so — checked before "Video", from the flag
+        // `last_message` carries for exactly this (the plan for #79, S5.7).
+        Some("video") if message.round_video().is_some() => t("Video message").to_string(),
         Some("video") => t("Video").to_string(),
         Some("audio") => t("Voice message").to_string(),
         Some("location") => t("Location").to_string(),
@@ -189,6 +196,66 @@ mod tests {
             preview(&message(9, "first line\nsecond"), 7, &blocked),
             "first line"
         );
+    }
+
+    /// A sticker's row says "Sticker"; the same photo without the flag
+    /// says "Photo"; and a blocked member's is the hidden row like any
+    /// other message of theirs.
+    #[wasm_bindgen_test]
+    fn a_stickers_row_says_sticker() {
+        let picture = |sticker: bool| Attachment {
+            id: 90,
+            kind: "photo".into(),
+            mime: Some("image/webp".into()),
+            sticker,
+            ..Default::default()
+        };
+        let mut sent = message(9, "");
+        sent.attachments = Some(vec![picture(true)]);
+        assert_eq!(preview(&sent, 7, &HashSet::new()), "Sticker");
+        assert_eq!(
+            preview(&sent, 7, &HashSet::from([9])),
+            "Hidden — blocked member"
+        );
+        let mut photo = message(9, "");
+        photo.attachments = Some(vec![picture(false)]);
+        assert_eq!(preview(&photo, 7, &HashSet::new()), "Photo");
+    }
+
+    /// A video message's row says "Video message", checked before "Video";
+    /// the same video without the flag says "Video"; a voice note keeps the
+    /// web's word; a blocked member's is the hidden row (S5.7).
+    #[wasm_bindgen_test]
+    fn a_video_messages_row_says_video_message() {
+        let video = |round: bool| Attachment {
+            id: 91,
+            kind: "video".into(),
+            mime: Some("video/mp4".into()),
+            width: Some(480),
+            height: Some(480),
+            round,
+            ..Default::default()
+        };
+        let mut sent = message(9, "");
+        sent.attachments = Some(vec![video(true)]);
+        assert_eq!(preview(&sent, 7, &HashSet::new()), "Video message");
+        assert_eq!(
+            preview(&sent, 7, &HashSet::from([9])),
+            "Hidden — blocked member"
+        );
+        let mut plain = message(9, "");
+        plain.attachments = Some(vec![video(false)]);
+        assert_eq!(preview(&plain, 7, &HashSet::new()), "Video");
+        let mut pair = message(9, "");
+        pair.attachments = Some(vec![video(true), video(true)]);
+        assert_eq!(preview(&pair, 7, &HashSet::new()), "Video", "never two");
+        let mut voice = message(9, "");
+        voice.attachments = Some(vec![Attachment {
+            id: 92,
+            kind: "audio".into(),
+            ..Default::default()
+        }]);
+        assert_eq!(preview(&voice, 7, &HashSet::new()), "Voice message");
     }
 
     /// A call record's body is an English placeholder the list never shows.

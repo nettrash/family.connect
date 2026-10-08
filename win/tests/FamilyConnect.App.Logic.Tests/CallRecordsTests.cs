@@ -38,4 +38,17 @@ public sealed class CallRecordsTests
         Assert.Equal((true, false), CallRecords.CallBack(Record("completed", video: true), true, true, videoCallsEnabled: false, false));
         Assert.Equal((true, false), CallRecords.CallBack(Record("completed"), true, true, videoCallsEnabled: true, false));
     }
+
+    /// <summary>
+    /// The call buttons are off while something records (docs/audio-video-messages-2026-10-04.md, S1.7, decision 14) — the
+    /// toolbar's and every record's "Call back" alike — and while a call is on, as they always were.
+    /// </summary>
+    [Fact]
+    public void NoCallIsPlacedOverARecordingOrBesideACall()
+    {
+        Assert.True(CallRecords.CanPlaceCall(callBusy: false, recording: false));
+        Assert.False(CallRecords.CanPlaceCall(callBusy: false, recording: true));
+        Assert.False(CallRecords.CanPlaceCall(callBusy: true, recording: false));
+        Assert.False(CallRecords.CanPlaceCall(callBusy: true, recording: true));
+    }
 }

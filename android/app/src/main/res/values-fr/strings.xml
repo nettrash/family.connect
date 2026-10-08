@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- fr. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">fr</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Ajoute une note : toute la famille la voit.</string>
     <string name="s_add_note">Ajouter une note</string>
     <string name="s_approval">Approbation</string>
@@ -160,11 +163,9 @@
     <string name="s_request_declined_explanation">Le propriétaire a refusé ta demande. Tu peux essayer un autre code d’invitation ou créer ta propre famille.</string>
     <string name="s_waiting_explanation">Il n’y a rien à annuler ici : le propriétaire t’accepte ou refuse la demande.</string>
     <string name="s_take_photo">Prendre une photo</string>
-    <string name="s_record_video">Filmer une vidéo</string>
+    <string name="s_camera">Appareil photo</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Ajoute un message, ou envoie-le tel quel.</string>
     <string name="s_remove_attachment">Retirer la pièce jointe</string>
-    <string name="s_record_audio">Enregistrer un audio</string>
-    <string name="s_stop">Arrêter</string>
     <string name="s_audio">Audio</string>
     <string name="s_play">Lire</string>
     <string name="s_pause">Suspendre</string>
@@ -189,8 +190,29 @@
     <string name="s_couldnt_load_statistics">Impossible de charger les statistiques</string>
     <string name="s_check_connection_try_again">Vérifie ta connexion et réessaie.</string>
     <string name="s_saved_by_one_copy">%1$s économisés en ne gardant qu\'une copie des fichiers identiques.</string>
-    <string name="s_attachments_and_size">%1$d pièces jointes, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions à l\'assistant</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d pièce jointe, %2$s</item>
+        <item quantity="many">%1$d pièces jointes, %2$s</item>
+        <item quantity="other">%1$d pièces jointes, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question à l\'assistant</item>
+        <item quantity="many">%1$d questions à l\'assistant</item>
+        <item quantity="other">%1$d questions à l\'assistant</item>
+    </plurals>
+    <string name="s_stats_pictures">Images</string>
+    <string name="s_stats_recordings_as_text">Enregistrements transcrits</string>
+    <string name="s_stats_recording_time">Durée des enregistrements</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d image de l’assistant</item>
+        <item quantity="many">%1$d images de l’assistant</item>
+        <item quantity="other">%1$d images de l’assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d enregistrement transcrit</item>
+        <item quantity="many">%1$d enregistrements transcrits</item>
+        <item quantity="other">%1$d enregistrements transcrits</item>
+    </plurals>
     <string name="s_family_language">Langue de la famille</string>
     <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
     <string name="s_not_set">Non défini</string>
@@ -401,7 +423,6 @@
     <string name="s_safety_for">Options de sécurité pour %1$s</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">Montrer une photo à l’assistant</string>
-    <string name="s_show_the_assistant_a_picture_note">Elle quitte ce serveur pour le modèle avec lequel il communique</string>
     <string name="s_ask_for_a_picture">Demander une image</string>
     <string name="s_assistant_sees_this_picture">L’assistant verra cette photo. Elle quitte ce serveur pour le modèle avec lequel il communique.</string>
     <string name="s_assistant_sees_these_pictures">L’assistant verra ces photos. Elles quittent ce serveur pour le modèle avec lequel il communique.</string>
@@ -422,6 +443,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Cette réponse mentionne l’assistant, il verra donc les photos auxquelles tu réponds, et jusqu’à %1$d des photos les plus récentes de cette conversation peuvent partir aussi. Elles quittent ce serveur pour le modèle avec lequel il communique.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Cette réponse mentionne l’assistant, il verra donc les photos jointes ici et celles auxquelles tu réponds, et jusqu’à %1$d des photos les plus récentes de cette conversation peuvent partir aussi. Elles quittent ce serveur pour le modèle avec lequel il communique.</string>
     <string name="s_assistant_answer_failed">L’assistant n’a pas pu terminer cette réponse. Redemandez.</string>
+    <string name="s_assistant_provider_refused">Le fournisseur de l\'assistant a refusé. Essaie de le formuler autrement.</string>
     <string name="s_assistant_vision">L’assistant peut regarder les photos</string>
     <string name="s_assistant_vision_explanation">Quand quelqu’un joint une photo à une question dans sa propre discussion avec l’assistant, la joint à un message qui mentionne l’assistant dans le chat familial, ou répond à une photo en le mentionnant, cette photo part vers le modèle avec la question — 4 au maximum par question. Une photo que personne n’a montrée à l’assistant n’est jamais envoyée, pas même depuis un message plus ancien sauf si « L’assistant voit les photos récentes » est activé, et les vidéos, fichiers, audios et positions non plus. Désactivé tant que vous ne l’activez pas ; désactivé, aucune photo n’est jamais envoyée.</string>
     <string name="e_change_assistant_vision_failed">Impossible de modifier ce réglage</string>
@@ -551,6 +573,7 @@
     <string name="s_draw_another_backdrop">Dessiner un autre fond</string>
     <string name="s_drawing">Dessin en cours…</string>
     <string name="s_draw_failed">Impossible de dessiner cela.</string>
+    <string name="s_describe_in_general_words">Décris les personnes et les choses en termes généraux — les vrais noms et les marques sont souvent refusés.</string>
     <string name="s_tick_failed">Impossible de cocher cette tâche.</string>
     <string name="s_no_calendar_app">Aucune app de calendrier pour l\'ajouter.</string>
     <string name="s_the_assistant">L’assistant</string>
@@ -572,4 +595,143 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Tant que vous n’avez pas accepté, rien de ce que vous écrivez n’est envoyé à %1$s et l’assistant ne vous répond pas.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Ce que vous écrivez à l’assistant est envoyé à %1$s. L’arrêt prend effet immédiatement ; ce qui est déjà parti ne peut pas être repris.</string>
     <string name="s_couldnt_save_your_answer">Impossible d’enregistrer votre réponse. Réessayez.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Autocollant</string>
+    <string name="s_stickers">Autocollants</string>
+    <string name="s_family_stickers">Autocollants de la famille</string>
+    <string name="s_family_stickers_count">%1$d sur %2$d</string>
+    <string name="s_family_stickers_explanation">Tout le monde dans la famille peut ajouter un autocollant. La personne qui l\'a ajouté, ou le propriétaire de la famille, peut le retirer.</string>
+    <string name="s_recently_used">Utilisés récemment</string>
+    <string name="s_no_stickers_yet">Pas encore d\'autocollants</string>
+    <string name="s_no_stickers_hint">Ajoutes-en depuis l\'écran Famille.</string>
+    <string name="s_add_sticker">Ajouter un autocollant</string>
+    <string name="s_add_to_family_stickers">Ajouter aux autocollants de la famille</string>
+    <string name="s_sticker_label">Description (facultatif)</string>
+    <string name="s_sticker_label_hint">Quelques mots pour le lecteur d\'écran. Ils ne sont jamais dessinés sur l\'image.</string>
+    <string name="s_remove_sticker">Retirer l\'autocollant</string>
+    <string name="s_remove_sticker_q">Retirer cet autocollant ?</string>
+    <string name="s_remove_sticker_explanation">Il quitte les autocollants de la famille. Les messages déjà envoyés le gardent.</string>
+    <string name="s_sticker_added">Ajouté aux autocollants de la famille</string>
+    <string name="s_sticker_already_in_pack">Déjà dans les autocollants de la famille</string>
+    <string name="s_sticker_pack_full">La famille a déjà %1$d autocollants. Retires-en un pour en ajouter un autre.</string>
+    <string name="s_sticker_too_large">Celui-ci est trop gros. Un autocollant peut faire au plus %1$s.</string>
+    <string name="s_sticker_add_failed">Impossible d\'ajouter l\'autocollant. Réessaie.</string>
+    <string name="s_sticker_unreadable">Cette image n\'a pas pu être lue.</string>
+    <string name="s_sticker_animated_must_be_webp">Les autocollants animés doivent être au format WebP. Celui-ci ne peut pas être ajouté.</string>
+    <string name="s_sticker_label_too_long">Une description peut contenir au maximum %1$d caractères.</string>
+    <string name="s_sticker_remove_not_allowed">Seule la personne qui a ajouté un autocollant, ou le propriétaire de la famille, peut le retirer.</string>
+    <string name="s_sticker_remove_failed">Impossible de retirer l\'autocollant. Réessaie.</string>
+    <string name="s_sticker_not_available_offline">Cet autocollant n\'est pas encore sur ce téléphone. Réessaie quand tu seras en ligne.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Afficher le texte</string>
+    <string name="s_transcript_hide">Masquer le texte</string>
+    <string name="s_transcript_getting">Récupération du texte…</string>
+    <string name="s_transcript_no_speech">Aucune parole</string>
+    <string name="s_transcript_failed">Impossible d’obtenir le texte. Réessaie.</string>
+    <string name="s_transcript_refused">Le fournisseur de l\'assistant a refusé cet enregistrement.</string>
+    <string name="s_transcript_unavailable">Indisponible pour ce message.</string>
+    <string name="s_transcript_too_long">Cet enregistrement est trop long pour être transcrit.</string>
+    <string name="s_transcript_unreadable">Impossible de lire le son de ce fichier.</string>
+    <string name="s_transcript_a11y">Texte de l’enregistrement</string>
+    <string name="s_assistant_transcripts">Voix et vidéo en texte</string>
+    <string name="s_assistant_transcripts_explanation">Avec ceci activé, les membres peuvent demander le texte des messages vocaux, audios et vidéos des autres membres dans la discussion familiale, et le son de cet enregistrement est alors envoyé à %1$s. Il n’est envoyé que si quelqu’un le demande, et seulement si le membre qui l’a envoyé a accepté l’assistant. Chacun peut obtenir le texte de ses propres enregistrements sans cela. C’est désactivé tant que vous ne l’activez pas.</string>
+    <string name="s_assistant_transcripts_no_server">Indisponible ici : ce serveur ne peut pas transcrire les enregistrements.</string>
+    <string name="s_consent_transcript_sound_sent">Si vous demandez le texte d’un message vocal, d’un fichier audio ou d’une vidéo, le son est envoyé à %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Impossible de modifier ce réglage</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Recherches</string>
+    <string name="s_assistant_lookups">Peut faire des recherches</string>
+    <string name="s_assistant_lookups_explanation">Avec ceci activé, l’assistant peut faire des recherches quand une question le demande — la météo, l’actualité, un fait dont il n’est pas sûr — auprès de %1$s. Seule une courte requête ou un nom de lieu que l’assistant rédige à partir de la question leur est envoyé, jamais la conversation elle-même, et seulement si le membre qui pose la question l’a accepté. Les réponses citent alors leurs sources. C’est désactivé tant que vous ne l’activez pas.</string>
+    <string name="s_consent_lookups_with_history">Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de votre question — dans la discussion familiale, peut-être aussi à partir des messages récents — et sa réponse cite alors ses sources.</string>
+    <string name="s_consent_lookups_alone">Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de votre question, et sa réponse cite alors ses sources.</string>
+    <string name="s_agree_with_lookups">Accepter avec les recherches</string>
+    <string name="s_agree_without_lookups">Accepter sans les recherches</string>
+    <string name="s_review_and_allow_lookups">Lire et autoriser les recherches…</string>
+    <string name="s_stop_lookups">Arrêter les recherches</string>
+    <string name="s_lookups_until_you_allow">Tant que vous n’avez pas autorisé les recherches, l’assistant vous répond avec ce qu’il sait déjà et rien de vos questions n’est envoyé à %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">L’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de vos questions. L’arrêt prend effet immédiatement ; ce qui est déjà parti ne peut pas être repris.</string>
+    <string name="s_list_two">%1$s et %2$s</string>
+    <string name="s_list_three">%1$s, %2$s et %3$s</string>
+    <string name="s_stats_web_searches">Recherches web</string>
+    <string name="e_change_assistant_lookups_failed">Impossible de modifier ce réglage</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d recherche web</item>
+        <item quantity="many">%1$d recherches web</item>
+        <item quantity="other">%1$d recherches web</item>
+    </plurals>
+    <string name="s_greeting_weather">Météo dans la salutation</string>
+    <string name="s_greeting_weather_place_placeholder">Ville ou village</string>
+    <string name="s_greeting_weather_add_place">Ajouter un lieu</string>
+    <string name="s_greeting_weather_remove_place">Retirer le lieu</string>
+    <string name="s_greeting_weather_limit">Jusqu’à 3 lieux.</string>
+    <string name="s_greeting_weather_footer">La salutation quotidienne mentionnera aussi la météo du jour dans ces lieux. Seuls les noms des lieux sont envoyés à Open-Meteo pour obtenir les prévisions. Rien d’autre n’est envoyé.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Message vocal non envoyé · %1$s</string>
+    <string name="s_send_voice_message">Envoyer le message vocal</string>
+    <string name="s_delete_recording">Supprimer l’enregistrement</string>
+    <string name="s_keep">Garder</string>
+    <string name="s_delete_this_recording">Supprimer cet enregistrement ?</string>
+    <string name="e_record_after_the_call">Tu pourras enregistrer un message après l’appel.</string>
+    <string name="e_send_or_delete_the_unsent_first">Envoie ou supprime d’abord le message vocal qui n’a pas été envoyé.</string>
+    <string name="s_recording_stopped_at_five_minutes">L’enregistrement s’est arrêté au bout de cinq minutes.</string>
+    <string name="e_recording_stopped_unexpectedly">L’enregistrement s’est arrêté de façon inattendue.</string>
+    <string name="s_voice_message_with_length">Message vocal · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Enregistrer un message vocal</string>
+    <string name="s_take_video">Filmer une vidéo</string>
+    <string name="s_open_settings">Ouvrir les paramètres</string>
+    <string name="s_stop_recording">Arrêter l’enregistrement</string>
+    <string name="s_stop_and_listen_first">Arrêter et écouter d’abord</string>
+    <string name="s_start_recording_action">démarrer l’enregistrement</string>
+    <string name="s_play_after_recording">Tu pourras le lire après l’enregistrement.</string>
+    <string name="s_thirty_seconds_left">Encore 30 secondes</string>
+    <string name="s_cant_hear_microphone_muted">On n’entend rien. Le micro est-il coupé ?</string>
+    <string name="s_announce_recording">Enregistrement en cours</string>
+    <string name="s_announce_recording_deleted">Enregistrement supprimé</string>
+    <string name="s_announce_voice_message_sent">Message vocal envoyé</string>
+    <string name="s_announce_ready_to_review">Prêt à vérifier, %1$s</string>
+    <string name="e_wait_for_the_attachment">Attends que la pièce jointe en cours soit terminée.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Message vidéo</string>
+    <string name="s_video_message_a11y">Message vidéo, %1$s</string>
+    <string name="s_not_played">Non lu</string>
+    <string name="s_open_full_screen">Ouvrir en plein écran</string>
+    <string name="s_couldnt_load_video_tap">Impossible de charger la vidéo. Touche pour réessayer.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Enregistrer un message vidéo</string>
+    <string name="s_send_video_message">Envoyer le message vidéo</string>
+    <string name="s_retake">Refaire</string>
+    <string name="s_record">Enregistrer</string>
+    <string name="s_switch_camera">Changer de caméra</string>
+    <string name="s_video_message_with_length">Message vidéo · %1$s</string>
+    <string name="s_not_recording">Pas d’enregistrement en cours</string>
+    <string name="s_only_you_can_see_this">Personne d’autre ne le voit tant que tu n’as pas commencé à enregistrer.</string>
+    <string name="s_starting_camera">Démarrage de la caméra…</string>
+    <string name="s_cant_see_anything">On ne voit rien. La caméra est-elle désactivée ou masquée ?</string>
+    <string name="s_ten_seconds_left">Encore 10 secondes</string>
+    <string name="s_recording_stopped_at_one_minute">L’enregistrement s’est arrêté au bout d’une minute.</string>
+    <string name="s_video_too_short">Cette vidéo est trop courte.</string>
+    <string name="s_delete_video_message">Supprimer le message vidéo ?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Les messages vidéo ont besoin de la caméra et du micro.</string>
+    <string name="e_camera_permission_settings">Family a besoin de l’autorisation d’utiliser ta caméra. Active-la dans Réglages.</string>
+    <string name="s_camera_in_use_by_another_app">La caméra est utilisée par une autre app.</string>
+    <string name="s_couldnt_make_it_round">Impossible de rendre la vidéo ronde. Elle sera envoyée comme une vidéo ordinaire.</string>
+    <string name="s_too_big_for_video_message">Trop lourde pour un message vidéo. Elle sera envoyée comme une vidéo ordinaire.</string>
+    <string name="s_announce_camera_ready">Caméra prête</string>
+    <string name="s_announce_recording_video">Enregistrement vidéo en cours</string>
+    <string name="s_announce_video_message_sent">Message vidéo envoyé</string>
+    <string name="s_announce_camera_turned_off">Caméra éteinte</string>
+    <string name="s_record_voice_message_instead">Enregistrer plutôt un message vocal</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Message vocal, %1$s</string>
+    <string name="s_played">Lu</string>
+    <string name="s_playback_speed">Vitesse de lecture</string>
+    <string name="s_playback_speed_a11y">Vitesse de lecture, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Non envoyé</string>
+    <string name="s_switch">Changer</string>
+    <string name="s_stop">Arrêter</string>
 </resources>

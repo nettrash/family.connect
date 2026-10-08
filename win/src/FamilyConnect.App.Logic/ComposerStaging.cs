@@ -35,10 +35,18 @@ public sealed record PrepOutcome(StagedMedia? Media, PrepFailure? Failure = null
 /// <b>PREPARED ONE AT A TIME, IN ORDER, AND STOPPED AT THE CAP</b> rather than preparing the rest only
 /// to throw them away (the web client's <c>ingest</c>, and MacConversationView's before it).
 /// </para>
+/// <para>
+/// <b>A BATCH CAN BE CALLED OFF</b> (<see cref="CancelPreparing"/>). Preparing was once a file read that took seconds;
+/// since a video is transcoded first (issue #74) it can take minutes, and somebody who dropped the wrong clip — or
+/// closed the window — must not have to sit it out behind "Wait until the current attachment is done."
+/// </para>
 /// </remarks>
 public sealed class ComposerStaging
 {
     private readonly List<StagedMedia> items = [];
+
+    /// <summary>The batch being prepared, so it can be called off; null between batches.</summary>
+    private CancellationTokenSource? preparing;
 
     public IReadOnlyList<StagedMedia> Items => items;
 
@@ -67,6 +75,22 @@ public sealed class ComposerStaging
         }
     }
 
+    /// <summary>
+    /// This very item out of the strip — by REFERENCE, not by place or by value: a question asked about it ("Delete this
+    /// recording?") may be answered after other items came or went, and two notes can hold equal bytes. Answers whether it
+    /// was still there.
+    /// </summary>
+    public bool Remove(StagedMedia item)
+    {
+        var at = items.FindIndex(held => ReferenceEquals(held, item));
+        if (at < 0)
+        {
+            return false;
+        }
+        items.RemoveAt(at);
+        return true;
+    }
+
     /// <summary>Everything staged, handed to a send, and the strip left empty.</summary>
     public IReadOnlyList<StagedMedia> TakeAll()
     {
@@ -81,6 +105,21 @@ public sealed class ComposerStaging
         items.InsertRange(0, taken);
     }
 
+    /// <summary>Whether a voice note recorded here is in review in this strip (<see cref="VoiceNotes.IsRecorded"/>).</summary>
+    public bool HoldsRecordings => items.Any(VoiceNotes.IsRecorded);
+
+    /// <summary>
+    /// The voice notes recorded here, taken out of the strip in their order — to wait as "not sent" when the person leaves
+    /// the chat (docs/audio-video-messages-2026-10-04.md, S2.8). Everything else staged stays: a photo can be picked
+    /// again, and a recording cannot be made again.
+    /// </summary>
+    public IReadOnlyList<StagedMedia> TakeRecordings()
+    {
+        var taken = items.Where(VoiceNotes.IsRecorded).ToList();
+        items.RemoveAll(VoiceNotes.IsRecorded);
+        return taken;
+    }
+
     /// <summary>
     /// Why nothing may be attached right now, or null. Which busy it is, because the two have
     /// different ways out (MacConversationView.composerBusyNotice).
@@ -91,24 +130,55 @@ public sealed class ComposerStaging
         : null;
 
     /// <summary>
+    /// Call off the batch being prepared: the file in hand is told to stop, the rest are never started, and nothing is
+    /// said — the person asked for this. What the batch had already staged stays; each has its own chip to remove it
+    /// by. Nothing happens when no batch is running.
+    /// </summary>
+    public void CancelPreparing()
+    {
+        try
+        {
+            preparing?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The batch ended between the look and the call: there is nothing left to call off.
+        }
+    }
+
+    /// <summary>
     /// Prepare <paramref name="files"/> into this strip. Answers what to say afterwards — the cap,
     /// or the last refusal — or null for nothing. A pane that went away meanwhile
     /// (<paramref name="stillHere"/>) stops the batch: its files must not land in somebody else's
     /// composer.
     /// </summary>
-    public async Task<string?> IngestAsync<T>(
+    public Task<string?> IngestAsync<T>(
         IReadOnlyList<T> files,
         Func<T, Task<PrepOutcome>> prepare,
         Func<bool> stillHere,
+        IStringCatalog say) =>
+        IngestAsync(files, (file, _) => prepare(file), stillHere, say);
+
+    /// <summary>
+    /// The same, with a preparer that can be stopped: it is handed the token <see cref="CancelPreparing"/> cancels.
+    /// A batch called off stages nothing more and says nothing, whether its preparer stopped by throwing or came back
+    /// with something anyway.
+    /// </summary>
+    public async Task<string?> IngestAsync<T>(
+        IReadOnlyList<T> files,
+        Func<T, CancellationToken, Task<PrepOutcome>> prepare,
+        Func<bool> stillHere,
         IStringCatalog say)
     {
+        using var batch = new CancellationTokenSource();
+        preparing = batch;
         Preparing = true;
         try
         {
             string? said = null;
             foreach (var file in files)
             {
-                if (!stillHere())
+                if (!stillHere() || batch.IsCancellationRequested)
                 {
                     return null;
                 }
@@ -120,13 +190,13 @@ public sealed class ComposerStaging
                 PrepOutcome outcome;
                 try
                 {
-                    outcome = await prepare(file).ConfigureAwait(true);
+                    outcome = await prepare(file, batch.Token).ConfigureAwait(true);
                 }
                 catch (Exception)
                 {
                     outcome = PrepOutcome.Refused(PrepFailure.Unreadable);
                 }
-                if (!stillHere())
+                if (!stillHere() || batch.IsCancellationRequested)
                 {
                     return null;
                 }
@@ -144,6 +214,7 @@ public sealed class ComposerStaging
         finally
         {
             Preparing = false;
+            preparing = null;
         }
     }
 
@@ -156,13 +227,19 @@ public sealed class ComposerStaging
         _ => say.Get("Couldn't read that file."),
     };
 
-    /// <summary>What a staged item is called on its chip: a picture by its kind, a file by its name and size.</summary>
+    /// <summary>
+    /// What a staged item is called on its chip: a picture by its kind, a file by its name and size — and a voice note recorded
+    /// here by its LENGTH, "Voice message · 0:42" (docs/audio-video-messages-2026-10-04.md, S2.7, S10): its size says nothing
+    /// to the person deciding whether to send it.
+    /// </summary>
     public static string Label(StagedMedia item, IStringCatalog say, CultureInfo? culture = null) => item.Kind switch
     {
         "photo" => say.Get("Photo"),
         "video" => say.Get("Video"),
-        "audio" or "file" =>
-            $"{item.Name ?? (item.Kind == "audio" ? say.Get("Voice message") : say.Get("File"))} · {MediaText.DisplaySize(item.Bytes.Length, say, culture)}",
+        "audio" when VoiceNotes.IsRecorded(item) =>
+            say.Format("Voice message · %@", MediaText.TimeLabel((item.DurationMs ?? 0) / 1000.0)),
+        // A sound file picked from disk keeps its name — a voice note is the audio with none (VoiceNotes.IsRecorded).
+        "audio" or "file" => $"{item.Name ?? say.Get("File")} · {MediaText.DisplaySize(item.Bytes.Length, say, culture)}",
         _ => item.Name ?? say.Get("File"),
     };
 }

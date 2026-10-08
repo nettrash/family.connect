@@ -30,6 +30,20 @@ public sealed class FolderMediaStoreTests : IDisposable
         Assert.Equal(new byte[] { 9, 8 }, read.Preview!.Value.ToArray());
     }
 
+    /// <summary>A voice note's shape survives a relaunch with its bytes, and a note without one reads back without one.</summary>
+    [Fact]
+    public void AVoiceNotesWaveformReadsBack()
+    {
+        var store = new FolderMediaStore(folder);
+        const string wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        var read = store.Read(store.Stage(new StagedMedia("audio", "audio/mp4", new byte[] { 1 }, DurationMs: 4200, Waveform: wire)));
+        var plain = store.Read(store.Stage(new StagedMedia("audio", "audio/mp4", new byte[] { 1 }, DurationMs: 4200)));
+
+        Assert.Equal(wire, read!.Waveform);
+        Assert.Null(plain!.Waveform);
+    }
+
     [Fact]
     public void MediaWithoutOptionalFactsReadsBackWithoutThem()
     {

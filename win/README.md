@@ -7,7 +7,7 @@ The fourth client of the protocol in `docs/protocol.md`, alongside `ios/` (iOS +
 **Status: the whole client, run on Windows.** The core and the logic are the part of the client that
 has nothing to do with Windows — the wire, the local cache, the send queue, the board's arithmetic,
 the reconnect resync, the live frame router and the session gate — and they are tested wherever
-`dotnet` runs (419 + 366 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
+`dotnet` runs (505 + 554 tests). `FamilyConnect.App` is the WinUI 3 window over them, and it carries
 what the Mac and the web carry: the chats with threads, polls, reactions, edits, mentions, the
 assistant, link previews and every attachment kind; the board; the family and its owner's console;
 settings; one-to-one voice and video calls; notifications; the notification area; and files shared in
@@ -22,31 +22,55 @@ win/
   src/FamilyConnect.Core/
     Protocol/   ApiError, ServerUrl, Dtos, Frames, ApiClient, ChatSocket, SendPipeline,
                 SendRules, ReconnectBackoff, Resync, FrameRouter, ApiResult/ITokenStore
-    Store/      Database + Migrations (numbered), ChatStore, BoardStore, OutboxStore, Times
+    Store/      Database + Migrations (numbered), ChatStore, BoardStore, PackStore, OutboxStore, Times
     Board/      NoteText, NoteLook, BoardWall, BoardTasks, BoardPicture, NoteFitting, BoardBadge
     Text/       StringCatalog (the apps' English string IS the key), CallRecordText,
-                AttachmentText, NotifyText, Calendar (the .ics a client writes itself)
+                AttachmentText, NotifyText, Calendar (the .ics a client writes itself),
+                MediaPlan (what a picked video or sound file becomes before upload),
+                StickerFile (what a chat sticker's bytes say: its type, its size, whether it moves)
   src/FamilyConnect.App.Logic/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
                 ChatList — the rows, their order, and the one line under each name
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
+                Pack — the family's CHAT stickers: the panel, who may remove what, add, remove, send
+                StickerLook — the one box a chat sticker is drawn in, and an animated one's clock
                 MediaOutbox — the uploads a queued message owes, and the bytes waiting for them
+                MediaEncoding — the numbers a Media Foundation profile is given for a plan, what a result
+                                must read back as, and which of source and result then goes
+                TranscodeAttempts — the order a transcode is asked for in, and what ends the asking
+                FrameTurn — a frame of a transcode beside the same frame of its source
+                Faststart — an MP4's index moved in front of its media data
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
                 StartupSetting — what the "start when I sign in" row shows, and who may change it
+                VoiceNotes, NotSent, ParkedRecordings — a voice note's floors, what ends a recording and where
+                                it goes, and the voice messages that were not sent, kept per account
+                ComposerButton — the Send slot (Send, Save, the microphone, a recording's Send or Stop), the video
+                                button's rule, the round video's arithmetic, and which press opens the slot's menu
+                RoundVideoRules, RoundRecorder — recording a video message: the switch, the square, the camera and its
+                                mode, the encodes, what is sent, and the recorder's three states as a machine
+                RecorderFrames — where the recorder's status, circle, banner, bar and controls stand, never overlapping
+                RoundPlayback, RoundInline, RoundFrames — a received video message played IN PLACE: the circle's
+                                machine, what shows in each state, and how often a frame is copied into it
   src/FamilyConnect.App/               the WinUI 3 window: structure + code-behind, no decisions
                 Services/ Connection (one server, wired), LockerTokenStore (the credential
                           locker), AppServices, AppFolders, the settings files, Toasts and
-                          Attention, TrayIcon, StartupLaunch (the manifest's startup task),
+                          Attention, TrayIcon, GlobalHotKey + HotKeySetting (Ctrl+Alt+Shift+F),
+                          StartupLaunch (the manifest's startup task),
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
-                          MediaPreparing, LocationFinder
+                          MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
+                          screen on while recording), SessionWatch (lock, screen saver, sleep),
+                          ScreenReader (whether one runs, so the microphone waits for it),
+                          VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off),
+                          RoundFramePlayer (a received circle's frame-server player) + RoundCrashMark
+                          (a build that died playing one in place opens the viewer)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
                           BoardView + NoteSheet, FamilyView, SettingsView, CallCardView, and the
-                          sheets and cards they open (polls, emoji, dialogs)
+                          sheets and cards they open (polls, emoji, dialogs, RoundRecorderLayer)
   i18n/                                generate.py + win.json (the port's own strings)
   store/                               the Microsoft Store submission: listing.md (every text, the certification
                                        notes, the checklist), images/, count.ps1 (the listing against Partner
@@ -104,6 +128,116 @@ four-photo message costs the remaining three; a file this device can no longer f
 outright (an id cannot recover a picture); and a flush PUSHES what is owed before it posts
 anything, because the pipeline passes over a row that still owes a byte.
 
+**A picked video is brought to the protocol's profile before it is staged, and a sound file where
+the audio rules say** ("Preparing media before upload", issue #74). What to do is `MediaPlan` — a
+port of `fc_text::media_plan` held to it by `MediaPlanOracleTests`, case for case, because four
+clients must reach the same answer for the same file. What Media Foundation is asked for is
+`MediaEncoding`, and three things about it are not obvious. **Its AAC encoder documents four rates
+— 96, 128, 160 and 192 kbit/s — and the protocol's 64 000 is not one**, so every encode (a voice
+note's too) asks for the exact number first and then for the nearest documented one that keeps
+rule B. A track already under 96 000 has no such rate, so where it is AAC at or under the profile's
+row it is asked for as ITSELF and passed through; anything else under 96 000 goes as the original.
+**A portrait clip is encoded in its STORED orientation with the source's turn carried as
+metadata** (`MF_MT_VIDEO_ROTATION`), and **every result is read back and checked** — sides, turn,
+codec, audio kept or not, a frame rate no higher than asked, an audio rate that is the one asked
+for, SDR where SDR was asked for — because nothing on the Mac can watch Media Foundation run. The
+numbers can all be right and the picture wrong (a transcoder that turns the pixels AND carries the
+turn writes exactly the sides and the turn it was asked for), so **a frame of the result is
+compared with the same frame of its source** (`FrameTurn`): on its side, upside down or squashed
+between bars is a failed transcode too, and rule C sends what 1.1 sent. **A refusal is a refusal
+whenever it arrives** (`TranscodeAttempts`): an encoder that takes a profile and rejects it once
+the transcode has started is followed by the next way of asking, under one ceiling for all of them.
+**A transcode can be called off** — it is minutes where 1.1's file read was seconds — from the
+"Preparing…" bar's Cancel or by the window going, and a cancel is not a failure: nothing is staged.
+**The `moov` is moved to the front in C#** (`Faststart`), not asked of the MP4 sink, so it is the
+same on every Windows and tested here (and checked once, by hand, on a real moov-at-end file from
+`AVAssetWriter`: every sample of both tracks decoded identically before and after); it is asked of
+a video only, and a re-encoded sound file goes with its index wherever it is. Two sources are left
+alone because their transcode would come out wrong with every number right: one whose pixels are
+not square, and one with sound the shell reads and Media Foundation does not. What only Windows can
+show has not been run yet: that the encoder takes these profiles and keeps the turn, that it
+passes an audio track through when asked for what it already is, that it drops 60 fps to 30 (a
+failed transcode when it does not — every such clip then goes as the original, and
+`diagnostics.log` says why), that a frame read back from a good transcode does compare as its
+source's, and that it tone-maps HDR rather than clipping it (nothing here can tell — it needs an
+HDR clip and eyes). A voice note is read back as well, but only SAID when it is not what was asked
+for: there is no original to send in its place.
+
+**The family has a sticker pack, and "sticker" now means two things in this code** (docs/protocol.md,
+"Sticker pack"; issue #58). The board's cards have always been called stickers here (`Sticker`,
+`StickerFace`) and still are; the CHAT sticker — a small picture sent as its own message — is spelled
+`Pack` wherever it is kept or synced (`PackStore`, `PackModel`, the `pack_*` tables), as the wire spells
+it, and `Sticker…` only where it is drawn (`StickerFile`, `StickerLook`, `StickerImaging`,
+`StickerAnimator`). The two never meet.
+
+`PackStore` is `BoardStore` one table over, on purpose: a full read replaces what is held except an item
+above the read's own mark, a removal is remembered (`pack_gone`) whether it was seen as a tombstone, as a
+full read that left the item out or as this device's own delete, every write is guarded by `pack_seq`,
+and the cursor moves in three ways and no others. The one rule it keeps more strictly than the board does
+here is the third: **a `pack_item` frame moves the cursor only once this CONNECTION has caught up**
+(`Reconnected` when a socket opens, `CaughtUp` when the pass reaches the pack) — otherwise the newest add,
+landing before the pass, would step the feed past everything added or removed while the socket was down.
+And "caught up" is said of ONE connection: a pass names the connection it began on, and if the socket
+has reopened since, its word is dropped — everything it read is older than the socket now listening, and
+the pass that connection started is the one that says it (`PackStore.Connection`). The board has the same
+shape without this guard; that is older than the pack and has not been changed here.
+
+**A sticker is never prepared.** `MediaPreparing` redraws a photograph on white and writes a JPEG with a
+preview, which is exactly what would cost a sticker its transparency and its animation — so nothing about
+a sticker goes near it. A pack item and a sticker message are `StagedMedia` built from the ORIGINAL bytes
+with no preview (`PackModel.AddAsync`, `ToSendAsync`), and both are always drawn from the original,
+whatever `has_preview` says (`AttachmentFiles.SourceFor`). A sent sticker is a COPY: one click in the
+panel stages the item's cached bytes and queues an ordinary outbox row with `sticker` set, so it is
+written down before anything moves and lands whenever the network lets it. 512 × 512 is this client's
+rule only when it MAKES one: a WebP or PNG within the byte ceiling goes up as it is, whatever its pixel
+size; any other still picture Windows Imaging decodes (a JPEG, a HEIC, a still GIF…), and a still WebP
+or PNG over the ceiling and larger than the box, is fitted whole into the box and written as PNG with
+its alpha, never scaled up (`PackPicking`, `StickerImaging.MakeAsync`). **An animated picture that is
+not already an acceptable WebP — an animated GIF, an animated PNG that would have to be redrawn — is
+refused with a sentence** ("Animated stickers must be WebP."), never flattened to one frame. Adding
+offers an optional label, at most 64 characters counted as the server counts them (scalar values after
+trimming, `PackLabel`), refused in the dialog before any request. `MakeAsync` has not been run: that a
+HEIC decodes, that a photograph comes out the way its camera held it, and that the PNG keeps its alpha
+are to be seen on Windows.
+
+**New or already there is the HTTP status** (`201` / `200`, `ApiResult.Status`) — never whether the cache
+holds the item, because the actor's own `pack_item` frame is fanned out before the POST answers.
+`attachment_expired` at the claim is answered by one more upload and one more claim, and
+`pack_item_not_found` on a removal means the item is already gone: it is dropped and nothing is said.
+Recently used is the last 16, in the cache file (so per device and across restarts) and wiped at sign-out.
+
+It is drawn with no balloon, in one box (`StickerLook.Box`, 160) fitted whole from metadata. **Animated
+where this machine can, frame zero where it cannot**: XAML's `BitmapImage` plays a GIF by itself and is
+not documented to play anything else, so an animated WebP is asked of Windows Imaging frame by frame and
+cycled by one timer per view. That depends on the WebP Image Extension, which ships with Windows 11 and
+can be removed; without it a WebP is not decoded at all and the sticker is the word "Sticker" in its box
+— in a conversation, and in the panel and on the Family screen too, where the cell says the item's own
+label when it has one: one click in the panel sends, so a cell is never a blank square. That answer is
+REMEMBERED per view, so a redraw does not read the file and fail the decode again.
+**None of that has been run**: nothing on the Mac decodes through Windows Imaging, so whether build 22000
+hands out more than one frame of an animated WebP, whether those frames are whole pictures (they are
+only cycled if they are), and whether an APNG is more than its first frame (it is not expected to be)
+are all to be seen on Windows. The arithmetic around it — which frame is due, what is worth animating,
+what size to decode at — is `StickerAnimation`, and is tested.
+
+**Decoded frames are held to ONE budget per view, not one per sticker** (`StickerShelf`, tested). A single
+animated sticker may hold 48 MB of frames; a chat full of them would be gigabytes, in surfaces .NET's
+collector cannot see. So the conversation's stickers sit on a shelf of 96 MB: past it, the one drawn
+longest ago gives its frames back — disposed outright when no image is showing it, made a STILL (frame
+zero) when one is — and the newest, which is the one at the bottom of the chat, keeps moving. Stickers
+are decoded one at a time so that holds while they are being decoded too. The shelf also keeps each
+sticker's CLOCK: the conversation is rebuilt on every change, and an image made by a rebuild joins the
+animation where it was rather than sending every sticker on screen back to frame zero. `StickerAnimator`
+is the one place that knows which image shows which frame, so it is what disposes — and after a tick has
+failed, when it no longer knows, nothing is disposed at all. The disposing itself has not been run either.
+
+The sticker button is offered in every chat a message can be sent in — the family chat, a one-to-one
+chat, the assistant's chat — and by the thread's composer, where a sticker answers the chain's root
+(`PackSending`). In the assistant's own chat a sticker is a photo to the model, so the one click goes
+through the same consent question the Send button does there, and is not sent at all to an assistant
+whose owner the server will not name. It is not offered at all on a server that names no
+`max_pack_items`.
+
 **A preview is only asked for when the attachment says it has one.** The server generates none for
 a picture the assistant drew, and none at all for a file, audio or a location — so `has_preview` is
 a fact, not a hint. Asking anyway answers 404, and a client that reads that as "no picture" draws
@@ -133,6 +267,14 @@ stays in the Dock — and an icon in the notification area opens it again or qui
 hidden window of its own rather than WinUI's, re-added when Explorer restarts). "Keep running when the
 window is closed" in Settings turns that off, and without an icon to come back from a close is always
 a quit.
+
+**AND ONE CHORD BRINGS IT BACK** (#80, the Mac's ⌃⌥⌘F): **Ctrl+Alt+Shift+F** from any app brings the
+window forward — out of the notification area, up from the taskbar — and pressed while it is in front puts
+it back (`GlobalHotKey`, `RegisterHotKey` on a message-only window of its own, for `TrayIcon`'s reason;
+the rule is `GlobalHotKeyRules`, tested). Three modifiers, never Ctrl+Alt alone: Windows reads Ctrl+Alt as
+AltGr, and on a Hungarian or Czech keyboard AltGr+F types "[" — a system-wide shortcut would take it from
+every app. "Open with Ctrl+Alt+Shift+F" in Settings switches it (on by default, `hot-key.txt` beside
+`keep-running.txt`); a combination another app already holds is said there, and the icon still works.
 
 **AND IT CAN START BEFORE ITS WINDOW DOES.** The manifest declares a `windows.startupTask`
 (`uap5:Extension`, TaskId `FamilyConnectStartup`, `Enabled="false"`), and "Start when I sign in" in
@@ -167,15 +309,37 @@ the thing this design exists to avoid. So `win/i18n/generate.py` writes eight JS
 needs none: its keys are its values) which ship embedded in `FamilyConnect.Core`, and the app's own
 XAML chrome may still use `.resw` for labels nobody else has to agree with.
 
-A sentence nobody has translated yet reads in ENGLISH rather than as a slug, and the five that are
-English for now are NAMED in `win/i18n/win.json` — a test fails on any other untranslated key, so
-a new string cannot go quietly missing in nine catalogues that look complete. Completeness is asked
+A sentence nobody has translated yet reads in ENGLISH rather than as a slug, and any that are
+English for now are NAMED in `win/i18n/win.json` (as an empty object) — a test fails on any other
+untranslated key, so a new string cannot go quietly missing in nine catalogues that look complete.
+Since issue #82 (2026-10-07) there are NONE: every sentence the port draws is in all nine, and the
+"Every string in every language" CI job checks the Apple and web catalogues the same way. Completeness is asked
 of the TABLE and not of the answer, because "Video" in German and "Photo" in French are real
 translations identical to the English.
 
 **A family's language is NOT the display language.** It is what the assistant answers in; the
 window draws in whatever the device is set to, because a family setting that silently re-languaged
 somebody's computer would be a surprise nobody asked for.
+
+**Looking things up is three keys, and this client holds none of them** (docs/protocol.md, "Looking things up";
+issue #72; `Lookups`). The server must name its providers (`assistant.lookups`, absent on a server without one), the
+owner must turn on `ai_lookups` (the family screen's "Looking things up" card, drawn only where providers are named),
+and the asking member must have given a SECOND consent on top of the assistant's — asked on the same consent screen,
+whose yes splits into "Agree With Lookups" and "Agree Without Lookups", and changeable in Settings. The answer comes
+back as an ordinary message with a sources footer the SERVER writes; it is plain markdown, so its links open like any
+other. What this client adds is that **a lookup answer draws no preview card** (design decision 7): its links are its
+sources and its providers' credits, so a card would have every device showing it contact a cited page. The same goes
+for **an assistant answer still being written**: the server filters links out of the finished body, not out of the
+stream, so the card waits for the finished row. `SourcesFooter` recognises the footer by its shape and its fixed words.
+
+**The greeting's weather is the owner's list of up to three places** (docs/protocol.md, "Today's weather, for places
+the owner chose"; issue #72; `GreetingPlaces`, `GreetingWeather`, `PlacesDraft`). It sits under the "Daily greeting"
+switch on the owner's family screen, drawn only where the server says it can (`assistant.greeting_weather`, absent on an
+older server) and editable with the greeting on or off, as on the other clients — the owner may choose the places
+before turning the greeting on. A field takes what the server would keep (no control characters, at most 80 characters, counted as Rust counts
+them), is saved when it is left or Enter is pressed, and the list shown afterwards is the one the server KEPT — repeats
+are the server's to drop. The credit line under such a greeting is markdown the server writes, so it is a link that
+opens, and it is the lookups' credit line, so the greeting draws no preview card.
 
 **A notification is never the message.** The body is the one a server with
 `include_message_body = false` would send, and the block reaches one step further than the sender:
@@ -225,9 +389,201 @@ saves through the save picker; a place opens in Maps. Bytes are fetched once by 
 into `FileBlobStore` (one file per key, written whole or not at all, wiped with the SQLite cache
 when the server changes). The measuring — sizes in the reader's decimal format, shapes, the
 location line with a POINT, the Maps link — is `fc_text::media` ported and pinned by the oracle.
-File sizes, "Zero KB" and "%lld byte(s)" are English for now: the Apple apps use the system's byte
-formatter, so the shared catalogue has no such sentences, and this port's catalogue has no plural
-forms (two keys stand in for English's one and other).
+File sizes, "Zero KB" and "%lld byte(s)" are this port's own sentences, translated in
+`win/i18n/win.json` (#82): the Apple apps use the system's byte formatter, so the shared catalogue
+has no such sentences, and two keys stand in for English's one and other.
+
+**A recording is never lost to an interruption, and never sent by one** (docs/audio-video-messages-2026-10-04.md,
+Phase 0; issue #79). The person's Stop stages a voice note for review, as before. Anything else that ends a recording —
+another chat, the rail's Board, Family or Settings, a call in any phase, the window minimised, hidden in the
+notification area or really closed, the session locking, the screen saver, sleep, the recorder failing — STOPS AND
+KEEPS it (`NotSent`): it waits in its chat as "Voice message not sent · 0:42", with the reply it was recorded under
+and, when the person left the chat with a note still in review, the words in the field as its caption. That row's Send
+sends it with THAT reply and caption and nothing else, never riding out with the next text; its ✕ deletes it, asking
+from ten seconds, as the recording row's Delete does; and while it waits, that chat records nothing new. Under a
+second there is nothing worth keeping, and it goes without a word. The rows are on disk per account per server
+(`ParkedRecordings`: whole or not at all, swept at launch) and wiped whenever the session ends, as the outbox is; one the
+disk refuses waits in memory as the same row, with the same reply and caption, and the disk is tried again as the window
+really closes. A real close is held back while they are written, because nothing awaited after the last window goes
+would finish. Nothing records during a call — refused with the reason, and the call buttons, every record's "Call back"
+among them, are off while something records — the screen is kept on while it does (`KeepAwake`), whatever plays is
+paused first, and nothing plays until it ends, the viewer's video included. **None of it has run on Windows**
+(the plan's trial T7): that `WTSRegisterSessionNotification` on a hidden window of its own hears a packaged app's lock
+and `WM_POWERBROADCAST` its sleep (`SessionWatch`), that `AppWindow.Changed` sees a minimise, that
+`DisplayRequest.RequestActive` no longer throws (the execution-state fallback is there if it does), that `AppCapability`
+answers for the microphone before Settings is offered, and that `MediaCapture.Failed` reaches the recorder when a
+microphone is pulled out.
+
+**The microphone lives in the Send slot** (docs/audio-video-messages-2026-10-04.md, Phase 1; issue #79). The composer's
+trailing control is one fixed 40-epx accent disc in a 44-epx target — Send, Save, the microphone, or while something records
+the Send arrow (or Stop, when the recording began beside words or staged items) — so the row never jumps, and which it is,
+how it is named and what a press does are `ComposerButton`'s, held case for case to `fc_text::record` by
+`record-vectors.json` (the slot, the video button and the round helpers). Since 2026-10-06 no client has a hold — the
+owner withdrew the phones' hold-to-talk after testing it — so the rule Windows always had is now everyone's. **Every input clicks**: a
+press of any length with a mouse, a finger or a pen records hands-free, the same place sends it, and holding is off; a mouse
+right-click, a pen tap with the barrel button down, Shift+F10 or the Menu key open the microphone's menu ("Record Voice
+Message"), and a touch or pen hold never does — nor its tooltip, which is taken away while a finger or a pen is down. **Ctrl+Shift+R** — the app's first keyboard accelerator — records, beside
+the draft when there is one, and pressed again stops into review: a shortcut never sends. Recording takes the field's place
+in the input row (Delete, the clock, Stop; "30 seconds left" from 4:30), Esc is Stop and never Delete, and Enter in an empty
+field still does nothing. A dimmed microphone — a call, an attachment on its way, a voice message not sent — stays a
+button and says why; for 600 ms after the slot's own click changed it, a second click — or Enter in the field, which is
+the slot's — is ignored, and so is a press that went down meanwhile, however late it lifts, so a double click can neither
+start nor send a recording; words typed and pictures staged since are never held back, and nothing under a second is
+ever sent. A key held
+down is one press: its repeats never send from the field or drop a reply, and Ctrl+Shift+R held down records, or stops,
+once. A note in review, and one that was not sent, plays from this device (▶), and nothing plays while something records
+— or while the microphone is still being opened (Windows' prompt, the screen reader's second); a lock, sleep or any other
+interruption that arrives then lets go of the microphone once it is granted (`RecordingStart`).
+With a screen reader running, "Recording" is said a second before the microphone records (`ScreenReader`), and what a
+recording does is said on a hidden polite line. **None of it has run on Windows** (trial T7, and T4 for a touch or pen hold
+on a button with holding off): that a long touch press clicks rather than opening the menu, that a pen's barrel tap reaches
+the menu, that Ctrl+Shift+R reaches an accelerator on the composer while the field has focus, the cross-fade and the pulse,
+and what Narrator reads in every state (T5). The video button is wired but not drawn — see the next paragraph.
+
+**Voice and video messages are drawn as the approved design of 2026-10-05** (the "Voice and Video Messages" mockup; issue
+#79). A voice bubble is a round accent play button, the WAVEFORM the sender measured (`AttachmentDto.Waveform`, read
+through `Waveform` — `fc_text::waveform` ported and held to `waveform-vectors.json` by `WaveformOracleTests` — and a
+neutral placeholder where there is none), its played bars lit in the accent as it plays (⌊position · bars / duration⌋), the
+time in tabular digits (where it is while it plays, its length at rest), a speed chip — 1×, 1.5×, 2×, kept on this device
+(`VoiceSpeed`, `VoiceSpeedSetting`) and applied as the player's rate — and a dot until this device has played someone
+else's (`PlayedVoiceStore`, migration 7: the circles' table one over). The waveform IS the seek: a slider lies over the bars
+with its track and thumb drawn in nothing, so a click or a drag seeks, the arrow keys step it and Narrator hears an
+adjustable "Position". In the reader's own balloon nothing is drawn in the accent, which is the balloon. **The sender's
+waveform is measured from the recording itself** (`VoiceShape`): `MediaCapture` exposes no level, so the M4A is decoded to
+16-bit mono PCM by Media Foundation and its peak every tenth of a second goes through `Waveform.FromPeaks`
+(`VoiceWaveform`) — the same bytes give the same 48 digits however often they are measured, so a note sent at once, from
+review and from its not-sent row all carry the same shape (`StagedMedia.Waveform`, kept by `FolderMediaStore`, sent as
+`&waveform=` on audio only). A server from before waveforms ignores the parameter. The recording row's LIVE waveform
+comes from a second, listen-only reader of the microphone (`VoiceMeter`: an `AudioGraph` frame output, read and dropped)
+— best effort, drawn and forgotten, never what the note's own shape comes from, and not drawn with Windows' animations
+off, where the red dot stops pulsing too. The review chip and the not-sent row are chips of their own (▶, the note's mini
+waveform lit as it plays, its length; "Not sent" in the caution colour, Send and ✕), and the row and the field cross-fade
+over 150 ms. The not-sent chip is the mockup's `min(360, 100%)` and FITS its width (`VoiceLook.FitNotSent`): its mini
+waveform is reduced to the bars that fit rather than cut off, and in a longer language or at a large text size "Not sent"
+moves onto a line of its own. Every small control — the speed chip, a chip's ✕ and Send — is a 44 target reaching past
+what is drawn (`VoiceLook.Reach`, S1.1). Every copy drawn of a note (the conversation's and the thread panel's) plays,
+loses its dot and says "Played" together (`DrawnCopies`); a note seeked while idle shows where it was put and Play starts
+there; and a voice note on its way is drawn as the bubble it will be, fainter, with "Sending…" under it. The bubble, the
+chips and that pending bubble are `NamedGroup`s, whose automation peer is a Group, so Narrator meets their names — a
+`Border` has none. A circle stands on a soft shadow (cast by a SOLID disc, since the mask takes its alpha) with its length
+and its white dot on a dark capsule at the bottom and a 48 play disc; a click plays it IN PLACE (the next paragraph but one),
+and Open Full Screen plays it in the viewer, where exactly one accent ring runs OUTSIDE the edge as it plays, its play disc
+fades out, and both go back to the poster's look when it ends (`RoundLook.ViewerRing`). A voice or video message's
+menu is the reactions, Reply, Show text, Playback speed (voice), Save…, Open Full Screen (video) and Safety — never Copy or
+Edit (`MessageMenu`); every other message's menu is unchanged. No client has a hold, a hold row or an Undo window any
+more (withdrawn 2026-10-06; Windows never had them). **None of it has run on Windows**: the WAV decode, the second reader of the microphone beside a
+`LowLagMediaRecording`, the shadow, the invisible slider's hit area, the playback rate and what Narrator reads.
+
+**A received video message plays IN PLACE** (S5.3; since 2026-10-06 — before that a click opened the viewer, the plan's
+interim). A click — a beat late, because a double click is the heart — plays the circle inside itself, at the same 240, with
+sound: the play disc fades out, a loading ring stands over the poster until the first frame, exactly ONE accent ring runs
+round the outside of the edge as it plays (stepping once a second with Windows' animations off), the capsule counts up, and
+an expand control at the top trailing edge (Segoe E740, a 28 disc in a 44 target) opens it full screen. A second click
+pauses it (and a click while it still loads gives up); at the end it is back to its poster and its play disc, and someone
+else's circle loses its dot and says "Played" (`RoundLook.ShowsDot`). A failure leaves the poster with "Couldn't load the
+video. Tap to try again." under it. Nothing plays by itself: drawing a circle fetches its poster and nothing else, and the
+MP4 is fetched only on the click — through the attachment cache, the viewer's own path (the session's header, kept on
+disk). **One thing plays at a time**: a circle starting pauses a voice note, a staged or not-sent note and the viewer's video;
+any of those starting — the viewer included, so Open Full Screen too — pauses the circle; a recording starting pauses it and
+none starts under one ("You can play this after recording."); a call, a lock, sleep, a new default output device and a
+hidden window pause it (`PlaybackPauses`); its row scrolled wholly out of view (`EffectiveViewportChanged`), its chat left
+and the window letting go STOP it. Every rule is `RoundPlayback` (rest → loading → playing ⇄ paused → rest, failed; stale
+news of a load given up changes nothing) and `RoundInline`, tested on any OS. **Round by construction**: WinUI 3's
+`MediaPlayerElement` does not clip its video to a `CornerRadius` (microsoft-ui-xaml #8264), so nothing is asked to clip.
+`RoundFramePlayer` runs a `MediaPlayer` with `IsVideoFrameServerEnabled` — it draws nowhere and plays its sound as usual —
+and on `VideoFrameAvailable` (throttled to the clip's own rate, at most 30, never two copies at once: `RoundFrames`) copies
+the frame with `CopyFrameToVideoSurface` into a Direct3D surface of the circle's pixel size
+(`VideoFrame.CreateAsDirect3D11SurfaceBacked`, so no Win2D), reads it back with `SoftwareBitmap.CreateCopyFromSurfaceAsync`,
+makes it opaque and writes it into a `WriteableBitmap` — the image source of the SAME `ImageBrush` that fills the poster's
+`Ellipse`. The circle is that ellipse. (The first build used a `SoftwareBitmapSource` fed by `SetBitmapAsync` and a code-made
+`ProgressRing`, and a click on a circle ended the app inside Microsoft.UI.Xaml.dll, 0xc000027b, with no managed exception;
+both are gone. Every step of a play and of its first frame writes a "round:" line to `diagnostics.log` — the last one before a
+crash names the step — and `round-inline.mark` beside it, written before a circle plays in place and removed when its player
+goes, makes a build that died mid-play open the viewer on every later launch; a new build tries in place again. To retry the
+same build, delete the mark.) Narrator meets "Video message, 0:23", its status Played or Not played, and its help text says what a
+press does next (Play or Pause); Enter or Space presses it. `RoundInline.PlaysInPlace = false` puts back the viewer on a
+click; a machine whose frames cannot be had — three failed copies in a row, or two seconds of sound with no frame
+(`RoundFrames.Starved`) — does the same on its own for the rest of the session, opening that circle in the viewer at once,
+and writes "circles open the viewer from now on" to `diagnostics.log`. **None of it has run on Windows.** On the ARM64 machine,
+receive a circle from a phone or the web and check:
+
+- **The picture is round and moving**: a click shows a loading ring for a moment, then the clip plays INSIDE the circle with
+  nothing square showing past its edge, at a steady rate, with sound; the colours are right (not blue-tinted — BGRA read
+  as RGBA — and not transparent, which would leave only the grey disc: the frame's alpha must come back opaque). If the
+  viewer opens by itself instead, the frame server failed: `diagnostics.log` says why ("copying a video message's frame"
+  with its HRESULT, or "no frame in two seconds of playing").
+- **The ring and the controls**: exactly one accent ring outside the edge, not clipped at the top of the first message or at
+  the window's edges; the expand control at the top right opens the viewer, paused in place behind it; a second click
+  pauses (the last frame stays), a third resumes; at the end the poster and its play disc come back and the dot goes —
+  and stays gone after switching chats. With "Animation effects" off in Settings, the ring steps once a second and the disc
+  appears and goes without fading.
+- **One at a time**: start a voice note while a circle plays (the circle pauses) and a circle while a voice note plays (the
+  note pauses); start a recording (it pauses and will not start again until the recording ends); lock the screen, minimise
+  the window, unplug headphones, ring it from a phone (each pauses it); scroll it away (it stops, back to the poster);
+  open another chat (it stops). Double-click a circle: a heart, and nothing plays.
+- **Narrator**: "Video message, 0:23", "Not played" then "Played", and Play/Pause as its help; the failure line is spoken
+  when it appears (turn the network off and click a circle never played on this machine, whose MP4 is not cached yet).
+- **Memory**: play a minute-long circle three times and watch Task Manager — the frames are surfaces outside .NET's heap,
+  given back when it stops, ends or scrolls away.
+
+**Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
+Decision 28). `RoundVideoRules.RecordingEnabled` is `false`, and while it is, no build draws a way in: no video button in
+the empty field, no "Record Video Message" in the paperclip's menu or the microphone's, no "Press Shift+F10 for a video
+message." hint for Narrator — and nothing enumerates or opens a camera. A build that can only RECEIVE circles shows no way
+of recording one (Decision 40). Behind the switch is the whole recorder: the video button (Segoe E714 inside the empty
+field, its own 600 ms guard), the two menu items, and `RoundRecorderLayer` over the rail and the page (under the call card)
+— the window darkened and blurred behind it (in-app acrylic; opaque with transparency effects off), the composer made
+transparent and unhittable while it is up, the circle with its status in a capsule above it, the reply it carries, and the
+controls on their own solid bar along the conversation's bottom with the slot under Send (a column bar at the trailing edge
+in a pane shorter than 480, the reply banner at its top where it fits and under the circle where it does not, so the slot
+never leaves the pane); the composer's Ctrl+Shift+R starts nothing behind it; every part is measured and placed by `RecorderFrames.Frame`, which shrinks the circle — and
+at worst cuts the status — rather than let anything overlap, proved by `RecorderFrameTests` at 320–1000 epx and 100–225 %
+text (decision 41, 2026-10-06); PREVIEW (mirrored, "Not recording", Record dimmed until the first frame, "Choose camera" — the cameras by name — with more than one,
+"Record a voice message instead", a minute untouched turns it off), RECORDING (the ring filling red, "10 seconds left" at
+50 s, stopped at 59.5 s into REVIEW, Delete asking from ten seconds) and REVIEW (the clip as it will be sent, Space plays
+and pauses wherever focus is, Delete, Retake, Send); `RoundRecorder` decides every step and is tested on any OS.
+`VideoMessageRecorder` opens the front-panel camera (else the chosen or first one) through `MediaCapture` for
+`AudioAndVideo`, shows it through `MediaPlayerElement` + `MediaSource.CreateFromMediaFrameSource` mirrored with
+`ScaleX = -1`, refuses a camera whose only formats leave that preview blank (#9756: RGB24, UYVY, I420 — "Video messages
+can't be recorded with this camera."), and writes the take to a temporary MP4 at the camera's size;
+`MediaPreparing.RoundAsync` makes the square through the existing `MediaTranscoder` path with a required
+`VideoTransformEffectDefinition` (centre `CropRectangle`, `OutputSize` 480 × 480) into H.264 High 500 kbit/s and AAC-LC
+mono 64 000 (96 000 where the encoder refuses it), reads it back, checks its bytes (`MediaPrep.MatchesMagic`), puts `moov`
+first (`Faststart.MoovFirst`) and cuts its 480 × 480 poster. A take that cannot be made square, or a length the server
+would refuse round, is sent as the regular video the planner makes of it ("Couldn't make it round."); a square over
+`max_round_video_bytes` goes as a regular 480 × 480 video ("Too big for a video message."). A real close over a take or a
+clip asks "Delete video message?" in `OnClosing`, and Keep cancels the close. The video entry also needs the server's
+`max_round_video_ms` and `max_round_video_bytes` on `GET /families/mine` (`RoundVideoLimits`, carried by the pass into the
+session) and a camera on the machine.
+
+**To switch it on**, set `RecordingEnabled = true` in `src/FamilyConnect.App.Logic/RoundVideoRules.cs`, build, and run the
+trials on the ARM64 machine (`RoundVideoRulesTests.RecordingIsSwitchedOffUntilTheTrials` fails while it is on, on
+purpose: flip that assertion too when the trials pass and the switch is meant to ship). Then:
+
+- **T1 — the picture and the microphone.** Open the recorder (the video button in an empty field) on the built-in webcam
+  and on any USB one: the circle shows the live picture, mirrored, within a second or two ("Starting camera…" then "Not
+  recording", Record coming alive), and the first-time line shows once per device. With PREVIEW up and Record NOT pressed,
+  look at the taskbar's privacy indicators: if Windows shows the MICROPHONE in use, set
+  `RoundVideoRules.MicrophoneOnInPreview = true` — PREVIEW then says "Camera and microphone on · Not recording". Close the
+  shutter or turn the camera off in Settings: "We can't see anything…" should appear after two seconds (the frame reader
+  runs with `MemoryPreference = Cpu`; if it does not start, the picture still shows and only that line is lost — check
+  `diagnostics.log` for "frame reader"). Check the camera light goes out on Close, in REVIEW, on a minimise, a lock, an
+  incoming call and Esc.
+- **T2 — the circle.** In PREVIEW and REVIEW the picture must be cut ROUND, its corners not showing past the ring. If
+  they show, set `RoundVideoRules.Clip` to `PreviewClip.Composition` (an ellipse clip on the element's visual) and try
+  again; if that also fails, `PreviewClip.Mask` (the corners painted over in the card's colour on an opaque card). Write
+  down which one held.
+- **T3 — the square.** Record ten seconds and Send to a test family; then check the uploaded file (or the REVIEW clip in
+  `%TEMP%\FamilyConnect\round\`): 480 × 480, H.264, AAC mono at 64 000 (96 000 is acceptable and is logged when taken),
+  `moov` before `mdat`, not squashed (a circle drawn on paper stays a circle), not mirrored (writing held up to the camera
+  reads correctly), a 480 × 480 poster, and a keyframe at least every 2 s (`ffprobe -select_streams v -skip_frame nokey
+  -show_entries frame=pts_time -of csv` lists them; the profile asks for `MF_MT_MAX_KEYFRAME_SPACING`, and only the last
+  encode tried goes without it). `diagnostics.log` says which encode was taken and anything that came out other than
+  asked. Also check a phone and the web draw it as a circle.
+
+Until all three pass, leave the switch off. T5 (Narrator reads every state of the recorder) and T6 (opening the camera
+while a WebView2 call holds it — "The camera is being used by another app.", read from Media Foundation's codes in
+`RoundVideoRules.Trouble`) are worth running in the same session.
 
 **Sharing INTO the app** is a share target in the manifest. What was shared is copied into the app's
 inbox by the process Windows launched for it, BEFORE that process hands its activation to the running
@@ -302,7 +658,7 @@ load-bearing, and now a test says so.
 CI runs this lane on **ubuntu AND windows** (`.github/workflows/ci.yml`, job `win`): the portable
 half is worth nothing unless something actually runs it on the target, and what that catches is not
 compile errors but SQLite's locking, path separators, line endings in the fixtures and the reader's
-own culture. The same lane re-prints both oracle fixtures from `web/text` and fails on a diff.
+own culture. The same lane re-prints the oracle fixtures from `web/text` and fails on a diff.
 
 .NET 10 (`global.json` pins the SDK band). Nothing here references a Windows API, on purpose: a
 WinUI **app** cannot be built on macOS at all — its XAML compiler is .NET Framework — so a port
@@ -334,6 +690,22 @@ dotnet run --project src/FamilyConnect.App -p:Platform=x64   # a debug package i
 or open `FamilyConnect.slnx` in Visual Studio. The bare `bin\…\FamilyConnect.exe` does not
 start on its own: a packaged app's Deployment Manager needs its identity and fails before `Main`
 (build with `-p:WindowsPackageType=None` for a real unpackaged binary).
+
+**Starting from an empty cache takes more than the manifest's name.** The WinApp tooling behind
+`dotnet run` (0.3.1) registers the package as **`nttrsh.FamilyConnect.debug`** — it appends `.debug`
+unless told `--keep-identity` — and keeps its application data across re-deploys; Visual Studio and an
+installed MSIX use `nttrsh.FamilyConnect`. So `Get-AppxPackage nttrsh.FamilyConnect | Remove-AppxPackage`
+leaves the `dotnet run` package and its `cache.db` exactly where they were. Remove every one:
+
+```powershell
+Get-AppxPackage *FamilyConnect* | Remove-AppxPackage
+# and, if an unpackaged build ever ran here, the real folder a packaged run falls back to reading:
+Remove-Item -Recurse "$env:LOCALAPPDATA\FamilyConnect" -ErrorAction SilentlyContinue
+```
+
+A cache an older build wrote is repaired, not trusted: schema step 8 marks every held set as not
+knowing the sticker and video-message flags, and each resync reads the possible stickers and circles
+once more (`Resync.RepairFlagsAsync`).
 
 **What running it on Windows taught, and where it is kept:**
 
@@ -409,6 +781,51 @@ cd win/tools/board-oracle
 cargo run --quiet > ../../tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json
 cargo run --quiet -- chat > ../../tests/FamilyConnect.Core.Tests/Fixtures/chat-vectors.json
 ```
+
+A third, `media-plan-vectors.json`, is `fc_text::media_plan` — what a picked video or sound file
+becomes before upload (docs/protocol.md, "Preparing media before upload"; issue #74). Unlike the
+other two it is held by THREE ports, so the same bytes are copied into the iOS test bundle and onto
+Android's JVM test classpath, and CI fails if any copy differs from a fresh print:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- media-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/media-plan-vectors.json android/app/src/test/resources/
+```
+
+A fourth, `record-vectors.json`, is `fc_text::record` — voice and video messages from the Send
+button (issue #79): which control the composer's trailing slot is, when the video button shows,
+the voice recording's reducer (`hold_step`, which kept its name when the hold was withdrawn on
+2026-10-06) and the round video's arithmetic. It travels like the media-plan file, three
+copies CI compares with a fresh print; the Windows port reads every function in it but
+`hold_step` (the window drives its own recording), and `App.Logic.Tests` links the Core copy
+rather than keeping a fourth:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- record > ../../tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/record-vectors.json android/app/src/test/resources/
+```
+
+A fifth, `waveform-vectors.json`, is `fc_text::waveform` — a voice note's waveform (issue #79,
+protocol.md "A voice note's waveform"): a metered peak as a level, a recording's peaks as the 48 hex
+digits the upload carries, parsing them back, the placeholder for audio without one, and drawing
+them as bars. Every port implements all of it; it travels like the two above:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- waveform > ../../tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json android/app/src/test/resources/
+```
+
+JSON has no NaN or infinity, so a peak that is one is written as the string `"NaN"`, `"Infinity"`
+or `"-Infinity"`; every other number is the shortest decimal that round-trips.
 
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a
 byte-versus-character split that panicked on Cyrillic, and the portfolio by four ports that agreed

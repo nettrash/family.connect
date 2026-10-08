@@ -45,6 +45,18 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.onClick as onSemanticsClick
+import me.nettrash.familyconnect.ui.components.VoiceBubbleRules
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.automirrored.outlined.Subject
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.graphics.lerp
+import me.nettrash.familyconnect.ui.components.WaveformBars
+import me.nettrash.familyconnect.ui.components.VoicePlayDisc
+import me.nettrash.familyconnect.ui.components.VoiceDrawing
+import me.nettrash.familyconnect.data.repo.Waveform
+import androidx.compose.runtime.CompositionLocalProvider
 import android.content.ClipData
 import android.content.Intent
 import android.os.Build
@@ -57,6 +69,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -129,6 +142,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
@@ -147,12 +161,15 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Poll
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.HowToVote
+import androidx.compose.material.icons.outlined.VideoCameraFront
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Flag
@@ -165,12 +182,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -214,7 +229,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -224,7 +238,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -242,6 +260,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -264,7 +284,31 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import me.nettrash.familyconnect.ui.stickers.ChatSticker
+import me.nettrash.familyconnect.ui.stickers.StickerNotices
+import me.nettrash.familyconnect.ui.stickers.StickerPanelSheet
+import me.nettrash.familyconnect.ui.stickers.StickerPreviewDialog
+import me.nettrash.familyconnect.ui.stickers.StickerViewModel
+import android.view.accessibility.AccessibilityManager
+import androidx.core.app.ActivityCompat
+import androidx.compose.ui.platform.LocalFocusManager
+import android.content.res.Configuration
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.focus.focusProperties
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.DisposableEffect
+import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.ui.components.KeepScreenAwake
+import me.nettrash.familyconnect.ui.components.findActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -280,6 +324,8 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.repo.AssistantFailure
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import android.net.Uri
@@ -323,7 +369,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
  * onPositioned keeps anchorBounds current while the capsule is open
  * (the focusable popup closes the keyboard, shifting the list).
  */
-private data class ReactionPickerTarget(
+internal data class ReactionPickerTarget(
     val item: ChatListItem.MessageItem,
     val anchorBounds: Rect,
 )
@@ -353,8 +399,20 @@ fun ChatScreen(
     /** Open another chat — the one-to-one a tapped mention leads to (docs/protocol.md, "Mentioning a member"). */
     onOpenChat: (Long) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
+    /**
+     * The family's chat stickers: the panel, and the larger view a tap
+     * opens (docs/protocol.md, "Sticker pack"). Its own model because the
+     * thread screen and the Family screen need the same things.
+     */
+    stickerViewModel: StickerViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    // Null on a server that predates packs, and then nothing about
+    // stickers is offered — no button, no "Add to family stickers".
+    val stickerLimits by stickerViewModel.limits.collectAsStateWithLifecycle()
+    var stickerPanelOpen by rememberSaveable { mutableStateOf(false) }
+    var viewingSticker by remember { mutableStateOf<AttachmentDto?>(null) }
+    StickerNotices(stickerViewModel)
     val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
@@ -370,16 +428,18 @@ fun ChatScreen(
     val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
     // Rows an `ai_error` frame named. A picture answer streams nothing, so
     // its failure is an empty balloon and nothing else unless the bubble
-    // says so (docs/protocol.md, "Pictures").
-    val failedAssistantIds by viewModel.failedAssistantMessageIds.collectAsStateWithLifecycle()
+    // says so (docs/protocol.md, "Pictures"). Each remembers HOW it failed,
+    // which picks the sentence (docs/protocol.md, "The assistant").
+    val failedAssistantAnswers by viewModel.failedAssistantAnswers.collectAsStateWithLifecycle()
     // The two picture affordances, each behind its own capability check —
     // no surface at all where the server cannot do the thing, rather than
     // a disabled one that lies about what would happen.
     val canShowAssistantPicture by viewModel.canShowAssistantPicture.collectAsStateWithLifecycle()
-    val canAskForPicture by viewModel.canAskForPicture.collectAsStateWithLifecycle()
+    val offersDrawButton by viewModel.offersDrawButton.collectAsStateWithLifecycle()
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
+    val showsPictureDescriptionHint by viewModel.showsPictureDescriptionHint.collectAsStateWithLifecycle()
     // Nothing reaches the model before this member has agreed
     // (docs/protocol.md, "Consenting to the assistant").
     val assistantProcessor by viewModel.assistantProcessor.collectAsStateWithLifecycle()
@@ -405,6 +465,22 @@ fun ChatScreen(
     val mediaState by viewModel.mediaState.collectAsStateWithLifecycle()
     val staged by viewModel.staged.collectAsStateWithLifecycle()
     val recordingMs by viewModel.recordingMs.collectAsStateWithLifecycle()
+    // #79, Phase 0: today's recorder made safe. Nothing records during a
+    // call; a recording something else stopped waits in its own "Voice
+    // message not sent" row until it is sent or deleted (S2.8).
+    val isRecording = recordingMs != null
+    val callLive by viewModel.callLive.collectAsStateWithLifecycle()
+    val notSent by viewModel.notSent.collectAsStateWithLifecycle()
+    val notSentInFlight by viewModel.notSentInFlight.collectAsStateWithLifecycle()
+    val deleteAsk by viewModel.deleteAsk.collectAsStateWithLifecycle()
+    // #79, Phase 1: voice in the Send slot. The shared reducer's state, and
+    // what the recording rows draw from it.
+    val hold by viewModel.hold.collectAsStateWithLifecycle()
+    val voiceLevel by viewModel.voiceLevel.collectAsStateWithLifecycle()
+    val voiceLevels by viewModel.voiceLevels.collectAsStateWithLifecycle()
+    val voiceLine by viewModel.voiceLine.collectAsStateWithLifecycle()
+    val announcement by viewModel.announcement.collectAsStateWithLifecycle()
+    val stagedDeleteAsk by viewModel.stagedDeleteAsk.collectAsStateWithLifecycle()
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
 
@@ -454,6 +530,7 @@ fun ChatScreen(
     // Stands in for a sender the roster cannot name — somebody who left,
     // or a roster still catching up.
     val memberFallbackName = stringResource(R.string.s_someone)
+    val memberYou = stringResource(R.string.s_you)
 
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
     val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
@@ -616,24 +693,119 @@ fun ChatScreen(
         }
     }
 
-    // Recording a voice note. RECORD_AUDIO really is required here (unlike
-    // CAMERA, which must not even be declared), so it is asked for at the
-    // moment of use and the grant continues the action.
-    val micPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            viewModel.startRecording()
-        } else {
-            Toast.makeText(context, R.string.e_microphone_permission, Toast.LENGTH_LONG).show()
-        }
-    }
-    val startRecording: () -> Unit = {
-        val held = ContextCompat.checkSelfPermission(
+    // Recording a voice message (#79). RECORD_AUDIO really is required, and
+    // it is asked when the SHARED reducer says so (RecordGesture): a tap's or
+    // a menu's prompt records on Allow — the tap meant "record" (S2.2). The
+    // screen only says
+    // what the permission is: granted, askable, or refused for good — which
+    // Android tells apart only after asking (shouldShowRequestPermission-
+    // Rationale is false both before the first ask and after the last), so
+    // "for good" is learnt from an answer and kept here.
+    var micRefusedForGood by rememberSaveable { mutableStateOf(false) }
+    val accessibility = remember(context) { context.getSystemService(AccessibilityManager::class.java) }
+    val voiceEnvironment: () -> ChatViewModel.VoiceEnvironment = {
+        val granted = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
-        if (held) viewModel.startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        if (granted) micRefusedForGood = false
+        ChatViewModel.VoiceEnvironment(
+            permission = when {
+                granted -> RecordGesture.Permission.GRANTED
+                micRefusedForGood -> RecordGesture.Permission.DENIED
+                else -> RecordGesture.Permission.NOT_ASKED
+            },
+            // S6: Android's word for "a screen reader runs" is touch exploration.
+            assistive = accessibility?.isTouchExplorationEnabled == true,
+        )
+    }
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val forGood = !granted && context.findActivity()?.let { activity ->
+            !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)
+        } == true
+        micRefusedForGood = forGood
+        viewModel.permissionAnswered(granted, permanent = forGood)
+    }
+    // S1.2's **can record**: a device with no microphone at all (a TV, some
+    // Chromebooks) gets today's disabled Send, never a microphone.
+    val canRecordSound = remember(context) {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)
+    }
+    // The paperclip's and the microphone menu's "Record voice message".
+    val startRecording: () -> Unit = { viewModel.recordVoiceMessage(voiceEnvironment()) }
+    // Refused for good: the strip's Open Settings goes to this app's page.
+    val openAppSettings: () -> Unit = {
+        runCatching {
+            context.startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
+    // Recording a video message (#79, Phase 3). The recorder is the app's
+    // (MainActivity provides it), a layer over everything; this chat only
+    // opens it — from the video button, the paperclip, the microphone's menu
+    // and its TalkBack action (S3.1) — and does what only it can for it.
+    val videoRecorder = LocalVideoMessageRecorder.current
+    val roundVideoOffered by viewModel.roundVideoOffered.collectAsStateWithLifecycle()
+    // The recorder is open over this chat: its composer row is not drawn
+    // (ComposerUnderRecorder), and the slot is S1.3's row 1.
+    val recorderOpen = videoRecorder?.let { it.state.collectAsStateWithLifecycle().value.isOpen } == true
+    // Hidden on a device without a camera (S1.2, S1.4).
+    val hasCamera = remember(context) {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
+    }
+    val replyingToRound = stringResource(R.string.s_video_message)
+    val openVideoRecorder: () -> Unit = open@{
+        val recorder = videoRecorder ?: return@open
+        if (!viewModel.mayOpenVideoRecorder()) return@open
+        val reply = viewModel.replyDraft.value
+        val appContext = context.applicationContext
+        fun granted(permission: String) =
+            ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+        recorder.open(
+            session = VideoMessageRecorder.Session(
+                chatId = viewModel.chatId,
+                reply = reply,
+                replyAuthor = reply?.senderId?.let { sender ->
+                    if (sender == myUserId) memberYou else memberNames[sender] ?: memberFallbackName
+                }.orEmpty(),
+                replyExcerpt = reply?.let { draft ->
+                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) replyingToRound else draft.excerpt
+                }.orEmpty(),
+                voiceBlocked = viewModel.notSent.value.isNotEmpty(),
+            ),
+            host = object : RecorderHost {
+                override fun recordVoiceInstead() {
+                    viewModel.recordVoiceMessage(
+                        ChatViewModel.VoiceEnvironment(
+                            permission = if (granted(Manifest.permission.RECORD_AUDIO)) {
+                                RecordGesture.Permission.GRANTED
+                            } else {
+                                RecordGesture.Permission.NOT_ASKED
+                            },
+                            assistive = appContext.getSystemService(AccessibilityManager::class.java)
+                                ?.isTouchExplorationEnabled == true,
+                        ),
+                    )
+                }
+
+                override fun sent(replyId: Long?) = viewModel.videoMessageSent(replyId)
+                override fun replyDropped() = viewModel.cancelReply()
+                override fun announce(text: Int) = viewModel.announceFromRecorder(text)
+            },
+            permissions = VideoMessageRecorder.Permissions(
+                camera = granted(Manifest.permission.CAMERA),
+                microphone = granted(Manifest.permission.RECORD_AUDIO),
+                cameraRefusedForGood = recorder.cameraRefusedForGood,
+                microphoneRefusedForGood = recorder.microphoneRefusedForGood || micRefusedForGood,
+            ),
+        )
     }
 
     // Placing a call: the microphone permission, asked the same way, and
@@ -742,6 +914,14 @@ fun ChatScreen(
             else -> viewModel.reportSaveNeedsPermission()
         }
     }
+    // A voice message's Save is the system's own save screen — Android's "Save
+    // to Files" (#79): the person picks where, and that screen is the answer.
+    val saveVoice = rememberVoiceSave(
+        onChosen = { attachment, destination ->
+            scope.launch { viewModel.saveToDocument(attachment, destination) }
+        },
+        onOrphaned = { destination -> scope.launch { viewModel.discardDocument(destination) } },
+    )
     val saveAttachment: (AttachmentDto) -> Unit = { attachment ->
         if (viewModel.savingNeedsPermission) {
             pendingSave = attachment
@@ -801,6 +981,95 @@ fun ChatScreen(
     LifecycleResumeEffect(Unit) {
         viewModel.setResumed(true)
         onPauseOrDispose { viewModel.setResumed(false) }
+    }
+
+    // A recording never outlives the screen it was started on (#79, S4).
+    // ON_STOP — the app to the background, the screen locked, the call
+    // screen or another app over this one — stops it and keeps it as "not
+    // sent"; this screen leaving composition is leaving the chat, which also
+    // turns a voice message in review into one — unless the chat's own
+    // thread or polls came over it (openOwnThread, openOwnPolls below). A
+    // configuration change is neither: the activity is rebuilt around the
+    // same ViewModel and the recording carries on, so both ask the activity
+    // first.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val hostActivity = remember(context) { context.findActivity() }
+    val playbackOwner = LocalPlaybackCoordinator.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        viewModel.screenAttached()
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.screenStopped(hostActivity?.isChangingConfigurations == true)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.screenDetached(hostActivity?.isChangingConfigurations == true)
+            // Leaving the chat STOPS whatever plays (S4) — a voice note and a
+            // circle alike. A rebuilt activity is not leaving: the
+            // now-playing owner keeps a circle going through it.
+            if (hostActivity?.isChangingConfigurations != true) playbackOwner?.stopAll()
+        }
+    }
+    // The chat's OWN thread and polls come over it, which is not leaving it
+    // (S4 lists the back button, another chat, the rail, a notification tap;
+    // on the iPhone both are sheets). The ViewModel is told first, so the
+    // screen leaving composition under them stops only a recording, and a
+    // voice message in review comes back with its photos, words and reply.
+    val openOwnThread: (Long, Long) -> Unit = { chatId, rootId ->
+        viewModel.coverWithOwnScreen()
+        onOpenThread(chatId, rootId)
+    }
+    val openOwnPolls: (Long) -> Unit = { chatId ->
+        viewModel.coverWithOwnScreen()
+        onOpenPolls(chatId)
+    }
+    // Android's Back while recording is Stop, into review — never Delete,
+    // and never leaving the chat with the recording still running (S2.5).
+    BackHandler(enabled = isRecording) { viewModel.stopRecording() }
+    // Auto-lock would turn a long story into a parked draft halfway through.
+    KeepScreenAwake(isRecording)
+
+    // What only the screen can do for the reducer: the permission prompt,
+    // the haptics (phones only — a tablet's smallest width is 600 dp or more,
+    // S2.9), and where focus goes (S2.4): to the slot when a recording turns
+    // hands-free — the keyboard goes down — and back to the field when it
+    // ends, where a hardware keyboard would otherwise press the microphone
+    // again with its next Enter.
+    val slotFocus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val configuration = LocalConfiguration.current
+    val hapticsOnThisDevice by rememberUpdatedState(voiceHapticsOn(configuration.smallestScreenWidthDp))
+    val keyboardAttached by rememberUpdatedState(
+        configuration.keyboard != Configuration.KEYBOARD_NOKEYS &&
+            configuration.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO,
+    )
+    LaunchedEffect(viewModel) {
+        viewModel.voiceEffects.collect { effect ->
+            when (effect) {
+                ChatViewModel.VoiceEffect.AskPermission ->
+                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                is ChatViewModel.VoiceEffect.Haptic ->
+                    if (hapticsOnThisDevice) haptics.performHapticFeedback(effect.haptic.feedback())
+                ChatViewModel.VoiceEffect.FocusSlot -> {
+                    focusManager.clearFocus(force = true)
+                    runCatching { slotFocus.requestFocus() }
+                }
+                ChatViewModel.VoiceEffect.Ended ->
+                    if (keyboardAttached) runCatching { focusRequester.requestFocus() }
+            }
+        }
+    }
+    // One thing of the chat's plays at a time, and nothing over a recording
+    // (S1.7): starting one pauses what plays, and every play control says why
+    // it waits.
+    // The app's now-playing owner (#79, Phase 2), provided by MainActivity;
+    // a chat composed without one (a test) keeps its own.
+    val playback = playbackOwner ?: remember { PlaybackCoordinator() }
+    LaunchedEffect(isRecording) { if (isRecording) playback.pauseAll() }
+    val recordingGate = remember(isRecording) {
+        RecordingGate(recording = isRecording, explain = viewModel::explainPlaybackWhileRecording)
     }
 
     // The other half of "reading": whether the newest message is on
@@ -1020,7 +1289,19 @@ fun ChatScreen(
         label = "chatBarLift",
     )
 
+    // "Show text" under every recording here reaches the screen's own
+    // Transcripts through this, rather than through every bubble's
+    // parameters (docs/protocol.md, "Transcripts on request").
+    CompositionLocalProvider(
+        LocalTranscripts provides viewModel.transcripts,
+        LocalPlaybackCoordinator provides playback,
+        LocalRecordingGate provides recordingGate,
+    ) {
     Scaffold(
+        modifier = Modifier
+            // The conversation pane, for the video recorder: its circle and
+            // controls stand over it, and its scrim is lighter here (#79, S3.3).
+            .onGloballyPositioned { coordinates -> videoRecorder?.paneBounds = coordinates.boundsInRoot() },
         topBar = {
             TopAppBar(
                 title = {
@@ -1077,12 +1358,16 @@ fun ChatScreen(
                         // The KIND is chosen here, at placement, and fixed
                         // for the call's life (docs/protocol.md, "Video")
                         // — hence two buttons, never a mid-call switch.
+                        //
+                        // Disabled while recording (#79, S1.7): a call over a
+                        // recording has no right answer, and nothing records
+                        // during one.
                         if (videoCallsEnabled) {
-                            IconButton(onClick = startVideoCall) {
+                            IconButton(onClick = startVideoCall, enabled = !isRecording) {
                                 Icon(Icons.Filled.Videocam, contentDescription = stringResource(R.string.s_video_call))
                             }
                         }
-                        IconButton(onClick = startCall) {
+                        IconButton(onClick = startCall, enabled = !isRecording) {
                             Icon(Icons.Filled.Call, contentDescription = stringResource(R.string.s_voice_call))
                         }
                     }
@@ -1106,7 +1391,7 @@ fun ChatScreen(
                                 }
                             },
                         ) {
-                            IconButton(onClick = { chat?.id?.let(onOpenPolls) }) {
+                            IconButton(onClick = { chat?.id?.let(openOwnPolls) }) {
                                 Icon(
                                     Icons.Filled.Poll,
                                     contentDescription = stringResource(R.string.s_open_polls),
@@ -1124,7 +1409,28 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .imePadding()
-                .navigationBarsPadding(),
+                .navigationBarsPadding()
+                // A hardware keyboard (S1.6, S2.4): Ctrl+Shift+R records a voice
+                // message, and pressed during one STOPS it into review — a
+                // shortcut never sends; Esc while recording is Stop. A held key
+                // repeats, and a repeat must not toggle it back.
+                .onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.nativeKeyEvent.repeatCount > 0) {
+                        return@onPreviewKeyEvent false
+                    }
+                    when {
+                        event.key == Key.R && event.isCtrlPressed && event.isShiftPressed &&
+                            !event.isAltPressed && !event.isMetaPressed -> {
+                            viewModel.recordVoiceMessage(voiceEnvironment())
+                            true
+                        }
+                        event.key == Key.Escape && isRecording -> {
+                            viewModel.stopRecording()
+                            true
+                        }
+                        else -> false
+                    }
+                },
         ) {
             OfflineBanner(isOnline = isOnline, socketState = socketState)
 
@@ -1205,6 +1511,8 @@ fun ChatScreen(
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
+                                    fromAssistant = assistantUserId != null &&
+                                        item.entity.senderId == assistantUserId,
                                     // Asked of the ROW, not only of the
                                     // live set: a picture answer produces
                                     // no deltas to put an id in it, and a
@@ -1216,10 +1524,10 @@ fun ChatScreen(
                                         assistantUserId = assistantUserId,
                                         myUserId = myUserId,
                                         streamingIds = streamingIds,
-                                        failedIds = failedAssistantIds,
+                                        failedIds = failedAssistantAnswers.keys,
                                     ),
-                                    answerFailed = item.entity.serverId
-                                        ?.let { it in failedAssistantIds } == true,
+                                    answerFailure = item.entity.serverId
+                                        ?.let { failedAssistantAnswers[it] },
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -1234,14 +1542,26 @@ fun ChatScreen(
                                         haptics.performHapticFeedback(HapticFeedbackType.Confirm)
                                         viewModel.vote(serverId, optionId)
                                     },
-                                    onCallBack = if (callsEnabled && chat?.kind == "direct") startCall else null,
+                                    // Not while recording, like the toolbar's (#79, S1.7).
+                                    onCallBack = if (callsEnabled && chat?.kind == "direct" && !isRecording) {
+                                        startCall
+                                    } else {
+                                        null
+                                    },
                                     onTapQuote = {
                                         pendingJump = JumpRequest(serverId = it, anchor = false)
                                     },
-                                    onOpenThread = { rootId -> chat?.id?.let { onOpenThread(it, rootId) } },
+                                    onOpenThread = { rootId -> chat?.id?.let { openOwnThread(it, rootId) } },
                                     onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
                                     onOpenAttachment = { attachment ->
-                                        if (attachment.isFile) {
+                                        if (attachment.isSticker) {
+                                            // Shown larger, with "Add to
+                                            // family stickers" — not the
+                                            // photo viewer, which zooms a
+                                            // photograph and would draw
+                                            // frame zero on black.
+                                            viewingSticker = attachment
+                                        } else if (attachment.isFile) {
                                             openFile(attachment)
                                         } else {
                                             // Built here, the one place the
@@ -1365,10 +1685,23 @@ fun ChatScreen(
                     onDismiss = { viewingAlbum = null },
                 )
             }
+            // While the video recorder is open the composer row is not drawn
+            // and takes no hits: the recorder's own bar is where it was
+            // (#79, decision 41).
+            ComposerUnderRecorder(recorderOpen = recorderOpen) {
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
-                replyDraft = replyDraft,
+                // Shown, not sent: answering a video message, the banner
+                // names it — its excerpt is its empty body (#79, S5.7). The
+                // draft the send carries stays the server's cut.
+                replyDraft = replyDraft?.let { draft ->
+                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) {
+                        draft.copy(excerpt = stringResource(R.string.s_video_message))
+                    } else {
+                        draft
+                    }
+                },
                 replyAuthorName = replyDraft?.senderId?.let { sender ->
                     if (sender == myUserId) {
                         stringResource(R.string.s_you)
@@ -1394,13 +1727,83 @@ fun ChatScreen(
                 onPasteTruncated = viewModel::reportPasteTruncated,
                 showsPoll = canCreatePoll,
                 onStartPoll = viewModel::beginPoll,
+                showsStickers = stickerLimits != null,
+                onOpenStickers = { stickerPanelOpen = true },
                 staged = staged,
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
                 onRecordAudio = startRecording,
+                // The video entries (#79, S1.4–S1.6): S1.2's **round
+                // available** — this server has video messages, this device
+                // a camera, and this build records them — in a family or a
+                // direct chat. The button itself is decided per keystroke.
+                videoEntries = ComposerSlot.DoorInputs(
+                    slot = ComposerSlot.SlotInputs(
+                        recorderOpen = false,
+                        recording = hold.recording,
+                        editing = editTarget != null,
+                        draftBlank = true,
+                        staged = staged.isNotEmpty(),
+                        assistantChat = chat?.kind == "ai",
+                        canRecord = canRecordSound,
+                        call = callLive,
+                        busy = mediaState.isBusy,
+                        notSent = notSent.isNotEmpty(),
+                    ),
+                    familyOrDirectChat = chat?.kind == "family" || chat?.kind == "direct",
+                    serverOffersRound = roundVideoOffered,
+                    hasCamera = hasCamera,
+                    encoderProbePasses = true,
+                    recordsRoundVideo = ComposerSlot.RECORDS_ROUND_VIDEO,
+                ),
+                onRecordVideo = openVideoRecorder,
+                // Not during a call, and not while a recording nobody has
+                // finished deciding about waits (#79, S1.5).
+                recordAudioEnabled = !callLive && notSent.isEmpty(),
+                // Removed from the assistant's chat on every client (S1.5,
+                // Decision 24): every message there is a consented model call.
+                showsRecordVoice = chat?.kind != "ai",
+                assistantChat = chat?.kind == "ai",
+                hasCamera = hasCamera,
                 recordingMs = recordingMs,
                 onStopRecording = viewModel::stopRecording,
-                onCancelRecording = viewModel::cancelRecording,
+                // The Send slot (#79, S1.3): what it is, and the voice
+                // recording the shared reducer has.
+                // `draftBlank` is the field's, and InputBar reads it there —
+                // reading the draft up here would recompose the whole screen
+                // on every keystroke.
+                slotInputs = ComposerSlot.SlotInputs(
+                    recorderOpen = recorderOpen,
+                    recording = hold.recording,
+                    editing = editTarget != null,
+                    draftBlank = true,
+                    staged = staged.isNotEmpty(),
+                    assistantChat = chat?.kind == "ai",
+                    canRecord = canRecordSound,
+                    call = callLive,
+                    busy = mediaState.isBusy,
+                    notSent = notSent.isNotEmpty(),
+                ),
+                hold = hold,
+                voiceLevel = voiceLevel,
+                voiceLevels = voiceLevels,
+                voiceLine = voiceLine,
+                announcement = announcement,
+                slotFocus = slotFocus,
+                onActivateSlot = { viewModel.activateSlot(voiceEnvironment()) },
+                onSendFromSlot = viewModel::sendFromSlot,
+                onSlotPressIgnored = viewModel::slotPressIgnored,
+                onDeleteRecording = viewModel::deleteRecording,
+                onOtherAction = viewModel::otherAction,
+                notSentFile = viewModel::notSentFile,
+                onOpenSettings = openAppSettings,
+                notSent = notSent,
+                notSentInFlight = notSentInFlight,
+                notSentReplyAuthor = { senderId ->
+                    if (senderId == myUserId) memberYou else memberNames[senderId] ?: memberFallbackName
+                },
+                onSendNotSent = viewModel::sendNotSent,
+                onDeleteNotSent = viewModel::deleteNotSent,
                 onDiscardStaged = viewModel::discardStaged,
                 onDismissMediaError = viewModel::clearMediaState,
                 showsAssistantMention = chat?.kind == "family" && assistantUserId != null,
@@ -1419,16 +1822,72 @@ fun ChatScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
-                showsDraw = canAskForPicture,
+                showsDraw = offersDrawButton,
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
                 mentionPictureNotice = mentionPictureNotice,
+                showsPictureDescriptionHint = showsPictureDescriptionHint,
                 assistantProcessor = assistantProcessor,
                 assistantConsentNeeded = assistantConsentNeeded,
                 assistantIsUnnamed = assistantIsUnnamed,
                 onReviewAssistantConsent = viewModel::send,
             )
+            }
         }
+    }
+    }
+
+    // "Delete this recording?" — ten seconds or more of a recording that
+    // cannot be made again (#79, S2.5, S2.7, S2.8): one that was just stopped
+    // to be asked about (Keep: review), a staged one, or a not-sent one (Keep:
+    // where it is). Dismissing it is Keep.
+    val askingAboutRecording = hold.phase is RecordGesture.Phase.AskingDelete
+    if (askingAboutRecording || stagedDeleteAsk != null || deleteAsk != null) {
+        val answer: (Boolean) -> Unit = { delete ->
+            when {
+                askingAboutRecording -> viewModel.answerRecordingDelete(delete)
+                stagedDeleteAsk != null -> viewModel.answerStagedDelete(delete)
+                else -> viewModel.answerDeleteAsk(delete)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { answer(false) },
+            title = { Text(stringResource(R.string.s_delete_this_recording)) },
+            confirmButton = {
+                DestructiveTextButton(
+                    label = stringResource(R.string.s_delete),
+                    onClick = { answer(true) },
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { answer(false) }) {
+                    Text(stringResource(R.string.s_keep))
+                }
+            },
+        )
+    }
+
+    if (stickerPanelOpen) {
+        StickerPanelSheet(
+            viewModel = stickerViewModel,
+            onPick = { item ->
+                // ONE TAP SENDS: no caption, no confirmation. The sheet
+                // closes so the sticker is seen landing in the thread.
+                stickerPanelOpen = false
+                viewModel.beginStickerSend { quote ->
+                    stickerViewModel.send(item, viewModel.chatId, quote)
+                }
+            },
+            onDismiss = { stickerPanelOpen = false },
+        )
+    }
+
+    viewingSticker?.let { attachment ->
+        StickerPreviewDialog(
+            attachment = attachment,
+            viewModel = stickerViewModel,
+            onDismiss = { viewingSticker = null },
+        )
     }
 
     pickerTarget?.let { target ->
@@ -1438,6 +1897,7 @@ fun ChatScreen(
         // onDismiss / onMore afterwards.
         ReactionPickerPopup(
             target = target,
+            transcripts = viewModel.transcripts,
             myUserId = myUserId,
             onPick = { emoji ->
                 target.item.entity.serverId?.let { applyToggle(it, emoji) }
@@ -1474,11 +1934,19 @@ fun ChatScreen(
                 val entity = target.item.entity
                 pickerTarget = null
                 entity.serverId?.let { serverId ->
-                    chat?.id?.let { onOpenThread(it, entity.threadRootId ?: serverId) }
+                    chat?.id?.let { openOwnThread(it, entity.threadRootId ?: serverId) }
                 }
             },
             canViewThread = target.item.entity.serverId != null &&
                 (target.item.entity.threadRootId != null || target.item.entity.replyCount > 0),
+            // A video message opens in the existing viewer, with scrubbing
+            // (#79, S5.4) — the same place a tap on a video tile goes.
+            onOpenFullScreen = roundOf(target.item.entity)?.let { round ->
+                {
+                    pickerTarget = null
+                    viewingAlbum = AttachmentAlbum.opening(target.item.entity.attachmentList, round)
+                }
+            },
             onClosePoll = {
                 val entity = target.item.entity
                 pickerTarget = null
@@ -1504,7 +1972,11 @@ fun ChatScreen(
             onSave = {
                 val attachment = target.item.entity.attachment
                 pickerTarget = null
-                if (attachment != null) saveAttachment(attachment)
+                when {
+                    attachment == null -> Unit
+                    attachment.isAudio -> saveVoice(attachment)
+                    else -> saveAttachment(attachment)
+                }
             },
             onShare = {
                 val entity = target.item.entity
@@ -1559,6 +2031,7 @@ fun ChatScreen(
             assistantUserId = assistantUserId,
             isAiChat = chat?.kind == "ai",
             onDismiss = { pickerTarget = null },
+            chatKind = chat?.kind,
         )
     }
 
@@ -1623,8 +2096,26 @@ fun ChatScreen(
             processor = ask.processor,
             familyHistory = ask.familyHistory,
             familyVision = ask.familyVision,
-            onAgree = viewModel::agreeToTheAssistant,
+            transcripts = ask.transcripts,
+            onAgree = { viewModel.agreeToTheAssistant(withLookups = false) },
             onDismiss = viewModel::dismissAssistantConsent,
+            lookupProviders = ask.lookupProviders,
+            onAgreeWithLookups = { viewModel.agreeToTheAssistant(withLookups = true) },
+        )
+    }
+
+    // The consent screen, raised by "Show text": the asker is the one
+    // sending the recording's sound to the provider (docs/protocol.md,
+    // "Transcripts on request"). Agreeing asks for the text again.
+    val transcriptConsentAsk by viewModel.transcripts.consentAsk.collectAsStateWithLifecycle()
+    transcriptConsentAsk?.let { ask ->
+        AssistantConsentDialog(
+            processor = ask.processor,
+            familyHistory = ask.familyHistory,
+            familyVision = ask.familyVision,
+            transcripts = ask.transcripts,
+            onAgree = viewModel.transcripts::agreed,
+            onDismiss = viewModel.transcripts::dismissed,
         )
     }
 
@@ -1667,8 +2158,15 @@ fun ChatScreen(
  * declared exits could never play.
  */
 @Composable
-private fun ReactionPickerPopup(
+internal fun ReactionPickerPopup(
     target: ReactionPickerTarget,
+    /**
+     * The screen's transcripts, for "Show text" on a recording. A parameter,
+     * not [LocalTranscripts]: this popup is composed outside the block that
+     * provides that local, so the local is null here — and a required
+     * parameter makes every caller say which transcripts it means.
+     */
+    transcripts: Transcripts?,
     myUserId: Long?,
     onPick: (String) -> Unit,
     onMore: () -> Unit,
@@ -1676,6 +2174,8 @@ private fun ReactionPickerPopup(
     /** Open the chain this message belongs to (docs/protocol.md, "Threads"). */
     onViewThread: () -> Unit = {},
     canViewThread: Boolean = false,
+    /** A video message's "Open full screen" (#79, S5.4); null on everything else. */
+    onOpenFullScreen: (() -> Unit)? = null,
     onEdit: () -> Unit,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
@@ -1690,7 +2190,28 @@ private fun ReactionPickerPopup(
     /** Whether this is the assistant's own chat, where every sender is it. */
     isAiChat: Boolean,
     onDismiss: () -> Unit,
+    /** The chat's kind, for whether "Show text" may be asked here. */
+    chatKind: String? = null,
 ) {
+    // A recording — a voice message or a video message — gets the menu that
+    // fits it (#79, the approved design): Show text, Playback speed (voice),
+    // Save, Open full screen (video); no Copy or Edit where there is no text.
+    val entity = target.item.entity
+    val recordingKind = RecordingMenu.kindOf(entity)
+    val recording = if (recordingKind != null) roundOf(entity) ?: voiceOf(entity) else null
+    val transcriptAction = rememberTranscriptMenuAction(
+        transcripts = transcripts,
+        attachment = recording,
+        chatKind = chatKind,
+        chatId = entity.chatId,
+        messageServerId = entity.serverId,
+        senderId = entity.senderId,
+    )
+    val voiceSpeed = LocalPlaybackCoordinator.current?.voiceSpeed
+    val speed by (voiceSpeed?.speed ?: remember { kotlinx.coroutines.flow.MutableStateFlow(1f) })
+        .collectAsStateWithLifecycle()
+    val speedName = stringResource(VoiceBubbleRules.speedLabel(speed))
+    val voiceSaveLabel = stringResource(R.string.s_save)
     val atWindowOrigin = remember {
         object : PopupPositionProvider {
             override fun calculatePosition(
@@ -1835,6 +2356,7 @@ private fun ReactionPickerPopup(
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onViewThread = { exitThen(onViewThread) },
+                    onOpenFullScreen = onOpenFullScreen?.let { open -> { exitThen(open) } },
                     onEdit = { exitThen(onEdit) },
                     onClosePoll = { exitThen(onClosePoll) },
                     onCopy = { exitThen(onCopy) },
@@ -1842,10 +2364,12 @@ private fun ReactionPickerPopup(
                     onSave = { exitThen(onSave) },
                     modifier = Modifier.onSizeChanged { menuSize = it },
                     canSave = target.item.entity.attachment?.isFile == false,
+                    canShare = RecordingMenu.offersShare(recordingKind),
                     canReply = target.item.entity.serverId != null,
                     canViewThread = canViewThread,
-                    canEdit = target.item.entity.serverId != null &&
-                        target.item.entity.senderId == myUserId,
+                    // The reader's own, and never a sticker — the rule is
+                    // [canEditMessage]'s, where a test holds it.
+                    canEdit = canEditMessage(target.item.entity, myUserId),
                     // Closing is the AUTHOR's, and one-way — the family
                     // owner does not outrank them here, exactly as with
                     // editing. Hidden once the poll is already closed:
@@ -1854,7 +2378,7 @@ private fun ReactionPickerPopup(
                     canClosePoll = target.item.poll?.closed == false &&
                         target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
-                    canCopy = target.item.entity.body.isNotEmpty(),
+                    canCopy = RecordingMenu.offersCopy(target.item.entity),
                     // Somebody else's message, and one the server can name.
                     // Never my own: `cannot_report_self` refuses that, and
                     // blocking yourself is refused too.
@@ -1886,6 +2410,14 @@ private fun ReactionPickerPopup(
                             hasServerId = target.item.entity.serverId != null,
                         ),
                     showSafety = { onSafetyPage = true },
+                    onShowText = transcriptAction?.let { action ->
+                        TranscriptMenuAction(action.label) { exitThen(action.run) }
+                    },
+                    playbackSpeed = speedName.takeIf { RecordingMenu.offersSpeed(recordingKind) && voiceSpeed != null },
+                    onCyclePlaybackSpeed = { voiceSpeed?.step() },
+                    // Any sound — a captioned voice note too — goes to the
+                    // system's save screen, never the gallery (onSave).
+                    saveLabel = if (target.item.entity.attachment?.isAudio == true) voiceSaveLabel else null,
                 )
                 }
             }
@@ -1984,10 +2516,12 @@ private fun EditBanner(onCancel: () -> Unit) {
 }
 
 @Composable
-private fun MessageContextMenu(
+internal fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onViewThread: () -> Unit = {},
+    /** A video message's "Open full screen" (#79, S5.4); null — no row — on anything else. */
+    onOpenFullScreen: (() -> Unit)? = null,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
@@ -2008,6 +2542,8 @@ private fun MessageContextMenu(
     canCopy: Boolean = true,
     /** Photos and videos only — what the gallery will take. */
     canSave: Boolean = false,
+    /** Every message but a recording ([RecordingMenu.offersShare]). */
+    canShare: Boolean = true,
     /**
      * Somebody else's message, so it can be reported and its sender
      * blocked. Never true on my own — reporting yourself is refused
@@ -2016,6 +2552,14 @@ private fun MessageContextMenu(
     canModerate: Boolean = false,
     /** Open the Safety page. */
     showSafety: () -> Unit = {},
+    /** A recording's "Show text" / "Hide text" (#79); null — no row — on anything else, or while it is fetched. */
+    onShowText: TranscriptMenuAction? = null,
+    /** A voice message's "Playback speed" and its value now (#79); null on anything else. */
+    playbackSpeed: String? = null,
+    /** Steps the speed 1× → 1.5× → 2× and leaves the menu open, so the new value is seen. */
+    onCyclePlaybackSpeed: () -> Unit = {},
+    /** What Save is called: "Save to gallery" for a picture, "Save" for a voice message. */
+    saveLabel: String? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -2037,6 +2581,23 @@ private fun MessageContextMenu(
                     label = stringResource(R.string.s_view_thread),
                     icon = Icons.Outlined.Forum,
                     onClick = onViewThread,
+                )
+            }
+            if (onShowText != null) {
+                MessageContextMenuItem(
+                    label = stringResource(onShowText.label),
+                    icon = Icons.AutoMirrored.Outlined.Subject,
+                    onClick = onShowText.run,
+                )
+            }
+            if (playbackSpeed != null) {
+                val speedA11y = stringResource(R.string.s_playback_speed_a11y, playbackSpeed)
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_playback_speed),
+                    icon = Icons.Outlined.Speed,
+                    onClick = onCyclePlaybackSpeed,
+                    trailing = playbackSpeed,
+                    a11yLabel = speedA11y,
                 )
             }
             if (canEdit) {
@@ -2064,16 +2625,28 @@ private fun MessageContextMenu(
                 // Android's chooser cannot do this on its own, unlike
                 // iOS's share sheet — hence a row of its own here.
                 MessageContextMenuItem(
-                    label = stringResource(R.string.s_save_to_gallery),
+                    label = saveLabel ?: stringResource(R.string.s_save_to_gallery),
                     icon = Icons.Outlined.Download,
                     onClick = onSave,
                 )
             }
-            MessageContextMenuItem(
-                label = stringResource(R.string.s_share),
-                icon = Icons.Outlined.Share,
-                onClick = onShare,
-            )
+            // After Save, as iOS, Windows and the web order a video
+            // message's menu; only a video message has it, and a video
+            // message has no Edit, poll or Copy above.
+            if (onOpenFullScreen != null) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_open_full_screen),
+                    icon = Icons.Filled.OpenInFull,
+                    onClick = onOpenFullScreen,
+                )
+            }
+            if (canShare) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_share),
+                    icon = Icons.Outlined.Share,
+                    onClick = onShare,
+                )
+            }
             if (canModerate) {
                 // Report and Block live one level down, under Safety —
                 // matching iOS and macOS. The panel MEASURES itself here
@@ -2161,6 +2734,10 @@ private fun MessageContextMenuItem(
     icon: ImageVector,
     onClick: () -> Unit,
     tint: Color = LocalContentColor.current,
+    /** A value at the trailing edge — the playback speed's "1×". */
+    trailing: String? = null,
+    /** Said instead of the words, where the value needs saying with them. */
+    a11yLabel: String? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -2168,10 +2745,23 @@ private fun MessageContextMenuItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .then(if (a11yLabel != null) Modifier.clearAndSetSemantics {
+                contentDescription = a11yLabel
+                role = Role.Button
+                onSemanticsClick { onClick(); true }
+            } else Modifier)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint)
+        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint, modifier = Modifier.weight(1f, fill = false))
+        if (trailing != null) {
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.bodyLarge.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
@@ -2404,9 +2994,10 @@ internal fun MessageBubble(
     isStreaming: Boolean,
     /**
      * An `ai_error` frame named this row: the answer stopped early and
-     * nothing more is coming (docs/protocol.md, "Pictures").
+     * nothing more is coming (docs/protocol.md, "Pictures") — and HOW, which
+     * picks the sentence it shows. Null when it did not fail.
      */
-    answerFailed: Boolean,
+    answerFailure: AssistantFailure?,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2430,6 +3021,12 @@ internal fun MessageBubble(
     onOpenThread: (Long) -> Unit = {},
     /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
     onTapMention: (Long) -> Unit = {},
+    /**
+     * The assistant wrote this row. Decides only whether the link-preview
+     * card is drawn ([LookupFooter.suppressesPreview]): an answer's
+     * sources, and words it is still writing, are never fetched.
+     */
+    fromAssistant: Boolean = false,
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -2479,6 +3076,16 @@ internal fun MessageBubble(
     // below: an 18dp balloon corner over the tile's own 14dp corner at
     // zero inset would shave the tile into a shape neither of them has.
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
+    // A STICKER is bare too, and more so: "drawn with NO BUBBLE — the
+    // picture alone, its transparency showing the chat behind it"
+    // (docs/protocol.md, "Sticker pack"). Unlike a bare photo it stays bare
+    // when it is a REPLY — replying with a sticker is how one answers
+    // something, and the quote then sits above it on the chat background.
+    val sticker = remember(entity) { stickerOf(entity) }
+    // A VIDEO MESSAGE is bare the same way (#79, S5.2): the circle alone on
+    // the chat background, its quote above it when it is a reply.
+    val round = remember(entity) { roundOf(entity) }
+    val bareMedia = mediaOnly || sticker != null || round != null
     // A reveal is a PEEK, not a setting: per row and per device, never on
     // the wire, never stored, and gone on the next launch. Keyed on the
     // message so a recycled row cannot inherit somebody else's reveal, and
@@ -2488,7 +3095,7 @@ internal fun MessageBubble(
     // A hidden row is never bare and never media-shaped: it draws one line
     // of placeholder text in an ordinary balloon, whatever the message
     // underneath it turns out to be.
-    val surfaceShape = if (mediaOnly && !isHidden) RectangleShape else bubbleShape
+    val surfaceShape = if (bareMedia && !isHidden) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2658,7 +3265,7 @@ internal fun MessageBubble(
             // emoji-only, and media-only (which also drops the inset and
             // the clip — see `surfaceShape`). One flag for both, so
             // nothing adapts to one half of the rule and not the other.
-            val isBare = (isEmojiOnly || mediaOnly) && !isHidden
+            val isBare = (isEmojiOnly || bareMedia) && !isHidden
             Surface(
                 shape = surfaceShape,
                 color = when {
@@ -2674,6 +3281,7 @@ internal fun MessageBubble(
                 modifier = bubbleModifier,
             ) {
                 BubbleContent(
+                    fromAssistant = fromAssistant,
                     entity = entity,
                     item = item,
                     isHidden = isHidden,
@@ -2681,8 +3289,10 @@ internal fun MessageBubble(
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
-                    answerFailed = answerFailed,
-                    mediaOnly = mediaOnly,
+                    answerFailure = answerFailure,
+                    mediaOnly = bareMedia,
+                    sticker = sticker,
+                    round = round,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
                     memberNames = memberNames,
@@ -3604,8 +4214,8 @@ private fun BubbleContent(
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
-    /** The answer stopped early — see [MessageBubble]. */
-    answerFailed: Boolean,
+    /** The answer stopped early, and how — see [MessageBubble]. */
+    answerFailure: AssistantFailure?,
     /**
      * Nothing but photos/videos: the balloon is gone (MessageBubble), so
      * the content's inset goes with it — the tile's edge is the message's
@@ -3613,6 +4223,17 @@ private fun BubbleContent(
      * the balloon's 12dp. Resolved by the caller, which owns the fill.
      */
     mediaOnly: Boolean = false,
+    /**
+     * The message's picture when it was sent as a STICKER, else null. Drawn
+     * in the one fixed box from its original bytes, in place of the photo
+     * tile (docs/protocol.md, "Sticker pack"). Resolved by the caller.
+     */
+    sticker: AttachmentDto? = null,
+    /**
+     * The message's video when it was sent as a VIDEO MESSAGE, else null:
+     * drawn as a circle that plays in place (#79, S5). Resolved by the caller.
+     */
+    round: AttachmentDto? = null,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
@@ -3656,6 +4277,8 @@ private fun BubbleContent(
     onOpenThread: (Long) -> Unit = {},
     /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
     onTapMention: (Long) -> Unit = {},
+    /** The assistant wrote this row — see [MessageBubble]. */
+    fromAssistant: Boolean = false,
 ) {
     // Everything that is CONTENT shares one left edge, whichever side the
     // balloon is on — the quote, the attachment, the body and the link
@@ -3705,8 +4328,14 @@ private fun BubbleContent(
             // depth rather than the oracle itself. `previewsEnabled` still
             // decides it — the setting "decides the fetch for every row
             // alike and is never evaluated per sender".
-            val hiddenPreviewUrl = remember(blocks) {
-                MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+            val hiddenSuppressed = LookupFooter.suppressesPreview(
+                fromAssistant = fromAssistant,
+                body = entity.body,
+                isStreaming = isStreaming,
+                failed = answerFailure != null,
+            )
+            val hiddenPreviewUrl = remember(blocks, hiddenSuppressed) {
+                if (hiddenSuppressed) null else MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
             }
             if (hiddenPreviewUrl != null && previewsEnabled) {
                 LaunchedEffect(hiddenPreviewUrl) { onRequestPreview(hiddenPreviewUrl) }
@@ -3762,7 +4391,14 @@ private fun BubbleContent(
                         else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
                     }
                 },
-                excerpt = if (replyHidden) "" else quotedExcerpt,
+                excerpt = when {
+                    replyHidden -> ""
+                    // The quoted message is a circle this list holds: its
+                    // excerpt is its (empty) body, so the quote names it
+                    // (#79, S5.7).
+                    item.quotesRound && quotedExcerpt.isEmpty() -> stringResource(R.string.s_video_message)
+                    else -> quotedExcerpt
+                },
                 isMine = isMine,
                 parentLine = parentLine,
                 replyHidden = replyHidden,
@@ -3816,7 +4452,45 @@ private fun BubbleContent(
         // exactly as before, an album as a stack of cards, files and audio
         // as rows (see AttachmentGroup).
         val bubbleAttachments = entity.attachmentList
-        if (bubbleAttachments.isNotEmpty()) {
+        if (round != null) {
+            // Before the sticker's branch, and not an AttachmentGroup: a
+            // video tile opens the viewer, and a circle plays where it is.
+            RoundVideoBubble(
+                attachment = round,
+                isMine = isMine,
+                acked = acked,
+                sending = !acked && entity.status == MessageStatus.SENDING,
+                streamUrl = streamUrl,
+                onOpenFullScreen = { onOpenAttachment(round) },
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
+                modifier = measureBlock,
+            )
+            // "Show text" under it, outside its gestures, under the same
+            // rules as under a video tile (S5.5) — the sticker's branch has
+            // no footer, so this one draws its own. The bubble is bare, so
+            // the line already takes the chat background's ink.
+            TranscriptLine(
+                attachment = round,
+                chatKind = chat?.kind,
+                chatId = entity.chatId,
+                messageServerId = entity.serverId,
+                senderId = entity.senderId,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        } else if (sticker != null) {
+            // Not an AttachmentGroup: that draws a photograph — cropped to
+            // its tile, from its preview when it has one. A sticker is
+            // fitted whole and drawn from its ORIGINAL bytes, which is the
+            // only copy with its transparency and its animation.
+            ChatSticker(
+                attachment = sticker,
+                onOpen = { onOpenAttachment(sticker) },
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
+                modifier = measureBlock,
+            )
+        } else if (bubbleAttachments.isNotEmpty()) {
             AttachmentGroup(
                 attachments = bubbleAttachments,
                 showMapPreviews = mapPreviewsEnabled,
@@ -3826,6 +4500,21 @@ private fun BubbleContent(
                 onLongPress = onTextLongPress,
                 onDoubleTap = onDoubleTap,
                 onBalloon = !mediaOnly,
+                // "Show text" under a voice note, an audio file or a video,
+                // when this member may ask (docs/protocol.md, "Transcripts on
+                // request").
+                recordingFooter = { attachment, videoNumber ->
+                    TranscriptLine(
+                        attachment = attachment,
+                        chatKind = chat?.kind,
+                        chatId = entity.chatId,
+                        messageServerId = entity.serverId,
+                        senderId = entity.senderId,
+                        videoNumber = videoNumber,
+                    )
+                },
+                isMine = isMine,
+                acked = acked,
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }
@@ -3834,7 +4523,7 @@ private fun BubbleContent(
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
-        } else if (answerFailed && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
+        } else if (answerFailure != null && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
             // The answer stopped with nothing on the row at all — which is
             // every PICTURE answer that failed, because an image model
             // produces no token stream and so there are no deltas to have
@@ -3842,9 +4531,12 @@ private fun BubbleContent(
             // empty row was created before the provider was called
             // precisely so a failure would have somewhere to fail; this is
             // that somewhere. A text answer that failed half-written keeps
-            // its half instead, and says nothing extra.
+            // its half instead, and says nothing extra. A refusal by the
+            // provider's own filter says so instead of "ask again", which
+            // would only earn the same refusal (docs/protocol.md, "The
+            // assistant").
             Text(
-                text = stringResource(R.string.s_assistant_answer_failed),
+                text = stringResource(AssistantAnswer.failureSentence(answerFailure)),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontStyle = FontStyle.Italic,
@@ -3947,8 +4639,19 @@ private fun BubbleContent(
         // URL from the spans alone left a URL typed into a cell with no
         // card and no other way in — the cell is not tappable either.
         // See MessageLinks.firstDrawnWebLinkUrl.
-        val previewUrl = remember(blocks) {
-            MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+        //
+        // NOT for an assistant answer's sources, nor for words it is still
+        // writing or stopped writing (docs/protocol.md, "Looking things
+        // up"; LookupFooter says why each): those links stay tappable in
+        // the text and this device never fetches them unasked.
+        val previewSuppressed = LookupFooter.suppressesPreview(
+            fromAssistant = fromAssistant,
+            body = entity.body,
+            isStreaming = isStreaming,
+            failed = answerFailure != null,
+        )
+        val previewUrl = remember(blocks, previewSuppressed) {
+            if (previewSuppressed) null else MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
         }
         if (previewUrl != null && previewsEnabled) {
             LaunchedEffect(previewUrl) { onRequestPreview(previewUrl) }
@@ -4653,6 +5356,25 @@ private fun AssistantConsentStrip(processor: String?, onReview: (() -> Unit)?) {
     }
 }
 
+/**
+ * The one sentence said beside a picture request — in the composer while
+ * `/draw` is being typed, and in the board's event dialog beside "Draw a
+ * backdrop" — about what the provider's filter tends to refuse
+ * (docs/protocol.md, "Pictures"). Small secondary text rather than a
+ * strip with an icon: it is advice, not a disclosure, and it must not
+ * outweigh the ones above it. Plain [Text], so a screen reader reads it
+ * in place with the control it sits by.
+ */
+@Composable
+internal fun PictureDescriptionHintText(modifier: Modifier = Modifier) {
+    Text(
+        text = stringResource(R.string.s_describe_in_general_words),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.fillMaxWidth(),
+    )
+}
+
 @Composable
 private fun MentionPictureStrip(notice: MentionPictureNotice) {
     Row(
@@ -4754,11 +5476,16 @@ private fun MentionPictureStrip(notice: MentionPictureNotice) {
     }
 }
 
-/** What the composer shows while a photo or video is on its way. */
+/**
+ * What the composer shows while a photo or video is on its way — and the
+ * composer's notice line (#79, S1.3: a dimmed control says why here).
+ */
 @Composable
-private fun MediaStrip(
+internal fun MediaStrip(
     state: ChatViewModel.MediaSendState,
     onDismiss: () -> Unit,
+    /** The microphone refused for good: Android's app settings (#79, S2.2). */
+    onOpenSettings: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -4805,6 +5532,24 @@ private fun MediaStrip(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.weight(1f),
                 )
+                if (state.opensSettings) {
+                    TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.s_open_settings)) }
+                }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_dismiss)) }
+            }
+            is ChatViewModel.MediaSendState.Notice -> {
+                Icon(
+                    imageVector = Icons.Outlined.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = state.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
                 TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_dismiss)) }
             }
             ChatViewModel.MediaSendState.Idle -> Unit
@@ -4813,40 +5558,262 @@ private fun MediaStrip(
 }
 
 /**
- * Media prepared and waiting for Send, sitting above the field.
- *
- * The thumbnail is the same JPEG the bubble will draw, so what is previewed
- * here is literally what goes out. A file has none — a document is a row,
- * not a tile — and gets its icon instead.
+ * The not-sent chip (#79, S2.8, the approved design): "Not sent" in the
+ * warning colour, ▶, the note's own waveform, its length, Send and ✕, on a
+ * chip whose edge is tinted with the warning — a recording something other
+ * than the person stopped (a call, the app leaving the screen, leaving the
+ * chat, the recorder failing). It quotes the
+ * reply it was recorded under and shows its caption, and its Send sends it
+ * with those and nothing else. Its ▶ plays the waiting file. To TalkBack the
+ * chip says what it is in full: "Voice message not sent · 0:42".
  */
-/** While a voice note is being recorded: a counter and the two ways out. */
 @Composable
-private fun RecordingStrip(
-    elapsedMs: Long,
-    onStop: () -> Unit,
-    onCancel: () -> Unit,
+internal fun NotSentVoiceMessageRow(
+    entry: ParkedRecording,
+    replyAuthorName: String?,
+    enabled: Boolean,
+    sending: Boolean,
+    onSend: () -> Unit,
+    onDelete: () -> Unit,
+    playing: Boolean = false,
+    /** Where the waiting file's ▶ has got to, for the played bars and the clock. */
+    positionMs: Long = 0L,
+    /** Null where nothing can play it (no file). */
+    onTogglePlay: (() -> Unit)? = null,
+    /** A recording runs: ▶ is dimmed and says why (S1.7). */
+    playDimmed: Boolean = false,
+    onPlayDimmed: () -> Unit = {},
 ) {
-    Row(
+    val sendLabel = stringResource(R.string.s_send_voice_message)
+    val warning = voiceWarning()
+    val whole = stringResource(R.string.s_voice_message_not_sent, formatDuration(entry.durationMs))
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp),
     ) {
-        Icon(
-            Icons.Filled.Mic,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.error,
+        NotSentChipLayout(
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, lerp(MaterialTheme.colorScheme.outlineVariant, warning, 0.45f), RoundedCornerShape(14.dp))
+                .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp)
+                .semantics(mergeDescendants = false) { contentDescription = whole }
+                .testTag("voice-not-sent-${entry.id}"),
+            label = {
+                Text(
+                    text = stringResource(R.string.s_not_sent),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = warning,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { hideFromAccessibility() },
+                )
+            },
+            body = {
+                VoiceChipBody(
+                    durationMs = entry.durationMs,
+                    waveform = entry.waveform,
+                    playing = playing,
+                    positionMs = positionMs,
+                    onTogglePlay = onTogglePlay,
+                    playDimmed = playDimmed,
+                    onPlayDimmed = onPlayDimmed,
+                    labelsWaveform = false,
+                )
+            },
+        ) {
+            TextButton(
+                onClick = onSend,
+                enabled = enabled && !sending,
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                // The word on the button is "Send"; what it sends is said
+                // to TalkBack in full.
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = sendLabel },
+            ) {
+                Text(stringResource(R.string.s_send), fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+            IconButton(onClick = onDelete, enabled = enabled && !sending) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.s_delete_recording),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        val reply = entry.replyTo
+        if (reply != null && replyAuthorName != null) {
+            Text(
+                text = stringResource(R.string.s_replying_to_excerpt, replyAuthorName, reply.excerpt),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 2.dp),
+            )
+        }
+        if (entry.caption.isNotBlank()) {
+            Text(
+                text = entry.caption,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The not-sent chip's arrangement: "Not sent", the body (▶, waveform,
+ * length) and the actions (Send, ✕) on one line, as the design draws it,
+ * when they fit with at least [NOT_SENT_MIN_WAVE] of waveform; otherwise
+ * "Not sent" moves to a line of its own above; and where even the body and
+ * the actions do not fit side by side — large text on a narrow phone — the
+ * actions go to a line of their own at the end. A plain Row measures the
+ * fixed pieces first and gives the waveform what is left, which on a
+ * 360-unit phone was nothing, with the length cut off.
+ */
+@Composable
+private fun NotSentChipLayout(
+    label: @Composable () -> Unit,
+    body: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit,
+) {
+    Layout(
+        contents = listOf(
+            label,
+            body,
+            { Row(verticalAlignment = Alignment.CenterVertically) { actions() } },
+        ),
+        modifier = modifier,
+    ) { (labelMeasurables, bodyMeasurables, actionMeasurables), constraints ->
+        val labelPart = labelMeasurables.single()
+        val bodyPart = bodyMeasurables.single()
+        val actionPart = actionMeasurables.single()
+        val gap = 6.dp.roundToPx()
+        val labelWidth = labelPart.maxIntrinsicWidth(Constraints.Infinity)
+        val actionsWidth = actionPart.maxIntrinsicWidth(Constraints.Infinity)
+        val bodyNeeds = bodyPart.maxIntrinsicWidth(Constraints.Infinity) + NOT_SENT_MIN_WAVE.roundToPx()
+        val oneLine = labelWidth + gap + bodyNeeds + gap + actionsWidth
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth else oneLine
+        val loose = Constraints(maxWidth = width)
+        when {
+            oneLine <= width -> {
+                val labelPlaced = labelPart.measure(loose)
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyWidth = (width - labelPlaced.width - actionsPlaced.width - 2 * gap).coerceAtLeast(0)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(bodyWidth))
+                val height = maxOf(labelPlaced.height, bodyPlaced.height, actionsPlaced.height)
+                    .coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, (height - labelPlaced.height) / 2)
+                    bodyPlaced.placeRelative(labelPlaced.width + gap, (height - bodyPlaced.height) / 2)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, (height - actionsPlaced.height) / 2)
+                }
+            }
+            bodyNeeds + gap + actionsWidth <= width -> {
+                val labelTop = 4.dp.roundToPx()
+                val labelPlaced = labelPart.measure(loose)
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyWidth = (width - actionsPlaced.width - gap).coerceAtLeast(0)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(bodyWidth))
+                val rowTop = labelTop + labelPlaced.height
+                val rowHeight = maxOf(bodyPlaced.height, actionsPlaced.height)
+                val height = (rowTop + rowHeight).coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, labelTop)
+                    bodyPlaced.placeRelative(0, rowTop + (rowHeight - bodyPlaced.height) / 2)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, rowTop + (rowHeight - actionsPlaced.height) / 2)
+                }
+            }
+            else -> {
+                val labelTop = 4.dp.roundToPx()
+                val labelPlaced = labelPart.measure(loose)
+                val bodyPlaced = bodyPart.measure(Constraints.fixedWidth(width))
+                val actionsPlaced = actionPart.measure(loose)
+                val bodyTop = labelTop + labelPlaced.height
+                val actionsTop = bodyTop + bodyPlaced.height
+                val height = (actionsTop + actionsPlaced.height).coerceAtLeast(constraints.minHeight)
+                layout(width, height) {
+                    labelPlaced.placeRelative(0, labelTop)
+                    bodyPlaced.placeRelative(0, bodyTop)
+                    actionsPlaced.placeRelative(width - actionsPlaced.width, actionsTop)
+                }
+            }
+        }
+    }
+}
+
+/** The least waveform the not-sent chip keeps on its line before it rearranges. */
+private val NOT_SENT_MIN_WAVE = 48.dp
+
+/**
+ * The middle of a voice chip — the review chip's and the not-sent chip's
+ * (the approved design): the 30-unit accent ▶, the note's own waveform with
+ * the played bars in the accent, and its length — "0:12 / 0:42" while it
+ * plays (S2.7) — in tabular digits.
+ */
+@Composable
+private fun VoiceChipBody(
+    durationMs: Long,
+    waveform: String?,
+    playing: Boolean,
+    positionMs: Long,
+    onTogglePlay: (() -> Unit)?,
+    playDimmed: Boolean,
+    onPlayDimmed: () -> Unit,
+    modifier: Modifier = Modifier,
+    /**
+     * Whether the waveform says "Voice message, 0:42" to TalkBack. False
+     * where the chip around it already says so in full (the not-sent chip's
+     * "Voice message not sent · 0:42"), so the length is not heard twice.
+     */
+    labelsWaveform: Boolean = true,
+) {
+    val levels = remember(waveform) { Waveform.levelsOrPlaceholder(waveform) }
+    val label = stringResource(R.string.s_voice_message_a11y, formatDuration(durationMs))
+    val reason = stringResource(R.string.s_play_after_recording)
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (onTogglePlay != null) {
+            VoicePlayDisc(
+                playing = playing,
+                onClick = if (playDimmed) onPlayDimmed else onTogglePlay,
+                disc = VoiceDrawing.CHIP_DISC,
+                dimmed = playDimmed,
+                dimmedReason = reason,
+            )
+        }
+        WaveformBars(
+            levels = levels,
+            played = { bars -> if (playing || positionMs > 0L) Waveform.playedBars(positionMs, durationMs, bars) else 0 },
+            active = MaterialTheme.colorScheme.primary,
+            inactive = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f),
+            decorative = !labelsWaveform,
+            modifier = Modifier
+                .weight(1f)
+                .height(VoiceDrawing.CHIP_WAVE_HEIGHT)
+                .then(if (labelsWaveform) Modifier.semantics { contentDescription = label } else Modifier)
+                .testTag("voice-chip-wave"),
         )
         Text(
-            text = formatDuration(elapsedMs),
-            style = MaterialTheme.typography.bodyMedium,
+            text = if (playing) "${formatDuration(positionMs)} / ${formatDuration(durationMs)}" else formatDuration(durationMs),
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.testTag("voice-chip-time"),
         )
-        Spacer(Modifier.weight(1f))
-        TextButton(onClick = onCancel) { Text(stringResource(R.string.s_cancel)) }
-        // Stop STAGES rather than sends, so a caption can be added and a
-        // recording made by accident can still be discarded.
-        TextButton(onClick = onStop) { Text(stringResource(R.string.s_stop)) }
     }
 }
 
@@ -4876,7 +5843,24 @@ private fun StagedAttachmentRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             staged.forEachIndexed { index, item ->
-                StagedAttachmentChip(staged = item, onDiscard = { onDiscard(index) })
+                if (item.voiceNote) {
+                    // Review (S2.7): ▶ plays the LOCAL file before anything leaves.
+                    key(item.file) {
+                        val player = rememberNotePlayer(item.file)
+                        val gate = LocalRecordingGate.current
+                        StagedAttachmentChip(
+                            staged = item,
+                            onDiscard = { onDiscard(index) },
+                            playing = player.playing,
+                            positionMs = player.positionMs,
+                            onTogglePlay = player::toggle,
+                            playDimmed = gate.recording,
+                            onPlayDimmed = gate.explain,
+                        )
+                    }
+                } else {
+                    StagedAttachmentChip(staged = item, onDiscard = { onDiscard(index) })
+                }
             }
         }
         Text(
@@ -4890,11 +5874,27 @@ private fun StagedAttachmentRow(
     }
 }
 
+/**
+ * One staged item. A voice note in review is "[▶] Voice message · 0:42 [✕]"
+ * and, while it plays, "[❚❚] 0:12 / 0:42" (#79, S2.7); its ✕ is "Delete
+ * recording", and asks first at ten seconds or more.
+ */
 @Composable
-private fun StagedAttachmentChip(
+internal fun StagedAttachmentChip(
     staged: MediaPrep.Prepared,
     onDiscard: () -> Unit,
+    playing: Boolean = false,
+    positionMs: Long = 0L,
+    /** A voice note's ▶; null for everything else. */
+    onTogglePlay: (() -> Unit)? = null,
+    /** A recording runs: ▶ is dimmed and says why (S1.7). */
+    playDimmed: Boolean = false,
+    onPlayDimmed: () -> Unit = {},
 ) {
+    if (staged.voiceNote) {
+        StagedVoiceNoteChip(staged, onDiscard, playing, positionMs, onTogglePlay, playDimmed, onPlayDimmed)
+        return
+    }
     val bitmap = remember(staged) {
         staged.previewJpeg?.let { bytes ->
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
@@ -4948,13 +5948,22 @@ private fun StagedAttachmentChip(
         }
         Text(
             text = staged.name?.takeIf { it.isNotBlank() }
-                ?: stringResource(
-                    if (staged.kind == AttachmentDto.KIND_VIDEO) {
-                        R.string.s_video
-                    } else {
-                        R.string.s_photo
-                    },
-                ),
+                ?: if (staged.voiceNote) {
+                    // A voice note carries no name (#79): its identity is
+                    // its length.
+                    stringResource(
+                        R.string.s_voice_message_with_length,
+                        formatDuration(staged.durationMs?.toLong() ?: 0L),
+                    )
+                } else {
+                    stringResource(
+                        if (staged.kind == AttachmentDto.KIND_VIDEO) {
+                            R.string.s_video
+                        } else {
+                            R.string.s_photo
+                        },
+                    )
+                },
             style = MaterialTheme.typography.labelLarge,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -4970,9 +5979,78 @@ private fun StagedAttachmentChip(
     }
 }
 
+/** The staged chip's voice-note face (S2.7, the approved design): ▶, its waveform, its length, ✕. */
+@Composable
+private fun StagedVoiceNoteChip(
+    staged: MediaPrep.Prepared,
+    onDiscard: () -> Unit,
+    playing: Boolean,
+    positionMs: Long,
+    onTogglePlay: (() -> Unit)?,
+    playDimmed: Boolean,
+    onPlayDimmed: () -> Unit,
+) {
+    val lengthMs = staged.durationMs?.toLong() ?: 0L
+    Row(
+        modifier = Modifier
+            .width(300.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+            .padding(start = 2.dp, end = 0.dp)
+            .testTag("voice-review-chip"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        VoiceChipBody(
+            durationMs = lengthMs,
+            waveform = staged.waveform,
+            playing = playing,
+            positionMs = positionMs,
+            onTogglePlay = onTogglePlay,
+            playDimmed = playDimmed,
+            onPlayDimmed = onPlayDimmed,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onDiscard) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.s_delete_recording),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/**
+ * ▶ / ❚❚ for a voice note that has not been sent. While a recording runs it
+ * is dimmed — not disabled: it says "You can play this after recording."
+ * when pressed, and TalkBack hears that as its state (S1.7, S6).
+ */
+@Composable
+internal fun NotePlayButton(
+    playing: Boolean,
+    dimmed: Boolean,
+    onToggle: () -> Unit,
+    onDimmed: () -> Unit,
+) {
+    val reason = stringResource(R.string.s_play_after_recording)
+    IconButton(
+        onClick = if (dimmed) onDimmed else onToggle,
+        modifier = Modifier.semantics { if (dimmed) stateDescription = reason },
+    ) {
+        Icon(
+            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            contentDescription = stringResource(if (playing) R.string.s_pause else R.string.s_play),
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = if (dimmed) 0.38f else 1f),
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun InputBar(
+internal fun InputBar(
     state: TextFieldState,
     onSend: () -> Unit,
     replyDraft: ReplyToDto?,
@@ -5002,15 +6080,95 @@ private fun InputBar(
     onTakeVideo: () -> Unit,
     onRecordAudio: () -> Unit,
     /**
+     * Whether "Record voice message" may start one now: not during a call,
+     * and not while a voice message that was not sent waits (#79, S1.5).
+     */
+    recordAudioEnabled: Boolean = true,
+    /** "Record voice message" is offered at all — never in the assistant's chat (S1.5). */
+    showsRecordVoice: Boolean = true,
+    /**
+     * This is the member's own `ai` chat: the attach menu takes images only
+     * there, and has no recording group (#78).
+     */
+    assistantChat: Boolean = false,
+    /**
+     * The device has a camera to hand off to (FEATURE_CAMERA_ANY): without
+     * one the attach menu has no "Camera" (#78).
+     */
+    hasCamera: Boolean = false,
+    /**
+     * Everything the video entries are decided from (#79, S1.2, S1.4) but the
+     * draft, which is read here per keystroke; null offers none — a thread,
+     * a test, a build that does not record video.
+     */
+    videoEntries: ComposerSlot.DoorInputs? = null,
+    /**
+     * Open the video recorder (S3.1) — the video button, the paperclip's
+     * "Record video message", the microphone's menu and its TalkBack action.
+     * Dimmed ways in come here too, and are told why (S1.3).
+     */
+    onRecordVideo: () -> Unit = {},
+    /**
+     * What the trailing slot is (S1.3) — all but the draft, which is read
+     * here, where the field is: the slot is decided per keystroke.
+     */
+    slotInputs: ComposerSlot.SlotInputs? = null,
+    /** The slot's voice recording as the shared reducer has it (#79, S2). */
+    hold: RecordGesture.HoldState = RecordGesture.HoldState(),
+    /** The level meter's lit bars and the row's line (S2.9). */
+    voiceLevel: Int = 0,
+    /** The live waveform's levels, oldest first (#79, the approved design). */
+    voiceLevels: List<Int> = emptyList(),
+    voiceLine: ChatViewModel.VoiceLine? = null,
+    /** What the composer's polite live region says next (S6). */
+    announcement: ChatViewModel.VoiceAnnouncement? = null,
+    /** Where focus goes when a recording starts (S2.4). */
+    slotFocus: FocusRequester = remember { FocusRequester() },
+    /**
+     * The slot activated — the microphone, the Send arrow or the Stop square —
+     * by a completed tap however long it was held, a click, Enter or TalkBack.
+     */
+    onActivateSlot: () -> Unit = {},
+    /** The slot's row-4 Save or row-5 Send, behind the activation guard. */
+    onSendFromSlot: () -> Unit = onSend,
+    /**
+     * Asked as any press goes DOWN on the slot: whether it goes down inside
+     * the activation guard, and is then ignored whole (S1.1).
+     */
+    onSlotPressIgnored: (ComposerSlot.Slot) -> Boolean = { false },
+    /** The recording row's Delete, and TalkBack's "Delete recording". */
+    onDeleteRecording: () -> Unit = {},
+    /** Any other composer action, which lifts the slot's activation guard (S1.1). */
+    onOtherAction: () -> Unit = {},
+    /** Where a not-sent message's bytes are, for its ▶ (S2.8). */
+    notSentFile: (ParkedRecording) -> File? = { null },
+    /** The strip's Open Settings, after the microphone was refused for good (S2.2). */
+    onOpenSettings: () -> Unit = {},
+    /** This chat's voice messages that were not sent (#79, S2.8). */
+    notSent: List<ParkedRecording> = emptyList(),
+    /** Those whose send is under way: their Send does nothing until it lands. */
+    notSentInFlight: Set<String> = emptySet(),
+    /** Who wrote the message a not-sent one answers, by sender id. */
+    notSentReplyAuthor: (Long) -> String = { "" },
+    onSendNotSent: (String) -> Unit = {},
+    onDeleteNotSent: (String) -> Unit = {},
+    /**
      * Offer to start a poll. The FAMILY CHAT only — a poll is a family
      * deciding something together, and anywhere else the server answers
      * `invalid_poll` (docs/protocol.md, "Polls").
      */
     showsPoll: Boolean,
     onStartPoll: () -> Unit,
+    /**
+     * Offer the sticker panel. Only on a server that HAS packs — the
+     * absence of `max_pack_items` on `GET /families/mine` is the whole
+     * capability check, so there is no button that leads to a 404
+     * (docs/protocol.md, "Sticker pack").
+     */
+    showsStickers: Boolean = false,
+    onOpenStickers: () -> Unit = {},
     recordingMs: Long?,
     onStopRecording: () -> Unit,
-    onCancelRecording: () -> Unit,
     onDiscardStaged: (Int) -> Unit,
     onDismissMediaError: () -> Unit,
     /** Share where this device is, once. */
@@ -5037,7 +6195,8 @@ private fun InputBar(
     showsAssistantPicture: Boolean,
     onShowAssistantPicture: () -> Unit,
     /**
-     * Offer `/draw`. Only where this server can MAKE a picture: on one
+     * Offer the "Ask for a picture" button (`/draw`). The assistant chat
+     * only (#78), and only where this server can MAKE a picture: on one
      * that cannot, `/draw` is just text answered in words, so the
      * affordance would promise something that will not happen.
      */
@@ -5059,6 +6218,12 @@ private fun InputBar(
      */
     mentionPictureNotice: MentionPictureNotice?,
     /**
+     * A picture request is being typed where this client offers `/draw`:
+     * say that real names and brands are often refused, while the member
+     * can still describe it another way ([PictureDescriptionHint]).
+     */
+    showsPictureDescriptionHint: Boolean,
+    /**
      * WHO would receive what is typed, verbatim as the operator named
      * them. Null on a server that named nobody (docs/protocol.md,
      * "Consenting to the assistant").
@@ -5078,7 +6243,13 @@ private fun InputBar(
     /** Opens the consent screen, which is what Send does here too. */
     onReviewAssistantConsent: () -> Unit,
 ) {
-    Surface(tonalElevation = 3.dp) {
+    // S1.2's **round available** in a family or a direct chat: the paperclip's
+    // and the microphone menu's "Record video message", and TalkBack's action
+    // on the microphone (S1.5, S1.6). The paperclip's is disabled while busy,
+    // mid-edit and during a call; the others say why.
+    val videoRoundAvailable = videoEntries?.let { it.roundAvailable && it.familyOrDirectChat } == true
+    val recordVideoEnabled = videoEntries?.slot?.let { !it.busy && !it.editing && !it.call } == true
+    ComposerSurface {
         Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             // The bar spans the window; what is IN it is held to the
@@ -5100,14 +6271,7 @@ private fun InputBar(
                 EditBanner(onCancel = onCancelEdit)
             }
             if (mediaState != ChatViewModel.MediaSendState.Idle) {
-                MediaStrip(state = mediaState, onDismiss = onDismissMediaError)
-            }
-            if (recordingMs != null) {
-                RecordingStrip(
-                    elapsedMs = recordingMs,
-                    onStop = onStopRecording,
-                    onCancel = onCancelRecording,
-                )
+                MediaStrip(state = mediaState, onDismiss = onDismissMediaError, onOpenSettings = onOpenSettings)
             }
             if (pictureNotice != null) {
                 AssistantPictureStrip(notice = pictureNotice)
@@ -5116,6 +6280,15 @@ private fun InputBar(
             // one the family chat.
             if (mentionPictureNotice != null) {
                 MentionPictureStrip(notice = mentionPictureNotice)
+            }
+            // A picture request being typed: the words are still the
+            // member's to change, which is the moment to say what the
+            // provider's filter tends to refuse (docs/protocol.md,
+            // "Pictures").
+            if (showsPictureDescriptionHint) {
+                PictureDescriptionHintText(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
             // Before any of those: nothing goes to the model until this
             // member has said so, and the strip appears as the draft
@@ -5133,6 +6306,32 @@ private fun InputBar(
                 // screen to raise — only this, and a send that does not
                 // happen.
                 AssistantConsentStrip(processor = null, onReview = null)
+            }
+            // Each in its own row, never carried by the composer's Send: a
+            // recording nobody finished deciding about cannot ride out with
+            // the next text, and its caption never leaves without it (S2.8).
+            notSent.forEach { entry ->
+                key(entry.id) {
+                    // Its ▶ plays the waiting file itself (S2.8).
+                    val player = notSentFile(entry)?.let { rememberNotePlayer(it) }
+                    val gate = LocalRecordingGate.current
+                    NotSentVoiceMessageRow(
+                        entry = entry,
+                        replyAuthorName = entry.replyTo?.let { notSentReplyAuthor(it.senderId) },
+                        // An edit has borrowed the composer, and a ✕ gives the
+                        // caption back to it; and while another attachment is
+                        // being prepared or sent, the strip is that one's.
+                        enabled = !isEditing && !mediaState.isBusy,
+                        sending = entry.id in notSentInFlight,
+                        onSend = { onSendNotSent(entry.id) },
+                        onDelete = { onDeleteNotSent(entry.id) },
+                        playing = player?.playing == true,
+                        positionMs = player?.positionMs ?: 0L,
+                        onTogglePlay = player?.let { it::toggle },
+                        playDimmed = gate.recording,
+                        onPlayDimmed = gate.explain,
+                    )
+                }
             }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)
@@ -5154,194 +6353,299 @@ private fun InputBar(
                 // message, which has no second attachment to add.
                 // One "attach" intent with two sources — the composer is
                 // too narrow for two buttons beside the field.
-                var attachMenuOpen by remember { mutableStateOf(false) }
-                Box {
-                    IconButton(
-                        onClick = { attachMenuOpen = true },
-                        // isBusy, not "is Idle": a FAILED notice is a
-                        // sentence waiting to be dismissed, and it used to
-                        // grey this button out — so an error from one paste
-                        // blocked the next one until something cleared it.
-                        // Greyed at the cap too: a message carries at most
-                        // ten attachments, and offering an add that can
-                        // only be refused is worse than a disabled button.
-                        enabled = !isEditing && !mediaState.isBusy &&
-                            staged.size < AttachmentDto.MAX_PER_MESSAGE,
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AttachFile,
-                            contentDescription = stringResource(R.string.s_attach_a_photo_video_or_file),
-                        )
+                //
+                // While a voice message is recorded, its row takes the field's
+                // place AND the buttons' (S2.4).
+                val handsFree = hold.phase as? RecordGesture.Phase.HandsFree
+                val recordingRow = handsFree != null
+                if (!recordingRow) {
+                    var attachMenuOpen by remember { mutableStateOf(false) }
+                    // "Camera" swaps the menu's content for its two choices
+                    // in place (#78); closing the menu, however it closes,
+                    // brings the next opening back to the top level.
+                    var cameraPage by remember { mutableStateOf(false) }
+                    val closeAttachMenu = {
+                        attachMenuOpen = false
+                        cameraPage = false
                     }
-                    DropdownMenu(
-                        expanded = attachMenuOpen,
-                        onDismissRequest = { attachMenuOpen = false },
-                    ) {
-                        if (showsAssistantPicture) {
-                            // Above "Photo or video", and worded as what it
-                            // DOES rather than what it attaches: this is the
-                            // one item in this menu that sends pixels off
-                            // this server, and the protocol asks a client to
-                            // say so where the choice is made rather than
-                            // only on a settings screen somebody read once.
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(stringResource(R.string.s_show_the_assistant_a_picture))
-                                        Text(
-                                            text = stringResource(
-                                                R.string.s_show_the_assistant_a_picture_note,
-                                            ),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Box {
+                        IconButton(
+                            onClick = {
+                                // The person's own action: it lifts the guard (S1.1).
+                                onOtherAction()
+                                cameraPage = false
+                                attachMenuOpen = true
+                            },
+                            // isBusy, not "is Idle": a FAILED notice is a
+                            // sentence waiting to be dismissed, and it used to
+                            // grey this button out — so an error from one paste
+                            // blocked the next one until something cleared it.
+                            // Greyed at the cap too: a message carries at most
+                            // ten attachments, and offering an add that can
+                            // only be refused is worse than a disabled button.
+                            enabled = !isEditing && !mediaState.isBusy &&
+                                staged.size < AttachmentDto.MAX_PER_MESSAGE,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.AttachFile,
+                                contentDescription = stringResource(R.string.s_attach_a_photo_video_or_file),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = attachMenuOpen,
+                            onDismissRequest = closeAttachMenu,
+                        ) {
+                            // One menu on every client, in the same order and
+                            // the same three groups (#78,
+                            // docs/attachment-menu-2026-10-07.md); AttachMenu
+                            // decides which items exist, this decides how each
+                            // looks and whether it is enabled right now.
+                            val takePhotoItem: @Composable () -> Unit = {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_take_photo)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        closeAttachMenu()
+                                        onTakePhoto()
+                                    },
+                                )
+                            }
+                            if (cameraPage) {
+                                // The way back, headed with where it is: the
+                                // arrow says "Back", the words say "Camera".
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_camera)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = stringResource(R.string.s_back),
                                         )
+                                    },
+                                    onClick = { cameraPage = false },
+                                )
+                                HorizontalDivider()
+                                takePhotoItem()
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_take_video)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Videocam, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        closeAttachMenu()
+                                        onTakeVideo()
+                                    },
+                                )
+                            } else {
+                                val groups = AttachMenu.groups(
+                                    assistantChat = assistantChat,
+                                    assistantPictures = showsAssistantPicture,
+                                    hasCamera = hasCamera,
+                                    recordVoice = showsRecordVoice,
+                                    recordVideo = videoRoundAvailable,
+                                    poll = showsPoll,
+                                )
+                                groups.forEachIndexed { index, group ->
+                                    if (index > 0) HorizontalDivider()
+                                    group.forEach { item ->
+                                        when (item) {
+                                            AttachMenu.Item.PHOTO_OR_VIDEO -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_photo_or_video)) },
+                                                leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPickMedia()
+                                                },
+                                            )
+                                            // In place of "Photo or video", and worded
+                                            // as what it DOES rather than what it
+                                            // attaches: this is the one item in this
+                                            // menu that sends pixels off this server,
+                                            // and the protocol asks a client to say so
+                                            // where the choice is made rather than only
+                                            // on a settings screen somebody read once.
+                                            AttachMenu.Item.SHOW_ASSISTANT_PICTURE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_show_the_assistant_a_picture)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onShowAssistantPicture()
+                                                },
+                                            )
+                                            AttachMenu.Item.CAMERA -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_camera)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                                                },
+                                                trailingIcon = {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                        contentDescription = null,
+                                                    )
+                                                },
+                                                onClick = { cameraPage = true },
+                                            )
+                                            // The assistant chat's camera: images only
+                                            // there, so a photo straight away rather
+                                            // than a page of one choice.
+                                            AttachMenu.Item.TAKE_PHOTO -> takePhotoItem()
+                                            AttachMenu.Item.TAKE_VIDEO -> Unit
+                                            AttachMenu.Item.FILE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_file)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPickFile()
+                                                },
+                                            )
+                                            // Inside the menu on purpose: it inherits the
+                                            // button's guard (no attaching mid-edit or mid-
+                                            // upload) for free, and it is the door that works
+                                            // when the text field has no focus at all.
+                                            AttachMenu.Item.PASTE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_paste)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.ContentPaste, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPasteFromClipboard()
+                                                },
+                                            )
+                                            // "Record voice message" (S1.5): with words typed or
+                                            // items staged it records BESIDE them — the slot is
+                                            // then Stop, and the note is staged with them.
+                                            AttachMenu.Item.RECORD_VOICE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_record_voice_message)) },
+                                                leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                                                enabled = recordAudioEnabled,
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onRecordAudio()
+                                                },
+                                            )
+                                            // "Record video message", right below (S1.5): it
+                                            // works with words typed or items staged — a
+                                            // video message always travels alone, and they
+                                            // stay in the composer. Disabled while busy,
+                                            // mid-edit and during a call.
+                                            AttachMenu.Item.RECORD_VIDEO -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_record_video_message)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Outlined.VideoCameraFront, contentDescription = null)
+                                                },
+                                                enabled = recordVideoEnabled,
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onRecordVideo()
+                                                },
+                                            )
+                                            AttachMenu.Item.LOCATION -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_share_your_location)) },
+                                                leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onShareLocation()
+                                                },
+                                            )
+                                            // A poll is one more thing a message can
+                                            // carry, and it inherits the paperclip's
+                                            // guard (nothing attaches mid-edit or
+                                            // mid-upload) for free.
+                                            AttachMenu.Item.POLL -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_poll)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.Poll, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onStartPoll()
+                                                },
+                                            )
+                                        }
                                     }
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onShowAssistantPicture()
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_photo_or_video)) },
-                            leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
-                            onClick = {
-                                attachMenuOpen = false
-                                onPickMedia()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_file)) },
-                            leadingIcon = {
-                                Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
-                            },
-                            onClick = {
-                                attachMenuOpen = false
-                                onPickFile()
-                            },
-                        )
-                        // Inside the menu on purpose: it inherits the
-                        // button's guard (no attaching mid-edit or mid-
-                        // upload) for free, and it is the door that works
-                        // when the text field has no focus at all.
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_paste)) },
-                            leadingIcon = {
-                                Icon(Icons.Filled.ContentPaste, contentDescription = null)
-                            },
-                            onClick = {
-                                attachMenuOpen = false
-                                onPasteFromClipboard()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_take_photo)) },
-                            leadingIcon = {
-                                Icon(Icons.Filled.PhotoCamera, contentDescription = null)
-                            },
-                            onClick = {
-                                attachMenuOpen = false
-                                onTakePhoto()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_record_audio)) },
-                            leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
-                            onClick = {
-                                attachMenuOpen = false
-                                onRecordAudio()
-                            },
-                        )
-                        if (showsPoll) {
-                            // Inside the attach menu rather than beside
-                            // the field: a poll is one more thing a
-                            // message can carry, and it inherits that
-                            // button's guard (nothing attaches mid-edit
-                            // or mid-upload) for free.
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_poll)) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Poll, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onStartPoll()
-                                },
-                            )
-                        }
-                        if (showsDraw) {
-                            // Inside the attach menu for the same reason the
-                            // poll is: asking for a picture is one more thing
-                            // a message can be, and it inherits that button's
-                            // guard (nothing is composed mid-edit) for free.
-                            // It does not attach anything — it rewrites the
-                            // draft into a request, because the token has to
-                            // be FIRST and, in the family chat, has to sit
-                            // after one leading `@ai`.
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_ask_for_a_picture)) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Brush, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onAskForPicture()
-                                    focusRequester.requestFocus()
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_share_your_location)) },
-                            leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
-                            onClick = {
-                                attachMenuOpen = false
-                                onShareLocation()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.s_record_video)) },
-                            leadingIcon = {
-                                Icon(Icons.Filled.Videocam, contentDescription = null)
-                            },
-                            onClick = {
-                                attachMenuOpen = false
-                                onTakeVideo()
-                            },
-                        )
-                    }
-                }
-                if (showsAssistantMention) {
-                    IconButton(
-                        onClick = {
-                            // Appended, never inserted at the caret: moving
-                            // somebody's cursor is worse than adding to the
-                            // end of what they were writing, and the phone
-                            // and the Mac do the same.
-                            val current = state.text.toString()
-                            if (!AssistantMention.mentions(current)) {
-                                val prefix = when {
-                                    current.isEmpty() -> ""
-                                    current.endsWith(" ") -> ""
-                                    else -> " "
-                                }
-                                state.edit {
-                                    append(prefix + AssistantMention.TOKEN + " ")
                                 }
                             }
-                            focusRequester.requestFocus()
-                        },
-                        enabled = !isEditing,
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AutoAwesome,
-                            contentDescription = stringResource(R.string.s_ask_the_assistant),
-                        )
+                        }
+                    }
+                    if (showsStickers) {
+                        // Its own button rather than a line in the attach menu:
+                        // a sticker is SENT by the tap that picks it, which is a
+                        // different promise from everything in that menu — those
+                        // stage something for Send.
+                        IconButton(
+                            onClick = {
+                                onOtherAction()
+                                onOpenStickers()
+                            },
+                            // An edit borrows the composer to rewrite one
+                            // message; a sticker is a new one.
+                            enabled = !isEditing,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.EmojiEmotions,
+                                contentDescription = stringResource(R.string.s_stickers),
+                            )
+                        }
+                    }
+                    if (showsAssistantMention) {
+                        IconButton(
+                            onClick = {
+                                onOtherAction()
+                                // Appended, never inserted at the caret: moving
+                                // somebody's cursor is worse than adding to the
+                                // end of what they were writing, and the phone
+                                // and the Mac do the same.
+                                val current = state.text.toString()
+                                if (!AssistantMention.mentions(current)) {
+                                    val prefix = when {
+                                        current.isEmpty() -> ""
+                                        current.endsWith(" ") -> ""
+                                        else -> " "
+                                    }
+                                    state.edit {
+                                        append(prefix + AssistantMention.TOKEN + " ")
+                                    }
+                                }
+                                focusRequester.requestFocus()
+                            },
+                            enabled = !isEditing,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = stringResource(R.string.s_ask_the_assistant),
+                            )
+                        }
+                    }
+                    if (showsDraw) {
+                        // Its own button, out of the attach menu (#78, the
+                        // owner's choice), and the assistant chat's only. It
+                        // attaches nothing — it rewrites the draft into a
+                        // request, because the token has to be FIRST.
+                        IconButton(
+                            onClick = {
+                                onOtherAction()
+                                onAskForPicture()
+                                focusRequester.requestFocus()
+                            },
+                            // An edit borrows the composer to rewrite one
+                            // message, which calls no model.
+                            enabled = !isEditing,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Brush,
+                                contentDescription = stringResource(R.string.s_ask_for_a_picture),
+                            )
+                        }
                     }
                 }
                 // The field's OWN paste — the long-press menu, Ctrl+V from
@@ -5384,98 +6688,130 @@ private fun InputBar(
                 // stops in silence. See BodyLengthLimit.
                 val truncated by rememberUpdatedState(onPasteTruncated)
                 val bodyLimit = remember { BodyLengthLimit { truncated() } }
-                TextField(
-                    state = state,
-                    inputTransformation = bodyLimit,
-                    // heightIn beats the field's 56.dp defaultMinSize, which
-                    // only applies when the incoming min constraint is zero.
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 44.dp)
-                        .focusRequester(focusRequester)
-                        .contentReceiver(pasteReceiver)
-                        // Ctrl+Enter (or Cmd+Enter) sends from a hardware
-                        // keyboard; Enter alone keeps inserting a line
-                        // break, as it always has on a phone.
-                        .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyDown &&
-                                event.key == Key.Enter &&
-                                (event.isCtrlPressed || event.isMetaPressed)
-                            ) {
-                                onSend()
-                                true
-                            } else {
-                                false
-                            }
+                // The row a voice recording takes the field's place with
+                // (S2.4). The field stays composed UNDER it — invisible,
+                // hidden from TalkBack — so words typed before a recording
+                // beside them are kept.
+                val covered = recordingRow
+                // The rows cross-fade in and out over the field in 150 ms (the
+                // approved design); without animations they simply are there.
+                val fadeSteady = animationsRemoved()
+                val fieldAlpha by animateFloatAsState(
+                    targetValue = if (covered) 0f else 1f,
+                    animationSpec = if (fadeSteady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+                    label = "fieldUnderTheRow",
+                )
+                // The video button inside the empty field (#79, S1.4): decided
+                // per keystroke by the shared rule — gone the moment a
+                // character is typed, dimmed in rows 7 and 8.
+                val videoDoor = videoEntries
+                    ?.let { ComposerSlot.videoDoor(it.copy(slot = it.slot.copy(draftBlank = state.text.isBlank()))) }
+                    ?: ComposerSlot.Door.Hidden
+                Box(modifier = Modifier.weight(1f)) {
+                    TextField(
+                        state = state,
+                        inputTransformation = bodyLimit,
+                        // heightIn beats the field's 56.dp defaultMinSize, which
+                        // only applies when the incoming min constraint is zero.
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .alpha(fieldAlpha)
+                            .semantics { if (covered) hideFromAccessibility() }
+                            // Hands-free, focus is the slot's: Tab walks Delete,
+                            // Stop and the slot, never the hidden field (S2.4).
+                            .focusProperties { canFocus = handsFree == null }
+                            .focusRequester(focusRequester)
+                            .contentReceiver(pasteReceiver)
+                            // Ctrl+Enter (or Cmd+Enter) sends from a hardware
+                            // keyboard; Enter alone keeps inserting a line
+                            // break, as it always has on a phone.
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown &&
+                                    event.key == Key.Enter &&
+                                    (event.isCtrlPressed || event.isMetaPressed)
+                                ) {
+                                    onSend()
+                                    true
+                                } else {
+                                    false
+                                }
+                            },
+                        // M3's default content padding for an unlabelled field is
+                        // 16.dp top and bottom, which is taller than the 44.dp
+                        // buttons' own centring — so both icons sat visibly below
+                        // the last line of text. 10.dp puts the text's optical
+                        // centre level with them at one line and at five alike.
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        placeholder = {
+                            // Truncated, never overlapped, by the video button (S1.4).
+                            Text(stringResource(R.string.s_message), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         },
-                    // M3's default content padding for an unlabelled field is
-                    // 16.dp top and bottom, which is taller than the 44.dp
-                    // buttons' own centring — so both icons sat visibly below
-                    // the last line of text. 10.dp puts the text's optical
-                    // centre level with them at one line and at five alike.
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                    placeholder = { Text(stringResource(R.string.s_message)) },
-                    lineLimits = TextFieldLineLimits.MultiLine(
-                        minHeightInLines = 1,
-                        maxHeightInLines = 5,
-                    ),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ),
-                )
-                // An attachment can travel with no words at all, so Send is
-                // live as soon as there is either.
-                val canSend = state.text.isNotBlank() || staged.isNotEmpty()
-                // The disabled slots get the same animated colors as the
-                // enabled ones — otherwise the tween would be invisible
-                // because the button snaps to its disabled palette.
-                val sendContainer by animateColorAsState(
-                    targetValue = if (canSend) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHighest
-                    },
-                    animationSpec = tween(150),
-                    label = "sendContainer",
-                )
-                val sendContent by animateColorAsState(
-                    targetValue = if (canSend) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    animationSpec = tween(150),
-                    label = "sendContent",
-                )
-                // Subtle pop the moment the draft first becomes non-blank;
-                // scale is draw-only, so neighbors never shift.
-                val sendScale by animateFloatAsState(
-                    targetValue = if (canSend) 1f else 0.9f,
-                    animationSpec = tween(150),
-                    label = "sendScale",
-                )
-                FilledIconButton(
-                    onClick = onSend,
-                    enabled = canSend,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .scale(sendScale),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = sendContainer,
-                        contentColor = sendContent,
-                        disabledContainerColor = sendContainer,
-                        disabledContentColor = sendContent,
-                    ),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = stringResource(R.string.s_send),
+                        trailingIcon = if (videoDoor != ComposerSlot.Door.Hidden && !covered) {
+                            { VideoDoorButton(door = videoDoor, onOpen = onRecordVideo) }
+                        } else {
+                            null
+                        },
+                        lineLimits = TextFieldLineLimits.MultiLine(
+                            minHeightInLines = 1,
+                            maxHeightInLines = 5,
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        ),
                     )
+                    val rowKind = if (handsFree != null) VoiceRowKind.HANDS_FREE else VoiceRowKind.NONE
+                    Crossfade(
+                        targetState = rowKind,
+                        animationSpec = if (fadeSteady) snap() else tween(ComposerSlot.SLOT_CROSSFADE_MS.toInt()),
+                        modifier = Modifier.matchParentSize(),
+                        label = "voiceRow",
+                    ) { kind ->
+                        when (kind) {
+                            VoiceRowKind.HANDS_FREE -> RecordingRow(
+                                recordedMs = recordingMs ?: 0L,
+                                level = voiceLevel,
+                                line = voiceLine,
+                                besideDraft = handsFree?.besideDraft == true,
+                                onDelete = onDeleteRecording,
+                                onStop = onStopRecording,
+                                levels = voiceLevels,
+                                modifier = Modifier.fillMaxSize().keepsTouchesFromTheField(),
+                            )
+                            VoiceRowKind.NONE -> Unit
+                        }
+                    }
+                    // The polite live region (S6) — "Recording", "Voice message
+                    // sent" — laid over the field, so it costs the bar no height.
+                    // LAST, on top: a node the field or a row covered would be
+                    // dropped from what TalkBack is told.
+                    VoiceAnnouncer(announcement)
                 }
+                // The Send slot (#79, S1.3): Send when there is something to
+                // send, the microphone when the composer is empty — decided
+                // here, per keystroke, by the shared rules. It never changes
+                // size or place, so the field never jumps.
+                val draftBlank = state.text.isBlank()
+                val slot = when {
+                    slotInputs != null -> ComposerSlot.composerSlot(slotInputs.copy(draftBlank = draftBlank))
+                    !draftBlank || staged.isNotEmpty() -> ComposerSlot.Slot.Send
+                    else -> ComposerSlot.Slot.SendDisabled
+                }
+                RecordSendButton(
+                    slot = slot,
+                    onActivate = onActivateSlot,
+                    onSend = onSendFromSlot,
+                    onStopAndListen = onStopRecording,
+                    onDeleteRecording = onDeleteRecording,
+                    onRecordFromMenu = onRecordAudio,
+                    onRecordVideo = if (videoRoundAvailable) onRecordVideo else null,
+                    focusRequester = slotFocus,
+                    pressIgnored = onSlotPressIgnored,
+                )
             }
         }
         }
@@ -5535,4 +6871,100 @@ internal fun shareWithSystem(
         context.startActivity(Intent.createChooser(send, null))
         true
     }.getOrDefault(false)
+}
+
+/** Which row takes the field's place while a voice message is recorded (S2.4). */
+private enum class VoiceRowKind { NONE, HANDS_FREE }
+
+/**
+ * The composer's panel: what `Surface(tonalElevation = 3.dp)` draws — the
+ * tonal colour, content colour, elevation for what is inside, a traversal
+ * group, and touches stopped from falling through — WITHOUT its clip. (It
+ * was made for the held microphone's swell, which reached past the bar's
+ * top edge; the hold is gone — #79, revised 2026-10-06 — and the panel
+ * stays as it is drawn.)
+ */
+@Composable
+private fun ComposerSurface(content: @Composable () -> Unit) {
+    val elevation = androidx.compose.material3.LocalAbsoluteTonalElevation.current + 3.dp
+    val colors = MaterialTheme.colorScheme
+    val panel = if (androidx.compose.material3.LocalTonalElevationEnabled.current) {
+        colors.surfaceColorAtElevation(elevation)
+    } else {
+        colors.surface
+    }
+    CompositionLocalProvider(
+        LocalContentColor provides colors.onSurface,
+        androidx.compose.material3.LocalAbsoluteTonalElevation provides elevation,
+    ) {
+        Box(
+            modifier = Modifier
+                .background(panel)
+                .semantics(mergeDescendants = false) { isTraversalGroup = true }
+                .pointerInput(Unit) {},
+            propagateMinConstraints = true,
+        ) {
+            content()
+        }
+    }
+}
+
+/**
+ * A voice message's Save through the system's save screen (#79), as one
+ * function to call with the message's recording.
+ *
+ * The recording being saved is kept in SAVED state, not plain `remember`:
+ * MainActivity declares no configChanges, so a rotation or a theme change
+ * while the save screen is up recreates this screen, and a plain `remember`
+ * forgot which recording it was — leaving the document the save screen had
+ * just created as an empty file. [onOrphaned] is handed any document that
+ * arrives with no recording to put in it, so that cannot be left behind
+ * either.
+ */
+@Composable
+internal fun rememberVoiceSave(
+    onChosen: (AttachmentDto, Uri) -> Unit,
+    onOrphaned: (Uri) -> Unit,
+): (AttachmentDto) -> Unit {
+    var pending by rememberSaveable(stateSaver = PendingAttachmentSaver) {
+        mutableStateOf<AttachmentDto?>(null)
+    }
+    val launcher = rememberLauncherForActivityResult(CreateSoundDocument) { destination ->
+        val attachment = pending
+        pending = null
+        when {
+            destination == null -> Unit
+            attachment != null -> onChosen(attachment, destination)
+            else -> onOrphaned(destination)
+        }
+    }
+    return { attachment ->
+        pending = attachment
+        runCatching {
+            launcher.launch(attachment.mime to (attachment.name ?: attachment.fallbackFileName))
+        }.onFailure { pending = null }
+    }
+}
+
+/** One attachment through saved instance state, as the same JSON the database keeps. */
+internal val PendingAttachmentSaver: androidx.compose.runtime.saveable.Saver<AttachmentDto?, String> =
+    androidx.compose.runtime.saveable.Saver(
+        save = { attachment -> attachment?.let { AttachmentsCodec.encode(listOf(it)) } },
+        restore = { raw -> AttachmentsCodec.decode(raw)?.singleOrNull() },
+    )
+
+/**
+ * ACTION_CREATE_DOCUMENT for a sound file of a given type and name — the
+ * stock CreateDocument contract fixes its type when it is made, and a voice
+ * message may be AAC, MP3 or Ogg.
+ */
+private object CreateSoundDocument : androidx.activity.result.contract.ActivityResultContract<Pair<String, String>, Uri?>() {
+    override fun createIntent(context: Context, input: Pair<String, String>): Intent =
+        Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(input.first.ifEmpty { "audio/*" })
+            .putExtra(Intent.EXTRA_TITLE, input.second)
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+        intent?.data?.takeIf { resultCode == android.app.Activity.RESULT_OK }
 }

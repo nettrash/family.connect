@@ -12,7 +12,9 @@
 //      nothing and gets `.shared`, tests pass a session backed by
 //      StubURLProtocol.
 //    - 15 s per-request timeout — generous for a LAN box, short enough
-//      that a dead server doesn't hang a UI await.
+//      that a dead server doesn't hang a UI await. Uploads, an event's
+//      backdrop and a recording's text, which wait on the model, get
+//      longer budgets of their own.
 //    - ONE retry, on GETs only, for transient statuses (429 / 5xx),
 //      honouring `Retry-After` (delta-seconds, capped). POSTs are never
 //      auto-retried here: message sending has its own idempotent retry
@@ -95,6 +97,27 @@ actor APIClient {
     /// uplink is minutes, not seconds, and the 15 s that suits a JSON call
     /// would cancel every video.
     private let uploadTimeout: TimeInterval = 600
+    /// An event's backdrop gets one of its own too: it is the one request
+    /// whose answer waits on the model — a picture, or a picture, a
+    /// rewrite and a second picture one after another — and the 15 s that
+    /// suits a JSON call would give up on nearly every one. The protocol
+    /// asks for no less than 90 s, the reference proxy's own read timeout
+    /// on `/api/v1/`; a little past it, so it is the server (or the proxy
+    /// answering for it) that ends the wait and not this client. Giving up
+    /// is safe: the server stops drawing when the connection closes
+    /// (docs/protocol.md, "Board" — "It is SLOW").
+    private let backdropTimeout: TimeInterval = 120
+    /// The text of a recording gets one of its own as well (protocol.md,
+    /// "Transcripts on request" — "give this request its own timeout of at
+    /// least 90 s, never your ordinary request timeout"). A speech model
+    /// works through the whole recording before it answers, up to 25 MiB of
+    /// it, and the reference proxy waits 300 s on this one route — so this
+    /// waits a little past that, and it is the server (or the proxy
+    /// answering for it) that ends the wait, as with the backdrop. Giving
+    /// up is safe the other way round from the backdrop: a request for the
+    /// stored copy is FINISHED and kept even when nobody is waiting, so
+    /// asking again a little later returns it at once.
+    static let transcriptTimeout: TimeInterval = 310
 
     /// `session` is the only test seam — see file header.
     init(serverURL: URL?, session: URLSession = .shared) {
@@ -210,6 +233,32 @@ actor APIClient {
         let granted: Bool
     }
 
+    /// `POST /me/assistant-lookup-consent` — this member's own permission
+    /// for the assistant to send a short query or place name it wrote from
+    /// their question to the providers `assistant.lookups` names
+    /// (protocol.md, "Consenting to the assistant", amended 2026-10-03).
+    /// Of exactly the first consent's shape, and answers with the stamp the
+    /// server now holds.
+    ///
+    /// Granting twice keeps the FIRST date; withdrawing clears it and
+    /// deletes nothing. It may only be granted on top of the assistant
+    /// consent — 403 `assistant_consent_required` otherwise — and a server
+    /// with no assistant or no lookup source answers 404 `not_found`.
+    func setAssistantLookupConsent(_ granted: Bool) async throws -> Date? {
+        let response: AssistantLookupConsentResponse = try await request(
+            "POST", "/me/assistant-lookup-consent",
+            body: AssistantConsentRequest(granted: granted))
+        return response.assistantLookupConsentAt
+    }
+
+    private struct AssistantLookupConsentResponse: Decodable {
+        let assistantLookupConsentAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case assistantLookupConsentAt = "assistant_lookup_consent_at"
+        }
+    }
+
     private struct AssistantConsentResponse: Decodable {
         let assistantConsentAt: Date?
 
@@ -313,6 +362,20 @@ actor APIClient {
         /// "Profile pictures of members"): the server refuses `true` while
         /// `ai_vision` is off, and turns it off whenever `ai_vision` goes off.
         var aiFaces: Bool?
+        /// The sixth boolean, bound to nothing (protocol.md, "Transcripts on
+        /// request"): whether a member may ask for the text of another
+        /// member's recording in the family chat. Changing `ai_vision` never
+        /// clears it.
+        var aiTranscripts: Bool?
+        /// The seventh boolean, bound to nothing (protocol.md, "Looking
+        /// things up"): whether the assistant may look things up for this
+        /// family. No other switch refuses it or clears it.
+        var aiLookups: Bool?
+        /// The owner's places for the greeting's weather (protocol.md,
+        /// "Today's weather, for places the owner chose"). The list REPLACES
+        /// the stored one and `[]` clears it, so a single Optional is enough:
+        /// absent leaves it alone, and the server refuses a `null`.
+        var greetingPlaces: [String]?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -328,6 +391,9 @@ actor APIClient {
             case aiHistoryPhotos = "ai_history_photos"
             case aiGreeting = "ai_greeting"
             case aiFaces = "ai_faces"
+            case aiTranscripts = "ai_transcripts"
+            case aiLookups = "ai_lookups"
+            case greetingPlaces = "greeting_places"
             case maxMembers = "max_members"
         }
 
@@ -349,6 +415,10 @@ actor APIClient {
             try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
             try container.encodeIfPresent(aiGreeting, forKey: .aiGreeting)
             try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
+            try container.encodeIfPresent(aiTranscripts, forKey: .aiTranscripts)
+            try container.encodeIfPresent(aiLookups, forKey: .aiLookups)
+            // An empty list is encoded as `[]` — the clear — never as null.
+            try container.encodeIfPresent(greetingPlaces, forKey: .greetingPlaces)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -529,6 +599,42 @@ actor APIClient {
         return response.family
     }
 
+    /// Turn the sixth switch on or off — whether members may ask for the
+    /// text of OTHER members' recordings in the family chat (protocol.md,
+    /// "Transcripts on request"). Sends this one key and nothing else. Bound
+    /// to no other switch, so no state of them can refuse it.
+    func setAITranscripts(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiTranscripts: enabled))
+        return response.family
+    }
+
+    /// Turn the seventh switch on or off — whether the assistant may look
+    /// things up for this family (protocol.md, "Looking things up"). Sends
+    /// this one key and nothing else; owner-only (`not_family_owner`, 403),
+    /// and bound to no other switch.
+    func setAILookups(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiLookups: enabled))
+        return response.family
+    }
+
+    /// Replace the places whose weather the daily greeting mentions
+    /// (protocol.md, "Today's weather, for places the owner chose"). Sends
+    /// this one key and nothing else; `[]` clears the list. Owner-only
+    /// (`not_family_owner`, 403); a list the server refuses is `validation`
+    /// (400), and nothing in a refused request is written.
+    ///
+    /// The family it answers with carries the list AS KEPT — trimmed, with
+    /// repeats dropped — and that, not what was sent, is what to show. A
+    /// server that predates the field ignores the key, which the answer
+    /// shows too.
+    func setGreetingPlaces(_ places: [String]) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(greetingPlaces: places))
+        return response.family
+    }
+
     func joinRequests() async throws -> [JoinRequestDTO] {
         let response: JoinRequestsResponse = try await request("GET", "/families/join-requests")
         return response.requests
@@ -686,6 +792,15 @@ actor APIClient {
         let poll: NewPollRequest?
         /// The members this message names — absent when nil, like the rest.
         let mentions: [MentionDTO]?
+        /// `true` sends the message's one attachment as a STICKER
+        /// (docs/protocol.md, "Sending one"). nil — and so absent, never
+        /// `false` — on every ordinary message, which keeps an ordinary
+        /// send byte-identical to what it has always been.
+        let sticker: Bool?
+        /// `true` sends the message's one video as a VIDEO MESSAGE
+        /// (docs/protocol.md, "Video messages", #79). Absent, never
+        /// `false`, on everything else — the sticker's rule.
+        let round: Bool?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
@@ -693,6 +808,8 @@ actor APIClient {
             case attachmentIDs = "attachment_ids"
             case poll
             case mentions
+            case sticker
+            case round
         }
     }
 
@@ -716,7 +833,9 @@ actor APIClient {
         replyToMessageID: Int64? = nil,
         attachmentIDs: [Int64]? = nil,
         pollOptions: [String]? = nil,
-        mentions: [MentionDTO]? = nil
+        mentions: [MentionDTO]? = nil,
+        sticker: Bool = false,
+        round: Bool = false
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -726,7 +845,9 @@ actor APIClient {
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
                 poll: pollOptions.map { NewPollRequest(options: $0) },
-                mentions: mentions))
+                mentions: mentions,
+                sticker: sticker ? true : nil,
+                round: round ? true : nil))
         return response.message
     }
 
@@ -799,7 +920,8 @@ actor APIClient {
         width: Int?,
         height: Int?,
         durationMS: Int?,
-        name: String? = nil
+        name: String? = nil,
+        waveform: String? = nil
     ) throws -> URLRequest {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [URLQueryItem(name: "kind", value: kind)]
@@ -811,6 +933,15 @@ actor APIClient {
         // Required for a file, ignored otherwise. URLComponents percent-
         // encodes it, so a name with spaces or umlauts survives the trip.
         if let name { query.append(URLQueryItem(name: "name", value: name)) }
+        // A voice note's shape (#79, docs/protocol.md, "A voice note's
+        // waveform"): audio only, and only a value the server will take —
+        // anything else is refused with `validation`, and a recording must
+        // never be refused for its drawing. An older server ignores the
+        // parameter (its query struct does not deny unknown fields) and
+        // simply echoes no waveform.
+        if let waveform, kind == AttachmentDTO.Kind.audio, Waveform.parse(waveform) != nil {
+            query.append(URLQueryItem(name: "waveform", value: waveform))
+        }
         guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
             throw APIError.notConfigured
         }
@@ -832,11 +963,12 @@ actor APIClient {
         width: Int?,
         height: Int?,
         durationMS: Int?,
-        name: String? = nil
+        name: String? = nil,
+        waveform: String? = nil
     ) async throws -> AttachmentDTO {
         let request = try attachmentUploadRequest(
             mime: mime, kind: kind, width: width, height: height,
-            durationMS: durationMS, name: name)
+            durationMS: durationMS, name: name, waveform: waveform)
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {
@@ -863,6 +995,45 @@ actor APIClient {
         } catch APIError.notFound(_) {
             return nil
         }
+    }
+
+    /// The bytes of an attachment, written to `destination` rather than
+    /// held in memory — a video may be 100 MB. For the one caller that
+    /// needs a whole streamed file on this device: the sound a transcript
+    /// request supplies (`TranscriptSound`). On `uploadTimeout`, the budget
+    /// a file that size already gets on the way up; a GET, but not retried
+    /// here — the caller says "Try again" and the person decides.
+    func downloadAttachment(id: Int64, to destination: URL) async throws {
+        guard let serverURL,
+              let url = Self.endpointURL(base: serverURL, path: "/attachments/\(id)")
+        else { throw APIError.notConfigured }
+        var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
+        request.httpMethod = "GET"
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let downloaded: URL
+        let response: URLResponse
+        do {
+            (downloaded, response) = try await session.download(for: request)
+        } catch let error as URLError {
+            throw APIError.transport(error)
+        }
+        // Moved (or removed) before anything else can suspend: the system
+        // owns the temporary file and may clean it up.
+        defer { try? FileManager.default.removeItem(at: downloaded) }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.transport(URLError(.badServerResponse))
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = (try? Data(contentsOf: downloaded)) ?? Data()
+            throw Self.mapError(
+                status: http.statusCode, data: body, retryAfter: Self.retryAfterSeconds(http))
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: downloaded, to: destination)
     }
 
     /// A URL an AVPlayer can stream from directly, with the session token
@@ -1096,10 +1267,107 @@ actor APIClient {
     /// `POST …/notes/{id}/backdrop` — the assistant draws a picture for an
     /// event from its own title. No body: the prompt is the title
     /// (docs/protocol.md, "Board").
+    ///
+    /// On `backdropTimeout`, never the ordinary one: it waits on the model,
+    /// up to three calls in a row. Refused with `assistant_consent_required`
+    /// (403) when the author has not agreed that their words may go to the
+    /// model — the title is their words (protocol.md, "Consenting to the
+    /// assistant").
     func drawBackdrop(noteID: Int64) async throws -> NoteDTO {
-        let response: NoteResponse = try await request(
-            "POST", "/families/mine/board/notes/\(noteID)/backdrop")
+        let (data, _) = try await perform(
+            "POST", "/families/mine/board/notes/\(noteID)/backdrop",
+            query: [], bodyData: nil, timeout: backdropTimeout)
+        let response: NoteResponse = try decodeResponse(data)
         return response.note
+    }
+
+    /// `POST /chats/{c}/messages/{m}/attachments/{a}/transcript` — the text
+    /// of one recording, from the server's STORED copy (protocol.md,
+    /// "Transcripts on request").
+    ///
+    /// NO BODY and no `Content-Type`, which is the stored-bytes form: the
+    /// server sends the file it already holds and keeps the answer, so the
+    /// next member who asks gets it without a second provider call. The
+    /// other form — sound this device supplies, as multipart — is for a
+    /// video, an Ogg file or an oversized one: `transcript(…suppliedSound:)`.
+    ///
+    /// On `transcriptTimeout`, never the ordinary one. The refusals keep
+    /// their codes (`TranscriptOutcome` sorts them): 403
+    /// `assistant_consent_required` / `transcript_not_allowed` /
+    /// `transcripts_unavailable`, 400 `not_transcribable` /
+    /// `transcript_refused`, 500 `internal`.
+    func transcript(chatID: Int64, messageID: Int64, attachmentID: Int64) async throws -> TranscriptDTO {
+        let (data, _) = try await perform(
+            "POST",
+            "/chats/\(chatID)/messages/\(messageID)/attachments/\(attachmentID)/transcript",
+            query: [], bodyData: nil, timeout: Self.transcriptTimeout)
+        let response: TranscriptResponse = try decodeResponse(data)
+        return response.transcript
+    }
+
+    /// The same request in its OTHER form: `multipart/form-data` with one
+    /// part, `audio`, carrying sound this device took out of the file
+    /// itself (`TranscriptSound`) — an M4A of AAC, `Content-Type:
+    /// audio/mp4`, at most `transcribe_max_bytes`. For a video, an Ogg
+    /// file, a type outside the provider's list or a recording over the
+    /// ceiling. The server returns the answer and keeps NOTHING
+    /// (protocol.md, "Transcripts on request"), so the caller keeps it.
+    ///
+    /// The form is written to a file beside the sound and streamed from
+    /// there, as every upload is, and removed afterwards. Same timeout,
+    /// same refusals, never retried.
+    func transcript(
+        chatID: Int64, messageID: Int64, attachmentID: Int64, suppliedSound sound: URL
+    ) async throws -> TranscriptDTO {
+        guard let serverURL,
+              let url = Self.endpointURL(
+                base: serverURL,
+                path: "/chats/\(chatID)/messages/\(messageID)/attachments/\(attachmentID)/transcript")
+        else { throw APIError.notConfigured }
+        let boundary = "fc-\(UUID().uuidString)"
+        let form = sound.deletingLastPathComponent()
+            .appendingPathComponent("form-\(UUID().uuidString)").appendingPathExtension("body")
+        defer { try? FileManager.default.removeItem(at: form) }
+        try Self.writeTranscriptForm(sound: sound, boundary: boundary, to: form)
+
+        var request = URLRequest(url: url, timeoutInterval: Self.transcriptTimeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await uploadFromFile(request, fileURL: form)
+        guard (200..<300).contains(response.statusCode) else {
+            throw Self.mapError(
+                status: response.statusCode, data: data, retryAfter: Self.retryAfterSeconds(response))
+        }
+        let decoded: TranscriptResponse = try decodeResponse(data)
+        return decoded.transcript
+    }
+
+    /// The multipart body of a supplied-sound transcript request, written
+    /// to `destination`: one part named `audio`, file name `sound.m4a`,
+    /// `Content-Type: audio/mp4`, the sound's bytes copied in chunks (never
+    /// the whole file in memory), and the closing boundary.
+    static func writeTranscriptForm(sound: URL, boundary: String, to destination: URL) throws {
+        try? FileManager.default.removeItem(at: destination)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let out = try FileHandle(forWritingTo: destination)
+        defer { try? out.close() }
+        let input = try FileHandle(forReadingFrom: sound)
+        defer { try? input.close() }
+        out.write(Data((
+            "--\(boundary)\r\n"
+            + "Content-Disposition: form-data; name=\"audio\"; filename=\"sound.m4a\"\r\n"
+            + "Content-Type: audio/mp4\r\n\r\n").utf8))
+        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+            out.write(chunk)
+        }
+        out.write(Data("\r\n--\(boundary)--\r\n".utf8))
     }
 
     func deleteNote(id: Int64) async throws {
@@ -1137,6 +1405,57 @@ actor APIClient {
 
     func markRead(chatID: Int64, lastReadMessageID: Int64) async throws {
         try await requestVoid("POST", "/chats/\(chatID)/read", body: ReadRequest(lastReadMessageID: lastReadMessageID))
+    }
+
+    // MARK: - Sticker pack
+
+    private struct AddPackItemRequest: Encodable {
+        let attachmentID: Int64
+        /// Omitted when nil: an empty label is no label.
+        let label: String?
+        enum CodingKeys: String, CodingKey {
+            case attachmentID = "attachment_id"
+            case label
+        }
+    }
+
+    /// `GET /families/mine/pack` — the whole pack as it now stands, in the
+    /// order added, tombstones excluded (docs/protocol.md, "Sticker pack").
+    func pack() async throws -> PackResponse {
+        try await request("GET", "/families/mine/pack")
+    }
+
+    /// One catch-up page, ascending by `pack_seq` and INCLUDING tombstones;
+    /// the caller loops (advancing `afterSeq`) until a short page.
+    func packChanges(afterSeq: Int64, limit: Int) async throws -> [PackItemDTO] {
+        let response: PackChangesResponse = try await request(
+            "GET", "/families/mine/pack/changes",
+            query: [
+                URLQueryItem(name: "after_seq", value: String(afterSeq)),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ])
+        return response.items
+    }
+
+    /// Claim an upload as a pack item. `alreadyHeld` is the `200`: the pack
+    /// already holds those bytes, or this very claim was made before and
+    /// its answer lost — nothing was added, and the item that comes back
+    /// may carry a DIFFERENT attachment id from the one sent, because the
+    /// fresh upload was dropped for the one the pack already had.
+    func addPackItem(
+        attachmentID: Int64, label: String?
+    ) async throws -> (item: PackItemDTO, alreadyHeld: Bool) {
+        let bodyData = try? APICoding.encoder().encode(
+            AddPackItemRequest(attachmentID: attachmentID, label: label))
+        let (data, http) = try await perform(
+            "POST", "/families/mine/pack", query: [], bodyData: bodyData)
+        let response: PackItemResponse = try decodeResponse(data)
+        return (response.item, http.statusCode == 200)
+    }
+
+    /// Remove one. Whoever added it, or the family owner; idempotent.
+    func deletePackItem(id: Int64) async throws {
+        try await requestVoid("DELETE", "/families/mine/pack/\(id)")
     }
 
     // MARK: - Reactions
@@ -1248,10 +1567,14 @@ actor APIClient {
         /// two tokens arrive from the OS at different moments, and a
         /// launch that has only one of them must not wipe the other.
         let voipToken: String??
+        /// The language this device's pushes are written in
+        /// (docs/protocol.md, "Devices"); left out when nil.
+        let language: String?
         enum CodingKeys: String, CodingKey {
             case platform
             case pushToken = "push_token"
             case voipToken = "voip_token"
+            case language
         }
         // push_token must be an explicit JSON null, not an absent key.
         func encode(to encoder: Encoder) throws {
@@ -1261,13 +1584,16 @@ actor APIClient {
             if let voipToken {
                 try container.encode(voipToken, forKey: .voipToken)
             }
+            try container.encodeIfPresent(language, forKey: .language)
         }
     }
 
-    func registerDevice(platform: String, pushToken: String?, voipToken: String?? = nil) async throws -> Int64 {
+    func registerDevice(
+        platform: String, pushToken: String?, voipToken: String?? = nil, language: String? = nil
+    ) async throws -> Int64 {
         let response: DeviceResponse = try await request(
             "POST", "/devices",
-            body: DeviceRequest(platform: platform, pushToken: pushToken, voipToken: voipToken))
+            body: DeviceRequest(platform: platform, pushToken: pushToken, voipToken: voipToken, language: language))
         return response.deviceID
     }
 
@@ -1350,14 +1676,17 @@ actor APIClient {
         _ path: String,
         query: [URLQueryItem],
         bodyData: Data?,
-        contentType: String = "application/json"
+        contentType: String = "application/json",
+        timeout requestTimeout: TimeInterval? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         guard let serverURL else { throw APIError.notConfigured }
         guard let url = Self.endpointURL(base: serverURL, path: path, query: query) else {
             throw APIError.notConfigured
         }
 
-        var request = URLRequest(url: url, timeoutInterval: timeout)
+        // The ordinary budget unless the one call asking said otherwise
+        // (`backdropTimeout`, `transcriptTimeout`).
+        var request = URLRequest(url: url, timeoutInterval: requestTimeout ?? timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let token {

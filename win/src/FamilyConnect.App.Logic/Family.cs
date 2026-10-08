@@ -109,6 +109,14 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
             AiHistoryPhotos = vision && photos,
             AiFaces = vision && faces,
             AiGreeting = patch.AiGreeting ?? family.AiGreeting,
+            // Tied to no other switch: turning vision off leaves it exactly where it was (docs/protocol.md,
+            // "Transcripts on request").
+            AiTranscripts = patch.AiTranscripts ?? family.AiTranscripts,
+            // Tied to no other switch either (docs/protocol.md, "Looking things up").
+            AiLookups = patch.AiLookups ?? family.AiLookups,
+            // A list that REPLACES the stored one when present; what the server keeps of it is read back from its answer
+            // (docs/protocol.md, "Today's weather, for places the owner chose").
+            GreetingPlaces = patch.GreetingPlaces is { } places ? [.. places] : family.GreetingPlaces,
         };
     }
 

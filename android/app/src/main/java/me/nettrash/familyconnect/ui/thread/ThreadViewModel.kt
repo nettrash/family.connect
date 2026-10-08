@@ -17,6 +17,8 @@
 
 package me.nettrash.familyconnect.ui.thread
 
+import me.nettrash.familyconnect.ui.chat.Transcripts
+import me.nettrash.familyconnect.data.repo.TranscriptRepository
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -46,13 +49,17 @@ import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.data.repo.ChatRepository
+import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.ui.chat.AssistantConsent
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import me.nettrash.familyconnect.ui.chat.ChatListItem
+import me.nettrash.familyconnect.ui.chat.ChatViewModel
 import me.nettrash.familyconnect.ui.chat.buildChatItems
 import me.nettrash.familyconnect.util.Clock
 import me.nettrash.familyconnect.util.resolvedDisplayNames
@@ -69,8 +76,10 @@ class ThreadViewModel @Inject constructor(
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
     private val chatRepository: ChatRepository,
-    settings: SettingsRepository,
+    private val familyRepository: FamilyRepository,
+    private val settings: SettingsRepository,
     private val clock: Clock,
+    transcriptRepository: TranscriptRepository,
 ) : ViewModel() {
 
     data class State(
@@ -174,11 +183,7 @@ class ThreadViewModel @Inject constructor(
      * (protocol.md, "Answering from the thread").
      */
     fun send(body: String) {
-        val root = items.value
-            .filterIsInstance<ChatListItem.MessageItem>()
-            .firstOrNull { it.entity.serverId == rootId }
-            ?.entity ?: return
-        val serverId = root.serverId ?: return
+        val quote = rootQuote() ?: return
         val trimmed = body.trim()
         if (trimmed.isEmpty()) return
         // The members named, resolved from the text as the chat's composer
@@ -189,19 +194,105 @@ class ThreadViewModel @Inject constructor(
             null
         }
         viewModelScope.launch {
-            messageRepository.send(
-                chatId,
-                trimmed,
-                ReplyToDto(
-                    messageId = serverId,
-                    senderId = root.senderId,
-                    // Cut exactly as the server will, so the bubble and its
-                    // ack agree.
-                    excerpt = ReplyToDto.excerpt(root.body),
-                ),
-                mentions,
-            )
+            messageRepository.send(chatId, trimmed, quote, mentions)
         }
+    }
+
+    /** The root, as the quote every answer from this screen carries — or null until it is here. */
+    private fun rootQuote(): ReplyToDto? {
+        val root = items.value
+            .filterIsInstance<ChatListItem.MessageItem>()
+            .firstOrNull { it.entity.serverId == rootId }
+            ?.entity ?: return null
+        val serverId = root.serverId ?: return null
+        return ReplyToDto(
+            messageId = serverId,
+            senderId = root.senderId,
+            // Cut exactly as the server will, so the bubble and its ack
+            // agree.
+            excerpt = ReplyToDto.excerpt(root.body),
+        )
+    }
+
+    /**
+     * A sticker was tapped in this screen's panel: decide whether it may
+     * go, and hand [go] the chat and the quote it answers — the ROOT, like
+     * everything sent from here.
+     *
+     * The sticker itself is sent by StickerViewModel, as in the chat. What
+     * is this model's is the question before it: in the member's own `ai`
+     * chat a sticker is a photo to the assistant, so the consent question
+     * is asked first, exactly as the chat's composer asks it
+     * (docs/protocol.md, "Consenting to the assistant") — the same gate,
+     * [AssistantConsent.stickerGate], and never a way around it.
+     */
+    fun beginStickerSend(go: (chatId: Long, replyTo: ReplyToDto) -> Unit) {
+        val quote = rootQuote() ?: return
+        val chatIdNow = chatId
+        val chatKind = chat.value?.kind
+        viewModelScope.launch {
+            val settingsState = settings.state.first()
+            when (
+                AssistantConsent.stickerGate(
+                    chatKind = chatKind,
+                    hasAssistant = settingsState.assistantUserId != null,
+                    processor = settingsState.assistantProcessor,
+                    agreedAt = settingsState.assistantConsentAt,
+                )
+            ) {
+                AssistantConsent.StickerGate.WITHHELD -> Unit
+                AssistantConsent.StickerGate.ASK -> _assistantConsentAsked.value = true
+                AssistantConsent.StickerGate.SEND -> go(chatIdNow, quote)
+            }
+        }
+    }
+
+    /**
+     * "Show text" under the recordings in this chain — the chat's own rule
+     * and dialog (docs/protocol.md, "Transcripts on request").
+     */
+    val transcripts = Transcripts(
+        scope = viewModelScope,
+        settings = settings,
+        repository = transcriptRepository,
+        agree = { familyRepository.setAssistantConsent(true) },
+    )
+
+    /** Whether the consent screen is up, because a sticker would have reached the model. */
+    private val _assistantConsentAsked = MutableStateFlow(false)
+
+    /** What the consent screen must say, or null while it is not up — the chat's own shape. */
+    val assistantConsentAsk: StateFlow<ChatViewModel.AssistantConsentAsk?> =
+        combine(_assistantConsentAsked, settings.state) { asked, settingsState ->
+            val processor = settingsState.assistantProcessor
+            if (!asked || processor.isNullOrBlank()) {
+                null
+            } else {
+                ChatViewModel.AssistantConsentAsk(
+                    processor = processor,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyVision = settingsState.familyAiVision,
+                    transcripts = settingsState.assistantTranscribe,
+                    lookupProviders = AssistantLookups.providers(settingsState.assistantLookups),
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Agree. The stamp is the server's. Nothing is sent afterwards: one tap
+     * sends a sticker, and the tap that raised the question was answered
+     * with the question — the next one goes.
+     */
+    fun agreeToTheAssistant(withLookups: Boolean = false) {
+        viewModelScope.launch {
+            _assistantConsentAsked.value = false
+            familyRepository.agreeToAssistant(withLookups)
+        }
+    }
+
+    /** "Not Now": the screen closes and nothing was sent. */
+    fun dismissAssistantConsent() {
+        _assistantConsentAsked.value = false
     }
 
     fun vote(messageServerId: Long, optionId: Long) {

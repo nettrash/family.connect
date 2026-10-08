@@ -203,6 +203,36 @@ struct SocketFrameTests {
         #expect(frame == .typing(chatID: 42, userID: 9))
     }
 
+    // MARK: ai_error and its optional reason (protocol.md, "The assistant")
+
+    @Test("ai_error without a reason decodes exactly as before")
+    func decodeAIErrorWithoutReason() throws {
+        let frame = try decode(#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#)
+        #expect(frame == .aiError(chatID: 42, messageID: 1339, reason: nil))
+    }
+
+    @Test("ai_error carries the provider's refusal")
+    func decodeAIErrorRefused() throws {
+        let frame = try decode(
+            #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"#)
+        #expect(frame == .aiError(chatID: 42, messageID: 1339, reason: .refused))
+    }
+
+    /// The compatibility rule applied to a VALUE: a reason this client does
+    /// not know is read as absent — never as a malformed frame, which would
+    /// cost the member the failure sentence altogether.
+    @Test("an unknown ai_error reason reads as absent", arguments: [
+        #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "quota"}"#,
+        #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "Refused"}"#,
+        #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": ""}"#,
+        #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": null}"#,
+        #"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": 7}"#,
+    ])
+    func decodeAIErrorUnknownReason(json: String) throws {
+        let frame = try decode(json)
+        #expect(frame == .aiError(chatID: 42, messageID: 1339, reason: nil))
+    }
+
     @Test("member_joined decodes the reduced user object")
     func decodeMemberJoined() throws {
         let frame = try decode("""

@@ -253,8 +253,10 @@ enum ClipboardAttachment {
                     type: type,
                     name: suggestedName(for: type, suggested: suggested),
                     limit: limit)
-                // prepareVideo hands back the source itself when it already
-                // fits; only delete the scratch file when it made a new one.
+                // prepareVideo hands back the source itself when the clip goes
+                // as it is (within the profile, or after a transcode that
+                // failed or did not help — rules A, C and D); only delete the
+                // scratch file when it made a new one.
                 if prepared.fileURL != scratch {
                     try? FileManager.default.removeItem(at: scratch)
                 }

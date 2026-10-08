@@ -487,6 +487,12 @@ public sealed partial class BoardView : UserControl
             PrepOutcome prepared;
             try
             {
+                // Asked first, from the file's first bytes: a video dropped here would otherwise be transcoded only to be refused.
+                if (!await MediaPreparing.IsPhotoAsync(file))
+                {
+                    ShowStatus($"{say.Get("Couldn't pin that photo.")} {PhotoPinning.PhotosOnlyText(say)}");
+                    return;
+                }
                 prepared = await MediaPreparing.PrepareAsync(file);
             }
             catch (Exception e)

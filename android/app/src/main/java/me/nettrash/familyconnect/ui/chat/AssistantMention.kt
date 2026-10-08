@@ -146,13 +146,28 @@ object AssistantMention {
         tokenStart(body)?.let { it until it + DRAW.length }
 
     /**
+     * Is the member in the middle of ASKING for a picture — the token
+     * leads the body and whitespace follows it — whether or not any
+     * words have been typed after it yet?
+     *
+     * [drawPrompt]'s rule minus its last clause, and NOT a second reading
+     * of the wire contract: nothing is sent or highlighted from it. It is
+     * what the composer's hint reads (see [PictureDescriptionHint]), and
+     * the hint has to be there the moment the "ask for a picture" button
+     * leaves `/draw ` behind — which is exactly the draft [drawPrompt]
+     * calls an ordinary message, because nothing has been described yet.
+     */
+    fun isStartingPicture(body: String): Boolean = tokenStart(body, requirePrompt = false) != null
+
+    /**
      * The index of the picture token, if this body is a request.
      *
      * Scans over the ORIGINAL string rather than over trimmed copies, so
      * the index it returns is one the caller can slice with. The rule
-     * itself is [drawPrompt]'s.
+     * itself is [drawPrompt]'s; [requirePrompt] false drops only its last
+     * clause, for [isStartingPicture].
      */
-    private fun tokenStart(body: String): Int? {
+    private fun tokenStart(body: String, requirePrompt: Boolean = true): Int? {
         var index = skipWhitespace(body, 0)
         // One LEADING mention, and only a leading one: `ranges` finds the
         // token anywhere, so the position is checked rather than trusted.
@@ -178,7 +193,7 @@ object AssistantMention {
         if (!body[after].isUnicodeWhitespace()) return null
         // …and the prompt itself must not be empty: `/draw` with nothing
         // but spaces after it is an ordinary message.
-        if (body.substring(after).all { it.isUnicodeWhitespace() }) return null
+        if (requirePrompt && body.substring(after).all { it.isUnicodeWhitespace() }) return null
         return index
     }
 

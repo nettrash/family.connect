@@ -27,6 +27,9 @@ nonisolated enum AppSettings {
         /// The PushKit VoIP token the server has confirmed, beside the
         /// APNs pair above — an incoming call is delivered to this one.
         static let voipToken = "v1.push.voipToken"
+        /// The language POST /devices last told the server this device's
+        /// pushes are written in (docs/protocol.md, "The words of a push").
+        static let pushLanguage = "v1.push.language"
         /// Stores the DISABLED flag, so a missing key reads as "on".
         static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
         /// Stored INVERTED, exactly like the link-preview key above and for
@@ -34,6 +37,14 @@ nonisolated enum AppSettings {
         /// (or any 401) must not silently turn third-party traffic back on
         /// for somebody who opted out of it.
         static let mapPreviewsDisabled = "v1.mapPreviewsDisabled"
+        /// The Mac's menu bar icon and its global shortcut (#80): this
+        /// Mac's, on by default, so both store the DISABLED flag — and
+        /// neither is wiped with the session.
+        static let menuBarDisabled = "v1.mac.menuBarDisabled"
+        static let hotKeyDisabled = "v1.mac.hotKeyDisabled"
+        /// The Mac's own message notifications (#84): this Mac's, on by
+        /// default, so the DISABLED flag — and not wiped with the session.
+        static let notificationsDisabled = "v1.mac.notificationsDisabled"
         /// The board catch-up cursor: the highest board_seq this device
         /// has APPLIED. Local-only and account-scoped, so it is wiped with
         /// the session — a different family's board must never be caught
@@ -46,6 +57,19 @@ nonisolated enum AppSettings {
         /// and a device that upgrades has a meaningful value for the old
         /// one and none for the new (BoardBadge.contentMarkSeed).
         static let boardSeenContentSeq = "v1.board.seenContentSeq"
+        /// The sticker pack's catch-up cursor: the highest pack_seq this
+        /// device has applied. Account-scoped and wiped with the session,
+        /// for the board cursor's reason (docs/protocol.md, "Sticker pack").
+        static let packCursor = "v1.pack.cursor"
+        /// The pack's two limits as `GET /families/mine` last reported
+        /// them. A MISSING key is the answer "this server has no packs",
+        /// which is why neither has a default.
+        static let packMaxItems = "v1.pack.maxItems"
+        static let packMaxItemBytes = "v1.pack.maxItemBytes"
+        /// The pack items this DEVICE sent most recently, newest first.
+        /// Never on the wire: it says something about a person's habits and
+        /// nothing about the family's pack.
+        static let packRecents = "v1.pack.recents"
         /// The assistant, as `GET /families/mine` last reported it. Two
         /// jobs at once: naming its messages in the family chat, where its
         /// reserved account is deliberately absent from the roster, and
@@ -82,10 +106,38 @@ nonisolated enum AppSettings {
         /// key means no assistant is offered at all, which is the honest
         /// answer for a server that names nobody.
         static let assistantProcessor = "v1.assistant.processor"
+        /// Whether this SERVER can turn a recording into text, and the most
+        /// bytes one request may send, as `GET /families/mine` last reported
+        /// them (protocol.md, "Transcripts on request"). Stored the plain way
+        /// round, like `assistantVision`: a missing key reads as "cannot".
+        static let assistantTranscribe = "v1.assistant.transcribe"
+        static let assistantTranscribeMaxBytes = "v1.assistant.transcribeMaxBytes"
+        /// The providers this SERVER's assistant may look things up in, by
+        /// name, as `GET /families/mine` last reported them (protocol.md,
+        /// "Looking things up"). A missing key reads as "no source".
+        static let assistantLookups = "v1.assistant.lookups"
+        /// Whether this SERVER fetches the weather for the daily greeting,
+        /// as `GET /families/mine` last reported it (protocol.md, "Today's
+        /// weather, for places the owner chose"). A missing key reads as
+        /// "does not", which hides the owner's place list.
+        static let assistantGreetingWeather = "v1.assistant.greetingWeather"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
         static let legacyDeviceRegistered = "v1.deviceRegistered"
+        /// The speed voice messages play at — 1×, 1.5× or 2× — as the
+        /// bubble's speed chip last left it (#79). A DEVICE preference: kept
+        /// across sign-outs, never on the wire.
+        static let voicePlaybackRate = "v1.voice.playbackRate"
+        /// Video messages (#79, Phase 3): the two limits `GET /families/mine`
+        /// last reported. A MISSING `max_round_video_ms` is the answer "this
+        /// server predates video messages" — no video entry at all.
+        static let roundVideoMaxMS = "v1.round.maxMS"
+        static let roundVideoMaxBytes = "v1.round.maxBytes"
+        /// The camera "Choose camera" picked on this device (S3.5).
+        static let videoMessageCameraID = "v1.round.cameraID"
+        /// The recorder's first-time line has led to a recording (S7.5).
+        static let videoMessagePreviewTaught = "v1.round.previewTaught"
     }
 
     /// The server URL compiled into this build, or nil for the generic
@@ -156,6 +208,27 @@ nonisolated enum AppSettings {
         set { defaults.set(newValue, forKey: Key.joinPending) }
     }
 
+    /// Whether the Mac keeps running in the menu bar when its window is
+    /// closed (#80, docs/mac-menu-bar-2026-10-07.md). On by default, as
+    /// Windows' "Keep running when the window is closed" is.
+    static var keepsRunningInMenuBar: Bool {
+        get { !defaults.bool(forKey: Key.menuBarDisabled) }
+        set { defaults.set(!newValue, forKey: Key.menuBarDisabled) }
+    }
+
+    /// Whether the Mac raises its own notification for a message or a board
+    /// note (#84) — Windows' "Tell me when a message arrives". On by default.
+    static var desktopNotificationsEnabled: Bool {
+        get { !defaults.bool(forKey: Key.notificationsDisabled) }
+        set { defaults.set(!newValue, forKey: Key.notificationsDisabled) }
+    }
+
+    /// Whether ⌃⌥⌘F brings the Mac's window forward from any app (#80).
+    static var opensWithHotKey: Bool {
+        get { !defaults.bool(forKey: Key.hotKeyDisabled) }
+        set { defaults.set(!newValue, forKey: Key.hotKeyDisabled) }
+    }
+
     /// Whether a message's first web link gets a preview card. On by
     /// default, but switchable because building one means THIS device
     /// requests the linked page — the only routine traffic the app sends
@@ -178,6 +251,60 @@ nonisolated enum AppSettings {
         set { defaults.set(!newValue, forKey: Key.mapPreviewsDisabled) }
     }
 
+    /// The voice-message playback speed this device remembers: one of
+    /// `VoicePlaybackSpeed.rates`, 1 when unset or unknown.
+    static var voicePlaybackRate: Double {
+        get {
+            let stored = defaults.double(forKey: Key.voicePlaybackRate)
+            return VoicePlaybackSpeed.rates.contains(stored) ? stored : 1
+        }
+        set { defaults.set(newValue, forKey: Key.voicePlaybackRate) }
+    }
+
+    /// `max_round_video_ms` as `GET /families/mine` last reported it, or
+    /// nil when this server takes no video messages (docs/protocol.md,
+    /// "Video messages"). NIL IS THE CAPABILITY CHECK, as the pack's limits
+    /// are: no video entry against a server that would deliver a square.
+    static var roundVideoMaxMS: UInt64? {
+        get { (defaults.object(forKey: Key.roundVideoMaxMS) as? NSNumber)?.uint64Value }
+        set {
+            if let newValue {
+                defaults.set(NSNumber(value: newValue), forKey: Key.roundVideoMaxMS)
+            } else {
+                defaults.removeObject(forKey: Key.roundVideoMaxMS)
+            }
+        }
+    }
+
+    /// `max_round_video_bytes`: a clip over it goes as a regular video (S3.6).
+    static var roundVideoMaxBytes: Int? {
+        get { defaults.object(forKey: Key.roundVideoMaxBytes) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.roundVideoMaxBytes)
+            } else {
+                defaults.removeObject(forKey: Key.roundVideoMaxBytes)
+            }
+        }
+    }
+
+    /// Whether this server takes video messages at all.
+    static var offersRoundVideo: Bool { roundVideoMaxMS != nil }
+
+    /// The camera chosen on this device, by `uniqueID` — a device's own
+    /// business, kept across sign-outs like any other preference of it.
+    static var videoMessageCameraID: String? {
+        get { defaults.string(forKey: Key.videoMessageCameraID) }
+        set { defaults.set(newValue, forKey: Key.videoMessageCameraID) }
+    }
+
+    /// "Only you can see this until you start recording." is shown until
+    /// the first recording on this device (S3.4, S7.5).
+    static var videoMessagePreviewTaught: Bool {
+        get { defaults.bool(forKey: Key.videoMessagePreviewTaught) }
+        set { defaults.set(newValue, forKey: Key.videoMessagePreviewTaught) }
+    }
+
     /// The APNs token (lowercase hex) most recently accepted by
     /// POST /devices. Paired with `pushDeviceID` below — PushRegistrar
     /// sets both together after a 2xx, so "token differs from stored" is
@@ -191,6 +318,20 @@ nonisolated enum AppSettings {
                 defaults.set(newValue, forKey: Key.pushToken)
             } else {
                 defaults.removeObject(forKey: Key.pushToken)
+            }
+        }
+    }
+
+    /// The language POST /devices most recently confirmed — what the
+    /// server writes this device's pushes in (#82). Beside the token for the
+    /// same reason: "differs from what was sent" is a re-POST condition.
+    static var pushLanguage: String? {
+        get { defaults.string(forKey: Key.pushLanguage) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.pushLanguage)
+            } else {
+                defaults.removeObject(forKey: Key.pushLanguage)
             }
         }
     }
@@ -258,6 +399,55 @@ nonisolated enum AppSettings {
     static var boardSeenContentSeq: Int64 {
         get { Int64(defaults.integer(forKey: Key.boardSeenContentSeq)) }
         set { defaults.set(Int(newValue), forKey: Key.boardSeenContentSeq) }
+    }
+
+    /// Highest pack_seq applied on this device; 0 = nothing yet, which is
+    /// what makes the first catch-up a full read of the pack rather than a
+    /// replay of every sticker the family ever added and removed.
+    static var packCursor: Int64 {
+        get { Int64(defaults.integer(forKey: Key.packCursor)) }
+        set { defaults.set(Int(newValue), forKey: Key.packCursor) }
+    }
+
+    /// How many stickers the family's pack may hold, or nil when this
+    /// server has no packs at all.
+    ///
+    /// NIL IS THE CAPABILITY CHECK (docs/protocol.md, "What old clients
+    /// and old servers do"): a server that predates the pack omits the
+    /// field, and the composer then offers no sticker button and the
+    /// Family screen no pack — rather than a door that answers 404.
+    static var packMaxItems: Int? {
+        get { defaults.object(forKey: Key.packMaxItems) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.packMaxItems)
+            } else {
+                defaults.removeObject(forKey: Key.packMaxItems)
+            }
+        }
+    }
+
+    /// The ceiling on one sticker's bytes — a pack item's, and a sticker
+    /// message's picture, which is the same number.
+    static var packMaxItemBytes: Int? {
+        get { defaults.object(forKey: Key.packMaxItemBytes) as? Int }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.packMaxItemBytes)
+            } else {
+                defaults.removeObject(forKey: Key.packMaxItemBytes)
+            }
+        }
+    }
+
+    /// Whether this server has sticker packs at all.
+    static var offersStickers: Bool { packMaxItems != nil }
+
+    /// Pack item ids this device sent most recently, newest first
+    /// (`StickerRecents` holds the rule and the cap).
+    static var packRecents: [Int64] {
+        get { (defaults.array(forKey: Key.packRecents) as? [Int] ?? []).map(Int64.init) }
+        set { defaults.set(newValue.map { Int($0) }, forKey: Key.packRecents) }
     }
 
     /// The pair, read and written together — a badge that used one mark
@@ -362,6 +552,58 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// Whether this server has a transcription deployment — the whole of
+    /// the server's half of "Show text" (protocol.md, "Transcripts on
+    /// request"). False here means the action is ABSENT, not disabled.
+    static var assistantTranscribe: Bool {
+        get { defaults.bool(forKey: Key.assistantTranscribe) }
+        set { defaults.set(newValue, forKey: Key.assistantTranscribe) }
+    }
+
+    /// `assistant.transcribe_max_bytes`, or nil when the server did not say
+    /// (it says only while `transcribe` is true). `TranscriptDoor` reads nil
+    /// as the protocol's default, 25 MiB.
+    static var assistantTranscribeMaxBytes: Int64? {
+        get {
+            (defaults.object(forKey: Key.assistantTranscribeMaxBytes) as? NSNumber)?.int64Value
+        }
+        set {
+            if let newValue {
+                defaults.set(NSNumber(value: newValue), forKey: Key.assistantTranscribeMaxBytes)
+            } else {
+                defaults.removeObject(forKey: Key.assistantTranscribeMaxBytes)
+            }
+        }
+    }
+
+    /// `assistant.lookups`, or nil when the server has no lookup source.
+    /// Never an empty list: nil is the one spelling of "nothing to name",
+    /// and every lookup surface — the owner's switch, the consent lines, the
+    /// member's Settings section — is ABSENT then rather than disabled.
+    static var assistantLookups: [String]? {
+        get {
+            let names = defaults.stringArray(forKey: Key.assistantLookups) ?? []
+            return names.isEmpty ? nil : names
+        }
+        set {
+            if let newValue, !newValue.isEmpty {
+                defaults.set(newValue, forKey: Key.assistantLookups)
+            } else {
+                defaults.removeObject(forKey: Key.assistantLookups)
+            }
+        }
+    }
+
+    /// `assistant.greeting_weather`: this server posts greetings AND may
+    /// fetch the weather for them. False here means the owner's place list
+    /// is ABSENT — its footnote promises a forecast, and a list that could
+    /// only be kept and never used would promise something the server
+    /// cannot do.
+    static var assistantGreetingWeather: Bool {
+        get { defaults.bool(forKey: Key.assistantGreetingWeather) }
+        set { defaults.set(newValue, forKey: Key.assistantGreetingWeather) }
+    }
+
     /// The picture token the server named, or nil when it named none.
     static var assistantDraw: String? {
         get { defaults.string(forKey: Key.assistantDraw) }
@@ -396,6 +638,10 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.assistantVision)
         defaults.removeObject(forKey: Key.assistantImages)
         defaults.removeObject(forKey: Key.assistantDraw)
+        defaults.removeObject(forKey: Key.assistantTranscribe)
+        defaults.removeObject(forKey: Key.assistantTranscribeMaxBytes)
+        defaults.removeObject(forKey: Key.assistantLookups)
+        defaults.removeObject(forKey: Key.assistantGreetingWeather)
         // The operator's half of the daily greeting is a fact about THIS
         // server, like the three above; a different server must not inherit it.
         defaults.removeObject(forKey: Key.greetingsEnabled)
@@ -408,6 +654,17 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
         defaults.removeObject(forKey: Key.boardSeenContentSeq)
+        // The pack is this family's on this server: its cursor, its limits
+        // and which of its stickers this person reaches for all go with
+        // the session, like the board's marks above.
+        defaults.removeObject(forKey: Key.packCursor)
+        defaults.removeObject(forKey: Key.packMaxItems)
+        defaults.removeObject(forKey: Key.packMaxItemBytes)
+        defaults.removeObject(forKey: Key.packRecents)
+        // Video messages are a fact about THIS server, like the pack's
+        // limits: a different server must not inherit the door.
+        defaults.removeObject(forKey: Key.roundVideoMaxMS)
+        defaults.removeObject(forKey: Key.roundVideoMaxBytes)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
     }

@@ -14,8 +14,17 @@
     --tint: #2f6fd0;
     --mine: #dceafd;
     --danger: #b3261e;
+    --warn: #b45309;
     --soft: #eef0f5;
     --radius: 12px;
+    /* Voice and video messages (#79, the approved design): recording red,
+     * the unplayed bars of a waveform on a panel and on the tinted balloon,
+     * the accent's soft fill behind the speed chip, the circle's shadow. */
+    --rec: #e5484d;
+    --wave-off: #b9c0d0;
+    --mine-wave-off: #8fb1e3;
+    --tint-soft: #dceafd;
+    --shadow: 0 6px 18px rgb(20 24 40 / 16%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -28,7 +37,13 @@
         --tint: #6fa5f5;
         --mine: #24405f;
         --danger: #f2b8b5;
+        --warn: #fbbf24;
         --soft: #262631;
+        --rec: #ff6369;
+        --wave-off: #4a4f60;
+        --mine-wave-off: #4f6f9c;
+        --tint-soft: #24405f;
+        --shadow: 0 6px 18px rgb(0 0 0 / 50%);
     }
 }
 
@@ -455,22 +470,133 @@ button.link, .link {
 .file-size { font-size: 12px; opacity: .7; white-space: nowrap; }
 .open-maps { margin-left: auto; font-size: 12px; color: var(--tint); white-space: nowrap; }
 
+/* A VOICE MESSAGE (#79, the approved design): a round accent play button,
+ * the waveform the sender measured — played bars in the accent colour, a
+ * tap or a drag seeks — and under it the time in tabular digits, the
+ * unplayed dot and, while it plays, the speed chip. The balloon is the
+ * bubble's own. */
 .audio {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: 28px auto;
+    column-gap: 10px;
+    row-gap: 2px;
+    align-items: center;
+    width: 280px;
+    max-width: 100%;
+    padding: 2px 2px 0 0;
+}
+.audio-toggle {
+    grid-row: 1 / span 2;
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: var(--tint);
+    color: #fff;
+}
+.audio-toggle .voice-glyph, .local-play .voice-glyph, .round-play svg { width: 18px; height: 18px; display: block; }
+.audio-toggle.is-loading::before {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+.audio-toggle:focus-visible, .audio-wave:focus-visible, .audio-speed:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+/* The waveform: the bars of docs/protocol.md, "A voice note's waveform",
+ * each (2 + level) / 17 of the height. Its hit area is the whole strip;
+ * a vertical swipe still scrolls the chat. */
+.audio-wave {
     display: flex;
     align-items: center;
-    gap: 10px;
-    width: 260px;
-    max-width: 100%;
-    padding: 6px 8px;
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--ink) 5%, transparent);
-    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    gap: 2px;
+    height: 28px;
+    min-width: 0;
+    cursor: pointer;
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    border-radius: 4px;
 }
-.audio-toggle { width: 36px; height: 36px; border-radius: 50%; padding: 0; flex: none; }
-.audio-track { display: grid; gap: 2px; flex: 1; min-width: 0; }
-.audio-track input { width: 100%; accent-color: var(--tint); margin: 0; }
-.audio-times { display: flex; justify-content: space-between; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.audio-wave > i, .chip-wave > i {
+    flex: 1 1 0;
+    min-width: 1px;
+    max-width: 4px;
+    border-radius: 2px;
+    background: var(--wave-off);
+}
+.audio.on-tint .audio-wave > i:not(.is-played) { background: var(--mine-wave-off); }
+.audio-wave > i.is-played, .chip-wave > i.is-played { background: var(--tint); }
+.audio-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    color: var(--muted);
+}
+.audio-time, .chip-time, .recording-time {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 12.5px;
+}
+.audio-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--tint);
+    flex: none;
+}
+.audio-speed {
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: var(--tint-soft);
+    color: var(--tint);
+    font-size: 11.5px;
+    font-weight: 700;
+    line-height: 1.5;
+    animation: fade-in 150ms ease-out;
+}
 .audio audio { display: none; }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+/* A finger takes 44 px without the button growing. */
+@media (pointer: coarse) {
+    .audio-toggle::after, .audio-speed::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - 44px) / 2));
+    }
+    .audio-speed { position: relative; }
+}
+@media (forced-colors: active) {
+    .audio-wave > i, .chip-wave > i, .audio-dot, .recording-meter > i { forced-color-adjust: none; background: GrayText; }
+    .audio-wave > i.is-played, .chip-wave > i.is-played, .audio-dot { background: Highlight; }
+}
+/* The text of a recording, under its player (docs/protocol.md, "Transcripts
+ * on request"): as wide as the player, selectable, and plainly not the
+ * message's own words. */
+.transcript { width: 260px; max-width: 100%; display: grid; gap: 2px; justify-items: start; font-size: 13px; }
+.transcript p { margin: 0; }
+.transcript-text {
+    width: 100%;
+    padding: 6px 8px;
+    border-left: 2px solid color-mix(in srgb, var(--ink) 20%, transparent);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+}
+.transcript-text .is-silence, .transcript-status, .transcript-failure { color: var(--muted); font-style: italic; }
+.transcript-status, .transcript-failure { padding: 2px 0; }
+.transcript-action { font-size: 13px; padding: 2px 0; }
+.transcript-marker { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* --- the viewer ------------------------------------------------------------ */
 .viewer {
@@ -598,6 +724,9 @@ button.link, .link {
 .menu-reactions { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .menu-emoji { background: transparent; padding: 4px; font-size: 18px; }
 .menu-section { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; border-top: 1px solid var(--line); }
+/* "Playback speed  1×": the item, and the value it is at. */
+.menu > button.menu-value-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.menu-value { color: var(--muted); font-variant-numeric: tabular-nums; }
 .reactor { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; }
 
 /* Not delivered yet, and not delivered at all: neither may look like a
@@ -638,6 +767,278 @@ button.mention { cursor: pointer; }
 .bubble.is-emoji-only { background: transparent; border-color: transparent; padding: 0 2px; }
 .emoji-only { line-height: 1.1; margin: 0; }
 
+/* --- stickers, the CHAT kind --------------------------------------------- *
+ * `.sticker` is already taken: it is a note on the family board, further
+ * down. These are `.chat-sticker` for the one in a message and `.pack-*` for
+ * the family's pack, so that neither rule set ever reaches the other's.
+ *
+ * A sticker is drawn with NO BUBBLE (docs/protocol.md, "How it is drawn"):
+ * the picture alone, its transparency showing the chat behind it. So the
+ * balloon goes, and the box has no background of its own — not even the
+ * grey a photo tile waits in. The box is one size for every sticker
+ * (views/stickers.rs sets it, from fc_text::pack::BOX) and `contain` fits
+ * the picture into it whole: never cropped, never at its own pixel size. */
+.bubble.is-chat-sticker { background: transparent; border-color: transparent; padding: 0; }
+.bubble.is-chat-sticker .bubble-foot { padding: 2px 4px 0; }
+/* A sticker that answers something keeps its quote readable over whatever
+ * the chat's background is, in the balloon the sticker itself gave up. */
+.bubble.is-chat-sticker .quote { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tint); border-radius: 8px; padding: 4px 8px; margin: 0 0 4px; }
+.bubble.is-chat-sticker.is-mine .quote { background: var(--mine); border-color: transparent; border-left-color: var(--tint); }
+.bubble.is-chat-sticker.is-failed { border-color: var(--danger); padding: 4px; }
+.chat-sticker {
+    position: relative;
+    display: block;
+    flex: none;
+    max-width: 100%;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    cursor: pointer;
+}
+.chat-sticker img, .pack-cell img, .chat-sticker-stage img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* A send that failed is not waiting for anything. */
+.bubble.is-failed .chat-sticker.is-loading::after { content: none; }
+.chat-sticker.is-loading::after, .pack-cell.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+
+/* --- video messages: the circle (the plan for #79, S5.2, S5.3) ----------- *
+ * Drawn with NO BUBBLE, like a sticker. 200 across in a window under 720 px
+ * and 240 from 720 px: views/round_tile.rs hands both diameters over from
+ * fc_text::record::round_diameter, and the window picks one here. The square
+ * poster fills the circle; until it lands, a neutral disc of the same size,
+ * so the row never changes height. */
+.bubble.is-round-video { background: transparent; border-color: transparent; padding: 0; }
+.bubble.is-round-video .bubble-foot { padding: 2px 4px 0; }
+.bubble.is-round-video .quote { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tint); border-radius: 8px; padding: 4px 8px; margin: 0 0 4px; }
+.bubble.is-round-video.is-mine .quote { background: var(--mine); border-color: transparent; border-left-color: var(--tint); }
+.bubble.is-round-video.is-failed { border-color: var(--danger); padding: 4px; }
+/* Room all round for the ring outside the circle and its shadow. */
+.round-video { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 0 0 2px; padding: 6px; max-width: 100%; min-width: 0; }
+.round-frame {
+    position: relative;
+    width: var(--round-regular, 240px);
+    max-width: 100%;
+    aspect-ratio: 1;
+}
+@media (max-width: 719.98px) {
+    .round-frame { width: var(--round-compact, 200px); }
+}
+.round-face {
+    position: absolute;
+    inset: 0;
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    /* Safari clips a playing <video> to the radius only on its own layer. */
+    isolation: isolate;
+    background: color-mix(in srgb, var(--ink) 12%, var(--bg));
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.round-face:focus-visible { outline: 2px solid var(--tint); outline-offset: 8px; }
+.round-poster, .round-player {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+}
+.round-player.is-idle { opacity: 0; }
+.round-play {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 48px;
+    height: 48px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 45%);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+    color: #fff;
+    padding-left: 2px;
+    pointer-events: none;
+    transition: opacity 200ms ease-out;
+}
+/* Fades out while it plays — and back at a pause. */
+.round-play.is-gone { opacity: 0; }
+.round-face.is-dimmed .round-play:not(.is-gone) { opacity: .45; }
+/* The length at the bottom centre, on a dark translucent capsule — and in
+ * it, until THIS DEVICE has played it, the dot. */
+.round-duration {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgb(0 0 0 / 55%);
+    color: #fff;
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+}
+.round-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #fff;
+}
+/* ONE ring, OUTSIDE the circle: 6 px past its edge all round, so it never
+ * lies over a face. */
+.round-ring {
+    position: absolute;
+    inset: -6px;
+    width: calc(100% + 12px);
+    height: calc(100% + 12px);
+    pointer-events: none;
+    overflow: visible;
+}
+/* The ring is drawn in its own 100-unit box, 12 px wider than the circle,
+ * so its width is in those units: 1.2 of them is 3 px at 240 across (a
+ * 252 box), 1.42 is 3 px at 200 (a 212 box) (S5.3).
+ * NOT `vector-effect: non-scaling-stroke`: under it Chrome lays the dash
+ * pattern out in screen pixels and ignores `pathLength`, and the one arc
+ * drew as several dashes round the circle. The dash itself is in the box's
+ * units too (round_tile.rs, `ring_dash`). */
+.round-ring circle {
+    fill: none;
+    stroke: var(--tint);
+    stroke-width: 1.2px;
+    stroke-linecap: round;
+}
+.round-ring.is-progress circle { transition: stroke-dasharray .25s linear; }
+.round-ring.is-loading, .round-ring.is-sending { animation: spin 0.9s linear infinite; }
+/* The sender's own, going up: a thin neutral ring, 2 px (S5.6). */
+.round-ring.is-sending circle { stroke: color-mix(in srgb, var(--ink) 40%, transparent); stroke-width: .8px; }
+@media (max-width: 719.98px) {
+    .round-ring circle { stroke-width: 1.42px; }
+    .round-ring.is-sending circle { stroke-width: .95px; }
+}
+/* The expand control: a 28 glyph in a 44 target at the top trailing edge. */
+.round-expand {
+    position: absolute;
+    top: 0;
+    inset-inline-end: 0;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+.round-expand > span {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 50%);
+    color: #fff;
+    font-size: 16px;
+}
+.round-failed { margin: 0; max-width: var(--round-regular, 240px); color: var(--danger); font-size: 13px; }
+.round-transcript { max-width: 320px; color: var(--ink); }
+@media (prefers-reduced-motion: reduce) {
+    .round-ring.is-progress circle { transition: none; }
+    .round-ring.is-loading, .round-ring.is-sending { animation: none; }
+    .round-play { transition: none; }
+}
+/* Under Increase Contrast the ring and the dot use the system's colours
+ * (S6, "Low vision"). */
+@media (forced-colors: active) {
+    .round-ring circle, .round-dot { forced-color-adjust: none; }
+    .round-ring circle { stroke: Highlight; }
+    .round-dot { background: Highlight; }
+}
+@media (prefers-contrast: more) {
+    .round-ring circle { stroke: var(--ink); }
+    .round-dot { background: #fff; outline: 1px solid #000; }
+}
+
+/* The panel the composer's sticker button opens: above the box, like the
+ * attach menu, and scrolling by itself when the pack is bigger than it.
+ *
+ * It is placed against the COMPOSER (`.composer-wrap`, which is the
+ * positioned box), not against its own button: the button is the second
+ * tool, some sixty pixels in, and a panel hung from its left edge and sized
+ * from the window ran past the right edge of every phone — 27 pixels at
+ * 360 wide — where `.conversation` clips it, scrollbar and all. So the
+ * button's wrapper gives up the `position: relative` every other `.attach`
+ * has, and the panel is as wide as the composer allows, whatever the
+ * composer is in: a phone, the pane beside the chat list, a thread. */
+.attach.pack-menu { position: static; }
+.pack-panel {
+    position: absolute;
+    z-index: 5;
+    bottom: 100%;
+    left: 16px;
+    margin-bottom: 6px;
+    width: min(348px, calc(100% - 32px));
+    max-height: min(320px, 50vh);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+    padding: 8px;
+    outline: none;
+}
+.pack-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; list-style: none; margin: 0; padding: 0; }
+.pack-cell {
+    position: relative;
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    padding: 4px;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+}
+button.pack-cell { cursor: pointer; }
+button.pack-cell:hover:not(:disabled), button.pack-cell:focus-visible { background: var(--soft); }
+button.pack-cell:disabled { cursor: default; }
+/* The pack on the Family screen: each sticker with its own way out, for
+ * whoever may take it. */
+.pack-item { position: relative; }
+.pack-item .staged-remove { position: absolute; top: 0; right: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 50%; width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 11px; }
+/* A width of its own: `input` is 100% wide by default, which in a row of
+ * actions is a row of its own. */
+.pack-label { width: 190px; flex: 0 1 190px; min-width: 0; }
+/* A sticker shown larger: at most the 512 a made one is, and inside the
+ * dialog whatever the window's size. */
+.dialog.chat-sticker-view { width: min(560px, 100%); }
+/* The picture is laid OVER the stage rather than in it: a percentage
+ * height inside an auto-sized box resolves against the picture's own size,
+ * and a 2000-pixel sticker opened over the button under it. The stage is a
+ * square as wide as there is room for; the picture fits in it whole. */
+.chat-sticker-stage { position: relative; display: grid; place-items: center; width: min(512px, 100%, 56vh); aspect-ratio: 1; justify-self: center; }
+.chat-sticker-stage img { position: absolute; inset: 0; }
+
 /* --- polls ---------------------------------------------------------------- */
 
 .poll { display: grid; gap: 6px; margin-top: 6px; min-width: 240px; }
@@ -664,6 +1065,10 @@ button.mention { cursor: pointer; }
 .typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
 
 .composer-wrap { flex: none; border-top: 1px solid var(--line); background: var(--panel); position: relative; }
+/* Under the video recorder (#79, decision 41): not drawn at all — hidden,
+ * not dimmed — and inert, so nothing of it shows through or takes a tap;
+ * it keeps its place, which the recorder measures its row by. */
+.composer-wrap.is-covered { visibility: hidden; }
 
 .composer {
     flex: none;
@@ -705,7 +1110,17 @@ button.mention { cursor: pointer; }
 .media-notice .link { margin-left: auto; }
 
 .attach { position: relative; flex: none; }
-.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; }
+.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px;
+    max-width: min(320px, calc(100vw - 32px)); }
+/* The paperclip's menu (#78): every line an icon in a fixed-width column,
+ * so the labels align, and its three groups parted by a hairline. A label
+ * WRAPS beside its icon rather than pushing the menu past a narrow pane —
+ * enlarged text and "Show the Assistant a Photo…" would otherwise be cut off
+ * by the conversation's overflow: hidden (PR #87 review). */
+.attach-menu > button.menu-icon-row { display: flex; align-items: flex-start; gap: 8px; }
+.attach-menu .menu-label { min-width: 0; overflow-wrap: anywhere; }
+.attach-menu .menu-icon { flex: none; width: 1.5em; text-align: center; line-height: inherit; }
+.attach-menu > hr.menu-separator { width: auto; height: 0; margin: 3px 4px; border: 0; border-top: 1px solid var(--line); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 4; }
 .hidden-picker { display: none; }
 
@@ -734,18 +1149,216 @@ button.mention { cursor: pointer; }
 .staged-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .staged-remove { background: transparent; color: var(--muted); padding: 2px 6px; flex: none; }
 
-.recording {
+/* THE SEND SLOT (#79, S1.3): one fixed icon button — Send with something
+ * to send, a microphone without, the Send arrow or the Stop square while a
+ * recording runs — so the row never jumps as it changes. Its word stays in
+ * it as visually hidden text. The hit area grows on a coarse pointer, the
+ * button and the bar do not (S1.1). */
+.slot-wrap { position: relative; flex: none; }
+.composer .slot {
     flex: none;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    position: relative;
+    /* A finger held on it is not a selection and not the browser's callout
+     * (S8.8) — on this button only, never the page. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+}
+.composer .slot.is-dimmed { opacity: .5; }
+.composer .slot svg { width: 22px; height: 22px; display: block; }
+/* Send ↔ microphone: a 150 ms cross-fade, none under reduced motion. */
+.slot-icon { animation: slot-in 150ms ease-out; }
+@keyframes slot-in { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: none; } }
+.slot-menu { top: auto; bottom: 100%; right: 0; left: auto; margin-bottom: 6px; }
+
+/* THE RECORDING ROW (S2.4), as the approved design draws it: in the
+ * composer's own row, in the field's place, at the same height — Delete,
+ * the pulsing red dot, the time in monospaced digits, the live waveform
+ * scrolling in from the right, Stop — before the slot. It cross-fades in
+ * over 150 ms (none under Reduce Motion). */
+.recording {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
+    min-height: 40px;
+    animation: fade-in 150ms ease-out;
+}
+/* Round icon buttons, their words kept for screen readers. */
+.recording button.secondary {
+    flex: none;
+    position: relative;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    border: 0;
+    display: grid;
+    place-items: center;
+}
+.recording button.secondary:hover { background: var(--soft); }
+.recording .recording-stop { color: var(--ink); }
+.recording .row-icon { width: 22px; height: 22px; display: block; }
+/* 8 units, between full and 40 % once a second (S2.9). */
+.recording-dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--rec);
+    animation: recording-pulse .5s ease-in-out infinite alternate;
+}
+@keyframes recording-pulse { from { opacity: 1; } to { opacity: .4; } }
+.recording-time { flex: none; }
+.recording-time.is-warning, .recording-left { color: var(--warn); }
+.recording-left { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The live waveform: the newest bar on the right, the oldest scrolling off
+ * the left; the bars on the sent waveform's own scale. */
+.recording-meter, .recording-spacer {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    justify-content: flex-end;
+    overflow: hidden;
+}
+.recording-meter > i { flex: none; width: 3px; min-height: 2px; border-radius: 2px; background: var(--rec); opacity: .8; }
+/* On the narrowest the waveform goes first (S2.4). */
+@media (max-width: 360px) {
+    .recording-meter { visibility: hidden; }
+}
+
+/* Read by a screen reader, not drawn: the slot's word, the announcements. */
+.visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* A recording's ▶ — a voice note in review, one that was not sent (S2.7,
+ * S2.8) — a round accent button, dimmed while another records (S1.7). */
+.local-play {
+    flex: none;
+    position: relative;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--tint);
+    color: #fff;
+}
+.local-play .voice-glyph { width: 14px; height: 14px; }
+.local-play.is-dimmed, .audio-toggle.is-dimmed { opacity: .5; }
+.local-play + audio { display: none; }
+/* The review chip (S2.7): ▶, the mini waveform, the length, ✕. */
+.staged.is-voice {
+    width: min(360px, 100%);
+    max-width: 360px;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 14px;
+    background: var(--panel);
+    animation: fade-in 150ms ease-out;
+}
+.chip-wave { flex: 1; min-width: 40px; height: 22px; display: flex; align-items: center; gap: 2px; }
+.chip-time { flex: none; color: var(--muted); }
+.staged.is-voice .staged-remove, .not-sent .not-sent-delete {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    background: transparent;
+}
+.staged.is-voice .row-icon, .not-sent .row-icon { width: 16px; height: 16px; display: block; }
+
+/* A voice message that was not sent (#79, S2.8): a row of its own above the
+ * box — the not-sent chip, with its own Send and ✕, never carried by another
+ * Send — and the reply and caption it was recorded with under it. */
+.not-sent {
+    flex: none;
+    display: grid;
+    gap: 4px;
     padding: 8px 16px;
     border-top: 1px solid var(--line);
     background: var(--panel);
-    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    animation: fade-in 150ms ease-out;
 }
-.recording-dot { color: var(--danger); animation: blink 1s steps(2) infinite; }
-.recording .secondary { margin-left: auto; background: transparent; color: var(--tint); }
+.not-sent-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(420px, 100%);
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+    border-radius: 14px;
+    background: var(--bg);
+}
+.not-sent-badge { flex: none; color: var(--warn); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.not-sent-text { min-width: 0; display: grid; gap: 2px; padding-inline-start: 8px; }
+.not-sent-quote, .not-sent-caption { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.not-sent .not-sent-send { flex: none; font-weight: 600; font-size: 14px; padding: 4px 6px; }
+/* A finger needs room the pointer does not (S1.1: 44 CSS px on a coarse
+ * pointer) — the hit area grows, the row does not. */
+@media (pointer: coarse) {
+    .not-sent .link { position: relative; }
+    /* The slot, the recording row's buttons and a recording's ▶ and ✕ take
+     * a 44-px finger without growing: the hit area reaches past them. */
+    .composer .slot::after,
+    .recording button.secondary::after,
+    .local-play::after,
+    .not-sent .link::after,
+    .staged.is-voice .staged-remove::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - 44px) / 2));
+    }
+}
+
+/* Under Reduce Motion nothing pulses, sweeps or fades in: the dot is
+ * steady, and every change is a cut. */
+@media (prefers-reduced-motion: reduce) {
+    .slot-icon, .recording-dot, .recording, .staged.is-voice, .not-sent,
+    .audio-speed, .audio-toggle.is-loading::before { animation: none; }
+}
+
+/* In the system's high-contrast colours the dot and the waveform are drawn
+ * in them, rather than painted over with the background like any other box
+ * (S6, "Low vision"). */
+@media (forced-colors: active) {
+    .recording-dot, .recording-meter > i { forced-color-adjust: none; }
+    .recording-dot { background: CanvasText; }
+    .recording-meter > i { background: Highlight; }
+}
+
+/* DIMMED, NOT DISABLED (S1.3): it looks unavailable, stays focusable and
+ * clickable, and says why instead of acting. */
+.menu > button.is-dimmed { opacity: .5; }
 
 /* A drag over the pane: an accent border, as the Mac draws one. */
 .conversation.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
@@ -803,6 +1416,7 @@ button.mention { cursor: pointer; }
 .option-row { display: flex; gap: 6px; align-items: center; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .dialog-actions .secondary { background: transparent; color: var(--tint); }
+.dialog-actions.consent-choice { flex-wrap: wrap; }
 
 .emoji-picker { width: min(420px, 100%); }
 .emoji-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1244,6 +1858,9 @@ button.mention { cursor: pointer; }
 
 .muted { color: var(--muted); }
 .hint { font-size: 13px; color: var(--muted); margin: 0; }
+/* Under an event's backdrop button while the consent question is open: the
+   composer's line, set as the hint beside it is. */
+.note-sheet .consent-notice { font-size: 13px; margin: 0; }
 .visually-hidden {
     position: absolute;
     width: 1px;
@@ -1357,6 +1974,13 @@ input.code { text-transform: uppercase; }
 .stepper { display: inline-flex; align-items: center; gap: 4px; }
 .stepper input { width: 5em; text-align: center; }
 .stepper .link { font-size: 18px; padding: 0 8px; }
+/* The greeting's weather places: one name per row, its remove button at
+ * the end; dimmed (and still editable) while the greeting itself is off. */
+.place-rows { display: grid; gap: 6px; }
+.place-row { flex-wrap: nowrap; }
+.place-row input { flex: 1; min-width: 0; }
+.place-row .link { font-size: 18px; padding: 0 8px; }
+.greeting-places.is-dimmed > :not(.error) { opacity: .6; }
 .version { text-align: center; font-size: 12px; color: var(--muted); margin: 0; }
 .members { list-style: none; margin: 0; padding: 0; display: grid; }
 .member-row {
@@ -1473,3 +2097,311 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     background: #000;
 }
 .call-buttons { display: flex; gap: 4px; flex: none; }
+
+/* --- the video message: the way in, and the recorder (#79, S1.4, S3) ------ */
+
+/* THE VIDEO BUTTON, inside the empty field at its trailing edge, centred on
+ * its one line: a 22-px glyph, its box as tall as the slot beside it, so the
+ * row never grows. The field leaves it room, so a placeholder never runs
+ * under it. On a coarse pointer the hit area reaches 44 (S1.1). */
+.composer textarea.has-door { padding-right: 44px; padding-inline-end: 44px; }
+.composer .video-door {
+    flex: none;
+    position: relative;
+    z-index: 1;
+    width: 40px;
+    height: 40px;
+    margin-inline-start: -48px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: var(--tint);
+    border-radius: 50%;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+}
+.composer .video-door.is-dimmed { opacity: .5; }
+.composer .video-door svg { width: 22px; height: 22px; display: block; }
+@media (pointer: coarse) {
+    .composer .video-door::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - 44px) / 2));
+    }
+}
+
+/* THE RECORDER (S3.3): the whole window, taking all input. Revised
+ * 2026-10-06 (decision 41): on a phone the chat competed with the camera
+ * circle and the composer showed through the controls. Now the
+ * conversation is blurred under black at 60 % — 85 % on a narrow window —
+ * and everything else is black at 80 %; opaque where transparency is
+ * reduced. The reply being answered is quoted in the recorder's own banner.
+ * The pane is where the conversation is; the controls stand on their own
+ * solid bar where the composer's row is, and the composer is not drawn. */
+.recorder {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    /* Clipped, never scrolled: a focused control below the fold of a short
+     * window must not slide the whole recorder up to show it. */
+    overflow: hidden;
+    overflow: clip;
+    color: #fff;
+    animation: recorder-in 200ms ease-out;
+}
+@keyframes recorder-in { from { opacity: 0; } to { opacity: 1; } }
+.recorder-pane {
+    position: absolute;
+    left: var(--pane-left, 0px);
+    top: var(--pane-top, 0px);
+    width: var(--pane-width, 100%);
+    height: var(--pane-height, 100%);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    background: rgb(0 0 0 / 60%);
+    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 80%);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+@media (max-width: 719.98px) {
+    .recorder-pane { background: rgb(0 0 0 / 85%); }
+}
+@media (prefers-reduced-transparency: reduce) {
+    .recorder-pane { background: #000; box-shadow: 0 0 0 100vmax #000; }
+}
+/* The status — "Not recording", the red dot and the clock, "Video message ·
+ * 0:23" — in its own capsule above the circle, never over the chat. */
+.recorder-status {
+    justify-self: center;
+    max-width: calc(100% - 32px);
+    margin-top: max(16px, env(safe-area-inset-top));
+    margin-bottom: 8px;
+    padding: 6px 14px;
+    border-radius: 14px;
+    background: rgb(28 28 31 / 96%);
+    text-align: center;
+    font-size: 14px;
+}
+.recorder-line {
+    margin: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+}
+.recorder-note { margin: 4px 0 0; font-size: 13px; }
+.recorder-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e5484d;
+    animation: recording-pulse 1.2s ease-in-out infinite;
+}
+.recorder-left { color: #f5a524; }
+/* The circle is S3.3's diameter, and never larger than the room it has
+ * between the status and the controls, less 8 on each side for the ring:
+ * whatever the window, the text size or the reply banner, it overlaps
+ * neither (decision 41). */
+.recorder-stage { display: grid; place-items: center; min-height: 0; min-width: 0; container-type: size; }
+.recorder-circle {
+    position: relative;
+    width: var(--circle, 320px);
+    height: var(--circle, 320px);
+    width: min(var(--circle, 320px), 100cqw - 16px, 100cqh - 16px);
+    height: min(var(--circle, 320px), 100cqw - 16px, 100cqh - 16px);
+    border-radius: 50%;
+    background: #1c1c1f;
+    display: grid;
+    place-items: center;
+}
+.recorder-preview, .recorder-review {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    clip-path: circle(50%);
+}
+/* The preview is a mirror, as a call's self-view is; the file — and so
+ * REVIEW — is the true view (S3.5). */
+.recorder-preview { transform: scaleX(-1); }
+.recorder-play {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+}
+.recorder-play:focus-visible { outline: 2px solid #fff; outline-offset: 8px; }
+.recorder-glyph svg { width: 56px; height: 56px; opacity: .7; display: block; }
+/* The ring: 4 wide, just OUTSIDE the circle, never over a face — drawn for
+ * S3.3's diameter and scaled with the circle where the room is less. */
+.recorder-ring {
+    position: absolute;
+    left: -6px;
+    top: -6px;
+    width: calc(100% + 12px);
+    height: calc(100% + 12px);
+    pointer-events: none;
+    overflow: visible;
+}
+/* A thin track all the way round, and on it the arc: red over the minute,
+ * orange in its last ten seconds, the accent while the clip plays back. */
+.recorder-ring circle { fill: none; stroke-linecap: round; }
+.recorder-ring .recorder-track { stroke: rgb(255 255 255 / 25%); stroke-width: 1px; }
+.recorder-ring .recorder-arc { stroke-width: 3px; }
+.recorder-ring.is-recording .recorder-arc { stroke: #e5484d; }
+.recorder-ring.is-warning .recorder-arc { stroke: #f5a524; }
+.recorder-ring.is-progress .recorder-arc { stroke: var(--tint); }
+.recorder-ring .recorder-arc { transition: stroke-dasharray .1s linear; }
+/* The controls' own bar: solid, so nothing under it shows, reaching the
+ * pane's bottom edge and the home indicator's safe area. */
+.recorder-dock {
+    min-width: 0;
+    padding-top: 6px;
+    padding-bottom: max(var(--row-bottom, 0px), env(safe-area-inset-bottom));
+    background: #121214;
+    border-top: 1px solid rgb(255 255 255 / 10%);
+}
+.recorder-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    margin: 0 16px 6px;
+    padding: 4px 6px 4px 12px;
+    border-radius: 10px;
+    background: rgb(0 0 0 / 60%);
+    font-size: 13px;
+}
+.recorder-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recorder-banner-drop { flex: none; min-width: 32px; min-height: 32px; padding: 0; background: transparent; color: #fff; }
+/* The control row, its bottom where the composer's row's is: round
+ * buttons with their words under them, and ONE big slot at the trailing
+ * end, in the Send button's place. */
+.recorder-row {
+    min-height: var(--row-height, 64px);
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px max(16px, env(safe-area-inset-right)) 4px max(16px, env(safe-area-inset-left));
+}
+.recorder-leading, .recorder-middle { display: flex; gap: 12px; align-items: flex-end; min-width: 0; }
+.recorder-middle { flex: 1; justify-content: center; }
+.recorder-item { display: grid; justify-items: center; gap: 4px; position: relative; }
+/* Its line height is the font's (14 at 11), so larger text grows the line —
+ * and a caption too wide for its button wraps rather than run into the next. */
+.recorder-caption {
+    max-width: 88px;
+    font-size: 11px;
+    line-height: 1.273;
+    color: #c9cbd6;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+.recorder-control {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: rgb(255 255 255 / 12%);
+    color: #e8e9ef;
+}
+.recorder-control:disabled, .recorder-control.is-dimmed { opacity: .45; }
+.recorder-icon { width: 22px; height: 22px; display: block; flex: none; }
+.recorder-choose { position: relative; }
+.recorder-cameras { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; color: var(--ink); }
+/* The slot, 64 across, in the Send button's place (S3.3): a red disc to
+ * Record, a red disc with a white rounded square to Stop, the accent with
+ * the arrow to Send. */
+.recorder-slot-item { margin-inline-start: auto; }
+.recorder-slot {
+    flex: none;
+    position: relative;
+    width: 64px;
+    height: 64px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: #e5484d;
+    box-shadow: 0 0 0 4px rgb(255 255 255 / 18%);
+    color: #fff;
+    transition: background-color 150ms ease-out;
+}
+.recorder-slot .recorder-icon { width: 28px; height: 28px; }
+.recorder-slot.is-dimmed { opacity: .45; }
+.recorder-slot.is-record .recorder-slot-mark { display: none; }
+.recorder-slot.is-stop .recorder-slot-mark { width: 22px; height: 22px; border-radius: 5px; background: #fff; }
+.recorder-slot.is-send { background: var(--tint); }
+.recorder-slot:focus-visible, .recorder-control:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* A pane shorter than 480 — a phone on its side: the controls stand on a
+ * solid bar at the trailing edge, the full height, the banner above them
+ * (S3.3); the status and the circle share what is left of the width. The
+ * slot is at the trailing edge, the smaller buttons in a column beside it,
+ * so that all of them fit a phone's 320 (decision 41). */
+.recorder.is-column .recorder-pane {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
+}
+.recorder.is-column .recorder-status { grid-column: 1; grid-row: 1; }
+.recorder.is-column .recorder-stage { grid-column: 1; grid-row: 2; }
+.recorder.is-column .recorder-dock {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-width: 184px;
+    padding: 12px max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 12px;
+    border-top: 0;
+    border-left: 1px solid rgb(255 255 255 / 10%);
+}
+.recorder.is-column .recorder-banner { margin: 0 0 6px; max-width: 220px; }
+.recorder.is-column .recorder-row {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas: "lead slot" "mid slot";
+    justify-content: end;
+    justify-items: center;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 8px;
+    padding: 0;
+}
+.recorder.is-column .recorder-leading { grid-area: lead; }
+.recorder.is-column .recorder-middle {
+    grid-area: mid;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.recorder.is-column .recorder-slot-item { grid-area: slot; margin: 0; }
+@media (prefers-reduced-motion: reduce) {
+    .recorder { animation: none; }
+    .recorder-dot { animation: none; }
+    .recorder-ring circle { transition: none !important; }
+    .recorder-slot { transition: none; }
+}
+@media (forced-colors: active) {
+    .recorder-ring circle, .recorder-dot, .recorder-slot, .recorder-slot-mark { forced-color-adjust: none; }
+    .recorder-ring circle { stroke: Highlight !important; }
+    .recorder-dot, .recorder-slot-mark { background: CanvasText !important; }
+    .recorder-slot { background: ButtonFace; border: 2px solid ButtonText; }
+    .recorder-slot.is-record .recorder-slot-mark { display: block; width: 26px; height: 26px; border-radius: 50%; }
+}

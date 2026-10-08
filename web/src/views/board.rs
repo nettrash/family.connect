@@ -22,17 +22,19 @@ use std::rc::Rc;
 use fc_text::board::{self as rules, Answer, Font, Kind, Size};
 use fc_text::i18n::{t, t1, t2, tn, tn1};
 use fc_text::mentions;
+use fc_text::{assistant_consent, assistant_pictures};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{DataTransfer, Element, File, HtmlElement, HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
-use crate::actions::{random_color, Action};
+use crate::actions::{random_color, Action, Backdrop};
 use crate::api::{NewNote, NotePatch, TaskLine};
 use crate::media::use_media;
 use crate::model::{Attachment, Member, Mention, Note, TaskItem};
 use crate::time;
+use crate::views::consent::{AssistantConsentBar, AssistantConsentDialog};
 
 /// What the pane's sheet is showing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,6 +63,33 @@ pub struct BoardProps {
     /// `GET /families/mine`; docs/protocol.md, "Board").
     #[prop_or_default]
     pub can_draw: bool,
+    /// Who draws it — `assistant.processor`, verbatim — which the consent
+    /// question a backdrop asks first must name. `can_draw` is never true
+    /// without one (`assistant_pictures::server_draws`).
+    #[prop_or_default]
+    pub processor: Option<String>,
+    /// Whether this member has agreed that their words may go to the model
+    /// (`assistant_consent_at` on `GET /me`). An event's title is their
+    /// words, so until they have, "Draw a backdrop" asks that first —
+    /// exactly as a `/draw` does (docs/protocol.md, "Consenting to the
+    /// assistant").
+    #[prop_or_default]
+    pub agreed_to_assistant: bool,
+    /// The family's `ai_history` and `ai_vision`: they change what the
+    /// consent screen PROMISES, and it is one screen wherever it is asked.
+    #[prop_or_default]
+    pub family_history: bool,
+    #[prop_or_default]
+    pub family_vision: bool,
+    /// Whether this server can turn a recording into text — one more line
+    /// the same screen says (`assistant.transcribe`).
+    #[prop_or_default]
+    pub transcribe: bool,
+    /// The providers the assistant may look things up in
+    /// (`assistant.lookups`) — and so whether the same screen offers
+    /// lookups beside the assistant.
+    #[prop_or_default]
+    pub lookups: Vec<String>,
     /// Hidden notes peeked at.
     pub revealed: HashSet<i64>,
     /// A photo on its way up.
@@ -401,6 +430,50 @@ pub fn board_pane(props: &BoardProps) -> Html {
         by_id
     };
 
+    // THE CONSENT QUESTION, asked before an event's title goes to the model
+    // — the app's one screen, as the composer asks it (views/consent.rs).
+    // Here and not in the sheet, so that Escape and Tab in it are its own
+    // and never also the sheet's. Agreeing records the answer and nothing
+    // more: the member presses the button again, as they press Send again.
+    let consent_open = use_state(|| false);
+    let asks_consent = assistant_consent::is_required_for_backdrop(
+        props.processor.as_deref(),
+        props.agreed_to_assistant,
+    );
+    let review_consent = {
+        let consent_open = consent_open.clone();
+        Callback::from(move |()| consent_open.set(true))
+    };
+    let consent_dialog = (*consent_open)
+        .then(|| props.processor.clone())
+        .flatten()
+        .filter(|processor| assistant_consent::is_available(Some(processor)))
+        .map(|processor| {
+            let on_agree = {
+                let on_action = props.on_action.clone();
+                let consent_open = consent_open.clone();
+                Callback::from(move |with_lookups: bool| {
+                    consent_open.set(false);
+                    on_action.emit(Action::agreement(with_lookups));
+                })
+            };
+            let on_cancel = {
+                let consent_open = consent_open.clone();
+                Callback::from(move |()| consent_open.set(false))
+            };
+            html! {
+                <AssistantConsentDialog
+                    {processor}
+                    family_history={props.family_history}
+                    family_vision={props.family_vision}
+                    transcribe={props.transcribe}
+                    lookups={props.lookups.clone()}
+                    {on_agree}
+                    {on_cancel}
+                />
+            }
+        });
+
     let sheet_view = (*sheet).and_then(|open| {
         let note = match open {
             Sheet::Open(id) => Some(props.notes.iter().find(|note| note.id == id).cloned()),
@@ -434,6 +507,9 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 open_ids={open_ids.clone()}
                 names={props.names.clone()}
                 can_draw={props.can_draw}
+                asks_consent={asks_consent}
+                processor={AttrValue::from(props.processor.clone().unwrap_or_default())}
+                on_review_consent={review_consent.clone()}
                 {compact}
                 now_minute={props.now_minute}
                 on_close={close.clone()}
@@ -520,6 +596,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 }
             </div>
             { sheet_view.unwrap_or_default() }
+            { consent_dialog.unwrap_or_default() }
         </section>
     }
 }
@@ -1356,6 +1433,20 @@ fn note_picture(props: &PictureProps) -> Html {
     }
 }
 
+/// What the backdrop button is described by, so a screen reader reads the
+/// hint with it. One note sheet is open at a time, so one id is unique.
+const BACKDROP_HINT_ID: &str = "backdrop-hint";
+
+/// Under the backdrop button, for as long as it is offered: a backdrop is
+/// asked of the same image model as `/draw`, whose filter refuses real
+/// names and brands (docs/protocol.md, "Pictures").
+#[function_component(BackdropHint)]
+fn backdrop_hint() -> Html {
+    html! {
+        <p class="hint picture-hint" id={BACKDROP_HINT_ID}>{ assistant_pictures::picture_hint() }</p>
+    }
+}
+
 /// AN EVENT'S BACKDROP: the picture the assistant drew, as the card's
 /// ground (docs/protocol.md, "Board").
 ///
@@ -1446,6 +1537,15 @@ struct SheetProps {
     names: HashMap<i64, String>,
     /// Whether the assistant can draw this event a backdrop.
     can_draw: bool,
+    /// Whether pressing "Draw a backdrop" asks for consent instead
+    /// (`assistant_consent::is_required_for_backdrop`).
+    asks_consent: bool,
+    /// Who the model's answer comes from, for the line that says so while
+    /// the question is unanswered. Empty when nobody is named — and then
+    /// nothing is asked either.
+    processor: AttrValue,
+    /// Raise the consent screen: the board's, over this sheet.
+    on_review_consent: Callback<()>,
     compact: bool,
     now_minute: i64,
     on_close: Callback<()>,
@@ -2412,7 +2512,13 @@ fn note_sheet(props: &SheetProps) -> Html {
 
     // The assistant's picture behind it — the AUTHOR's, and only where this
     // server can draw at all (docs/protocol.md, "Board").
-    let backdrop = (kind == Kind::Event && editable && props.can_draw && !props.gone).then(|| {
+    let backdrop = assistant_pictures::offers_backdrop(
+        kind == Kind::Event,
+        editable,
+        props.gone,
+        props.can_draw,
+    )
+    .then(|| {
         let on_action = props.on_action.clone();
         let cell = cell.clone();
         let redraw = redraw.clone();
@@ -2422,10 +2528,21 @@ fn note_sheet(props: &SheetProps) -> Html {
             .as_ref()
             .is_some_and(|note| note.attachment.is_some());
         let drawing = now.drawing;
+        let asks_consent = props.asks_consent;
+        let on_review_consent = props.on_review_consent.clone();
         let ask = Callback::from(move |_: MouseEvent| {
             let Sheet::Open(note_id) = sheet else {
                 return;
             };
+            // NOTHING REACHES THE MODEL UNASKED: the title is the author's
+            // words, and the server refuses them with
+            // `assistant_consent_required` anyway. Asked here, that refusal
+            // is a question instead, with the note just as it was
+            // (docs/protocol.md, "Consenting to the assistant").
+            if asks_consent {
+                on_review_consent.emit(());
+                return;
+            }
             {
                 let mut editing = cell.borrow_mut();
                 if editing.drawing {
@@ -2437,16 +2554,23 @@ fn note_sheet(props: &SheetProps) -> Html {
             let done = {
                 let cell = cell.clone();
                 let redraw = redraw.clone();
-                Callback::from(move |()| {
+                let on_review_consent = on_review_consent.clone();
+                Callback::from(move |outcome: Backdrop| {
                     cell.borrow_mut().drawing = false;
                     redraw.force_update();
+                    // The server's answer was the question — consent
+                    // withdrawn elsewhere since this tab last heard.
+                    if outcome == Backdrop::AskConsent {
+                        on_review_consent.emit(());
+                    }
                 })
             };
             on_action.emit(Action::DrawBackdrop { note_id, done });
         });
         html! {
             <button type="button" class="secondary" onclick={ask}
-                disabled={drawing} aria-busy={drawing.then_some("true")}>
+                disabled={drawing} aria-busy={drawing.then_some("true")}
+                aria-describedby={BACKDROP_HINT_ID}>
                 { if drawing {
                     t("Drawing…")
                 } else if has_one {
@@ -2457,6 +2581,26 @@ fn note_sheet(props: &SheetProps) -> Html {
             </button>
         }
     });
+
+    // Beside the backdrop control, for as long as it is offered: the hint
+    // about what the filter refuses, and — while the consent question is
+    // unanswered — the composer's own line saying where the title goes,
+    // with the door onto the question on it.
+    let backdrop_notes = if backdrop.is_some() {
+        html! {
+            <>
+                <BackdropHint />
+                if props.asks_consent {
+                    <AssistantConsentBar
+                        processor={props.processor.to_string()}
+                        on_review={props.on_review_consent.clone()}
+                    />
+                }
+            </>
+        }
+    } else {
+        Html::default()
+    };
 
     // Answering is its own act: ANY member may, so it is not part of the
     // author's save, and it sits outside every author gate.
@@ -2747,6 +2891,7 @@ fn note_sheet(props: &SheetProps) -> Html {
                         { backdrop.clone().unwrap_or_default() }
                     </div>
                 }
+                { backdrop_notes.clone() }
             </>
         }
     } else {
@@ -2805,9 +2950,10 @@ fn note_sheet(props: &SheetProps) -> Html {
                 if to_calendar.is_some() || backdrop.is_some() {
                     <div class="event-actions">
                         { to_calendar.unwrap_or_default() }
-                        { backdrop.unwrap_or_default() }
+                        { backdrop.clone().unwrap_or_default() }
                     </div>
                 }
+                { backdrop_notes.clone() }
             </>
         }
     };
@@ -2902,6 +3048,14 @@ mod tests {
             // that care about the button say so, and the ones that do not
             // are unaffected by its presence.
             can_draw: true,
+            // …and names nobody to ask about: the tests of the consent
+            // question name a processor themselves.
+            processor: None,
+            agreed_to_assistant: false,
+            family_history: false,
+            family_vision: false,
+            transcribe: false,
+            lookups: Vec::new(),
             revealed: HashSet::new(),
             pinning: false,
             now_minute: (js_sys::Date::now() / 60_000.0) as i64,
@@ -4042,7 +4196,10 @@ mod tests {
             .expect("the event with a picture draws it");
         // An event with none keeps its colour, exactly as it always did.
         assert!(
-            stickers[1].query_selector(".note-backdrop").unwrap().is_none(),
+            stickers[1]
+                .query_selector(".note-backdrop")
+                .unwrap()
+                .is_none(),
             "and an event without one draws no ground"
         );
         // It is NOT the content: a photo note's picture is the thing pinned
@@ -4114,15 +4271,25 @@ mod tests {
         // is drawn 55 wide and the full 110 tall — the picture's own shape,
         // and every pixel of it.
         let (width, height) = (px(&stickers[0], "width"), px(&stickers[0], "height"));
-        assert!((width - 55.0).abs() < 0.5, "the card hugs the picture: {width}");
-        assert!((height - 110.0).abs() < 0.5, "and fills the card's height: {height}");
+        assert!(
+            (width - 55.0).abs() < 0.5,
+            "the card hugs the picture: {width}"
+        );
+        assert!(
+            (height - 110.0).abs() < 0.5,
+            "and fills the card's height: {height}"
+        );
         assert!(
             ((width / height) - 0.5).abs() < 0.01,
             "which is the picture's own shape: {width}x{height}"
         );
         // A captioned one keeps its whole card — the words need the paper —
         // and fits the picture into the strip above them.
-        assert_eq!(px(&stickers[1], "width"), 150.0, "the captioned card stands");
+        assert_eq!(
+            px(&stickers[1], "width"),
+            150.0,
+            "the captioned card stands"
+        );
         assert_eq!(px(&stickers[1], "height"), 110.0);
         // FITTED, not filled: the rule that was wrong. Asserted on the
         // shipped stylesheet through the shipped markup — the bytes never
@@ -4298,7 +4465,10 @@ mod tests {
         assert_eq!(groups.len(), 3, "going, maybe and can't: {groups:?}");
         assert!(groups[0].contains("Anna"), "{groups:?}");
         assert!(groups[1].contains("Gran"), "{groups:?}");
-        assert!(groups[2].contains("Me"), "the reader is among them: {groups:?}");
+        assert!(
+            groups[2].contains("Me"),
+            "the reader is among them: {groups:?}"
+        );
         handle.destroy();
         root.remove();
     }
@@ -4402,6 +4572,187 @@ mod tests {
             ask.has_attribute("disabled"),
             "and it says it is drawing while it draws"
         );
+        handle.destroy();
+        root.remove();
+    }
+
+    /// The hint about what the picture filter refuses sits beside the
+    /// backdrop control, exactly where that control is — and the control is
+    /// described by it.
+    #[wasm_bindgen_test]
+    async fn the_backdrop_control_carries_the_picture_hint() {
+        const HINT: &str =
+            "Describe people and things in general words — real names and brands are often refused.";
+        // (author, server can draw, hinted)
+        for (author, can_draw, hinted) in
+            [(ME, true, true), (ME, false, false), (ANNA, true, false)]
+        {
+            let log = Log::default();
+            let mut shown = props(vec![event_note(6, author)], &[], &log);
+            shown.can_draw = can_draw;
+            let (root, handle) = render(shown).await;
+            TimeoutFuture::new(30).await;
+            key(&all(&root, ".sticker")[0], "keydown", "Enter");
+            TimeoutFuture::new(30).await;
+            let hints = all(&root, ".note-sheet .picture-hint");
+            assert_eq!(
+                hints.len(),
+                usize::from(hinted),
+                "author {author}, can_draw {can_draw}"
+            );
+            if hinted {
+                assert_eq!(hints[0].text_content().unwrap_or_default(), HINT);
+                let ask = all(&root, ".note-sheet .event-actions button")
+                    .into_iter()
+                    .find(|button| {
+                        button
+                            .text_content()
+                            .unwrap_or_default()
+                            .contains("backdrop")
+                    })
+                    .expect("the backdrop button");
+                assert_eq!(
+                    ask.get_attribute("aria-describedby"),
+                    hints[0].get_attribute("id"),
+                    "the button is described by the hint"
+                );
+            }
+            handle.destroy();
+            root.remove();
+        }
+    }
+
+    /// A BACKDROP ASKS BEFORE THE TITLE GOES TO THE MODEL, as a `/draw`
+    /// does (docs/protocol.md, "Consenting to the assistant", amended
+    /// 2026-09-30): offered all the same, with the composer's line under it
+    /// naming who receives the title; pressed, it raises the consent screen
+    /// and asks the server nothing; agreed, the answer is recorded and the
+    /// member presses again. And the server's own `assistant_consent_required`
+    /// raises the same screen.
+    #[wasm_bindgen_test]
+    async fn a_backdrop_asks_for_consent_first() {
+        const PROCESSOR: &str = "Microsoft — Azure OpenAI";
+        let backdrop_button = |root: &HtmlElement| {
+            all(root, ".note-sheet .event-actions button")
+                .into_iter()
+                .find(|button| {
+                    button
+                        .text_content()
+                        .unwrap_or_default()
+                        .contains("backdrop")
+                })
+                .expect("the backdrop button")
+        };
+        let asked = |log: &Log| {
+            log.borrow()
+                .iter()
+                .filter(|action| matches!(action, Action::DrawBackdrop { .. }))
+                .count()
+        };
+        let agreed = |log: &Log| {
+            log.borrow()
+                .iter()
+                .filter(|action| matches!(action, Action::SetAssistantConsent { granted: true }))
+                .count()
+        };
+        let consent = |root: &HtmlElement| {
+            all(root, ".dialog")
+                .into_iter()
+                .find(|dialog| !dialog.class_list().contains("note-sheet"))
+        };
+        let button_in = |dialog: &HtmlElement, label: &str| {
+            all(dialog, "button")
+                .into_iter()
+                .find(|button| button.text_content().unwrap_or_default() == label)
+                .unwrap_or_else(|| panic!("{label} in the consent screen"))
+        };
+
+        // Not yet agreed.
+        let log = Log::default();
+        let mut shown = props(vec![event_note(6, ME)], &[], &log);
+        shown.processor = Some(PROCESSOR.into());
+        shown.family_history = true;
+        let (root, handle) = render(shown).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        let bar = one(&root, ".note-sheet .consent-notice");
+        assert!(
+            bar.text_content().unwrap_or_default().contains(&format!(
+                "This goes to {PROCESSOR}. You haven't agreed to that yet."
+            )),
+            "{:?}",
+            bar.text_content()
+        );
+        assert!(consent(&root).is_none(), "nothing raised before a press");
+
+        // Pressed: the question, and nothing asked of the server.
+        backdrop_button(&root).click();
+        TimeoutFuture::new(30).await;
+        assert_eq!(asked(&log), 0, "the title went nowhere");
+        let dialog = consent(&root).expect("the consent screen");
+        let said = dialog.text_content().unwrap_or_default();
+        assert!(said.contains(PROCESSOR), "it names who receives it: {said}");
+        assert!(
+            said.contains("30"),
+            "and follows the family's switches: {said}"
+        );
+        assert!(
+            !backdrop_button(&root).has_attribute("disabled"),
+            "not drawing"
+        );
+        button_in(&dialog, "Not Now").click();
+        TimeoutFuture::new(30).await;
+        assert!(consent(&root).is_none(), "Not Now closes it");
+        assert!(
+            !all(&root, ".note-sheet").is_empty(),
+            "and leaves the sheet as it was"
+        );
+        assert_eq!(agreed(&log), 0);
+
+        // The line's own door raises the same screen; agreeing records it.
+        button_in(&one(&root, ".note-sheet .consent-notice"), "Review…").click();
+        TimeoutFuture::new(30).await;
+        button_in(&consent(&root).expect("the consent screen"), "I Agree").click();
+        TimeoutFuture::new(30).await;
+        assert_eq!(agreed(&log), 1, "the answer is recorded");
+        assert!(consent(&root).is_none());
+        assert_eq!(asked(&log), 0, "and the member presses again");
+        handle.destroy();
+        root.remove();
+
+        // Agreed: no line, and a press asks for the picture.
+        let log = Log::default();
+        let mut shown = props(vec![event_note(6, ME)], &[], &log);
+        shown.processor = Some(PROCESSOR.into());
+        shown.agreed_to_assistant = true;
+        let (root, handle) = render(shown).await;
+        TimeoutFuture::new(30).await;
+        key(&all(&root, ".sticker")[0], "keydown", "Enter");
+        TimeoutFuture::new(30).await;
+        assert!(all(&root, ".note-sheet .consent-notice").is_empty());
+        backdrop_button(&root).click();
+        TimeoutFuture::new(30).await;
+        assert_eq!(asked(&log), 1);
+        assert!(consent(&root).is_none());
+
+        // …and the server answers that this member has NOT agreed after
+        // all: the button is a button again, and the question is raised.
+        let done = log
+            .borrow()
+            .iter()
+            .find_map(|action| match action {
+                Action::DrawBackdrop { done, .. } => Some(done.clone()),
+                _ => None,
+            })
+            .expect("the request's callback");
+        done.emit(Backdrop::AskConsent);
+        TimeoutFuture::new(30).await;
+        assert!(
+            consent(&root).is_some(),
+            "the server's answer is the question"
+        );
+        assert!(!backdrop_button(&root).has_attribute("disabled"));
         handle.destroy();
         root.remove();
     }

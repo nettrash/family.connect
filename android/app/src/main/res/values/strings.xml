@@ -11,6 +11,9 @@
   consistent with that.
 -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">en</string>
     <!-- The app name is a name, not a word: it reads the same in every language. -->
     <string name="app_name" translatable="false">Family</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Add a note — everyone in the family sees it.</string>
@@ -139,6 +142,7 @@
     -->
     <string name="s_n_of_m">%1$d of %2$d</string>
     <string name="s_take_photo">Take photo</string>
+    <string name="s_camera">Camera</string>
     <string name="s_statistics">Statistics</string>
     <string name="s_messages">Messages</string>
     <!--
@@ -166,17 +170,31 @@
     <string name="s_couldnt_load_statistics">Couldn\'t load statistics</string>
     <string name="s_check_connection_try_again">Check your connection and try again.</string>
     <string name="s_saved_by_one_copy">%1$s saved by storing one copy of identical files.</string>
-    <string name="s_attachments_and_size">%1$d attachments, %2$s</string>
-    <string name="s_questions_to_assistant">%1$d questions to the assistant</string>
-    <string name="s_record_audio">Record audio</string>
-    <string name="s_stop">Stop</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d attachment, %2$s</item>
+        <item quantity="other">%1$d attachments, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d question to the assistant</item>
+        <item quantity="other">%1$d questions to the assistant</item>
+    </plurals>
+    <string name="s_stats_pictures">Pictures</string>
+    <string name="s_stats_recordings_as_text">Recordings as text</string>
+    <string name="s_stats_recording_time">Recording time</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d picture from the assistant</item>
+        <item quantity="other">%1$d pictures from the assistant</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d recording as text</item>
+        <item quantity="other">%1$d recordings as text</item>
+    </plurals>
     <string name="s_audio">Audio</string>
     <string name="s_play">Play</string>
     <string name="s_pause">Pause</string>
     <string name="e_record_failed">Couldn\'t start recording.</string>
     <string name="e_recording_too_short">That recording was too short.</string>
     <string name="e_microphone_permission">Family needs permission to use the microphone.</string>
-    <string name="s_record_video">Record video</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Add a message, or send it on its own.</string>
     <string name="s_remove_attachment">Remove attachment</string>
     <string name="s_photo_or_video">Photo or video</string>
@@ -444,7 +462,6 @@
     </plurals>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">Show the assistant a picture</string>
-    <string name="s_show_the_assistant_a_picture_note">It leaves this server for the model your server talks to</string>
     <string name="s_ask_for_a_picture">Ask for a picture</string>
     <string name="s_assistant_sees_this_picture">The assistant will be shown this picture. It leaves this server for the model your server talks to.</string>
     <string name="s_assistant_sees_these_pictures">The assistant will be shown these pictures. They leave this server for the model your server talks to.</string>
@@ -465,6 +482,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">This reply mentions the assistant, so it will be shown the photos you are replying to, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
     <string name="s_assistant_mention_sees_both_and_recent">This reply mentions the assistant, so it will be shown the pictures here and the ones you are replying to, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
     <string name="s_assistant_answer_failed">The assistant couldn\'t finish this answer. Ask again.</string>
+    <string name="s_assistant_provider_refused">The assistant\'s provider refused that. Try putting it another way.</string>
     <string name="s_assistant_vision">Assistant may look at photos</string>
     <string name="s_assistant_vision_explanation">When someone attaches a photo to a question in their own chat with the assistant, attaches one to a message that mentions the assistant in the family chat, or replies to a photo while mentioning it, that photo is sent to the model with the question — at most 4 per question. A photo the assistant was not pointed at is never sent, not even from an earlier message unless “Assistant sees recent photos” is on, and neither are videos, files, audio or locations. Off unless you turn it on; with it off, no photo is ever sent.</string>
     <string name="e_change_assistant_vision_failed">Couldn\'t change that setting</string>
@@ -599,6 +617,7 @@
     <string name="s_draw_another_backdrop">Draw another backdrop</string>
     <string name="s_drawing">Drawing…</string>
     <string name="s_draw_failed">Couldn\'t draw that.</string>
+    <string name="s_describe_in_general_words">Describe people and things in general words — real names and brands are often refused.</string>
     <string name="s_tick_failed">Couldn\'t tick that off.</string>
     <string name="s_no_calendar_app">No calendar app to add it to.</string>
     <string name="s_the_assistant">The assistant</string>
@@ -620,4 +639,143 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Until you agree, nothing you write is sent to %1$s and the assistant does not answer you.</string>
     <string name="s_consent_stopping_takes_effect_at_once">What you write to the assistant is sent to %1$s. Stopping takes effect at once; what has already been sent cannot be taken back.</string>
     <string name="s_couldnt_save_your_answer">Couldn\'t save your answer. Try again.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Sticker</string>
+    <string name="s_stickers">Stickers</string>
+    <string name="s_family_stickers">Family stickers</string>
+    <string name="s_family_stickers_count">%1$d of %2$d</string>
+    <string name="s_family_stickers_explanation">Anyone in the family can add a sticker. Whoever added one, or the family owner, can remove it.</string>
+    <string name="s_recently_used">Recently used</string>
+    <string name="s_no_stickers_yet">No stickers yet</string>
+    <string name="s_no_stickers_hint">Add some on the Family screen.</string>
+    <string name="s_add_sticker">Add sticker</string>
+    <string name="s_add_to_family_stickers">Add to family stickers</string>
+    <string name="s_sticker_label">Description (optional)</string>
+    <string name="s_sticker_label_hint">A few words for a screen reader. It is never drawn over the picture.</string>
+    <string name="s_remove_sticker">Remove sticker</string>
+    <string name="s_remove_sticker_q">Remove this sticker?</string>
+    <string name="s_remove_sticker_explanation">It leaves the family\'s stickers. Messages already sent keep it.</string>
+    <string name="s_sticker_added">Added to family stickers</string>
+    <string name="s_sticker_already_in_pack">Already in family stickers</string>
+    <string name="s_sticker_pack_full">The family\'s stickers have reached their limit of %1$d. Remove one to add another.</string>
+    <string name="s_sticker_too_large">That one is too big. A sticker can be at most %1$s.</string>
+    <string name="s_sticker_add_failed">Couldn\'t add the sticker. Try again.</string>
+    <string name="s_sticker_unreadable">That picture couldn\'t be read.</string>
+    <string name="s_sticker_animated_must_be_webp">Animated stickers must be WebP. This one can\'t be added.</string>
+    <string name="s_sticker_label_too_long">A description can be at most %1$d characters.</string>
+    <string name="s_sticker_remove_not_allowed">Only whoever added a sticker, or the family owner, can remove it.</string>
+    <string name="s_sticker_remove_failed">Couldn\'t remove the sticker. Try again.</string>
+    <string name="s_sticker_not_available_offline">That sticker isn\'t on this phone yet. Try again when you\'re online.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Show text</string>
+    <string name="s_transcript_hide">Hide text</string>
+    <string name="s_transcript_getting">Getting the text…</string>
+    <string name="s_transcript_no_speech">No speech</string>
+    <string name="s_transcript_failed">Couldn\'t get the text. Try again.</string>
+    <string name="s_transcript_refused">The assistant\'s provider refused this recording.</string>
+    <string name="s_transcript_unavailable">Not available for this message.</string>
+    <string name="s_transcript_too_long">This recording is too long to turn into text.</string>
+    <string name="s_transcript_unreadable">Couldn\'t read the sound in this file.</string>
+    <string name="s_transcript_a11y">Text of the recording</string>
+    <string name="s_assistant_transcripts">Voice and video as text</string>
+    <string name="s_assistant_transcripts_explanation">With this on, members can ask for the text of other members\' voice notes, audio and videos in the family chat, and that recording\'s sound is then sent to %1$s. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.</string>
+    <string name="s_assistant_transcripts_no_server">Not available here: this server can\'t turn recordings into text.</string>
+    <string name="s_consent_transcript_sound_sent">If you ask for the text of a voice note, audio file or video, its sound is sent to %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Couldn\'t change that setting</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Looking things up</string>
+    <string name="s_assistant_lookups">Can look things up</string>
+    <string name="s_assistant_lookups_explanation">With this on, the assistant can look things up when a question needs it — the weather, the news, a fact it isn\'t sure of — in %1$s. Only a short search query or place name the assistant writes from the question is sent to them, never the conversation itself, and only when the member asking has agreed to it. Answers then list their sources. It is off unless you turn it on.</string>
+    <string name="s_consent_lookups_with_history">If your family\'s owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to %1$s, and its answer then lists its sources.</string>
+    <string name="s_consent_lookups_alone">If your family\'s owner turns on lookups, the assistant may send a short search query or place name it writes from your question to %1$s, and its answer then lists its sources.</string>
+    <string name="s_agree_with_lookups">Agree With Lookups</string>
+    <string name="s_agree_without_lookups">Agree Without Lookups</string>
+    <string name="s_review_and_allow_lookups">Review and Allow Lookups…</string>
+    <string name="s_stop_lookups">Stop Lookups</string>
+    <string name="s_lookups_until_you_allow">Until you allow lookups, the assistant answers you from what it already knows, and nothing from your questions is sent to %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">The assistant may send a short search query or place name it writes from your questions to %1$s. Stopping takes effect at once; what has already been sent cannot be taken back.</string>
+    <string name="s_list_two">%1$s and %2$s</string>
+    <string name="s_list_three">%1$s, %2$s and %3$s</string>
+    <string name="s_stats_web_searches">Web searches</string>
+    <string name="e_change_assistant_lookups_failed">Couldn\'t change that setting</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d web search</item>
+        <item quantity="other">%1$d web searches</item>
+    </plurals>
+    <!-- Weather in the greeting (#72): docs/protocol.md, "Today's weather, for places the owner chose" -->
+    <string name="s_greeting_weather">Weather in the greeting</string>
+    <string name="s_greeting_weather_place_placeholder">City or town</string>
+    <string name="s_greeting_weather_add_place">Add place</string>
+    <string name="s_greeting_weather_remove_place">Remove place</string>
+    <string name="s_greeting_weather_limit">Up to 3 places.</string>
+    <string name="s_greeting_weather_footer">The daily greeting will also mention today\'s weather in these places. Only the place names are sent to Open-Meteo to fetch the forecast. Nothing else is sent.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Voice message not sent · %1$s</string>
+    <string name="s_send_voice_message">Send voice message</string>
+    <string name="s_delete_recording">Delete recording</string>
+    <string name="s_keep">Keep</string>
+    <string name="s_delete_this_recording">Delete this recording?</string>
+    <string name="e_record_after_the_call">You can record a message after the call.</string>
+    <string name="e_send_or_delete_the_unsent_first">Send or delete the voice message that wasn\'t sent first.</string>
+    <string name="s_recording_stopped_at_five_minutes">Recording stopped at five minutes.</string>
+    <string name="e_recording_stopped_unexpectedly">The recording stopped unexpectedly.</string>
+    <string name="s_voice_message_with_length">Voice message · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Record voice message</string>
+    <string name="s_take_video">Take video</string>
+    <string name="s_open_settings">Open Settings</string>
+    <string name="s_stop_recording">Stop recording</string>
+    <string name="s_stop_and_listen_first">Stop and listen first</string>
+    <string name="s_start_recording_action">start recording</string>
+    <string name="s_play_after_recording">You can play this after recording.</string>
+    <string name="s_thirty_seconds_left">30 seconds left</string>
+    <string name="s_cant_hear_microphone_muted">We can\'t hear anything. Is the microphone muted?</string>
+    <string name="s_announce_recording">Recording</string>
+    <string name="s_announce_recording_deleted">Recording deleted</string>
+    <string name="s_announce_voice_message_sent">Voice message sent</string>
+    <string name="s_announce_ready_to_review">Ready to review, %1$s</string>
+    <string name="e_wait_for_the_attachment">Wait until the current attachment is done.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Video message</string>
+    <string name="s_video_message_a11y">Video message, %1$s</string>
+    <string name="s_not_played">Not played</string>
+    <string name="s_open_full_screen">Open full screen</string>
+    <string name="s_couldnt_load_video_tap">Couldn\'t load the video. Tap to try again.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Record video message</string>
+    <string name="s_send_video_message">Send video message</string>
+    <string name="s_retake">Retake</string>
+    <string name="s_record">Record</string>
+    <string name="s_switch_camera">Switch camera</string>
+    <string name="s_video_message_with_length">Video message · %1$s</string>
+    <string name="s_not_recording">Not recording</string>
+    <string name="s_only_you_can_see_this">Only you can see this until you start recording.</string>
+    <string name="s_starting_camera">Starting camera…</string>
+    <string name="s_cant_see_anything">We can\'t see anything. Is the camera turned off or covered?</string>
+    <string name="s_ten_seconds_left">10 seconds left</string>
+    <string name="s_recording_stopped_at_one_minute">Recording stopped at one minute.</string>
+    <string name="s_video_too_short">That video was too short.</string>
+    <string name="s_delete_video_message">Delete video message?</string>
+    <string name="s_video_messages_need_camera_and_microphone">Video messages need the camera and the microphone.</string>
+    <string name="e_camera_permission_settings">Family needs permission to use your camera. Turn it on in Settings.</string>
+    <string name="s_camera_in_use_by_another_app">The camera is being used by another app.</string>
+    <string name="s_couldnt_make_it_round">Couldn\'t make it round. It will be sent as a regular video.</string>
+    <string name="s_too_big_for_video_message">Too big for a video message. It will be sent as a regular video.</string>
+    <string name="s_announce_camera_ready">Camera ready</string>
+    <string name="s_announce_recording_video">Recording video</string>
+    <string name="s_announce_video_message_sent">Video message sent</string>
+    <string name="s_announce_camera_turned_off">Camera turned off</string>
+    <string name="s_record_voice_message_instead">Record a voice message instead</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Voice message, %1$s</string>
+    <string name="s_played">Played</string>
+    <string name="s_playback_speed">Playback speed</string>
+    <string name="s_playback_speed_a11y">Playback speed, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1.5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Not sent</string>
+    <string name="s_switch">Switch</string>
+    <string name="s_stop">Stop</string>
 </resources>

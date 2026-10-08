@@ -106,6 +106,31 @@ interface FamilyApi {
      * [setAiHistoryPhotos] is.
      */
     suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether members may ask for the text of OTHER members'
+     * recordings in the family chat (docs/protocol.md, "Transcripts on
+     * request"). Family-wide, OFF by default, bound to no other switch.
+     */
+    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether the assistant may look things up for this family
+     * (docs/protocol.md, "Looking things up"). Family-wide, OFF by default,
+     * bound to no other switch, and inert on a server whose
+     * `assistant.lookups` is absent.
+     */
+    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: the places whose weather the daily greeting mentions
+     * (docs/protocol.md, "Today's weather, for places the owner chose").
+     * The list REPLACES the stored one; `[]` clears it. The answer carries
+     * the list as the server KEPT it — possibly shorter, or spelt with less
+     * whitespace — and a server that predates the field ignores it, so the
+     * answer, never the request, is what a caller shows.
+     */
+    suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -230,6 +255,15 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiFaces(enabled))
+
+    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiTranscripts(enabled))
+
+    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiLookups(enabled))
+
+    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.greetingPlaces(places))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 21.
+ * Room database, version 32.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -43,8 +43,11 @@ fun interface LocalDataWiper {
         NoteEntity::class,
         GoneNoteEntity::class,
         PendingAttachmentEntity::class,
+        PackItemEntity::class,
+        GonePackItemEntity::class,
+        TranscriptEntity::class,
     ],
-    version = 28,
+    version = 32,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -56,6 +59,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun memberDao(): MemberDao
     abstract fun noteDao(): NoteDao
+    abstract fun packDao(): PackDao
+    abstract fun transcriptDao(): TranscriptDao
 
     /** Logout / removed-from-family: drop every table, keep the schema. */
     suspend fun wipeAll() = withContext(Dispatchers.IO) {
@@ -464,6 +469,98 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v29: the family's sticker pack (docs/protocol.md, "Sticker pack")
+         * — the items, and the ids a tombstone has taken.
+         *
+         * Two NEW TABLES and nothing else. `messages` is untouched on
+         * purpose: whether a message is a sticker rides INSIDE its
+         * attachment (`sticker: true` in the JSON column it already has), so
+         * every message cached before this version reads exactly as it did —
+         * a photo — and needs no column to say so.
+         *
+         * Column order, types and NOT NULLs byte-match PackItemEntity and
+         * GonePackItemEntity, without which Room's validation refuses every
+         * upgraded database on launch. Nothing is backfilled: the pack fills
+         * from the next resync's full read.
+         */
+        val MIGRATION_28_29: Migration = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS packItems (
+                        id INTEGER NOT NULL,
+                        addedBy INTEGER NOT NULL,
+                        attachmentJson TEXT NOT NULL,
+                        label TEXT,
+                        createdAt INTEGER NOT NULL,
+                        packSeq INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS gonePackItems " +
+                        "(itemId INTEGER NOT NULL, PRIMARY KEY(itemId))",
+                )
+            }
+        }
+
+        /**
+         * v30: the texts of recordings this member asked for
+         * (docs/protocol.md, "Transcripts on request"). A new table only,
+         * arriving empty: nothing held before it was ever asked.
+         */
+        val MIGRATION_29_30: Migration = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS transcripts (
+                        attachmentId INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        language TEXT,
+                        source TEXT NOT NULL,
+                        hidden INTEGER NOT NULL,
+                        PRIMARY KEY(attachmentId)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * v31: whether a message's stored attachment set knows the video
+         * message flag (#79; docs/audio-video-messages-2026-10-04.md, S5.8).
+         *
+         * One column, NOT NULL DEFAULT 0, because 0 is the truth for every
+         * row already here: a build before #79 wrote each received set back
+         * with only the fields it knew, so a circle it cached reads as a
+         * plain video. The flag itself rides inside `attachmentsJson` and
+         * needs no column; this one only says which rows have to be read
+         * again (`MessageRepository.repairUnknownRoundFlags`). Byte-matches
+         * the entity's @ColumnInfo default, which Room validates on launch.
+         */
+        val MIGRATION_30_31: Migration = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsKnowRound INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v32: a queued voice note's WAVEFORM (#79; docs/protocol.md, "A voice
+         * note's waveform") — the 48 hex digits the upload carries, kept with
+         * the bytes so a retry after a process death sends the same shape the
+         * sender's own bubble drew. Nullable TEXT with no default: every row
+         * already queued is a photo, a file or a note recorded before there
+         * were waveforms, and goes up without one. Byte-matches the entity,
+         * which Room validates on launch.
+         */
+        val MIGRATION_31_32: Migration = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_attachments ADD COLUMN waveform TEXT")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -559,6 +656,10 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_25_26,
                 MIGRATION_26_27,
                 MIGRATION_27_28,
+                MIGRATION_28_29,
+                MIGRATION_29_30,
+                MIGRATION_30_31,
+                MIGRATION_31_32,
             )
         }
     }

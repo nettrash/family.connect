@@ -54,6 +54,9 @@ struct PushRegistrarTests {
     private final class StoredBox {
         var token: String?
         var deviceID: Int64?
+        var language: String?
+        /// What the app is shown in, for the test — never the host's own.
+        var shown = "en"
     }
 
     private func makeRegistrar(
@@ -68,6 +71,9 @@ struct PushRegistrarTests {
         let box = StoredBox()
         registrar.loadStored = { (box.token, box.deviceID) }
         registrar.saveStored = { box.token = $0; box.deviceID = $1 }
+        registrar.loadStoredLanguage = { box.language }
+        registrar.saveStoredLanguage = { box.language = $0 }
+        registrar.shownLanguage = { box.shown }
         return (registrar, box)
     }
 
@@ -107,8 +113,48 @@ struct PushRegistrarTests {
         // Mac, which is exactly what it should have done.
         #expect(body?["platform"] as? String == PushRegistrar.platform)
         #expect(body?["push_token"] as? String == "0a1b2c")
+        // And the language its pushes are written in (#82).
+        #expect(body?["language"] as? String == "en")
         #expect(box.token == "0a1b2c")
         #expect(box.deviceID == 17)
+        #expect(box.language == "en")
+    }
+
+    @Test("the language the app is shown in rides along, and a new one re-POSTs the same token (#82)")
+    func languageChange() async throws {
+        let host = "push-language.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (registrar, box) = makeRegistrar(host: host, handler: Self.deviceHandler(counter: Counter()))
+
+        box.shown = "ru"
+        await registrar.register(tokenHex: "abcd")
+        await registrar.register(tokenHex: "abcd")
+        var requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 1, "the same token in the same language is not news")
+        #expect(requests[0].bodyJSON()?["language"] as? String == "ru")
+
+        // Switched to Serbian in Latin script in Settings: the next launch tells the server.
+        box.shown = "sr-Latn"
+        await registrar.register(tokenHex: "abcd")
+        requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 2)
+        #expect(requests[1].bodyJSON()?["language"] as? String == "sr-Latn")
+        #expect(box.language == "sr-Latn")
+
+        // Signing out forgets it, so the next account's first POST says it again.
+        await registrar.deregister()
+        #expect(box.language == nil)
+    }
+
+    @Test("the shown language is one of the nine, and anything else is English")
+    func pushLanguageMapping() {
+        for language in PushRegistrationLogic.pushLanguages {
+            #expect(PushRegistrationLogic.pushLanguage(shown: language) == language)
+        }
+        #expect(PushRegistrationLogic.pushLanguage(shown: "zh-hans") == "zh-Hans")
+        #expect(PushRegistrationLogic.pushLanguage(shown: "Base") == "en")
+        #expect(PushRegistrationLogic.pushLanguage(shown: "pt-BR") == "en")
+        #expect(PushRegistrationLogic.pushLanguage(shown: nil) == "en")
     }
 
     @Test("the VoIP token rides along when known, is absent when not, and re-POSTs when it changes")
@@ -214,6 +260,52 @@ struct PushRegistrarTests {
         #expect(requests.count == 3)
         #expect(requests[2].method == "POST")
     }
+
+    #if os(macOS)
+    @Test("switched off, the Mac withdraws its device — forgetting it only once the server has (PR #86)")
+    func withdraw() async throws {
+        let host = "push-withdraw.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        final class Answer: @unchecked Sendable { var code = 503 }
+        let answer = Answer()
+        StubURLProtocol.register(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/devices"):
+                return .json(201, #"{"device_id": 41}"#)
+            case ("DELETE", "/api/v1/devices/41"):
+                return answer.code == 204
+                    ? .empty(204)
+                    : .json(answer.code, #"{"error": {"code": "\#(answer.code == 404 ? "device_not_found" : "internal")", "message": "no"}}"#)
+            default:
+                return .json(404, #"{"error": {"code": "not_found", "message": "no"}}"#)
+            }
+        }
+        let api = APIClient(serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
+        let registrar = PushRegistrar(api: api)
+        let box = StoredBox()
+        registrar.loadStored = { (box.token, box.deviceID) }
+        registrar.saveStored = { box.token = $0; box.deviceID = $1 }
+        registrar.loadStoredLanguage = { box.language }
+        registrar.saveStoredLanguage = { box.language = $0 }
+        registrar.shownLanguage = { box.shown }
+        registrar.loadStoredVoIP = { nil }
+        registrar.saveStoredVoIP = { _ in }
+        await registrar.register(tokenHex: "abcd")
+        #expect(box.deviceID == 41)
+
+        // The server cannot be reached: the pair is kept, so the next pass tries again.
+        await registrar.withdraw()
+        #expect(box.deviceID == 41)
+        #expect(box.token == "abcd")
+
+        // A row the server no longer has is gone already.
+        answer.code = 404
+        await registrar.withdraw()
+        #expect(box.deviceID == nil)
+        #expect(box.token == nil)
+        #expect(box.language == nil)
+    }
+    #endif
 
     @Test("deregister with nothing stored issues no request")
     func deregisterEmpty() async throws {

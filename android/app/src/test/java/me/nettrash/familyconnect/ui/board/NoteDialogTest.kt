@@ -50,6 +50,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.repo.BackdropOutcome
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -547,7 +548,7 @@ class NoteDialogTest {
 
     @Test
     fun theAuthorAsksForABackdropOnceAndTheButtonSaysItIsDrawing() {
-        var settle: ((AttachmentDto?) -> Unit)? = null
+        var settle: ((BackdropOutcome) -> Unit)? = null
         var asked = 0
         compose.setContent {
             NoteDialog(
@@ -572,7 +573,7 @@ class NoteDialogTest {
         compose.onNodeWithText("Drawing…").performClick()
         assertThat(asked).isEqualTo(1)
 
-        settle?.invoke(drawnPicture)
+        settle?.invoke(BackdropOutcome.Drawn(drawnPicture))
         compose.waitForIdle()
         // The picture LANDED, so the offer is now "another": the dialog
         // knows what it drew even though the draft it opened with had none.
@@ -585,7 +586,7 @@ class NoteDialogTest {
     /** And what it drew is DRAWN, over the note that is open. */
     @Test
     fun aBackdropThatLandedIsDrawnInTheOpenNote() {
-        var settle: ((AttachmentDto?) -> Unit)? = null
+        var settle: ((BackdropOutcome) -> Unit)? = null
         compose.setContent {
             NoteDialog(
                 draft = eventDraft(),
@@ -601,7 +602,7 @@ class NoteDialogTest {
         }
 
         compose.onNodeWithText("Draw a backdrop").performClick()
-        settle?.invoke(drawnPicture)
+        settle?.invoke(BackdropOutcome.Drawn(drawnPicture))
         compose.waitForIdle()
 
         // The bytes never arrive in a Robolectric test, so what is pinned
@@ -627,7 +628,7 @@ class NoteDialogTest {
                 onSave = { _, _, _, _, _ -> },
                 names = guestNames,
                 canDraw = true,
-                onDrawBackdrop = { onSettled -> onSettled(null) },
+                onDrawBackdrop = { onSettled -> onSettled(BackdropOutcome.Failed) },
                 onDelete = null,
             )
         }
@@ -638,6 +639,74 @@ class NoteDialogTest {
         assertThat(ShadowToast.getTextOfLatestToast()).isEqualTo("Couldn't draw that.")
         // And it can be asked again: nothing was drawn.
         compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
+    }
+
+    /**
+     * A title the provider's own filter refused to draw gets the same
+     * refusal every time, so it says to put it another way rather than
+     * merely that it did not draw — the sentence a refused answer says
+     * (docs/protocol.md, "Board": `picture_refused`).
+     */
+    @Test
+    fun aBackdropTheProviderRefusedSaysToPutItAnotherWay() {
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { onSettled -> onSettled(BackdropOutcome.Refused) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        compose.waitForIdle()
+
+        assertThat(ShadowToast.getTextOfLatestToast())
+            .isEqualTo("The assistant's provider refused that. Try putting it another way.")
+        // Nothing was drawn: the button offers a first backdrop still.
+        compose.onNodeWithText("Draw a backdrop").assertIsDisplayed()
+    }
+
+    /**
+     * "Not Now" on the consent screen a backdrop raised is the author's own
+     * answer, so nothing is said about it — and a redraw that was never
+     * asked for leaves the picture this dialog already drew where it is
+     * (docs/protocol.md, "Consenting to the assistant"; "Board": the note is
+     * untouched).
+     */
+    @Test
+    fun aBackdropTheAuthorDidNotConsentToSaysNothingAndKeepsThePicture() {
+        var answer: BackdropOutcome = BackdropOutcome.Drawn(drawnPicture)
+        compose.setContent {
+            NoteDialog(
+                draft = eventDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                names = guestNames,
+                canDraw = true,
+                onDrawBackdrop = { onSettled -> onSettled(answer) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Draw a backdrop").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
+
+        answer = BackdropOutcome.Declined
+        compose.onNodeWithText("Draw another backdrop").performClick()
+        compose.waitForIdle()
+
+        assertThat(ShadowToast.getTextOfLatestToast()).isNull()
+        // Still "another": the picture drawn a moment ago is the note's.
+        compose.onNodeWithText("Draw another backdrop").assertIsDisplayed()
     }
 
     @Test

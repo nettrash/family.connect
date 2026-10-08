@@ -57,6 +57,12 @@ import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.NoteDao
+import me.nettrash.familyconnect.data.db.PackDao
+import me.nettrash.familyconnect.data.db.TranscriptDao
+import me.nettrash.familyconnect.data.net.DefaultTranscriptApi
+import me.nettrash.familyconnect.data.net.TranscriptApi
+import me.nettrash.familyconnect.data.repo.DeviceTranscriptSound
+import me.nettrash.familyconnect.data.repo.TranscriptSoundSource
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
@@ -69,29 +75,39 @@ import me.nettrash.familyconnect.data.net.DefaultAuthApi
 import me.nettrash.familyconnect.data.net.DefaultAttachmentApi
 import me.nettrash.familyconnect.data.net.DefaultAvatarApi
 import me.nettrash.familyconnect.data.net.DefaultBoardApi
+import me.nettrash.familyconnect.data.net.DefaultPackApi
+import me.nettrash.familyconnect.data.net.PackApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
 import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.repo.AndroidVoiceRecorder
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
 import me.nettrash.familyconnect.data.repo.MediaStaging
+import me.nettrash.familyconnect.data.repo.PackRepository
+import me.nettrash.familyconnect.data.repo.ParkedRecordings
+import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MediaUploadScheduler
 import me.nettrash.familyconnect.data.repo.MediaUploadWorker
 import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
 import me.nettrash.familyconnect.data.repo.WorkManagerUploads
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
+import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
+import me.nettrash.familyconnect.data.push.ResourcePushLanguageProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.KeystoreTokenStore
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.TokenStore
 import me.nettrash.familyconnect.util.Clock
+import me.nettrash.familyconnect.util.Uptime
+import android.os.SystemClock
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import javax.inject.Qualifier
@@ -128,6 +144,15 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindBoardApi(impl: DefaultBoardApi): BoardApi
+
+    @Binds
+    abstract fun bindPackApi(impl: DefaultPackApi): PackApi
+
+    @Binds
+    abstract fun bindTranscriptApi(impl: DefaultTranscriptApi): TranscriptApi
+
+    @Binds
+    abstract fun bindTranscriptSound(impl: DeviceTranscriptSound): TranscriptSoundSource
 
     @Binds
     abstract fun bindAvatarSource(impl: ContentResolverAvatarSource): AvatarSource
@@ -170,10 +195,20 @@ abstract class AppModule {
     @Binds
     abstract fun bindCallStateSource(impl: CallManager): CallStateSource
 
+    // The microphone. An interface so the chat's tests drive a fake one
+    // (#79): the one per process, which used to outlive the chat that
+    // started it.
+    @Binds
+    abstract fun bindVoiceRecorder(impl: AndroidVoiceRecorder): VoiceRecorder
+
     // The only Firebase touchpoint in the graph. Safely inert when the
     // build has no google-services.json — see PushTokenProvider.kt.
     @Binds
     abstract fun bindPushTokenProvider(impl: FirebasePushTokenProvider): PushTokenProvider
+
+    // The language POST /devices sends, read off the locale folder the app is shown in (#82).
+    @Binds
+    abstract fun bindPushLanguageProvider(impl: ResourcePushLanguageProvider): PushLanguageProvider
 
     companion object {
 
@@ -238,6 +273,12 @@ abstract class AppModule {
         fun provideNoteDao(db: AppDatabase): NoteDao = db.noteDao()
 
         @Provides
+        fun providePackDao(db: AppDatabase): PackDao = db.packDao()
+
+        @Provides
+        fun provideTranscriptDao(db: AppDatabase): TranscriptDao = db.transcriptDao()
+
+        @Provides
         fun provideChatDao(db: AppDatabase): ChatDao = db.chatDao()
 
         @Provides
@@ -255,6 +296,7 @@ abstract class AppModule {
         fun provideLocalDataWiper(
             db: AppDatabase,
             @ApplicationContext context: Context,
+            settings: SettingsRepository,
         ): LocalDataWiper = LocalDataWiper {
             // The staged bytes and the jobs that would upload them go with
             // the rows: a send composed in one account must never reach the
@@ -263,8 +305,19 @@ abstract class AppModule {
             val staged = db.pendingAttachmentDao().stagedPaths()
             val staging = MediaStaging(context)
             db.wipeAll()
+            // The sticker pack's pictures go with its rows. They are the
+            // one thing here kept under filesDir rather than the cache, so
+            // nothing else would ever reclaim them — and they belong to a
+            // family this account may just have left.
+            PackRepository.bytesDirectory(context).deleteRecursively()
             staged.forEach { staging.remove(it) }
             MediaUploadWorker.cancelAll(context)
+            // The voice messages that were not sent (#79, S2.8): everything
+            // recorded and not sent is deleted at sign-out, and goes when the
+            // chats it belongs to go. Index and bytes together, so neither is
+            // left naming — or holding — the other.
+            settings.updateParkedRecordings { emptyList() }
+            ParkedRecordings.directory(context).deleteRecursively()
         }
 
         @Provides
@@ -281,6 +334,9 @@ abstract class AppModule {
         @Provides
         @Singleton
         fun provideClock(): Clock = Clock { System.currentTimeMillis() }
+
+        @Provides
+        fun provideUptime(): Uptime = Uptime { SystemClock.uptimeMillis() }
 
         /** The protocol's ring timeout and the client's own guards. */
         @Provides

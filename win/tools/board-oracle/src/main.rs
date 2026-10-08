@@ -7,7 +7,13 @@
 //! agreed with each other and were all wrong about `pow(10, n)`.
 //!
 //! Output goes to `win/tests/FamilyConnect.Core.Tests/Fixtures/board-vectors.json` — see
-//! Cargo.toml for the one command.
+//! Cargo.toml for the one command. `media-plan` is the exception to "the Windows port": its file
+//! is copied to the iOS and Android test resources too, because all three ports implement it.
+//! `record` (issue #79) is the second such exception: the composer's slot, the video button, the
+//! voice recording's reducer and the round video's arithmetic, which the Apple and Android ports
+//! implement whole and the Windows port in part (it has no reducer). `waveform` (issue #79) is the third: a voice note's 48
+//! levels — computed from metered peaks, parsed off the wire, drawn as bars — which every port
+//! implements whole.
 use fc_text::board as b;
 use fc_text::{calendar, call_record, media, notify};
 
@@ -20,6 +26,22 @@ fn main() {
     // chat-line vectors instead — the same idea for the words a chat row is drawn with.
     // `markdown <corpus.json>` prints what fc_text::markdown and fc_text::links make of every body in the corpus;
     // `unicode` prints the Rust standard library's own character properties, which those two modules decide by.
+    // `media-plan` prints what fc_text::media_plan decides for a picked video or sound file — the one file of
+    // vectors the Apple, Android and Windows ports are ALL held to, so it is copied beside each port's tests.
+    // `record` prints fc_text::record — the Send slot, the video button and the voice recording (issue #79) — copied likewise.
+    if std::env::args().nth(1).as_deref() == Some("media-plan") {
+        media_plan_vectors();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("record") {
+        record_vectors();
+        return;
+    }
+    // `waveform` prints fc_text::waveform — a voice note's shape (issue #79) — copied likewise.
+    if std::env::args().nth(1).as_deref() == Some("waveform") {
+        waveform_vectors();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("markdown") {
         markdown_vectors(std::env::args().nth(2).expect("the corpus path"));
         return;
@@ -1267,4 +1289,1625 @@ fn unicode_tables() {
         "grapheme_prepends": ranges(|c| format!("{c}a").graphemes(true).count() == 1),
     });
     println!("{}", serde_json::to_string(&tables).unwrap());
+}
+
+// --- media plan: what a picked video or sound file becomes before upload (fc_text::media_plan) ------------
+
+/// A frame rate as JSON. A whole one is written as an integer (`30`, not `30.0`), so that every
+/// number in the file that IS an integer reads as one in all four languages; anything else is the
+/// shortest decimal that round-trips, which every port's parser turns back into the same `f64`.
+fn rate(value: f64) -> serde_json::Value {
+    if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
+        serde_json::json!(value as i64)
+    } else {
+        serde_json::json!(value)
+    }
+}
+
+fn video_input(source: &fc_text::media_plan::VideoSource) -> serde_json::Value {
+    serde_json::json!({
+        "width": source.width,
+        "height": source.height,
+        "frame_rate": source.frame_rate.map(rate),
+        "container": source.container,
+        "video_codec": source.video_codec,
+        "audio_codec": source.audio_codec,
+        "audio_channels": source.audio_channels,
+        "video_bitrate": source.video_bitrate,
+        "audio_bitrate": source.audio_bitrate,
+        "size_bytes": source.size_bytes,
+        "duration_ms": source.duration_ms,
+    })
+}
+
+/// Every intermediate as well as the plan, so a port that disagrees finds out WHICH step it
+/// disagrees on: V, the target (computed for a kept source too — rule A is judged against it) and
+/// rule A's verdict.
+fn video_expected(source: &fc_text::media_plan::VideoSource) -> serde_json::Value {
+    use fc_text::media_plan::{self as mp, VideoPlan};
+    let target = mp::video_target(source);
+    let plan = match mp::plan_video(source) {
+        VideoPlan::Keep => "keep",
+        VideoPlan::Transcode(transcode) => {
+            assert_eq!(Some(transcode), target, "a transcode is to the target");
+            "transcode"
+        }
+        VideoPlan::Fallback => "fallback",
+    };
+    serde_json::json!({
+        "plan": plan,
+        "within_profile": mp::within_profile(source),
+        "source_video_bitrate": mp::source_video_bitrate(source),
+        "target": target.map(|target| serde_json::json!({
+            "width": target.width,
+            "height": target.height,
+            "frame_rate": rate(target.frame_rate),
+            "video_bitrate": target.video_bitrate,
+            "audio_bitrate": target.audio_bitrate,
+        })),
+    })
+}
+
+fn audio_input(source: &fc_text::media_plan::AudioSource) -> serde_json::Value {
+    serde_json::json!({
+        "container": source.container,
+        "codec": source.codec,
+        "channels": source.channels,
+        "bitrate": source.bitrate,
+        "size_bytes": source.size_bytes,
+        "duration_ms": source.duration_ms,
+    })
+}
+
+fn audio_expected(source: &fc_text::media_plan::AudioSource) -> serde_json::Value {
+    use fc_text::media_plan::{self as mp, AudioPlan};
+    let bitrate = mp::source_audio_bitrate(source);
+    let target = mp::target_audio_bitrate(source.channels, bitrate);
+    let plan = match mp::plan_audio(source) {
+        AudioPlan::Keep => "keep",
+        AudioPlan::Transcode { bitrate } => {
+            assert_eq!(bitrate, target, "a transcode is to the target");
+            "transcode"
+        }
+    };
+    serde_json::json!({"plan": plan, "source_bitrate": bitrate, "target_bitrate": target})
+}
+
+/// The vectors for `fc_text::media_plan` (docs/protocol.md, "Preparing media before upload"): one
+/// case per line, each `{"name", "function", "input", "expected"}`, where `function` names the
+/// module's function the case is for and the input and expected fields are its arguments and
+/// answers under the module's own names. Hand-picked cases for every rule and edge first, then a
+/// sweep across sizes, turns, frame rates, bitrate situations and containers that nobody picked.
+fn media_plan_vectors() {
+    use fc_text::media_plan::{self as mp, AudioSource, OnFailure, Upload, VideoSource};
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case = |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+        cases.push(json!({"name": name, "function": function, "input": input, "expected": expected}));
+    };
+
+    // --- the steps on their own ------------------------------------------------------------
+    for (width, height) in [
+        (1920, 1080), (1080, 1920), (3840, 2160), (2160, 3840), (1440, 1080), (1080, 1440),
+        (1080, 1080), (2560, 1080), (854, 480), (480, 854), (640, 360), (176, 144),
+        (1280, 720), (720, 1280), (1282, 721), (721, 1282), (1281, 721), (853, 481),
+        (1279, 719), (641, 361), (360, 641), (1000, 800), (1001, 800), (2025, 1080),
+        (1443, 1440), (1441, 1440), (720, 2560), (1, 1080), (1080, 1), (1, 1), (2, 2),
+        (0, 1080), (1920, 0), (0, 0),
+    ] {
+        let (target_width, target_height) = mp::target_size(width, height);
+        case(
+            &format!("target size {width}x{height}"),
+            "target_size",
+            json!({"width": width, "height": height}),
+            json!({"width": target_width, "height": target_height}),
+        );
+    }
+    for frame_rate in [
+        Some(24.0), Some(24_000.0 / 1001.0), Some(25.0), Some(29.97), Some(30_000.0 / 1001.0),
+        Some(30.0), Some(30.5), Some(30.51), Some(50.0), Some(59.94), Some(60_000.0 / 1001.0),
+        Some(60.0), Some(120.0), Some(240.0), Some(15.0), Some(0.0), Some(-1.0), None,
+    ] {
+        case(
+            &format!("target frame rate {}", frame_rate.map_or("unknown".to_string(), |rate| rate.to_string())),
+            "target_frame_rate",
+            json!({"frame_rate": frame_rate.map(rate)}),
+            json!({"frame_rate": rate(mp::target_frame_rate(frame_rate))}),
+        );
+    }
+    for (width, height, frame_rate, why) in [
+        (1280, 720, 30.0, "the reference point"),
+        (720, 1280, 30.0, "turned"),
+        (1280, 720, 25.0, "1666.67 thousand"),
+        (1280, 720, 24.0, ""),
+        (1280, 720, 29.97, ""),
+        (1280, 720, 30_000.0 / 1001.0, ""),
+        (1280, 720, 30.5, "2033.33 thousand, over the ceiling"),
+        (960, 720, 30.0, ""),
+        (854, 480, 30.0, "889.58 thousand"),
+        (852, 480, 24_000.0 / 1001.0, ""),
+        (640, 360, 30.0, ""),
+        (720, 720, 30.0, ""),
+        (320, 240, 15.0, "under the floor"),
+        (176, 144, 30.0, "under the floor"),
+        (720, 2560, 30.0, "a panorama, over the ceiling"),
+        (0, 1080, 30.0, "no pixels at all"),
+        (404, 288, 30.0, "exactly 252.5 thousand: half up, where half-even says 252"),
+        (484, 360, 24.0, "exactly 302.5 thousand: half up, where half-even says 302"),
+        (960, 540, 25.0, "exactly 937.5 thousand"),
+        (3618, 128, 25.0, "exactly 837.5 thousand; left to right as written it is 837.4999"),
+        (644, 360, 24.0, "exactly 402.5 thousand; left to right as written it is 402.50000000000006"),
+    ] {
+        case(
+            &format!("profile bitrate {width}x{height} at {frame_rate}{}{why}", if why.is_empty() { "" } else { ": " }),
+            "profile_video_bitrate",
+            json!({"width": width, "height": height, "frame_rate": rate(frame_rate)}),
+            json!({"bitrate": mp::profile_video_bitrate(width, height, frame_rate)}),
+        );
+    }
+    for (source_bitrate, why) in [
+        (None, "no V: the profile's"),
+        (Some(0), "a stated 0 is no V"),
+        (Some(9_000_000), "V above: the profile's"),
+        (Some(2_000_000), "V equal"),
+        (Some(800_000), "V below: V"),
+        (Some(1_234_567), "the cap comes after the rounding"),
+        (Some(100_000), "below the floor, still V"),
+    ] {
+        case(
+            &format!("target bitrate 1280x720 at 30, {why}"),
+            "target_video_bitrate",
+            json!({"width": 1280, "height": 720, "frame_rate": 30, "source_bitrate": source_bitrate}),
+            json!({"bitrate": mp::target_video_bitrate(1280, 720, 30.0, source_bitrate)}),
+        );
+    }
+    for (channels, source_bitrate, why) in [
+        (Some(2), None, "stereo"),
+        (Some(1), None, "mono"),
+        (Some(6), None, "5.1 takes the stereo rate"),
+        (None, None, "a count nobody gave is not mono"),
+        (Some(0), None, "0 channels is not mono either"),
+        (Some(2), Some(96_000), "stereo, never above the source's"),
+        (Some(1), Some(48_000), "mono, never above the source's"),
+        (Some(1), Some(96_000), "mono under a higher source"),
+        (Some(2), Some(0), "a stated 0 is no rate"),
+        (Some(2), Some(1_411_200), "CD audio"),
+    ] {
+        case(
+            &format!("target audio bitrate: {why}"),
+            "target_audio_bitrate",
+            json!({"channels": channels, "source_bitrate": source_bitrate}),
+            json!({"bitrate": mp::target_audio_bitrate(channels, source_bitrate)}),
+        );
+    }
+    for (size_bytes, duration_ms, audio_bitrate, why) in [
+        (1_000_000u64, Some(3_000u64), 128_000u64, "2 666 666.67 truncates, less the audio"),
+        (1_000_000, Some(3_000), 0, "nothing to take off"),
+        (1_000_000, None, 0, "no duration"),
+        (1_000_000, Some(0), 0, "a duration of 0 is none"),
+        (0, Some(1_000), 0, "an empty file"),
+        (16_000, Some(1_000), 128_000, "the audio is the whole file"),
+        (16_000, Some(1_000), 127_999, "one bit a second left"),
+        (16_000, Some(1_000), 200_000, "more audio than file"),
+        (3_285_000, Some(10_000), 128_000, "exactly 2 500 000"),
+        (3_285_001, Some(10_000), 128_000, "truncates back to 2 500 000"),
+        (3_285_002, Some(10_000), 128_000, "2 500 001"),
+        (7_200_000, Some(180_000), 0, "a three-minute MP3 at 320k"),
+        (31_752_000, Some(180_000), 0, "three minutes of CD audio"),
+        (95_000_000, Some(95_000), 128_000, "a 95 MB phone clip"),
+    ] {
+        case(
+            &format!("estimated bitrate: {why}"),
+            "estimated_bitrate",
+            json!({"size_bytes": size_bytes, "duration_ms": duration_ms, "audio_bitrate": audio_bitrate}),
+            json!({"bitrate": mp::estimated_bitrate(size_bytes, duration_ms, audio_bitrate)}),
+        );
+    }
+
+    // --- a video, by hand --------------------------------------------------------------------
+    // A 1080p H.264 phone clip with stereo AAC, every number stated; each case changes it.
+    let clip = VideoSource {
+        width: 1920,
+        height: 1080,
+        frame_rate: Some(30.0),
+        container: "video/mp4".into(),
+        video_codec: "h264".into(),
+        audio_codec: Some("aac".into()),
+        audio_channels: Some(2),
+        video_bitrate: Some(8_000_000),
+        audio_bitrate: Some(128_000),
+        size_bytes: 20_000_000,
+        duration_ms: Some(19_000),
+    };
+    // 720p30 H.264 at 1.5 Mbit/s: within the profile (the design's test fixture 2).
+    let within = VideoSource {
+        width: 1280,
+        height: 720,
+        video_bitrate: Some(1_500_000),
+        size_bytes: 2_035_000,
+        duration_ms: Some(10_000),
+        ..clip.clone()
+    };
+    let hevc = |source: &VideoSource| VideoSource { video_codec: "hevc".into(), ..source.clone() };
+    let sized = |width: u32, height: u32, base: &VideoSource| VideoSource { width, height, ..base.clone() };
+    let silent = |source: &VideoSource| VideoSource {
+        audio_codec: None,
+        audio_channels: None,
+        audio_bitrate: None,
+        ..source.clone()
+    };
+
+    let mut videos: Vec<(String, VideoSource)> = vec![
+        ("1080p landscape".into(), clip.clone()),
+        ("1080p portrait".into(), sized(1080, 1920, &clip)),
+        (
+            "4K60 HEVC portrait from a phone (the design's test fixture 1)".into(),
+            VideoSource {
+                width: 2160,
+                height: 3840,
+                frame_rate: Some(59.94),
+                container: "video/quicktime".into(),
+                video_codec: "hevc".into(),
+                video_bitrate: Some(40_000_000),
+                size_bytes: 150_000_000,
+                duration_ms: Some(29_000),
+                ..clip.clone()
+            },
+        ),
+        ("4K landscape".into(), sized(3840, 2160, &clip)),
+        ("within the profile: kept".into(), within.clone()),
+        ("within the profile, portrait: kept".into(), sized(720, 1280, &within)),
+        ("within the profile, no audio: kept".into(), silent(&within)),
+        (
+            "within the profile, 320k audio: kept (rule A does not ask the audio's rate)".into(),
+            VideoSource { audio_bitrate: Some(320_000), ..within.clone() },
+        ),
+        (
+            "within the profile, V estimated: kept".into(),
+            VideoSource { video_bitrate: None, ..within.clone() },
+        ),
+        ("short side exactly 720, V too high".into(), VideoSource { video_bitrate: Some(8_000_000), ..within.clone() }),
+        ("short side 721: scaled".into(), sized(1282, 721, &within)),
+        ("short side 721, portrait".into(), sized(721, 1282, &within)),
+        ("short side 721, odd long side".into(), sized(1281, 721, &within)),
+        ("odd sides under the cap, HEVC".into(), hevc(&sized(853, 481, &within))),
+        (
+            "odd sides under the cap, H.264: kept (even sides are not in rule A)".into(),
+            VideoSource { video_bitrate: Some(1_000_000), ..sized(1279, 719, &within) },
+        ),
+        ("odd sides under the cap, HEVC, transcoded".into(), hevc(&sized(1279, 719, &within))),
+        ("480p stays 480p".into(), hevc(&sized(854, 480, &within))),
+        ("480p portrait stays 480p".into(), hevc(&sized(480, 854, &within))),
+        ("360p stays 360p".into(), hevc(&sized(640, 360, &within))),
+        ("QCIF stays QCIF, bitrate at the floor".into(), hevc(&sized(176, 144, &within))),
+        ("square".into(), sized(1080, 1080, &clip)),
+        (
+            "square 720 at 1M: kept".into(),
+            VideoSource { video_bitrate: Some(1_000_000), ..sized(720, 720, &within) },
+        ),
+        ("square 720 at 1.5M, 1.33 times its smaller target: transcoded".into(), sized(720, 720, &within)),
+        ("QuickTime holding H.264 is never within the profile".into(), VideoSource {
+            container: "video/quicktime".into(),
+            ..within.clone()
+        }),
+        ("HEVC at 900k: transcoded, never above V".into(), VideoSource { video_bitrate: Some(900_000), ..hevc(&within) }),
+        ("an unnamed video codec".into(), VideoSource { video_codec: "unknown".into(), ..within.clone() }),
+        ("AV1".into(), VideoSource { video_codec: "av1".into(), ..within.clone() }),
+        ("MP3 audio in MP4".into(), VideoSource { audio_codec: Some("mp3".into()), ..within.clone() }),
+        ("an unnamed audio codec is not absent".into(), VideoSource {
+            audio_codec: Some("unknown".into()),
+            ..within.clone()
+        }),
+        ("no audio, transcoded: no audio target".into(), silent(&clip)),
+        ("mono audio".into(), VideoSource { audio_channels: Some(1), audio_bitrate: Some(64_000), ..clip.clone() }),
+        ("mono audio under 64k".into(), VideoSource { audio_channels: Some(1), audio_bitrate: Some(48_000), ..clip.clone() }),
+        ("stereo audio under 128k".into(), VideoSource { audio_bitrate: Some(96_000), ..clip.clone() }),
+        ("5.1 audio".into(), VideoSource { audio_channels: Some(6), audio_bitrate: Some(384_000), ..clip.clone() }),
+        ("channels unknown".into(), VideoSource { audio_channels: None, ..clip.clone() }),
+        ("channels 0".into(), VideoSource { audio_channels: Some(0), ..clip.clone() }),
+        ("audio rate not stated, V stated".into(), VideoSource { audio_bitrate: None, ..clip.clone() }),
+        (
+            "audio rate not stated, V not stated: V unknown".into(),
+            VideoSource { audio_bitrate: None, video_bitrate: None, ..within.clone() },
+        ),
+        (
+            "no audio track, V estimated from the whole file".into(),
+            VideoSource { video_bitrate: None, ..silent(&within) },
+        ),
+        ("V stated as 0 is estimated".into(), VideoSource { video_bitrate: Some(0), ..within.clone() }),
+        (
+            "V unknown: no duration".into(),
+            VideoSource { video_bitrate: None, duration_ms: None, ..within.clone() },
+        ),
+        (
+            "V unknown: duration 0".into(),
+            VideoSource { video_bitrate: None, duration_ms: Some(0), ..within.clone() },
+        ),
+        (
+            "V unknown: the stated audio is more than the file".into(),
+            VideoSource {
+                video_bitrate: None,
+                size_bytes: 100_000,
+                audio_bitrate: Some(128_000),
+                ..within.clone()
+            },
+        ),
+        ("rule A: exactly 1.25 times".into(), VideoSource { video_bitrate: Some(2_500_000), ..within.clone() }),
+        ("rule A: one bit over".into(), VideoSource { video_bitrate: Some(2_500_001), ..within.clone() }),
+        ("rule A at 360p: exactly 1.25 times".into(), VideoSource { video_bitrate: Some(625_000), ..sized(640, 360, &within) }),
+        ("rule A at 360p: one bit over".into(), VideoSource { video_bitrate: Some(625_001), ..sized(640, 360, &within) }),
+        (
+            "rule A at 24 fps: exactly 1.25 times".into(),
+            VideoSource { frame_rate: Some(24.0), video_bitrate: Some(2_000_000), ..within.clone() },
+        ),
+        (
+            "rule A at 24 fps: one bit over".into(),
+            VideoSource { frame_rate: Some(24.0), video_bitrate: Some(2_000_001), ..within.clone() },
+        ),
+        (
+            "rule A, V estimated exactly 1.25 times".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_000, ..within.clone() },
+        ),
+        (
+            "rule A, V estimated: the truncation keeps it at 1.25 times".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_001, ..within.clone() },
+        ),
+        (
+            "rule A, V estimated one bit over".into(),
+            VideoSource { video_bitrate: None, size_bytes: 3_285_002, ..within.clone() },
+        ),
+        ("the floor".into(), VideoSource { video_bitrate: Some(500_000), frame_rate: Some(15.0), ..hevc(&sized(320, 240, &within)) }),
+        (
+            "the floor, then capped by V".into(),
+            VideoSource { video_bitrate: Some(200_000), frame_rate: Some(15.0), ..hevc(&sized(320, 240, &within)) },
+        ),
+        (
+            "the ceiling: 720p at 30.5".into(),
+            VideoSource { frame_rate: Some(30.5), video_bitrate: Some(8_000_000), ..hevc(&within) },
+        ),
+        ("the ceiling: a panorama".into(), hevc(&sized(2560, 720, &clip))),
+        ("the ceiling: a portrait panorama".into(), hevc(&sized(720, 2560, &clip))),
+        ("never above V".into(), VideoSource { video_bitrate: Some(1_200_000), ..hevc(&clip) }),
+        ("never above V, to the bit".into(), VideoSource { video_bitrate: Some(1_234_567), ..hevc(&clip) }),
+        ("a tie at 404x288, 30 fps".into(), VideoSource { video_bitrate: None, duration_ms: None, ..hevc(&sized(404, 288, &within)) }),
+        ("a tie at 484x360, 24 fps".into(), VideoSource {
+            frame_rate: Some(24.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(484, 360, &within))
+        }),
+        ("a tie at 960x540, 25 fps".into(), VideoSource {
+            frame_rate: Some(25.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(960, 540, &within))
+        }),
+        ("a tie at 3618x128, 25 fps".into(), VideoSource {
+            frame_rate: Some(25.0),
+            video_bitrate: None,
+            duration_ms: None,
+            ..hevc(&sized(3618, 128, &within))
+        }),
+        (
+            "within the profile but over the 100 MB ceiling: kept (rule A names no ceiling)".into(),
+            VideoSource {
+                video_bitrate: Some(2_000_000),
+                size_bytes: 160_000_000,
+                duration_ms: Some(600_000),
+                ..within.clone()
+            },
+        ),
+        ("no width: the fallback".into(), sized(0, 1080, &clip)),
+        ("no height: the fallback".into(), sized(1920, 0, &clip)),
+        ("no size at all: the fallback".into(), sized(0, 0, &clip)),
+        ("one pixel wide: no even width, the fallback".into(), sized(1, 1080, &clip)),
+        ("one pixel high: the fallback".into(), sized(1080, 1, &clip)),
+        (
+            "one pixel wide but within the profile: kept, the original goes".into(),
+            VideoSource { video_bitrate: Some(200_000), ..sized(1, 1080, &within) },
+        ),
+        ("two by two".into(), hevc(&sized(2, 2, &within))),
+    ];
+    // Every frame rate the task names, on a clip that is otherwise within the profile (so rule A
+    // turns on the rate alone) and on a 1080p HEVC clip (so the target's rate and bitrate show).
+    for (label, frame_rate) in [
+        ("24", Some(24.0)),
+        ("23.976", Some(24_000.0 / 1001.0)),
+        ("25", Some(25.0)),
+        ("29.97", Some(29.97)),
+        ("30000/1001", Some(30_000.0 / 1001.0)),
+        ("30", Some(30.0)),
+        ("30.5", Some(30.5)),
+        ("30.51", Some(30.51)),
+        ("50", Some(50.0)),
+        ("59.94", Some(59.94)),
+        ("60000/1001", Some(60_000.0 / 1001.0)),
+        ("60", Some(60.0)),
+        ("120", Some(120.0)),
+        ("240", Some(240.0)),
+        ("unknown", None),
+        ("0, which is unknown", Some(0.0)),
+        ("-1, which is unknown", Some(-1.0)),
+    ] {
+        videos.push((format!("{label} fps, otherwise within the profile"), VideoSource { frame_rate, ..within.clone() }));
+        videos.push((format!("{label} fps, 1080p HEVC"), VideoSource { frame_rate, ..hevc(&clip) }));
+    }
+    for (name, source) in &videos {
+        case(name, "plan_video", video_input(source), video_expected(source));
+    }
+
+    // --- a video, swept ----------------------------------------------------------------------
+    // Sizes × turns × frame rates, with the bitrate situation and the container/codecs rotating
+    // through them so that every pairing turns up without a cross product nobody could read: the
+    // situation steps with k + group and the variant with 2k + group, which between them meet
+    // every situation with every variant, and every frame rate with both.
+    let resolutions: [(u32, u32); 12] = [
+        (3840, 2160), (2560, 1440), (1920, 1080), (1440, 1080), (1280, 720), (1080, 1080),
+        (960, 540), (854, 480), (640, 480), (640, 360), (426, 240), (1281, 721),
+    ];
+    let rates: [(&str, Option<f64>); 8] = [
+        ("24", Some(24.0)),
+        ("25", Some(25.0)),
+        ("30000/1001", Some(30_000.0 / 1001.0)),
+        ("30", Some(30.0)),
+        ("50", Some(50.0)),
+        ("60000/1001", Some(60_000.0 / 1001.0)),
+        ("60", Some(60.0)),
+        ("unknown", None),
+    ];
+    // (container, video codec, audio as (codec, channels, stated bitrate) or none)
+    type Variant = (&'static str, &'static str, Option<(&'static str, u32, u64)>);
+    let variants: [Variant; 6] = [
+        ("video/mp4", "h264", Some(("aac", 2, 128_000))),
+        ("video/quicktime", "hevc", Some(("aac", 2, 128_000))),
+        ("video/mp4", "h264", None),
+        ("video/mp4", "hevc", Some(("aac", 1, 64_000))),
+        ("video/mp4", "h264", Some(("aac", 1, 48_000))),
+        ("video/quicktime", "h264", Some(("aac", 2, 160_000))),
+    ];
+    let situations = ["V stated high", "V stated low", "V estimated", "V unknown"];
+    let mut group = 0usize;
+    for (width, height) in resolutions {
+        for turned in [false, true] {
+            if turned && width == height {
+                continue;
+            }
+            let (width, height) = if turned { (height, width) } else { (width, height) };
+            let pixels = u64::from(width) * u64::from(height);
+            for (k, (rate_label, frame_rate)) in rates.iter().enumerate() {
+                let situation = (k + group) % situations.len();
+                let (container, video_codec, audio) = variants[(2 * k + group) % variants.len()];
+                let audio_rate = audio.map_or(0, |(_, _, bitrate)| bitrate);
+                // Consistent files: the size is what the rates make over the duration.
+                let (video_bitrate, size_bytes, duration_ms) = match situation {
+                    0 => (Some(pixels * 6), (pixels * 6 + audio_rate) * 5 / 4, Some(10_000)),
+                    1 => (Some(pixels * 2), (pixels * 2 + audio_rate) * 5 / 4, Some(10_000)),
+                    2 => (None, (pixels * 5 / 2 + audio_rate) * 9 / 8, Some(9_000)),
+                    _ => (None, (pixels * 3 + audio_rate) * 5 / 4, None),
+                };
+                let source = VideoSource {
+                    width,
+                    height,
+                    frame_rate: *frame_rate,
+                    container: container.into(),
+                    video_codec: video_codec.into(),
+                    audio_codec: audio.map(|(codec, _, _)| codec.to_string()),
+                    audio_channels: audio.map(|(_, channels, _)| channels),
+                    video_bitrate,
+                    audio_bitrate: audio.map(|(_, _, bitrate)| bitrate),
+                    size_bytes,
+                    duration_ms,
+                };
+                let audio_label = match audio {
+                    Some((codec, channels, bitrate)) => {
+                        format!("{codec} {} {}k", if channels == 1 { "mono" } else { "stereo" }, bitrate / 1000)
+                    }
+                    None => "no audio".into(),
+                };
+                let name = format!(
+                    "sweep {width}x{height}{} at {rate_label} fps, {}, {container} {video_codec} + {audio_label}",
+                    if turned { " (turned 90°)" } else { "" },
+                    situations[situation],
+                );
+                case(&name, "plan_video", video_input(&source), video_expected(&source));
+            }
+            group += 1;
+        }
+    }
+
+    // --- audio alone ---------------------------------------------------------------------------
+    // Three minutes, stereo, with a size that estimates to 222 222 bit/s unless a case says otherwise.
+    let song = |container: &str, codec: &str, bitrate: Option<u64>| AudioSource {
+        container: container.into(),
+        codec: codec.into(),
+        channels: Some(2),
+        bitrate,
+        size_bytes: 5_000_000,
+        duration_ms: Some(180_000),
+    };
+    let mono = |source: AudioSource| AudioSource { channels: Some(1), ..source };
+    let by_size = |source: AudioSource, size_bytes: u64| AudioSource { bitrate: None, size_bytes, ..source };
+    let audios: Vec<(&str, AudioSource)> = vec![
+        ("MP3 128k: kept", song("audio/mpeg", "mp3", Some(128_000))),
+        ("MP3 at exactly 192 000: kept", song("audio/mpeg", "mp3", Some(192_000))),
+        ("MP3 at 192 001: re-encoded", song("audio/mpeg", "mp3", Some(192_001))),
+        ("MP3 320k: re-encoded", song("audio/mpeg", "mp3", Some(320_000))),
+        ("MP3 256k mono: re-encoded to 64k", mono(song("audio/mpeg", "mp3", Some(256_000)))),
+        ("MP3 192 001 mono", mono(song("audio/mpeg", "mp3", Some(192_001)))),
+        ("AAC 128k: kept", song("audio/mp4", "aac", Some(128_000))),
+        ("AAC at exactly 192 000: kept", song("audio/mp4", "aac", Some(192_000))),
+        ("AAC at 192 001: re-encoded", song("audio/mp4", "aac", Some(192_001))),
+        ("AAC 256k as audio/m4a", song("audio/m4a", "aac", Some(256_000))),
+        ("HE-AAC 48k: kept", song("audio/mp4", "aac", Some(48_000))),
+        (
+            "MP3 of unknown bitrate: kept",
+            AudioSource { duration_ms: None, ..song("audio/mpeg", "mp3", None) },
+        ),
+        (
+            "AAC of unknown bitrate: kept",
+            AudioSource { duration_ms: Some(0), ..song("audio/mp4", "aac", Some(0)) },
+        ),
+        ("MP3 estimated at 320k: re-encoded", by_size(song("audio/mpeg", "mp3", None), 7_200_000)),
+        ("MP3 estimated at exactly 192 000: kept", by_size(song("audio/mpeg", "mp3", None), 4_320_000)),
+        (
+            "MP3 estimated at 192 000.49, truncated to 192 000: kept",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_011),
+        ),
+        (
+            "MP3 estimated at 192 001.02, truncated to 192 001: re-encoded",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_023),
+        ),
+        (
+            "MP3 estimated at 192 001.96, truncated to 192 001: re-encoded",
+            by_size(song("audio/mpeg", "mp3", None), 4_320_044),
+        ),
+        (
+            "MP3 stated 128k in a file that estimates at 320k: the stated rate wins",
+            AudioSource { size_bytes: 7_200_000, ..song("audio/mpeg", "mp3", Some(128_000)) },
+        ),
+        ("WAV, estimated at CD rate", by_size(song("audio/wav", "pcm", None), 31_752_000)),
+        ("WAV mono", mono(by_size(song("audio/wav", "pcm", None), 15_876_000))),
+        ("WAV mono 8 kHz 8-bit: exactly 64k", mono(by_size(song("audio/wav", "pcm", None), 1_440_000))),
+        ("WAV mono at 32k: never raised", mono(by_size(song("audio/wav", "pcm", None), 720_000))),
+        (
+            "WAV of unknown channels",
+            AudioSource { channels: None, ..by_size(song("audio/wav", "pcm", None), 31_752_000) },
+        ),
+        (
+            "WAV of 0 channels",
+            AudioSource { channels: Some(0), ..by_size(song("audio/wav", "pcm", None), 31_752_000) },
+        ),
+        ("WAV holding ADPCM: no rule names it, kept", song("audio/wav", "adpcm", None)),
+        ("AIFF", song("audio/aiff", "pcm", Some(1_411_200))),
+        ("FLAC, estimated", song("audio/flac", "flac", None)),
+        ("FLAC mono", mono(song("audio/flac", "flac", Some(700_000)))),
+        (
+            "FLAC of unknown bitrate: re-encoded at the profile's",
+            AudioSource { duration_ms: None, ..song("audio/flac", "flac", None) },
+        ),
+        ("ALAC in M4A", song("audio/mp4", "alac", Some(900_000))),
+        ("5.1 FLAC", AudioSource { channels: Some(6), ..song("audio/flac", "flac", Some(2_000_000)) }),
+        ("Ogg Vorbis 160k", song("audio/ogg", "vorbis", Some(160_000))),
+        ("Ogg Vorbis, unknown bitrate", AudioSource { duration_ms: None, ..song("audio/ogg", "vorbis", None) }),
+        ("Ogg Opus 96k: never raised", song("audio/ogg", "opus", Some(96_000))),
+        ("Ogg Opus mono 32k", mono(song("audio/ogg", "opus", Some(32_000)))),
+        ("Ogg Opus mono estimated at 24k", mono(by_size(song("audio/ogg", "opus", None), 540_000))),
+        ("Ogg of an unnamed codec", song("audio/ogg", "unknown", None)),
+        ("FLAC in Ogg", song("audio/ogg", "flac", None)),
+        ("Opus in MP4: no rule names it, kept", song("audio/mp4", "opus", Some(256_000))),
+        ("AC-3: no rule names it, kept", song("audio/mp4", "ac3", Some(448_000))),
+        ("an unnamed codec in MP4: kept", song("audio/mp4", "unknown", Some(900_000))),
+        ("Vorbis outside Ogg: kept", song("audio/mpeg", "vorbis", None)),
+    ];
+    for (name, source) in &audios {
+        case(name, "plan_audio", audio_input(source), audio_expected(source));
+    }
+
+    // --- sendable, rule C, rule D -------------------------------------------------------------
+    let ceiling = media::SIZE_LIMIT;
+    for (kind, container, honest, size_bytes, why) in [
+        ("video", "video/mp4", true, 1_000u64, "an MP4"),
+        ("video", "video/quicktime", true, 1_000, "a QuickTime movie"),
+        ("video", "video/webm", true, 1_000, "not an accepted video type"),
+        ("video", "audio/mp4", true, 1_000, "a type of the other kind"),
+        ("video", "video/mp4", false, 1_000, "the bytes say otherwise"),
+        ("video", "video/mp4", true, ceiling, "at the ceiling is within it"),
+        ("video", "video/mp4", true, ceiling + 1, "a byte over the ceiling"),
+        ("audio", "audio/mp4", true, 1_000, "M4A"),
+        ("audio", "audio/m4a", true, 1_000, "audio/m4a"),
+        ("audio", "audio/mpeg", true, 1_000, "MP3"),
+        ("audio", "audio/wav", true, 1_000, "WAV"),
+        ("audio", "audio/ogg", true, 1_000, "Ogg"),
+        ("audio", "audio/aiff", true, 1_000, "AIFF is not accepted"),
+        ("audio", "audio/flac", true, 1_000, "FLAC is not accepted"),
+        ("audio", "audio/wav", false, 1_000, "dishonest WAV"),
+        ("audio", "audio/wav", true, ceiling + 1, "a WAV over the ceiling"),
+        ("file", "video/mp4", true, 1_000, "a file is not a kind these rules are about"),
+        ("photo", "image/jpeg", true, 1_000, "nor is a photo"),
+    ] {
+        case(
+            &format!("sendable: {why}"),
+            "sendable",
+            json!({"kind": kind, "container": container, "honest": honest, "size_bytes": size_bytes, "ceiling_bytes": ceiling}),
+            json!({"sendable": mp::sendable(kind, container, honest, size_bytes, ceiling)}),
+        );
+    }
+    // A server configured lower than the default: the ceiling is an input, not a constant.
+    case(
+        "sendable: under a 50 MB server ceiling",
+        "sendable",
+        json!({"kind": "video", "container": "video/mp4", "honest": true, "size_bytes": 60_000_000, "ceiling_bytes": 50_000_000}),
+        json!({"sendable": mp::sendable("video", "video/mp4", true, 60_000_000, 50_000_000)}),
+    );
+    for source_sendable in [true, false] {
+        let send = match mp::on_failure(source_sendable) {
+            OnFailure::Original => "original",
+            OnFailure::TodaysPath => "todays_path",
+        };
+        case(
+            &format!("rule C: the source is {}sendable", if source_sendable { "" } else { "not " }),
+            "on_failure",
+            json!({"source_sendable": source_sendable}),
+            json!({"send": send}),
+        );
+    }
+    for (source_bytes, source_sendable, result_bytes, why) in [
+        (10_000_000u64, true, 12_000_000u64, "bigger, and the source can go: the source"),
+        (10_000_000, false, 12_000_000, "bigger, but the source cannot go: the result"),
+        (10_000_000, true, 4_000_000, "smaller: the result"),
+        (10_000_000, false, 4_000_000, "smaller, source unsendable: the result"),
+        (10_000_000, true, 10_000_000, "equal is not bigger: the result"),
+        (10_000_000, true, 10_000_001, "one byte bigger: the source"),
+        (150_000_000, false, 90_000_000, "a source over the ceiling, made to fit: the result"),
+    ] {
+        let upload = match mp::keep_smaller(source_bytes, source_sendable, result_bytes) {
+            Upload::Source => "source",
+            Upload::Result => "result",
+        };
+        case(
+            &format!("rule D: {why}"),
+            "keep_smaller",
+            json!({"source_bytes": source_bytes, "source_sendable": source_sendable, "result_bytes": result_bytes}),
+            json!({"upload": upload}),
+        );
+    }
+
+    let lines: Vec<String> = cases.iter().map(|case| serde_json::to_string(case).unwrap()).collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
+}
+
+// --- record (issue #79) -----------------------------------------------------------------------------
+//
+// One case per line, `{"name", "function", "input", "expected"}`, keys sorted — the media-plan file's
+// shape. The functions: `constants`, `composer_slot`, `video_door`, `round_cap_ms`, `round_warning_ms`,
+// `round_diameter`, `is_round` and `hold_step` (the voice recording's reducer, which keeps its first name:
+// since 2026-10-06 there is no hold — the microphone's activation is the one way in). The Windows port has
+// no reducer, so it reads every function but `hold_step`. A `hold_step` case is ONE step — a state,
+// an event and the constants in; the next state, the effects and what the slot is told out — taken from a
+// named scenario run through the reducer, so every port meets each transition in a state it can really
+// be in, and checks it without replaying anything.
+
+fn record_dimmed(reason: fc_text::record::Dimmed) -> &'static str {
+    use fc_text::record::Dimmed;
+    match reason {
+        Dimmed::Call => "call",
+        Dimmed::Busy => "busy",
+        Dimmed::NotSent => "not_sent",
+    }
+}
+
+fn record_recording(recording: fc_text::record::Recording) -> &'static str {
+    use fc_text::record::Recording;
+    match recording {
+        Recording::None => "none",
+        Recording::HandsFree => "hands_free",
+        Recording::HandsFreeBesideDraft => "hands_free_beside_draft",
+    }
+}
+
+fn record_slot_inputs(i: &fc_text::record::SlotInputs) -> serde_json::Value {
+    serde_json::json!({
+        "recorder_open": i.recorder_open,
+        "recording": record_recording(i.recording),
+        "editing": i.editing,
+        "draft_blank": i.draft_blank,
+        "staged": i.staged,
+        "assistant_chat": i.assistant_chat,
+        "can_record": i.can_record,
+        "call": i.call,
+        "busy": i.busy,
+        "not_sent": i.not_sent,
+    })
+}
+
+fn record_slot(slot: fc_text::record::Slot) -> serde_json::Value {
+    use fc_text::record::Slot;
+    let (name, enabled, reason) = match slot {
+        Slot::Recorder => ("recorder", None, None),
+        Slot::SendVoice => ("send_voice", None, None),
+        Slot::StopRecording => ("stop_recording", None, None),
+        Slot::Save { enabled } => ("save", Some(enabled), None),
+        Slot::Send => ("send", None, None),
+        Slot::SendDisabled => ("send_disabled", None, None),
+        Slot::Dimmed(reason) => ("dimmed", None, Some(record_dimmed(reason))),
+        Slot::Microphone => ("microphone", None, None),
+    };
+    serde_json::json!({
+        "row": slot.row(),
+        "slot": name,
+        "enabled": enabled,
+        "reason": reason,
+        "label": slot.label(),
+        "notice": slot.notice(),
+    })
+}
+
+fn record_door_inputs(i: &fc_text::record::DoorInputs) -> serde_json::Value {
+    serde_json::json!({
+        "slot": record_slot_inputs(&i.slot),
+        "family_or_direct_chat": i.family_or_direct_chat,
+        "server_offers_round": i.server_offers_round,
+        "has_camera": i.has_camera,
+        "encoder_probe_passes": i.encoder_probe_passes,
+        "records_round_video": i.records_round_video,
+    })
+}
+
+fn record_door(door: fc_text::record::Door) -> serde_json::Value {
+    use fc_text::record::Door;
+    let (name, reason) = match door {
+        Door::Hidden => ("hidden", None),
+        Door::Dimmed(reason) => ("dimmed", Some(record_dimmed(reason))),
+        Door::Shown => ("shown", None),
+    };
+    serde_json::json!({"door": name, "reason": reason, "label": door.label(), "notice": door.notice()})
+}
+
+fn record_constants(c: &fc_text::record::HoldConstants) -> serde_json::Value {
+    serde_json::json!({
+        "shortest_recording_ms": c.shortest_recording_ms,
+        "activation_guard_ms": c.activation_guard_ms,
+        "delete_asks_from_ms": c.delete_asks_from_ms,
+    })
+}
+
+fn record_situation(s: &fc_text::record::Situation) -> serde_json::Value {
+    use fc_text::record::Permission;
+    serde_json::json!({
+        "permission": match s.permission {
+            Permission::Granted => "granted",
+            Permission::NotAsked => "not_asked",
+            Permission::Denied => "denied",
+        },
+        "blocked": s.blocked.map(record_dimmed),
+    })
+}
+
+fn record_state(s: &fc_text::record::HoldState) -> serde_json::Value {
+    use fc_text::record::{Phase, Source};
+    use serde_json::json;
+    let mut value = match s.phase {
+        Phase::Idle => json!({"phase": "idle"}),
+        Phase::HandsFree { beside_draft } => json!({"phase": "hands_free", "beside_draft": beside_draft}),
+        Phase::AskingDelete { recorded_ms } => json!({"phase": "asking_delete", "recorded_ms": recorded_ms}),
+        Phase::AwaitingPermission { source, beside_draft } => json!({
+            "phase": "awaiting_permission",
+            "source": match source { Source::Tap => "tap", Source::Menu => "menu" },
+            "beside_draft": beside_draft,
+        }),
+    };
+    value["guard_until_ms"] = json!(s.guard_until_ms);
+    value
+}
+
+fn record_event(e: &fc_text::record::HoldEvent) -> serde_json::Value {
+    use fc_text::record::HoldEvent as E;
+    use serde_json::json;
+    match *e {
+        E::Cap { at_ms } => json!({"event": "cap", "at_ms": at_ms}),
+        E::Interruption { at_ms, recorded_ms } => json!({"event": "interruption", "at_ms": at_ms, "recorded_ms": recorded_ms}),
+        E::Activate { at_ms, situation, recorded_ms } => json!({
+            "event": "activate", "at_ms": at_ms, "situation": record_situation(&situation), "recorded_ms": recorded_ms,
+        }),
+        E::Record { at_ms, beside_draft, situation, recorded_ms } => json!({
+            "event": "record", "at_ms": at_ms, "beside_draft": beside_draft,
+            "situation": record_situation(&situation), "recorded_ms": recorded_ms,
+        }),
+        E::Stop { at_ms, recorded_ms } => json!({"event": "stop", "at_ms": at_ms, "recorded_ms": recorded_ms}),
+        E::Delete { at_ms, recorded_ms } => json!({"event": "delete", "at_ms": at_ms, "recorded_ms": recorded_ms}),
+        E::Answer { at_ms, delete } => json!({"event": "answer", "at_ms": at_ms, "delete": delete}),
+        E::PermissionAnswer { at_ms, granted } => json!({"event": "permission_answer", "at_ms": at_ms, "granted": granted}),
+        E::OtherAction { at_ms } => json!({"event": "other_action", "at_ms": at_ms}),
+        E::Emptied { at_ms } => json!({"event": "emptied", "at_ms": at_ms}),
+    }
+}
+
+fn record_effect(e: &fc_text::record::HoldEffect) -> serde_json::Value {
+    use fc_text::record::{Announcement, Haptic, Hint, HoldEffect as F};
+    use serde_json::json;
+    let plain = |name: &str| json!({"effect": name});
+    match *e {
+        F::Start => plain("start"),
+        F::Delete => plain("delete"),
+        F::Send => plain("send"),
+        F::Review => plain("review"),
+        F::Park => plain("park"),
+        F::AskDelete => plain("ask_delete"),
+        F::AskPermission => plain("ask_permission"),
+        F::Denied => plain("denied"),
+        F::Explain(reason) => json!({"effect": "explain", "reason": record_dimmed(reason), "text": reason.notice()}),
+        F::Hint(hint) => {
+            let name = match hint {
+                Hint::StoppedAtFiveMinutes => "stopped_at_five_minutes",
+                Hint::TooShort => "too_short",
+            };
+            json!({"effect": "hint", "hint": name, "text": hint.text()})
+        }
+        F::Announce(announcement) => {
+            let name = match announcement {
+                Announcement::Recording => "recording",
+                Announcement::RecordingDeleted => "recording_deleted",
+                Announcement::VoiceMessageSent => "voice_message_sent",
+                Announcement::ReadyToReview { .. } => "ready_to_review",
+                Announcement::TooShort => "too_short",
+                Announcement::StoppedAtFiveMinutes => "stopped_at_five_minutes",
+            };
+            let mut value = json!({"effect": "announce", "announcement": name, "text": announcement.text()});
+            if let Announcement::ReadyToReview { recorded_ms } = announcement {
+                value["recorded_ms"] = json!(recorded_ms);
+            }
+            value
+        }
+        F::Haptic(haptic) => json!({"effect": "haptic", "haptic": match haptic {
+            Haptic::Light => "light",
+            Haptic::Success => "success",
+            Haptic::Warning => "warning",
+        }}),
+    }
+}
+
+fn record_vectors() {
+    use fc_text::record::{
+        self as r, AttachmentFlags, Dimmed, DoorInputs, HoldConstants, HoldEvent, HoldState, Permission, Phase,
+        Recording, Situation, SlotInputs, Source, WidthClass,
+    };
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case = |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+        cases.push(json!({"name": name, "function": function, "input": input, "expected": expected}));
+    };
+
+    // --- the constants -----------------------------------------------------------------------------
+    case(
+        "the S1.1 constants, and S5.2's diameters",
+        "constants",
+        json!({}),
+        json!({
+            "activation_guard_ms": r::ACTIVATION_GUARD_MS,
+            "shortest_recording_ms": r::SHORTEST_RECORDING_MS,
+            "voice_cap_ms": r::VOICE_CAP_MS,
+            "voice_warning_ms": r::VOICE_WARNING_MS,
+            "default_max_round_video_ms": r::DEFAULT_MAX_ROUND_VIDEO_MS,
+            "round_cap_margin_ms": r::ROUND_CAP_MARGIN_MS,
+            "round_warning_lead_ms": r::ROUND_WARNING_LEAD_MS,
+            "silence_peak_dbfs": rate(r::SILENCE_PEAK_DBFS),
+            "silence_max_amplitude": r::SILENCE_MAX_AMPLITUDE,
+            "silence_sample_magnitude": r::SILENCE_SAMPLE_MAGNITUDE,
+            "silence_warning_after_ms": r::SILENCE_WARNING_AFTER_MS,
+            "delete_asks_from_ms": r::DELETE_ASKS_FROM_MS,
+            "preview_idle_close_ms": r::PREVIEW_IDLE_CLOSE_MS,
+            "slot_crossfade_ms": r::SLOT_CROSSFADE_MS,
+            "recorder_fade_ms": r::RECORDER_FADE_MS,
+            "min_target_apple_pt": r::MIN_TARGET_APPLE_PT,
+            "min_target_android_dp": r::MIN_TARGET_ANDROID_DP,
+            "min_target_windows_epx": r::MIN_TARGET_WINDOWS_EPX,
+            "min_target_web_px": r::MIN_TARGET_WEB_PX,
+            "round_diameter_compact": r::ROUND_DIAMETER_COMPACT,
+            "round_diameter_regular": r::ROUND_DIAMETER_REGULAR,
+            "video_door_label": r::VIDEO_DOOR_LABEL,
+            "video_door_tooltip": r::VIDEO_DOOR_TOOLTIP,
+            "default_hold_constants": record_constants(&HoldConstants::default()),
+        }),
+    );
+    // --- S1.3, the trailing slot -------------------------------------------------------------------
+    // Every row on its own, every pair of rows (the higher must win), and the inputs inside a row.
+    let mic = SlotInputs {
+        recorder_open: false,
+        recording: Recording::None,
+        editing: false,
+        draft_blank: true,
+        staged: false,
+        assistant_chat: false,
+        can_record: true,
+        call: false,
+        busy: false,
+        not_sent: false,
+    };
+    let with_row = |mut i: SlotInputs, row: u8| -> SlotInputs {
+        match row {
+            1 => i.recorder_open = true,
+            2 => i.recording = Recording::HandsFree,
+            3 => {
+                i.recording = Recording::HandsFreeBesideDraft;
+                i.draft_blank = false;
+            }
+            4 => i.editing = true,
+            5 => i.draft_blank = false,
+            6 => i.assistant_chat = true,
+            7 => i.call = true,
+            8 => i.busy = true,
+            9 => i.not_sent = true,
+            _ => {}
+        }
+        i
+    };
+    let row_names = [
+        "",
+        "the video recorder is open",
+        "a hands-free recording that started empty",
+        "a recording beside a draft",
+        "editing",
+        "words typed",
+        "the assistant's chat",
+        "a call",
+        "busy with an attachment",
+        "a not-sent voice message",
+        "otherwise",
+    ];
+    let mut slot_cases: Vec<(String, SlotInputs)> = Vec::new();
+    for row in 1..=10u8 {
+        slot_cases.push((format!("row {row} alone: {}", row_names[usize::from(row)]), with_row(mic, row)));
+    }
+    for higher in 1..=9u8 {
+        for lower in higher + 1..=9u8 {
+            if (higher, lower) == (2, 3) {
+                continue;
+            }
+            slot_cases.push((
+                format!("row {higher} over row {lower}: {} and {}", row_names[usize::from(higher)], row_names[usize::from(lower)]),
+                with_row(with_row(mic, lower), higher),
+            ));
+        }
+    }
+    let typed = with_row(mic, 5);
+    let staged = SlotInputs { staged: true, ..mic };
+    slot_cases.extend([
+        ("row 2 with every lower row true".to_string(), SlotInputs {
+            recording: Recording::HandsFree,
+            editing: true,
+            draft_blank: false,
+            assistant_chat: true,
+            call: true,
+            busy: true,
+            not_sent: true,
+            ..mic
+        }),
+        ("row 3 with items staged, not words".to_string(), SlotInputs { recording: Recording::HandsFreeBesideDraft, staged: true, ..mic }),
+        ("row 4 with words in the field: Save enabled".to_string(), SlotInputs { editing: true, draft_blank: false, ..mic }),
+        ("row 4 with the field cleared during a call: Save, never a microphone".to_string(), SlotInputs {
+            editing: true,
+            call: true,
+            not_sent: true,
+            ..mic
+        }),
+        ("row 5 by staging alone".to_string(), staged),
+        ("row 5 by staging, in a call, busy, with a not-sent message".to_string(), SlotInputs { call: true, busy: true, not_sent: true, ..staged }),
+        ("row 5 in the assistant's chat".to_string(), SlotInputs { assistant_chat: true, ..typed }),
+        ("row 5 where nothing can record".to_string(), SlotInputs { can_record: false, ..typed }),
+        ("row 6 where nothing can record".to_string(), SlotInputs { can_record: false, ..mic }),
+        ("row 6 where nothing can record, in a call".to_string(), SlotInputs { can_record: false, call: true, ..mic }),
+        ("row 6 in the assistant's chat, busy".to_string(), SlotInputs { assistant_chat: true, busy: true, ..mic }),
+        ("every row true".to_string(), {
+            let mut all = mic;
+            for row in [1, 3, 4, 5, 6, 7, 8, 9] {
+                all = with_row(all, row);
+            }
+            all
+        }),
+    ]);
+    for (name, inputs) in &slot_cases {
+        case(&format!("slot: {name}"), "composer_slot", record_slot_inputs(inputs), record_slot(r::composer_slot(inputs)));
+    }
+
+    // --- S1.4, the video button --------------------------------------------------------------------
+    let open = DoorInputs {
+        slot: mic,
+        family_or_direct_chat: true,
+        server_offers_round: true,
+        has_camera: true,
+        encoder_probe_passes: true,
+        records_round_video: true,
+    };
+    let mut door_cases: Vec<(String, DoorInputs)> = Vec::new();
+    for row in 1..=10u8 {
+        door_cases.push((
+            format!("beside row {row}: {}", row_names[usize::from(row)]),
+            DoorInputs { slot: with_row(mic, row), ..open },
+        ));
+    }
+    for (row, why) in [(10, "a microphone"), (7, "a call"), (9, "a not-sent message")] {
+        let at = DoorInputs { slot: with_row(mic, row), ..open };
+        door_cases.extend([
+            (format!("{why}, against a server without the keys"), DoorInputs { server_offers_round: false, ..at }),
+            (format!("{why}, on a device without a camera"), DoorInputs { has_camera: false, ..at }),
+            (format!("{why}, in a browser whose probe fails"), DoorInputs { encoder_probe_passes: false, ..at }),
+            (format!("{why}, in a build that does not record round video"), DoorInputs { records_round_video: false, ..at }),
+            (format!("{why}, in a thread or the assistant's chat"), DoorInputs { family_or_direct_chat: false, ..at }),
+        ]);
+    }
+    door_cases.extend([
+        ("items staged".to_string(), DoorInputs { slot: staged, ..open }),
+        ("recording hands-free".to_string(), DoorInputs { slot: SlotInputs { recording: Recording::HandsFree, ..mic }, ..open }),
+        ("recording beside a draft".to_string(), DoorInputs { slot: SlotInputs { recording: Recording::HandsFreeBesideDraft, ..mic }, ..open }),
+        ("editing with the field cleared".to_string(), DoorInputs { slot: with_row(mic, 4), ..open }),
+        ("a call and busy: the call's sentence".to_string(), DoorInputs { slot: SlotInputs { call: true, busy: true, ..mic }, ..open }),
+        ("busy with a not-sent message: dimmed for busy".to_string(), DoorInputs { slot: SlotInputs { busy: true, not_sent: true, ..mic }, ..open }),
+        ("where nothing can record".to_string(), DoorInputs { slot: SlotInputs { can_record: false, ..mic }, ..open }),
+        ("Phase 1, everywhere: everything but a build that records".to_string(), DoorInputs { records_round_video: false, ..open }),
+    ]);
+    for (name, inputs) in &door_cases {
+        case(&format!("door: {name}"), "video_door", record_door_inputs(inputs), record_door(r::video_door(inputs)));
+    }
+
+    // --- the round video's arithmetic --------------------------------------------------------------
+    for (max, why) in [
+        (60_000, "the server's"),
+        (120_000, "a longer one"),
+        (30_000, "a shorter one"),
+        (10_500, ""),
+        (10_000, "exactly the warning's lead"),
+        (9_999, "shorter than the lead: warned from the start"),
+        (1_000, ""),
+        (501, ""),
+        (500, "exactly the margin"),
+        (499, "shorter than the margin: clamped, never wrapped"),
+        (0, "none at all"),
+    ] {
+        let suffix = if why.is_empty() { String::new() } else { format!(": {why}") };
+        case(
+            &format!("round cap for {max} ms{suffix}"),
+            "round_cap_ms",
+            json!({"max_round_video_ms": max}),
+            json!({"cap_ms": r::round_cap_ms(max)}),
+        );
+        case(
+            &format!("round warning for {max} ms{suffix}"),
+            "round_warning_ms",
+            json!({"max_round_video_ms": max}),
+            json!({"warning_ms": r::round_warning_ms(max)}),
+        );
+    }
+    for (width, name) in [(WidthClass::Compact, "compact"), (WidthClass::Regular, "regular")] {
+        case(
+            &format!("round diameter, {name}"),
+            "round_diameter",
+            json!({"width_class": name}),
+            json!({"diameter": r::round_diameter(width)}),
+        );
+    }
+    let flags = |kind: &'static str, round: bool| AttachmentFlags { kind, round };
+    let shapes: Vec<(&str, &str, Vec<AttachmentFlags>)> = vec![
+        ("one video with the flag", "", vec![flags("video", true)]),
+        ("one video without it", "", vec![flags("video", false)]),
+        ("two flagged videos", "", vec![flags("video", true), flags("video", true)]),
+        ("a flagged video and a photo", "", vec![flags("video", true), flags("photo", false)]),
+        ("no attachment", "", vec![]),
+        ("a body beside it", "Look!", vec![flags("video", true)]),
+        ("a body of one space: compared exactly", " ", vec![flags("video", true)]),
+        ("the flag on a photo", "", vec![flags("photo", true)]),
+        ("the flag on an audio", "", vec![flags("audio", true)]),
+        ("the flag on a file", "", vec![flags("file", true)]),
+        ("the flag on a location", "", vec![flags("location", true)]),
+        ("a kind spelled otherwise", "", vec![flags("Video", true)]),
+    ];
+    for (name, body, attachments) in &shapes {
+        let listed: Vec<serde_json::Value> =
+            attachments.iter().map(|a| json!({"kind": a.kind, "round": a.round})).collect();
+        case(
+            &format!("is round: {name}"),
+            "is_round",
+            json!({"body": body, "attachments": listed}),
+            json!({"round": r::is_round(body, attachments)}),
+        );
+    }
+
+    // --- S2.1, S2.2 and S2.5, the voice recording, as scenarios -------------------------------------
+    // Every activation of the slot is `activate` — the platform button's own completed tap, however long
+    // the press was held, a click, Enter or Space, a screen reader's. There is no press, hold or slide.
+    let sit = Situation::default();
+    let not_asked = Situation { permission: Permission::NotAsked, ..sit };
+    let denied = Situation { permission: Permission::Denied, ..sit };
+    let activate = |at_ms: u64, recorded_ms: u64| HoldEvent::Activate { at_ms, situation: sit, recorded_ms };
+    let activate_with = |at_ms: u64, situation: Situation| HoldEvent::Activate { at_ms, situation, recorded_ms: 0 };
+    let record = |at_ms: u64, beside_draft: bool, situation: Situation, recorded_ms: u64| HoldEvent::Record {
+        at_ms,
+        beside_draft,
+        situation,
+        recorded_ms,
+    };
+    let interruption = |at_ms: u64, recorded_ms: u64| HoldEvent::Interruption { at_ms, recorded_ms };
+    let stop = |at_ms: u64, recorded_ms: u64| HoldEvent::Stop { at_ms, recorded_ms };
+    let delete = |at_ms: u64, recorded_ms: u64| HoldEvent::Delete { at_ms, recorded_ms };
+    let answer = |at_ms: u64, granted: bool| HoldEvent::PermissionAnswer { at_ms, granted };
+    let other = |at_ms: u64| HoldEvent::OtherAction { at_ms };
+    let idle = HoldState::default();
+    let defaults = HoldConstants::default();
+
+    type Scenario = (&'static str, HoldState, HoldConstants, Vec<HoldEvent>);
+    let scenarios: Vec<Scenario> = vec![
+        (
+            "a tap records hands-free, a second tap inside the guard is ignored, the same slot sends, and the microphone it leaves is guarded",
+            idle,
+            defaults,
+            vec![activate(120, 0), activate(719, 599), activate(5_120, 5_000), activate(5_719, 0), activate(5_720, 0)],
+        ),
+        ("a double tap on the microphone finds the recording too short", idle, defaults, vec![activate(100, 0), activate(700, 600)]),
+        ("Send at a millisecond under a second is too short", idle, defaults, vec![activate(100, 0), activate(1_200, 999)]),
+        ("Send at exactly a second sends", idle, defaults, vec![activate(100, 0), activate(1_200, 1_000)]),
+        (
+            "a text Send emptied the composer: an activation inside the guard is ignored whole",
+            idle,
+            defaults,
+            vec![HoldEvent::Emptied { at_ms: 1_000 }, activate(1_599, 0), activate(1_600, 0)],
+        ),
+        (
+            "a text Send emptied the composer, then words typed and deleted: never guarded, the microphone records",
+            idle,
+            defaults,
+            vec![HoldEvent::Emptied { at_ms: 1_000 }, other(1_100), other(1_200), activate(1_300, 0)],
+        ),
+        (
+            "Record Voice Message beside a draft, Stop, then a character typed: the row-5 Send is no longer guarded",
+            idle,
+            defaults,
+            vec![record(1_000, true, sit, 0), activate(4_000, 3_000), other(4_100)],
+        ),
+        (
+            "while a recording runs nothing lifts the guard on its Send",
+            idle,
+            defaults,
+            vec![activate(100, 0), other(300), activate(400, 300)],
+        ),
+        (
+            "a tap with the microphone never asked: the prompt, then Allow records",
+            idle,
+            defaults,
+            vec![activate_with(100, not_asked), answer(4_000, true)],
+        ),
+        ("a tap with the microphone never asked: Don't Allow", idle, defaults, vec![activate_with(100, not_asked), answer(4_000, false)]),
+        (
+            "Record Voice Message with the microphone never asked, beside a draft",
+            idle,
+            defaults,
+            vec![record(0, true, not_asked, 0), answer(4_000, true)],
+        ),
+        ("a denied microphone, from a tap", idle, defaults, vec![activate_with(0, denied)]),
+        ("a denied microphone, from the paperclip", idle, defaults, vec![record(0, false, denied, 0)]),
+        (
+            "dimmed by a call: a tap explains, before any prompt",
+            idle,
+            defaults,
+            vec![activate_with(100, Situation { blocked: Some(Dimmed::Call), permission: Permission::NotAsked })],
+        ),
+        (
+            "dimmed while busy: the shortcut explains",
+            idle,
+            defaults,
+            vec![record(0, false, Situation { blocked: Some(Dimmed::Busy), ..sit }, 0)],
+        ),
+        (
+            "dimmed by a not-sent message: the paperclip explains",
+            idle,
+            defaults,
+            vec![record(0, false, Situation { blocked: Some(Dimmed::NotSent), ..sit }, 0)],
+        ),
+        ("an interruption hands-free parks it", idle, defaults, vec![activate(100, 0), interruption(9_000, 8_900)]),
+        ("an interruption hands-free under a second deletes it", idle, defaults, vec![activate(100, 0), interruption(900, 800)]),
+        ("an interruption beside a draft parks it", idle, defaults, vec![record(0, true, sit, 0), interruption(5_000, 5_000)]),
+        (
+            "an interruption while the prompt is up abandons it",
+            idle,
+            defaults,
+            vec![activate_with(0, not_asked), interruption(1_000, 0), answer(2_000, true)],
+        ),
+        ("five minutes, hands-free: review", idle, defaults, vec![activate(100, 0), HoldEvent::Cap { at_ms: 300_100 }]),
+        ("five minutes beside a draft: review", idle, defaults, vec![record(0, true, sit, 0), HoldEvent::Cap { at_ms: 300_000 }]),
+        ("Stop reviews", idle, defaults, vec![activate(100, 0), stop(9_000, 8_900)]),
+        ("Stop under a second is too short", idle, defaults, vec![activate(100, 0), stop(1_000, 900)]),
+        ("Magic Tap with nothing recording never starts one", idle, defaults, vec![stop(0, 0)]),
+        ("Delete under ten seconds", idle, defaults, vec![activate(100, 0), delete(9_000, 9_999)]),
+        (
+            "Delete at ten seconds stops and asks; Delete",
+            idle,
+            defaults,
+            vec![activate(100, 0), delete(10_200, 10_000), HoldEvent::Answer { at_ms: 11_000, delete: true }],
+        ),
+        (
+            "Delete at ten seconds stops and asks; Keep",
+            idle,
+            defaults,
+            vec![activate(100, 0), delete(12_200, 12_000), HoldEvent::Answer { at_ms: 13_000, delete: false }],
+        ),
+        ("an interruption while asking parks it", idle, defaults, vec![activate(100, 0), delete(12_200, 12_000), interruption(13_000, 12_000)]),
+        (
+            "Record Voice Message beside a draft: the slot is Stop, it stages the note, and a double tap cannot send it",
+            idle,
+            defaults,
+            vec![record(1_000, true, sit, 0), activate(4_000, 3_000), activate(4_599, 0)],
+        ),
+        ("Record Voice Message beside a draft, stopped too soon", idle, defaults, vec![record(1_000, true, sit, 0), activate(1_600, 600)]),
+        (
+            "the shortcut starts, and pressed again stops into review",
+            idle,
+            defaults,
+            vec![record(0, false, sit, 0), record(9_000, false, sit, 9_000)],
+        ),
+        ("the shortcut during a tapped recording stops into review, never sending", idle, defaults, vec![activate(0, 0), record(4_000, false, sit, 3_500)]),
+    ];
+
+    for (name, start, constants, events) in &scenarios {
+        let mut state = *start;
+        for (index, event) in events.iter().enumerate() {
+            let (next, effects) = r::hold_step(state, *event, constants);
+            let label = record_event(event)["event"].as_str().unwrap().to_string();
+            case(
+                &format!("voice: {name} — step {}: {label}", index + 1),
+                "hold_step",
+                json!({"state": record_state(&state), "event": record_event(event), "constants": record_constants(constants)}),
+                json!({
+                    "state": record_state(&next),
+                    "effects": effects.iter().map(record_effect).collect::<Vec<_>>(),
+                    "recording": record_recording(next.recording()),
+                }),
+            );
+            state = next;
+        }
+    }
+
+    // --- events out of place: nothing changes ---------------------------------------------------------
+    let hands_free = HoldState { phase: Phase::HandsFree { beside_draft: false }, guard_until_ms: 700 };
+    let asking = HoldState { phase: Phase::AskingDelete { recorded_ms: 12_000 }, ..idle };
+    let prompting = HoldState { phase: Phase::AwaitingPermission { source: Source::Menu, beside_draft: true }, ..idle };
+    let still: Vec<(&str, HoldState, HoldEvent)> = vec![
+        ("Delete with nothing recording", idle, delete(10, 5_000)),
+        ("an answer nobody was asked for", idle, HoldEvent::Answer { at_ms: 10, delete: true }),
+        ("a permission answer with no prompt", idle, answer(10, true)),
+        ("another action with nothing guarded", idle, other(10)),
+        ("five minutes with nothing recording", idle, HoldEvent::Cap { at_ms: 10 }),
+        ("an interruption with nothing recording", idle, interruption(10, 0)),
+        ("another action while recording keeps the guard", hands_free, other(300)),
+        ("an answer nobody was asked for, while recording", hands_free, HoldEvent::Answer { at_ms: 300, delete: true }),
+        ("a permission answer while recording", hands_free, answer(300, true)),
+        ("an Activate while asking", asking, activate(20_000, 0)),
+        ("the shortcut while asking", asking, record(20_000, false, sit, 12_000)),
+        ("Stop while asking", asking, stop(20_000, 12_000)),
+        ("Delete while asking", asking, delete(20_000, 12_000)),
+        ("five minutes while asking", asking, HoldEvent::Cap { at_ms: 20_000 }),
+        ("an Activate while the prompt is up", prompting, activate(20_000, 0)),
+        ("the paperclip while the prompt is up", prompting, record(20_000, false, sit, 0)),
+        ("Stop while the prompt is up", prompting, stop(20_000, 0)),
+        ("a delete answer while the prompt is up", prompting, HoldEvent::Answer { at_ms: 20_000, delete: true }),
+    ];
+    for (name, state, event) in &still {
+        let (next, effects) = r::hold_step(*state, *event, &defaults);
+        case(
+            &format!("voice, out of place: {name}"),
+            "hold_step",
+            json!({"state": record_state(state), "event": record_event(event), "constants": record_constants(&defaults)}),
+            json!({
+                "state": record_state(&next),
+                "effects": effects.iter().map(record_effect).collect::<Vec<_>>(),
+                "recording": record_recording(next.recording()),
+            }),
+        );
+    }
+
+    let lines: Vec<String> = cases.iter().map(|case| serde_json::to_string(case).unwrap()).collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
+}
+
+// --- waveform: a voice note's shape (fc_text::waveform) ---------------------------------------------
+
+/// A peak as JSON. JSON has no NaN or infinity, so those three are the strings `"NaN"`,
+/// `"Infinity"` and `"-Infinity"` — the spellings Swift's `Double(_:)`, Kotlin's `toDouble()` and
+/// C#'s `double.Parse` (invariant culture) all read back. Everything else is the number, written as
+/// the shortest decimal that round-trips; [`rate`] writes a whole one as an integer.
+fn peak(value: f64) -> serde_json::Value {
+    if value.is_nan() {
+        serde_json::json!("NaN")
+    } else if value == f64::INFINITY {
+        serde_json::json!("Infinity")
+    } else if value == f64::NEG_INFINITY {
+        serde_json::json!("-Infinity")
+    } else {
+        rate(value)
+    }
+}
+
+/// A deterministic "recording" of `n` peaks: an envelope that rises and falls with a ripple,
+/// every value a multiple of 1/8 dB — exact in binary, so the input every port parses is the
+/// input this printed — and some below the floor and above full scale.
+fn synthetic_peaks(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..n)
+        .map(|i| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let noise = ((state >> 33) % 121) as i64; // 0..=120 eighths: 0..15 dB
+            let envelope = if n <= 1 {
+                0
+            } else {
+                (i as i64 * (n as i64 - 1 - i as i64) * 4 * 8 * 30)
+                    / ((n as i64 - 1) * (n as i64 - 1))
+            };
+            // −70 dB … +5 dB in eighths: below the floor at the ends, above full scale at the peak.
+            let eighths = -560 + 2 * envelope + noise;
+            eighths as f64 / 8.0
+        })
+        .collect()
+}
+
+fn waveform_vectors() {
+    use fc_text::waveform as w;
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case =
+        |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+            cases.push(
+                json!({"name": name, "function": function, "input": input, "expected": expected}),
+            );
+        };
+
+    case(
+        "the constants and the placeholder",
+        "constants",
+        json!({}),
+        json!({
+            "levels": w::LEVELS,
+            "max_level": w::MAX_LEVEL,
+            "floor_dbfs": rate(w::FLOOR_DBFS),
+            "db_per_level": rate(w::DB_PER_LEVEL),
+            "placeholder_level": w::PLACEHOLDER_LEVEL,
+            "placeholder": w::encode(&w::PLACEHOLDER),
+        }),
+    );
+
+    // --- level: one peak ------------------------------------------------------------------------
+    let below = |value: f64| f64::from_bits(value.to_bits() + 1); // one ulp further from zero
+    let above = |value: f64| f64::from_bits(value.to_bits() - 1); // one ulp nearer zero
+    let mut peaks: Vec<(String, f64)> = vec![
+        ("NaN is silence".into(), f64::NAN),
+        ("+infinity is full scale".into(), f64::INFINITY),
+        ("-infinity is silence".into(), f64::NEG_INFINITY),
+        ("-160, a meter's floor".into(), -160.0),
+        ("-120".into(), -120.0),
+        ("-60.5, below the floor".into(), -60.5),
+        ("above full scale: +3.5".into(), 3.5),
+        ("+120".into(), 120.0),
+        ("0".into(), 0.0),
+        ("one ulp below -58, the first tie".into(), below(-58.0)),
+        ("one ulp above -58".into(), above(-58.0)),
+        ("2^-16 below -58".into(), -58.0 - 1.0 / 65_536.0),
+        (
+            "one ulp below -2: the addition rounds it onto the tie".into(),
+            below(-2.0),
+        ),
+        ("2^-16 below -2".into(), -2.0 - 1.0 / 65_536.0),
+        ("one ulp above -60".into(), above(-60.0)),
+        ("one ulp below 0".into(), below(0.0)),
+        (
+            "one ulp above -0 (the least positive)".into(),
+            f64::from_bits(1),
+        ),
+        ("-12.3, not exact in binary".into(), -12.3),
+        ("-33.333333333333336".into(), -33.333333333333336),
+        (
+            "-45.1, a Float meter widened (f32 -> f64)".into(),
+            f64::from(-45.1_f32),
+        ),
+    ];
+    for k in 0..=15 {
+        let centre = -60.0 + 4.0 * f64::from(k);
+        peaks.push((format!("level {k}'s centre"), centre));
+        peaks.push((
+            format!("level {k}'s centre - 2 (a tie, rounds up)"),
+            centre - 2.0,
+        ));
+        peaks.push((format!("level {k}'s centre + 1.875"), centre + 1.875));
+        peaks.push((format!("level {k}'s centre - 1.875"), centre - 1.875));
+    }
+    for eighths in (-500..=16).step_by(3) {
+        let value = f64::from(eighths) / 8.0;
+        peaks.push((format!("{value} dBFS"), value));
+    }
+    for (name, value) in &peaks {
+        case(
+            &format!("level: {name}"),
+            "level",
+            json!({"dbfs": peak(*value)}),
+            json!({"level": w::level(*value)}),
+        );
+    }
+
+    // --- from_peaks: a recording's peaks to the wire ---------------------------------------------
+    let mut recordings: Vec<(String, Vec<f64>, usize)> = vec![
+        ("no peaks at all: silence".into(), vec![], 48),
+        ("one peak covers every slice".into(), vec![-30.0], 48),
+        ("two peaks, half each".into(), vec![-60.0, 0.0], 48),
+        (
+            "three peaks, a third each".into(),
+            vec![-60.0, -30.0, 0.0],
+            48,
+        ),
+        (
+            "NaN and infinities among peaks".into(),
+            vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -20.0],
+            48,
+        ),
+        (
+            "every peak a tie".into(),
+            (0..48).map(|i| -58.0 + 4.0 * f64::from(i % 15)).collect(),
+            48,
+        ),
+        (
+            "a slice takes its loudest".into(),
+            {
+                let mut v = vec![-60.0; 96];
+                v[1] = 0.0;
+                v[94] = -30.0;
+                v
+            },
+            48,
+        ),
+        ("count 0 is empty".into(), vec![-30.0, -20.0], 0),
+        (
+            "count 1 is the loudest".into(),
+            vec![-50.0, -10.0, -40.0],
+            1,
+        ),
+        ("a live meter's 22 bars".into(), synthetic_peaks(300, 7), 22),
+    ];
+    for n in [
+        5usize, 47, 48, 49, 95, 96, 97, 100, 143, 144, 145, 480, 1_000, 3_001,
+    ] {
+        recordings.push((
+            format!("{n} synthetic peaks"),
+            synthetic_peaks(n, n as u64),
+            48,
+        ));
+    }
+    for (name, samples, count) in &recordings {
+        case(
+            &format!("from_peaks: {name}"),
+            "from_peaks",
+            json!({"samples_dbfs": samples.iter().map(|value| peak(*value)).collect::<Vec<_>>(), "levels": count}),
+            json!({"waveform": w::from_peaks(samples, *count)}),
+        );
+    }
+
+    // --- parse and the placeholder ---------------------------------------------------------------
+    let wire = "0123456789abcdef0123456789abcdef0123456789abcdef";
+    let parses: Vec<(&str, Option<String>)> = vec![
+        ("every digit", Some(wire.to_string())),
+        ("all zeros", Some("0".repeat(48))),
+        ("all f", Some("f".repeat(48))),
+        (
+            "protocol.md's example",
+            Some("0124689abcddeeedcba987654321001245678aabbba98642".to_string()),
+        ),
+        ("the placeholder", Some("4".repeat(48))),
+        ("empty", Some(String::new())),
+        ("47", Some("0".repeat(47))),
+        ("49", Some("0".repeat(49))),
+        ("96", Some("0".repeat(96))),
+        ("uppercase", Some(wire.to_uppercase())),
+        ("one uppercase F", Some(format!("{}F", &wire[..47]))),
+        ("g", Some(format!("{}g", &wire[..47]))),
+        ("a trailing space", Some(format!("{} ", &wire[..47]))),
+        ("a leading space", Some(format!(" {}", &wire[..47]))),
+        ("a newline", Some(format!("{}\n", &wire[..47]))),
+        ("a comma", Some(format!("{},", &wire[..47]))),
+        ("a minus", Some(format!("{}-", &wire[..47]))),
+        ("48 bytes, 47 characters", Some(format!("{}é", &wire[..46]))),
+        ("48 characters, 49 bytes", Some(format!("{}٣", &wire[..47]))),
+        ("a fullwidth digit", Some(format!("{}０", &wire[..45]))),
+        ("absent", None),
+    ];
+    for (name, value) in &parses {
+        if let Some(value) = value {
+            case(
+                &format!("parse: {name}"),
+                "parse",
+                json!({"waveform": value}),
+                json!({"levels": w::parse(value).map(|levels| levels.to_vec())}),
+            );
+        }
+        case(
+            &format!("levels_or_placeholder: {name}"),
+            "levels_or_placeholder",
+            json!({"waveform": value}),
+            json!({"levels": w::levels_or_placeholder(value.as_deref()).to_vec()}),
+        );
+    }
+
+    // --- drawing: bars, heights, the played part -------------------------------------------------
+    let shapes: Vec<(&str, Vec<u8>)> = vec![
+        ("every digit", w::parse(wire).unwrap().to_vec()),
+        (
+            "protocol.md's example",
+            w::parse("0124689abcddeeedcba987654321001245678aabbba98642")
+                .unwrap()
+                .to_vec(),
+        ),
+        ("the placeholder", w::PLACEHOLDER.to_vec()),
+    ];
+    for (name, levels) in &shapes {
+        for count in [
+            0usize, 1, 2, 3, 10, 16, 22, 24, 34, 44, 47, 48, 49, 64, 96, 100,
+        ] {
+            case(
+                &format!("bars: {name} as {count}"),
+                "bars",
+                json!({"levels": levels, "count": count}),
+                json!({"bars": w::bars(levels, count)}),
+            );
+        }
+    }
+    case(
+        "bars: no levels is silence",
+        "bars",
+        json!({"levels": [], "count": 5}),
+        json!({"bars": w::bars(&[], 5)}),
+    );
+    case(
+        "bars: a level above 15 reads as 15",
+        "bars",
+        json!({"levels": [200, 3, 16], "count": 3}),
+        json!({"bars": w::bars(&[200, 3, 16], 3)}),
+    );
+    for level in [0u8, 1, 2, 3, 4, 5, 7, 8, 10, 14, 15, 16, 255] {
+        case(
+            &format!("bar_fraction: {level}"),
+            "bar_fraction",
+            json!({"level": level}),
+            json!({"fraction": rate(w::bar_fraction(level))}),
+        );
+    }
+    let positions: Vec<(u64, u64, usize)> = vec![
+        (0, 14_200, 44),
+        (1, 14_200, 44),
+        (322, 14_200, 44),
+        (323, 14_200, 44),
+        (7_100, 14_200, 44),
+        (14_199, 14_200, 44),
+        (14_200, 14_200, 44),
+        (99_999, 14_200, 44),
+        (5_000, 0, 44),
+        (0, 0, 48),
+        (1_000, 3_000, 0),
+        (2_999, 3_000, 48),
+        (300_000, 300_000, 48),
+        (149_999, 300_000, 48),
+        (u64::MAX / 2, u64::MAX / 2 + 1, 48),
+    ];
+    for (position_ms, duration_ms, bars) in positions {
+        case(
+            &format!("played_bars: {position_ms} of {duration_ms} ms, {bars} bars"),
+            "played_bars",
+            json!({"position_ms": position_ms, "duration_ms": duration_ms, "bars": bars}),
+            json!({"played": w::played_bars(position_ms, duration_ms, bars)}),
+        );
+    }
+
+    let lines: Vec<String> = cases
+        .iter()
+        .map(|case| serde_json::to_string(case).unwrap())
+        .collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
 }

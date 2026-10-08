@@ -183,6 +183,26 @@ max_password_hashes_in_flight = 8
 # was set stays editable, or one edit here locks owners out of their own
 # settings screen.
 max_family_members = 50
+# The family's STICKER PACK — chat stickers, one pack per family, which any
+# member may add to (docs/protocol.md, "Sticker pack").
+#
+# max_pack_items is how many one family may hold. Lowering it removes
+# nothing: a family already over it simply cannot add until it removes some.
+# max_pack_item_bytes is the largest single sticker — 512 KiB leaves room
+# for a few seconds of animated WebP. It may not exceed max_attachment_bytes,
+# because a sticker is uploaded as an attachment. The 512 x 512 pixel rule is
+# the apps' own: this server never decodes an image.
+max_pack_items = 200
+max_pack_item_bytes = 524288
+# The largest VIDEO MESSAGE — a short square video the apps draw as a circle
+# (docs/protocol.md, "Video messages"). Left UNSET it is 12 MiB, or
+# max_attachment_bytes when that is lower: clamped, never refused, so a
+# server with a small attachment ceiling starts as it always did. A minute
+# recorded to the apps' profile is about 4.2 MB. If you SET it, it must be
+# between 1 and max_attachment_bytes — a video message is uploaded as an
+# attachment — and the server refuses to start otherwise. The apps are told
+# the ceiling in force; the length (60 s) is fixed.
+# max_round_video_bytes = 12582912
 # Largest preview (the downscaled photo or a video's poster frame). Small on
 # purpose: it is drawn in a chat bubble.
 max_preview_bytes = 2097152
@@ -476,6 +496,13 @@ ring_timeout_secs = 45
 # # one long answer cannot run up a bill.
 # max_tokens = 1024
 #
+# # How long, in seconds, one request to the provider may take before it is
+# # given up — a reply, a picture, a rewrite. Raise it if your images
+# # deployment is slow; lower it if you would rather a stuck call gave up
+# # sooner. At least 10: the server refuses to start below that, because
+# # every answer would fail and the assistant would be off without saying so.
+# timeout_secs = 180
+#
 # # How many earlier turns of that member's own thread go with a question.
 # # Larger means better continuity and a bigger request; nothing outside that
 # # one thread is ever included whatever this is set to.
@@ -656,4 +683,213 @@ ring_timeout_secs = 45
 # # YOUR-RESOURCE.services.ai.azure.com take the same key, so [ai.images] here
 # # needs no `api_key` of its own; it inherits [ai]'s and changes only the
 # # header it goes in.
+# # ---------------------------------------------------------------------------
+#
+#
+# # ---------------------------------------------------------------------------
+# # Transcripts (docs/protocol.md, "Transcripts on request")
+# #
+# # The deployment that turns a recording into TEXT — a voice note, an audio
+# # file, or a video's sound — when a member ASKS for it, one recording at a
+# # time. OFF until you name a deployment here, like the two above, and it
+# # inherits the endpoint, key, auth and api-version of [ai] the same way.
+# # Clients are told by `assistant.transcribe` on GET /families/mine.
+# #
+# # What leaves the server, and the whole of it: that ONE recording's sound —
+# # the stored file for a voice note or an audio file the provider reads
+# # (m4a/mp4 audio, mp3, wav), or the sound track the asking device took out
+# # of a video or an Ogg file itself — plus the family's language as a hint
+# # when the owner has set one. No prompt, no words, no history, no picture.
+# # The server decodes nothing; it sends bytes it already holds or was given.
+# #
+# # Who may ask is decided per request (docs/protocol.md has the rule): a
+# # member's OWN recordings need only their own consent to the assistant;
+# # somebody ELSE's need the family owner's `ai_transcripts` switch — OFF by
+# # default for every family — and that person's own consent too, and only
+# # ever in the family chat. Another member's voice in a direct chat is never
+# # sent, at any setting.
+# #
+# # An answer made from the stored file is kept, and every later member who
+# # may ask gets it with no second call and no second bill. Each call is one
+# # "transcript" and the recording's length in Family Statistics, because
+# # transcription is billed by audio length, not tokens.
+# #
+# # TWO CONTRACTS, chosen by `api` below. The block below is the OpenAI one
+# # (gpt-4o-transcribe, whisper on Azure OpenAI); Microsoft's own
+# # MAI-Transcribe models answer on Azure Speech instead, and have their own
+# # worked example after it — if that is what you deployed, replace this
+# # block with that one rather than adapting this one.
+# #
+# # The OpenAI request is Azure's documented one (POST
+# # .../audio/transcriptions, multipart, response_format=json). Like the
+# # images contract it has to be confirmed against your live deployment; a
+# # mismatch shows up in this server's log as a provider failure. A pasted
+# # full target URI works here exactly as it does under [ai].
+# [ai.transcribe]
+# api = "openai"
+# deployment = "YOUR-TRANSCRIBE-DEPLOYMENT"
+# model = "gpt-4o-transcribe"
+# # The most bytes of sound one request may send. 25 MiB is both the default
+# # and the most this accepts — the provider refuses larger files, and the
+# # server refuses to start configured above it rather than let a family
+# # wait on an upload the provider will throw away. Lower it if you like.
+# max_bytes = 26214400
+# # Whether the family's language goes with the request as a hint. On by
+# # default for this contract (off by default for "speech", below).
+# language_hint = true
+# # endpoint / api_key / api_version / auth may be given here too, when this
+# # model answers somewhere else entirely. Omitted, they come from [ai] above.
+#
+# # ---------------------------------------------------------------------------
+# # MAI-Transcribe-2 on Azure Speech
+# #
+# # A worked [ai.transcribe] for Microsoft's own speech models — replace the
+# # block above with this one when your model is MAI-Transcribe-2 (or 1.5;
+# # MAI-Transcribe-1 is deprecated). They are served by Azure Speech's "Fast
+# # Transcription" / "LLM Speech" API, a different service from Azure OpenAI
+# # that agrees with it on nothing but multipart:
+# #
+# #     [ai.transcribe]
+# #     api = "speech"
+# #     endpoint = "https://YOUR-SPEECH-RESOURCE.cognitiveservices.azure.com"
+# #     api_key = "YOUR-SPEECH-RESOURCE-KEY"
+# #     model = "MAI-Transcribe-2"
+# #     style = "clean"
+# #     language_hint = false
+# #     max_bytes = 26214400
+# #
+# # WHAT IS SENT: POST {endpoint}/speechtotext/transcriptions:transcribe
+# # ?api-version=2025-10-15, the key in an `Ocp-Apim-Subscription-Key`
+# # header, and two multipart parts — `audio`, the recording's sound, and
+# # `definition`, which the server writes and which says only this:
+# #
+# #     {"enhancedMode": {"enabled": true, "model": "MAI-Transcribe-2",
+# #                       "modelOptions": {"transcribeStyle": "clean"}}}
+# #
+# # (plus `"locales": ["ru"]` when `language_hint = true` — see below). Still
+# # only the sound: no text, no names, no chat.
+# #
+# # THE KEYS, and why each is what it is:
+# #
+# # - `endpoint` is REQUIRED and is not inherited from [ai], whose endpoint
+# #   is an Azure OpenAI one. The resource root is enough — the path and
+# #   `api-version=2025-10-15` are appended. A full
+# #   ".../speechtotext/transcriptions:transcribe?api-version=..." URI is
+# #   used exactly as pasted; `api_version` sets the date for a root.
+# # - `api_key` falls back to [ai]'s when omitted — right only when one
+# #   multi-service resource serves both. It always goes in
+# #   Ocp-Apim-Subscription-Key; `auth` is refused here, and so is
+# #   `deployment` (the model is named by `model`, which is REQUIRED).
+# # - `style`: "clean" (the default here) leaves out "um" and false starts;
+# #   "verbatim" (the provider's own default) keeps them. Clean, because the
+# #   text is read by a person in a chat.
+# # - `language_hint`: OFF by default. The provider calls a locale "a very
+# #   strong hint" to give only when you are certain of the language AND its
+# #   own detection fails — and MAI-Transcribe-2 does not list Serbian, so
+# #   an `sr` / `sr-Latn` family's language is never sent even when this is
+# #   on (it would be refused).
+# # - `max_bytes` keeps the 25 MiB ceiling. The provider takes more (under
+# #   250 MB and 2 hours), but the clients size the sound tracks they send to
+# #   this one number, and both contracts share it.
+# #
+# # WHAT A REFUSAL BECOMES: a format or length the provider will not read
+# # (InvalidAudioFormat, UnsupportedMediaType, AudioLengthLimitExceeded) is
+# # `not_transcribable` to the client, which then sends its own sound track;
+# # so is EmptyAudioFile (the server never sends an empty file, so it means
+# # the provider could not read this one) and NoLanguageIdentified (what a
+# # language the model does not know looks like — Serbian — logged
+# # `unheard`). None of them is ever turned into "No speech", none is kept,
+# # and none is counted. Anything else is a transient failure. The log gets
+# # the provider's codes, never its message.
+# #
+# # NOT YET CONFIRMED: the MAI documentation lists WAV, MP3 and FLAC, and
+# # neither it nor the Fast Transcription page names M4A — the format of
+# # every voice note. Try one voice note against your deployment first; if it
+# # comes back `not_transcribable`, this contract cannot read your family's
+# # voice notes yet. This API is in public preview, with no SLA.
+# # ---------------------------------------------------------------------------
+#
+#
+# # ---------------------------------------------------------------------------
+# # Looking things up (docs/protocol.md, "Looking things up")
+# #
+# # Where the assistant may LOOK SOMETHING UP while it answers — a web
+# # search, the weather, Wikipedia — when a question needs current or
+# # checkable information. Each source is OFF until it is named here, and
+# # with none named nothing changes: no tool is declared, the model is not
+# # told the date, and every request is byte for byte what it was.
+# #
+# # THIS IS THE ONE PLACE THE ASSISTANT REACHES SOMEBODY WHO IS NOT YOUR
+# # `processor`. What each source receives is the short query (or place
+# # name) the MODEL wrote from the member's question — at most
+# # `max_query_chars` — plus a result count and the answer's language, this
+# # server's IP address and a User-Agent naming the product and `contact`.
+# # Never the conversation, a name, a photo, a location or who asked.
+# #
+# # Three keys must ALL be turned before a single lookup is made: a source
+# # here, the family owner's `ai_lookups` switch (off by default), and each
+# # asking member's own lookup consent (asked on the consent screen, beside
+# # the first). Clients learn the sources from `assistant.lookups`.
+# [ai.lookups]
+# # A URL that says whose server this is, for the User-Agent — Wikimedia's
+# # policy requires one. A URL, NEVER an email address (refused at
+# # startup). Leave it out to name the project's own page,
+# # https://github.com/nettrash/family.connect.
+# contact = "https://YOUR-SITE.example/contact"
+#
+# # THE WEB SEARCH: "brave" or "searxng", one per server; leave `search` out
+# # for none. Brave is below; the SearXNG block after it replaces these two
+# # lines.
+# #
+# # BRAVE'S TERMS, which YOU take on by turning it on (checked 2026-10-03):
+# # results may be stored only "transiently", derivative works are
+# # forbidden, each end user must be bound by a written agreement with the
+# # same restrictions, and "POWERED BY BRAVE" plus Brave's logo must appear
+# # in the application's description. A stored reply keeps its footer's
+# # titles and links for `retention_days`, and goes back to the model in
+# # later mentions. Ask Brave IN WRITING whether that fits your plan before
+# # you enable it (docs/information-streams-2026-10-03.md, decision 12).
+# # Every reply that used Brave ends "Powered by Brave"; the logo is yours
+# # to place.
+# search = "brave"
+# search_key = "YOUR-BRAVE-SEARCH-API-KEY"
+# #
+# # SearXNG, on hardware you run — queries stay with you, but it forwards
+# # them to the engines it scrapes, whose own terms forbid scraping and who
+# # rate-limit it, so results are best-effort. Its JSON output must be
+# # switched on in its settings.yml (`search: formats: [html, json]`), or it
+# # answers 403 to every query:
+# #
+# #     search = "searxng"
+# #     searxng_url = "https://YOUR-SEARXNG.example"
+#
+# # THE WEATHER: Open-Meteo's geocoder and forecast, keyless and free for
+# # non-commercial use (no subscriptions, no ads). The place goes to the
+# # geocoder as WORDS — never a member's position — and the forecast is
+# # asked for the geocoder's coordinates. `weather_key` switches both to
+# # Open-Meteo's commercial endpoints. It also lets the daily greeting
+# # ([greetings]) mention today's forecast for up to three places a family's
+# # owner names in its settings (`greeting_places`): those names go to the
+# # geocoder when that family is greeted, and nothing else does.
+# weather = true
+# # weather_key = "YOUR-OPEN-METEO-KEY"
+#
+# # WIKIPEDIA: search, article summaries and "on this day", in the answer's
+# # language, falling back to English. Text is CC BY-SA 4.0; every reply that
+# # used it carries the licence link.
+# wikipedia = true
+#
+# # The limits (protocol.md, "Limits, logging, statistics").
+# # Web searches one family may make per UTC day — YOUR bill. Past it the
+# # search is simply not offered until tomorrow. Weather and Wikipedia are
+# # free and not capped by it.
+# daily_searches_per_family = 100
+# # Lookups one reply may make, in all.
+# lookups_per_reply = 3
+# # Rounds of lookups before the final answer, which may look nothing up.
+# rounds = 2
+# # How long ONE lookup may take, in seconds — never the 180 of [ai].
+# timeout_secs = 10
+# # The longest query or place name; a longer one is refused, never cut.
+# max_query_chars = 200
 # # ---------------------------------------------------------------------------

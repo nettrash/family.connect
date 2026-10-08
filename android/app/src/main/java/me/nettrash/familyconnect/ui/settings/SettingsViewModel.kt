@@ -40,6 +40,7 @@ import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.ui.chat.AssistantLookups
 import javax.inject.Inject
 
 @HiltViewModel
@@ -118,9 +119,22 @@ class SettingsViewModel @Inject constructor(
         /** The family's switches, which decide what the screen promises. */
         val familyAiHistory: Boolean = true,
         val familyAiVision: Boolean = false,
+        /** `assistant.transcribe`: the consent screen also names a recording's sound. */
+        val assistantTranscribe: Boolean = false,
         /** The consent screen is up. */
         val reviewingAssistant: Boolean = false,
-    )
+        /**
+         * `assistant.lookups`: who a lookup would reach. Empty on a server
+         * with no source, and then no lookup row is drawn.
+         */
+        val assistantLookups: List<String> = emptyList(),
+        /** When this member allowed lookups, or null until they have. */
+        val assistantLookupConsentAt: String? = null,
+    ) {
+        /** The member's lookup row ([AssistantLookups.settingsRow]). */
+        val lookupRow: AssistantLookups.SettingsRow
+            get() = AssistantLookups.settingsRow(assistantProcessor, assistantLookups, assistantLookupConsentAt)
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -152,6 +166,12 @@ class SettingsViewModel @Inject constructor(
                         assistantConsentAt = stored.assistantConsentAt,
                         familyAiHistory = stored.familyAiHistory,
                         familyAiVision = stored.familyAiVision,
+                        assistantTranscribe = stored.assistantTranscribe,
+                        // The lookup question, followed for the same
+                        // reason: a withdrawal elsewhere — of either
+                        // consent — lands on `/me`.
+                        assistantLookups = stored.assistantLookups,
+                        assistantLookupConsentAt = stored.assistantLookupConsentAt,
                     )
                 }
             }
@@ -184,6 +204,58 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             val saved = familyRepository.setAssistantConsent(granted)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    reviewingAssistant = false,
+                    error = if (saved) {
+                        null
+                    } else {
+                        appContext.getString(R.string.s_couldnt_save_your_answer)
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * "Agree With Lookups", or — for a member who already agreed to the
+     * assistant — "I Agree" on the lookup-only screen: whichever consents
+     * are still missing, the assistant's first (docs/protocol.md,
+     * "Consenting to the assistant", amended 2026-10-03). A failure of
+     * either is SHOWN.
+     */
+    fun agreeWithLookups() {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val saved = if (_state.value.assistantConsentAt == null) {
+                val outcome = familyRepository.agreeToAssistant(withLookups = true)
+                outcome.assistant && outcome.lookups
+            } else {
+                familyRepository.setAssistantLookupConsent(true)
+            }
+            _state.update {
+                it.copy(
+                    busy = false,
+                    reviewingAssistant = false,
+                    error = if (saved) {
+                        null
+                    } else {
+                        appContext.getString(R.string.s_couldnt_save_your_answer)
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * "Stop Lookups": withdraws the lookup consent alone; the assistant
+     * consent stands. Nothing is deleted on the server.
+     */
+    fun stopLookups() {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val saved = familyRepository.setAssistantLookupConsent(false)
             _state.update {
                 it.copy(
                     busy = false,

@@ -64,6 +64,39 @@ nonisolated enum PushRegistrationLogic {
         return voipToken != storedVoIPToken
     }
 
+    /// The apps' nine localisations, as POST /devices names them
+    /// (docs/protocol.md, "Devices").
+    static let pushLanguages = ["en", "de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"]
+
+    /// The language this device's pushes are written in: the one the app is
+    /// SHOWN in — the bundle's first preferred localisation, which is what
+    /// every screen reads — so the lock screen and the app it opens agree.
+    /// Anything else (a "Base" or a localisation added without the server
+    /// knowing it) is English, which is what the server would say anyway.
+    static func pushLanguage(shown: String?) -> String {
+        guard let shown else { return "en" }
+        return pushLanguages.first { $0.caseInsensitiveCompare(shown) == .orderedSame } ?? "en"
+    }
+
+    /// What this build is showing now.
+    static var shownLanguage: String {
+        pushLanguage(shown: Bundle.main.preferredLocalizations.first)
+    }
+
+    /// The language is news exactly when it is not the one the server last
+    /// confirmed — a person who switched the app to Russian in Settings is
+    /// re-registered on the next launch, and their lock screen follows.
+    static func needsRegistration(
+        token: String, storedToken: String?, storedDeviceID: Int64?,
+        voipToken: String?, storedVoIPToken: String?,
+        language: String, storedLanguage: String?
+    ) -> Bool {
+        needsRegistration(
+            token: token, storedToken: storedToken, storedDeviceID: storedDeviceID,
+            voipToken: voipToken, storedVoIPToken: storedVoIPToken)
+            || language != storedLanguage
+    }
+
     /// What `ensureRegistered` does for a given authorization status:
     /// prompt when the user has never been asked, go straight to APNs
     /// registration when a previous answer (or a provisional grant)
@@ -119,6 +152,10 @@ final class PushRegistrar {
     /// The VoIP token the server has confirmed, beside the pair above.
     var loadStoredVoIP: () -> String? = { AppSettings.voipToken }
     var saveStoredVoIP: (String?) -> Void = { AppSettings.voipToken = $0 }
+    /// The language the server last confirmed, and the one shown now (#82).
+    var loadStoredLanguage: () -> String? = { AppSettings.pushLanguage }
+    var saveStoredLanguage: (String?) -> Void = { AppSettings.pushLanguage = $0 }
+    var shownLanguage: () -> String = { PushRegistrationLogic.shownLanguage }
 
     /// What PushKit said this launch: nil until it speaks, and it speaks
     /// on every launch. `.some(nil)` after it INVALIDATED the token — that
@@ -154,6 +191,15 @@ final class PushRegistrar {
     /// live-socket experience — but no branch is silent any more: every
     /// outcome leaves a line in the push log.
     func ensureRegistered() async {
+        #if os(macOS)
+        // "Tell me when a message arrives" switched off (#84): no notification
+        // at all — the server's pushes to a quit Mac included, so this Mac's
+        // device comes off the server rather than merely going quiet here.
+        guard AppSettings.desktopNotificationsEnabled else {
+            await withdraw()
+            return
+        }
+        #endif
         if ensureInFlight {
             AppLog.push.debug("ensureRegistered already in flight; skipping")
             return
@@ -225,12 +271,18 @@ final class PushRegistrar {
     /// above); persist the {token, device_id} pair only after a 2xx so a
     /// failed attempt naturally retries on the next token delivery.
     func register(tokenHex: String) async {
+        #if os(macOS)
+        // A token callback landing after the switch went off (#84).
+        guard AppSettings.desktopNotificationsEnabled else { return }
+        #endif
         let stored = loadStored()
         let storedVoIP = loadStoredVoIP()
         let voip = voipToken
+        let language = shownLanguage()
         guard PushRegistrationLogic.needsRegistration(
             token: tokenHex, storedToken: stored.token, storedDeviceID: stored.deviceID,
-            voipToken: voip.flatMap { $0 }, storedVoIPToken: storedVoIP)
+            voipToken: voip.flatMap { $0 }, storedVoIPToken: storedVoIP,
+            language: language, storedLanguage: loadStoredLanguage())
             || (voip == .some(nil) && storedVoIP != nil) else { return }
         guard !registrationInFlight else { return }
         registrationInFlight = true
@@ -245,14 +297,43 @@ final class PushRegistrar {
             // The VoIP token rides along only when PushKit has spoken —
             // absent otherwise, so a launch that has only the APNs token
             // does not wipe the server's copy (protocol.md, POST /devices).
+            //
+            // The language always rides along: it is what the server writes
+            // this device's pushes in (docs/protocol.md, "The words of a push").
             let deviceID = try await api.registerDevice(
-                platform: Self.platform, pushToken: tokenHex, voipToken: voip)
+                platform: Self.platform, pushToken: tokenHex, voipToken: voip, language: language)
             saveStored(tokenHex, deviceID)
             if let voip { saveStoredVoIP(voip) }
+            saveStoredLanguage(language)
             AppLog.push.info("Registered device \(deviceID, privacy: .public) for push")
         } catch {
             AppLog.push.info("Device registration failed: \(String(describing: error))")
         }
+    }
+
+    // MARK: - Switched off (macOS, #84)
+
+    /// Take this device off the server, so nothing is pushed to it — and
+    /// forget it here only once the server has: a DELETE that fails (no
+    /// network) keeps the pair, so the next `ensureRegistered` tries again
+    /// rather than leaving a row behind that goes on pushing. A row the
+    /// server no longer has is gone already.
+    func withdraw() async {
+        let stored = loadStored()
+        if let deviceID = stored.deviceID {
+            do {
+                try await api.deleteDevice(id: deviceID)
+            } catch APIError.notFound {
+                // Gone already — the forgetting below is all that is left.
+            } catch {
+                AppLog.push.info("Withdrawing device \(deviceID, privacy: .public) failed; will retry: \(String(describing: error))")
+                return
+            }
+            AppLog.push.info("Withdrew device \(deviceID, privacy: .public): notifications switched off")
+        }
+        saveStored(nil, nil)
+        saveStoredVoIP(nil)
+        saveStoredLanguage(nil)
     }
 
     // MARK: - Logout
@@ -269,5 +350,6 @@ final class PushRegistrar {
         }
         saveStored(nil, nil)
         saveStoredVoIP(nil)
+        saveStoredLanguage(nil)
     }
 }

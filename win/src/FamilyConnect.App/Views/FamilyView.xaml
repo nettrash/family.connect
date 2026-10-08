@@ -240,6 +240,23 @@
                                 </Grid>
                             </StackPanel>
                         </Border>
+                        <!--
+                            Other members' recordings as text (docs/protocol.md, "Transcripts on request"): a switch of its own,
+                            tied to no other, in a card of its own the way "Sees recent history" sits in the language card.
+                        -->
+                        <Border x:Name="TranscriptsCard" Style="{StaticResource Card}">
+                            <Grid Style="{StaticResource SwitchRow}" Padding="20,16,20,18">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock x:Name="TranscriptsTitle" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="TranscriptsFootnote" Style="{StaticResource Footnote}" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="TranscriptsSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
+                            </Grid>
+                        </Border>
                         <Border Style="{StaticResource Card}">
                             <StackPanel Padding="0,0,0,8">
                                 <StackPanel Style="{StaticResource CardHeader}">
@@ -257,11 +274,105 @@
                                     </StackPanel>
                                     <ToggleSwitch x:Name="GreetingSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
                                 </Grid>
+                                <!--
+                                    Today's weather in the greeting (docs/protocol.md, "Today's weather, for places the owner chose"):
+                                    up to three place names, beside the switch they ride on. Drawn only where the server says it can
+                                    (assistant.greeting_weather), editable with the greeting on or off (FamilyView.DrawPlaces), and
+                                    the footnote says where the names go.
+                                -->
+                                <StackPanel x:Name="PlacesPanel" Padding="20,4,20,12" Spacing="8" Visibility="Collapsed">
+                                    <TextBlock x:Name="PlacesHeading" TextWrapping="Wrap" />
+                                    <Grid x:Name="PlaceRow0" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox0" />
+                                        <Button x:Name="RemovePlace0" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <Grid x:Name="PlaceRow1" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox1" />
+                                        <Button x:Name="RemovePlace1" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <Grid x:Name="PlaceRow2" ColumnSpacing="8" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MaxWidth="360" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="PlaceBox2" />
+                                        <Button x:Name="RemovePlace2" Grid.Column="1" VerticalAlignment="Center" Padding="8" AllowFocusOnInteraction="False">
+                                            <FontIcon Glyph="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+                                    <HyperlinkButton x:Name="AddPlaceButton" Padding="0,4,0,4" AllowFocusOnInteraction="False" />
+                                    <TextBlock x:Name="PlacesFull" Style="{StaticResource Footnote}" />
+                                    <TextBlock x:Name="PlacesFootnote" Style="{StaticResource Footnote}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <!--
+                            Looking things up (docs/protocol.md, "Looking things up"): the owner's half of three keys, tied to no
+                            other switch. Drawn only where the server names its lookup providers (FamilyView.DrawAssistant), and the
+                            footnote names them.
+                        -->
+                        <Border x:Name="LookupsCard" Style="{StaticResource Card}" Visibility="Collapsed">
+                            <StackPanel Padding="0,0,0,8">
+                                <StackPanel Style="{StaticResource CardHeader}">
+                                    <FontIcon Style="{StaticResource CardIcon}" Glyph="&#xE721;" />
+                                    <TextBlock x:Name="LookupsHeading" Style="{StaticResource CardTitle}" />
+                                </StackPanel>
+                                <Grid Style="{StaticResource SwitchRow}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock x:Name="LookupsTitle" TextWrapping="Wrap" />
+                                        <TextBlock x:Name="LookupsFootnote" Style="{StaticResource Footnote}" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="LookupsSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" />
+                                </Grid>
                             </StackPanel>
                         </Border>
                         <TextBlock x:Name="AssistantError" Margin="2,10,0,0" Style="{StaticResource Problem}" Visibility="Collapsed" />
                     </StackPanel>
                 </StackPanel>
+
+                <!--
+                    The family's stickers — the pictures sent in a chat, not the notes on the board. Everybody's card, not
+                    the owner's: anybody may add one, and whoever added it, or the owner, may take it out. Drawn only on a
+                    server that has packs (FamilyView.DrawStickers).
+                -->
+                <Border x:Name="StickersSection" Style="{StaticResource Card}" Visibility="Collapsed">
+                    <StackPanel>
+                        <StackPanel Style="{StaticResource CardHeader}">
+                            <FontIcon Style="{StaticResource CardIcon}" Glyph="&#xE899;" />
+                            <TextBlock x:Name="StickersHeading" Style="{StaticResource CardTitle}" />
+                        </StackPanel>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="StickersCount" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Button x:Name="AddStickerButton" Grid.Column="1" />
+                            </Grid>
+                            <TextBlock x:Name="StickersFootnote" Style="{StaticResource Footnote}" />
+                            <VariableSizedWrapGrid x:Name="StickersGrid" Orientation="Horizontal" MaximumRowsOrColumns="6" />
+                            <TextBlock x:Name="StickersNotice" Style="{StaticResource Footnote}" Visibility="Collapsed" />
+                            <TextBlock x:Name="StickersError" Style="{StaticResource Problem}" Visibility="Collapsed" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- The people: under the rules while narrow, beside them while wide. -->

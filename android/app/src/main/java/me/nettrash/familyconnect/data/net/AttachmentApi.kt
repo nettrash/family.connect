@@ -22,6 +22,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import java.io.File
 import java.net.URLEncoder
+import java.time.Duration
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,6 +38,13 @@ interface AttachmentApi {
         durationMs: Int?,
         /** Required for `kind=file`, ignored otherwise. */
         name: String? = null,
+        /**
+         * A voice note's 48 hex digits (#79; docs/protocol.md, "A voice note's
+         * waveform"), audio only. A server from before waveforms ignores the
+         * parameter (its query struct takes no unknown-field check), so it is
+         * sent whenever there is one, and a missing echo is not a failure.
+         */
+        waveform: String? = null,
     ): ApiResult<AttachmentResponse>
 
     /**
@@ -79,6 +87,7 @@ class DefaultAttachmentApi @Inject constructor(
         height: Int?,
         durationMs: Int?,
         name: String?,
+        waveform: String?,
     ): ApiResult<AttachmentResponse> {
         val query = buildList {
             add("kind=$kind")
@@ -88,6 +97,13 @@ class DefaultAttachmentApi @Inject constructor(
             // Percent-encoded: a name has spaces, umlauts and & in it, and
             // this is a query string.
             name?.let { add("name=" + URLEncoder.encode(it, "UTF-8")) }
+            // Only on audio, and only a well-formed one: anything else the
+            // server refuses with `validation`, and a voice note must never
+            // fail to send over its picture.
+            if (kind == AttachmentDto.KIND_AUDIO) {
+                waveform?.takeIf { me.nettrash.familyconnect.data.repo.Waveform.parse(it) != null }
+                    ?.let { add("waveform=$it") }
+            }
         }.joinToString("&")
         return client.decode(client.rawUploadFile("POST", "/attachments?$query", file, mime))
     }
@@ -130,7 +146,13 @@ class DefaultAttachmentApi @Inject constructor(
         destination: File,
     ): ApiResult<Unit> {
         val suffix = if (preview) "/preview" else ""
-        return client.rawDownloadToFile("/attachments/$attachmentId$suffix", destination)
+        // A preview is small and keeps the ordinary budget; an original may
+        // be a 100 MB video, which no 20 s wall clock lets through.
+        return client.rawDownloadToFile(
+            "/attachments/$attachmentId$suffix",
+            destination,
+            timeout = if (preview) Duration.ZERO else ApiClient.DOWNLOAD_TIMEOUT,
+        )
     }
 
     override suspend fun streamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =
