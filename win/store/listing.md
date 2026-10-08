@@ -82,14 +82,20 @@ If you want your family's conversations off big-tech servers — and, when you a
 
 ## What's new in this version (≤ 1500)
 
-This one adds a family sticker pack and makes videos smaller before they are sent.
+This one adds voice messages, a family sticker pack, video messages you can watch, and Family Connect in your language throughout.
 
-- Family stickers. Your family now has its own sticker pack. Anyone can add a picture to it from the Family view, and the sticker button beside the message box sends one with a single click. Whoever added a sticker, or the family owner, can remove it. WebP stickers need the WebP Image Extension, which comes with Windows 11.
-- Smaller videos. A video bigger than 720p at 30 frames a second is brought down to that before it is sent, so it uploads sooner and is quicker for everyone to download. Where Windows cannot prepare one, the original goes exactly as before, and "Preparing…" can be cancelled.
-- Where a server runs an assistant, a request its provider refuses now says so, and drawing an event backdrop now needs the same agreement as a message.
+- Voice messages. With nothing typed, the Send button is a microphone: click it (or press Ctrl+Shift+R) to record hands-free, stop to listen back, then send or delete it. Voice messages show their waveform and play at 1×, 1.5× or 2×.
+- Video messages. Round video messages from family members on their phones, Macs and the web play right inside the chat.
+- Family stickers. Your family now has its own sticker pack. Anyone can add a picture to it from the Family view, and the sticker button beside the message box sends one with a single click. WebP stickers need the WebP Image Extension, which comes with Windows 11.
+- One attachment menu. The paperclip lists the same things in the same order as every other Family Connect app, and adds Photo or Video.
+- Ctrl+Alt+Shift+F brings Family Connect forward from any app, and puts it back in the notification area when pressed again.
+- Every word of the app is now in all nine of its languages.
+- Where a server runs an assistant, a request its provider refuses now says so, and drawing an event backdrop asks first.
+- Smaller videos. A video bigger than 720p at 30 frames a second is brought down to that before it is sent. Where Windows cannot prepare one, the original goes exactly as before.
 
-*Written on 2026-10-02 against what `win/` gained since the v1.1 tag (issues #58 and #74) and the CHANGELOG v1.2.0
-entry. NEITHER HEADLINE HAS RUN ON WINDOWS (`win/README.md`): not one transcode, not one sticker decoded or made. So
+*Rewritten on 2026-10-08 for everything `win/` gained since the v1.1 tag (issues #58, #74, #79, #80, #82, #78); written
+first on 2026-10-02 for #58 and #74 against the CHANGELOG v1.2.0 entry. Recording a VIDEO message is still switched off on
+Windows, so the line says they play, never that they are made here. NEITHER HEADLINE HAS RUN ON WINDOWS (`win/README.md`): not one transcode, not one sticker decoded or made. So
 the video line promises only what the fallback guarantees — the original, exactly as 1.1 sent it, when preparing fails
 — and the sticker line claims no animation. Before submitting, on a real machine: send a portrait 1080p60 phone clip
 and see it arrive upright at 720p30, and add a JPEG and an animated WebP to the pack and send both. If either fails,
