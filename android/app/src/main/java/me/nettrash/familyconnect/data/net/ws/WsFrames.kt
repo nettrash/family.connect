@@ -36,6 +36,7 @@ import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.PackItemDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.UserDto
@@ -82,6 +83,18 @@ sealed interface ClientFrame {
          * (protocol.md, "Mentioning a member"). Omitted the same way.
          */
         val mentions: List<MentionDto>? = null,
+        /**
+         * Optional: `true` sends the one attachment as a STICKER
+         * (protocol.md, "Sticker pack"). Omitted the same way — an ordinary
+         * send never carries the key at all.
+         */
+        val sticker: Boolean? = null,
+        /**
+         * Optional: `true` sends the one `kind=video` attachment as a VIDEO
+         * MESSAGE (protocol.md, "Video messages"; #79). Omitted the same
+         * way; never `false`, never beside [sticker].
+         */
+        val round: Boolean? = null,
     ) : ClientFrame
 
     @Serializable
@@ -291,6 +304,17 @@ sealed interface ServerFrame {
     data class BoardNote(val note: NoteDto) : ServerFrame
 
     /**
+     * One item of the family's sticker pack in whatever state it now has —
+     * added, or a tombstone — to every connection of every member, the
+     * actor's own included. Never notifies, never counts as unread, and is
+     * not filtered by blocks: an item is a picture the family keeps, not
+     * something a person said (protocol.md, "Sticker pack").
+     */
+    @Serializable
+    @SerialName("pack_item")
+    data class PackItem(val item: PackItemDto) : ServerFrame
+
+    /**
      * One fragment of the assistant's reply, as it is generated.
      *
      * COSMETIC: the row named by [messageId] is the truth, and its final
@@ -306,13 +330,36 @@ sealed interface ServerFrame {
         val text: String,
     ) : ServerFrame
 
-    /** The reply stopped early; whatever arrived is already on the row. */
+    /**
+     * The reply stopped early; whatever arrived is already on the row.
+     *
+     * [reason] says WHY, when the server knows (protocol.md, "The
+     * assistant", added 2026-09-30). It is kept as the raw word rather than
+     * decoded into an enum, because a value this client does not know must
+     * read as ABSENT — never as a frame that failed to decode — so a later
+     * server can add one without this client inventing a meaning for it.
+     * [isRefused] is the only question asked of it.
+     */
     @Serializable
     @SerialName("ai_error")
     data class AiError(
         @SerialName("chat_id") val chatId: Long,
         @SerialName("message_id") val messageId: Long,
-    ) : ServerFrame
+        val reason: String? = null,
+    ) : ServerFrame {
+        /**
+         * The AI provider's OWN safety or content filter refused the
+         * question, the answer or a picture's description: asking again in
+         * the same words gets the same refusal. Any other value, or none,
+         * is an ordinary failure.
+         */
+        val isRefused: Boolean get() = reason == REASON_REFUSED
+
+        companion object {
+            /** The one `reason` protocol.md defines. */
+            const val REASON_REFUSED = "refused"
+        }
+    }
 
     /**
      * An edit of an existing message. A SEPARATE frame from [Message]

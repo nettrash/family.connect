@@ -4,6 +4,10 @@
       "one": "%1$@. %2$lld Stimme",
       "other": "%1$@. %2$lld Stimmen"
     },
+    "%lld attachments, %@": {
+      "one": "%1$lld Anhang, %2$@",
+      "other": "%1$lld Anhänge, %2$@"
+    },
     "%lld members": {
       "one": "%lld Mitglied",
       "other": "%lld Mitglieder"
@@ -16,6 +20,18 @@
       "one": "%1$lld von %2$lld hat abgestimmt",
       "other": "%1$lld von %2$lld haben abgestimmt"
     },
+    "%lld pictures from the assistant": {
+      "one": "%lld Bild vom Assistenten",
+      "other": "%lld Bilder vom Assistenten"
+    },
+    "%lld questions to the assistant": {
+      "one": "%lld Frage an den Assistenten",
+      "other": "%lld Fragen an den Assistenten"
+    },
+    "%lld recordings as text": {
+      "one": "%lld Aufnahme als Text",
+      "other": "%lld Aufnahmen als Text"
+    },
     "%lld replies": {
       "one": "%lld Antwort",
       "other": "%lld Antworten"
@@ -23,6 +39,10 @@
     "%lld voted": {
       "one": "%lld hat abgestimmt",
       "other": "%lld haben abgestimmt"
+    },
+    "%lld web searches": {
+      "one": "%lld Websuche",
+      "other": "%lld Websuchen"
     },
     "+%lld more": {
       "one": "+%lld weitere",
@@ -58,9 +78,17 @@
       "one": "%lld question to the assistant",
       "other": "%lld questions to the assistant"
     },
+    "%lld recordings as text": {
+      "one": "%lld recording as text",
+      "other": "%lld recordings as text"
+    },
     "%lld replies": {
       "one": "%lld reply",
       "other": "%lld replies"
+    },
+    "%lld web searches": {
+      "one": "%lld web search",
+      "other": "%lld web searches"
     },
     "+%lld more": {
       "one": "+%lld more",
@@ -71,6 +99,10 @@
     "%@. %lld votes": {
       "one": "%1$@. %2$lld voto",
       "other": "%1$@. %2$lld votos"
+    },
+    "%lld attachments, %@": {
+      "one": "%1$lld adjunto, %2$@",
+      "other": "%1$lld adjuntos, %2$@"
     },
     "%lld members": {
       "one": "%lld miembro",
@@ -84,6 +116,18 @@
       "one": "%1$lld de %2$lld ha votado",
       "other": "%1$lld de %2$lld han votado"
     },
+    "%lld pictures from the assistant": {
+      "one": "%lld imagen del asistente",
+      "other": "%lld imágenes del asistente"
+    },
+    "%lld questions to the assistant": {
+      "one": "%lld pregunta al asistente",
+      "other": "%lld preguntas al asistente"
+    },
+    "%lld recordings as text": {
+      "one": "%lld grabación a texto",
+      "other": "%lld grabaciones a texto"
+    },
     "%lld replies": {
       "one": "%lld respuesta",
       "other": "%lld respuestas"
@@ -91,6 +135,10 @@
     "%lld voted": {
       "one": "%lld ha votado",
       "other": "%lld han votado"
+    },
+    "%lld web searches": {
+      "one": "%lld búsqueda web",
+      "other": "%lld búsquedas web"
     },
     "+%lld more": {
       "one": "+%lld más",
@@ -101,6 +149,10 @@
     "%@. %lld votes": {
       "one": "%1$@. %2$lld vote",
       "other": "%1$@. %2$lld votes"
+    },
+    "%lld attachments, %@": {
+      "one": "%1$lld pièce jointe, %2$@",
+      "other": "%1$lld pièces jointes, %2$@"
     },
     "%lld members": {
       "one": "%lld membre",
@@ -114,6 +166,18 @@
       "one": "%1$lld sur %2$lld a voté",
       "other": "%1$lld sur %2$lld ont voté"
     },
+    "%lld pictures from the assistant": {
+      "one": "%lld image de l’assistant",
+      "other": "%lld images de l’assistant"
+    },
+    "%lld questions to the assistant": {
+      "one": "%lld question à l'assistant",
+      "other": "%lld questions à l'assistant"
+    },
+    "%lld recordings as text": {
+      "one": "%lld enregistrement transcrit",
+      "other": "%lld enregistrements transcrits"
+    },
     "%lld replies": {
       "one": "%lld réponse",
       "other": "%lld réponses"
@@ -121,6 +185,10 @@
     "%lld voted": {
       "one": "%lld a voté",
       "other": "%lld ont voté"
+    },
+    "%lld web searches": {
+      "one": "%lld recherche web",
+      "other": "%lld recherches web"
     },
     "+%lld more": {
       "one": "+%lld autre",
@@ -145,6 +213,9 @@
     },
     "%lld voted": {
       "other": "%lld人が投票"
+    },
+    "%lld web searches": {
+      "other": "ウェブ検索 %lld 件"
     },
     "+%lld more": {
       "other": "ほか %lld 件"
@@ -175,6 +246,12 @@
       "one": "%1$lld голос из %2$lld",
       "other": "%1$lld голоса из %2$lld"
     },
+    "%lld pictures from the assistant": {
+      "few": "%lld картинки от ассистента",
+      "many": "%lld картинок от ассистента",
+      "one": "%lld картинка от ассистента",
+      "other": "%lld картинки от ассистента"
+    },
     "%lld replies": {
       "few": "%lld ответа",
       "many": "%lld ответов",
@@ -186,6 +263,12 @@
       "many": "%lld голосов",
       "one": "%lld голос",
       "other": "%lld голоса"
+    },
+    "%lld web searches": {
+      "few": "%lld поиска в интернете",
+      "many": "%lld поисков в интернете",
+      "one": "%lld поиск в интернете",
+      "other": "%lld поиска в интернете"
     },
     "+%lld more": {
       "few": "+%lld ещё",
@@ -215,6 +298,11 @@
       "one": "%1$lld глас од %2$lld",
       "other": "%1$lld гласова од %2$lld"
     },
+    "%lld pictures from the assistant": {
+      "few": "%lld слике од асистента",
+      "one": "%lld слика од асистента",
+      "other": "%lld слика од асистента"
+    },
     "%lld replies": {
       "few": "%lld одговора",
       "one": "%lld одговор",
@@ -224,6 +312,11 @@
       "few": "%lld гласа",
       "one": "%lld глас",
       "other": "%lld гласова"
+    },
+    "%lld web searches": {
+      "few": "%lld претраге на вебу",
+      "one": "%lld претрага на вебу",
+      "other": "%lld претрага на вебу"
     },
     "+%lld more": {
       "few": "+%lld још",
@@ -252,6 +345,11 @@
       "one": "%1$lld glas od %2$lld",
       "other": "%1$lld glasova od %2$lld"
     },
+    "%lld pictures from the assistant": {
+      "few": "%lld slike od asistenta",
+      "one": "%lld slika od asistenta",
+      "other": "%lld slika od asistenta"
+    },
     "%lld replies": {
       "few": "%lld odgovora",
       "one": "%lld odgovor",
@@ -261,6 +359,11 @@
       "few": "%lld glasa",
       "one": "%lld glas",
       "other": "%lld glasova"
+    },
+    "%lld web searches": {
+      "few": "%lld pretrage na vebu",
+      "one": "%lld pretraga na vebu",
+      "other": "%lld pretraga na vebu"
     },
     "+%lld more": {
       "few": "+%lld još",
@@ -286,6 +389,9 @@
     },
     "%lld voted": {
       "other": "%lld 人已投票"
+    },
+    "%lld web searches": {
+      "other": "网络搜索 %lld 次"
     },
     "+%lld more": {
       "other": "还有 %lld 项"

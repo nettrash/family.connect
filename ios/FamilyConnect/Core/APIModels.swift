@@ -295,6 +295,41 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// write whenever `aiVision` goes off, so a PATCH answer is where this
     /// client learns either.
     let aiFaces: Bool
+    /// Whether a member may ask for the text of ANOTHER member's voice
+    /// note, audio file or video in the family chat (protocol.md,
+    /// "Transcripts on request"). A SIXTH switch, and bound to none of the
+    /// others: it widens nothing the assistant is shown — it sends one
+    /// recording's sound to a speech model when somebody asks, and brings
+    /// text back. A member's OWN recordings need no switch at all.
+    ///
+    /// ALWAYS present on the wire and **false** by default, for every family
+    /// that predates it and for a server that predates the field, where no
+    /// recording can be turned into text at all.
+    let aiTranscripts: Bool
+    /// Whether the assistant may LOOK THINGS UP for this family — send a
+    /// short query or place name it wrote from a question to the providers
+    /// `assistant.lookups` names (protocol.md, "Looking things up"). A
+    /// SEVENTH switch, bound to none of the others, and only the owner's
+    /// half of three keys: the server must have a source, and each asking
+    /// member must have given the lookup consent
+    /// (`MeResponse.assistantLookupConsentAt`).
+    ///
+    /// ALWAYS present on the wire and **false** by default, for every family
+    /// that predates it and for a server that predates the field, where
+    /// nothing is ever looked up.
+    let aiLookups: Bool
+    /// The places — at most three, as the owner typed them and the server
+    /// kept them — whose weather the daily greeting mentions (protocol.md,
+    /// "Today's weather, for places the owner chose"). Not a switch: these
+    /// names are the one thing it sends anywhere, to the weather provider,
+    /// once a day, and only while the server says
+    /// `assistant.greeting_weather`.
+    ///
+    /// ALWAYS present on the wire and `[]` by default; read as `[]` from a
+    /// server that predates the field, and from anything that is not a list
+    /// of strings, rather than failing the whole family — the Family object
+    /// rides on `/me`, which the app bootstraps from.
+    let greetingPlaces: [String]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -309,6 +344,9 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case aiHistoryPhotos = "ai_history_photos"
         case aiGreeting = "ai_greeting"
         case aiFaces = "ai_faces"
+        case aiTranscripts = "ai_transcripts"
+        case aiLookups = "ai_lookups"
+        case greetingPlaces = "greeting_places"
     }
 
     init(
@@ -345,6 +383,21 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // rebuild that dropped it would show that off while the server had
         // it on.
         aiFaces: Bool,
+        // And the sixth, undefaulted for the same reason as the rest: it
+        // decides whether another member's VOICE may leave the server, and
+        // a rebuild that dropped it would show it off while the server had
+        // it on.
+        aiTranscripts: Bool,
+        // And the seventh, undefaulted for the same reason: it decides
+        // whether words the assistant writes from a member's question may
+        // reach a party that is NOT the processor, and a rebuild that
+        // dropped it would show it off while the server had it on.
+        aiLookups: Bool,
+        // And the places, undefaulted for a reason of their own: the editor
+        // saves the WHOLE list, so a rebuild that dropped it would show an
+        // empty list, and the owner's next added place would replace the
+        // ones the server holds.
+        greetingPlaces: [String],
         maxMembers: Int?
     ) {
         self.id = id
@@ -359,6 +412,9 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.aiHistoryPhotos = aiHistoryPhotos
         self.aiGreeting = aiGreeting
         self.aiFaces = aiFaces
+        self.aiTranscripts = aiTranscripts
+        self.aiLookups = aiLookups
+        self.greetingPlaces = greetingPlaces
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -393,6 +449,16 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // FALSE, the protocol's own default: a server that predates the
         // field sends no face, which is exactly what `false` reports.
         aiFaces = try container.decodeIfPresent(Bool.self, forKey: .aiFaces) ?? false
+        // FALSE, the protocol's own default: a server that predates the
+        // field turns no recording into text, which is what `false` reports.
+        aiTranscripts = try container.decodeIfPresent(Bool.self, forKey: .aiTranscripts) ?? false
+        // FALSE, the protocol's own default: a server that predates the
+        // field looks nothing up, which is what `false` reports.
+        aiLookups = try container.decodeIfPresent(Bool.self, forKey: .aiLookups) ?? false
+        // EMPTY, the protocol's own default: a server that predates the
+        // field sends no place anywhere. Tolerant of a malformed value for
+        // the same reason, so a bad list costs the editor, not the family.
+        greetingPlaces = ((try? container.decodeIfPresent([String].self, forKey: .greetingPlaces)) ?? nil) ?? []
     }
 }
 
@@ -740,6 +806,34 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     /// radius in metres it believed the fix good to. Absent means UNKNOWN,
     /// which is drawn as a plain pin — never as perfect precision.
     let accuracyM: Int?
+    /// True when (and only when) the message that carries this was sent as
+    /// a STICKER (docs/protocol.md, "Sticker pack"): still a `kind=photo`
+    /// in every other respect, drawn without a bubble and from the original
+    /// bytes. ABSENT on the wire when false — never `false` — so it is a
+    /// defaulted Bool, written back out only when true. A pack item's own
+    /// attachment never carries it: the flag is a message's.
+    ///
+    /// Not to be confused with the board's "sticker note", which is the
+    /// other thing this codebase calls a sticker and has nothing to do
+    /// with this field.
+    let sticker: Bool
+    /// True when (and only when) the message that carries this was sent as
+    /// a VIDEO MESSAGE (docs/protocol.md, "Video messages", #79): still a
+    /// `kind=video` in every other respect, drawn as a circle with no
+    /// balloon. Absent on the wire when false — never `false` — and never
+    /// beside `sticker`.
+    ///
+    /// `isRound`, with the coding key `round`, so nothing here shadows
+    /// Swift's own `round(_:)`.
+    let isRound: Bool
+    /// A voice note's shape (docs/protocol.md, "A voice note's waveform",
+    /// #79): exactly 48 lowercase hex digits, levels 0–15 in time order,
+    /// computed by the sender from its meter. Audio only, and only when the
+    /// sender sent one — absent on a picked sound file, an old message and
+    /// anything an old server stored. Drawn through `Waveform.
+    /// levelsOrPlaceholder`, so a value a reader cannot parse is a flat row,
+    /// never an error. Absent on the wire when nil, and written back so.
+    let waveform: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -754,6 +848,92 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case latitude
         case longitude
         case accuracyM = "accuracy_m"
+        case sticker
+        case isRound = "round"
+        case waveform
+    }
+
+    init(
+        id: Int64,
+        kind: String,
+        mime: String,
+        size: Int64,
+        width: Int?,
+        height: Int?,
+        durationMS: Int?,
+        hasPreview: Bool,
+        name: String?,
+        latitude: Double?,
+        longitude: Double?,
+        accuracyM: Int?,
+        sticker: Bool = false,
+        isRound: Bool = false,
+        waveform: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.mime = mime
+        self.size = size
+        self.width = width
+        self.height = height
+        self.durationMS = durationMS
+        self.hasPreview = hasPreview
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+        self.accuracyM = accuracyM
+        self.sticker = sticker
+        self.isRound = isRound
+        self.waveform = waveform
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and `sticker` is absent from every
+    /// attachment that is not one — which is nearly all of them, and all of
+    /// them on a server that predates the pack. Every other field decodes
+    /// exactly as the synthesized initialiser did.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        kind = try container.decode(String.self, forKey: .kind)
+        mime = try container.decode(String.self, forKey: .mime)
+        size = try container.decode(Int64.self, forKey: .size)
+        width = try container.decodeIfPresent(Int.self, forKey: .width)
+        height = try container.decodeIfPresent(Int.self, forKey: .height)
+        durationMS = try container.decodeIfPresent(Int.self, forKey: .durationMS)
+        hasPreview = try container.decode(Bool.self, forKey: .hasPreview)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        accuracyM = try container.decodeIfPresent(Int.self, forKey: .accuracyM)
+        sticker = try container.decodeIfPresent(Bool.self, forKey: .sticker) ?? false
+        isRound = try container.decodeIfPresent(Bool.self, forKey: .isRound) ?? false
+        // `try?`: a malformed value (a number, an object) must not cost the
+        // whole message — it draws as the placeholder, like an unparseable
+        // string does.
+        waveform = (try? container.decodeIfPresent(String.self, forKey: .waveform)) ?? nil
+    }
+
+    /// And the writing half, because MessageEntity stores the set in the
+    /// wire shape: absent-not-false, like every optional field here, so a
+    /// stored photo stays byte-identical to what it was before the flag.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(mime, forKey: .mime)
+        try container.encode(size, forKey: .size)
+        try container.encodeIfPresent(width, forKey: .width)
+        try container.encodeIfPresent(height, forKey: .height)
+        try container.encodeIfPresent(durationMS, forKey: .durationMS)
+        try container.encode(hasPreview, forKey: .hasPreview)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+        try container.encodeIfPresent(accuracyM, forKey: .accuracyM)
+        if sticker { try container.encode(true, forKey: .sticker) }
+        if isRound { try container.encode(true, forKey: .isRound) }
+        try container.encodeIfPresent(waveform, forKey: .waveform)
     }
 
     var isVideo: Bool { kind == Kind.video }
@@ -793,8 +973,16 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
             name: name,
             latitude: latitude,
             longitude: longitude,
-            accuracyM: accuracyM)
+            accuracyM: accuracyM,
+            sticker: sticker,
+            isRound: isRound,
+            waveform: waveform)
     }
+
+    /// The types a sticker may be (docs/protocol.md, "What a sticker is
+    /// made of"): WebP, which carries transparency and animation, and PNG,
+    /// which an Apple device can also WRITE.
+    static let stickerMIMEs: Set<String> = ["image/webp", "image/png"]
 
     /// What the bubble calls it: the name for a file, a word for the rest.
     var displayName: String {
@@ -1116,6 +1304,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// `ai` chat (protocol.md, "Consenting to the assistant"). Read at
     /// step 1 of the resync, so the composer knows before it is drawn.
     var assistantConsentAt: Date?
+    /// When this caller agreed that the assistant may send a query or place
+    /// name it wrote from their question to the lookup providers, or nil
+    /// (protocol.md, "Consenting to the assistant", amended 2026-10-03).
+    /// Null both when they have not agreed and when the server has no
+    /// lookup source; absent — nil — on a server that predates it.
+    var assistantLookupConsentAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -1131,6 +1325,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case familylessAccountTTLDays = "familyless_account_ttl_days"
         case greetingsEnabled = "greetings_enabled"
         case assistantConsentAt = "assistant_consent_at"
+        case assistantLookupConsentAt = "assistant_lookup_consent_at"
     }
 
     init(
@@ -1146,7 +1341,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         familyRegistrationEnabled: Bool = true,
         familylessAccountTTLDays: Int = 0,
         greetingsEnabled: Bool = false,
-        assistantConsentAt: Date? = nil
+        assistantConsentAt: Date? = nil,
+        assistantLookupConsentAt: Date? = nil
     ) {
         self.user = user
         self.family = family
@@ -1161,6 +1357,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.familylessAccountTTLDays = familylessAccountTTLDays
         self.greetingsEnabled = greetingsEnabled
         self.assistantConsentAt = assistantConsentAt
+        self.assistantLookupConsentAt = assistantLookupConsentAt
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -1187,6 +1384,10 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         // and null for anybody who has not answered — both of which mean
         // "has not agreed", which is what nil says here.
         assistantConsentAt = try container.decodeIfPresent(Date.self, forKey: .assistantConsentAt)
+        // Absent on a server from before lookups, which looks nothing up —
+        // the same answer as null.
+        assistantLookupConsentAt = try container.decodeIfPresent(
+            Date.self, forKey: .assistantLookupConsentAt)
     }
 }
 
@@ -1257,6 +1458,26 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// name the recipient cannot ask the question honestly, so it offers
     /// no assistant at all there — see `AssistantConsent.isAvailable`.
     let processor: String?
+    /// This SERVER has a transcription deployment (protocol.md,
+    /// "Transcripts on request"). A client offers "Show text" only when it
+    /// is true. Absent — false — on a server that predates it.
+    let transcribe: Bool
+    /// The most bytes of sound one transcript request may send, present
+    /// only when `transcribe` is true: 25 MiB by default and never more.
+    let transcribeMaxBytes: Int64?
+    /// The providers the assistant may look things up in, by name, in the
+    /// server's order — web search, then "Open-Meteo", then "Wikipedia"
+    /// (protocol.md, "Looking things up"). Named on the consent screen and
+    /// under the owner's switch, the way `processor` is. ABSENT — nil —
+    /// when the server has no source, and on a server that predates it;
+    /// the server never sends `[]`, and this client reads one as absent.
+    let lookups: [String]?
+    /// This server posts the daily greeting AND may fetch the weather for
+    /// it (protocol.md, "Today's weather, for places the owner chose"). The
+    /// owner's place list is offered only when it is true; absent — false —
+    /// on a server that predates it. It does not depend on the family's
+    /// `ai_lookups` switch.
+    let greetingWeather: Bool
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -1266,6 +1487,10 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         case vision
         case images
         case processor
+        case transcribe
+        case transcribeMaxBytes = "transcribe_max_bytes"
+        case lookups
+        case greetingWeather = "greeting_weather"
     }
 
     init(
@@ -1275,7 +1500,11 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         draw: String? = nil,
         vision: Bool = false,
         images: Bool = false,
-        processor: String? = nil
+        processor: String? = nil,
+        transcribe: Bool = false,
+        transcribeMaxBytes: Int64? = nil,
+        lookups: [String]? = nil,
+        greetingWeather: Bool = false
     ) {
         self.userID = userID
         self.displayName = displayName
@@ -1284,6 +1513,10 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         self.vision = vision
         self.images = images
         self.processor = processor
+        self.transcribe = transcribe
+        self.transcribeMaxBytes = transcribeMaxBytes
+        self.lookups = lookups
+        self.greetingWeather = greetingWeather
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1301,6 +1534,21 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
         vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         images = try container.decodeIfPresent(Bool.self, forKey: .images) ?? false
         processor = try container.decodeIfPresent(String.self, forKey: .processor)
+        // FALSE for a server that predates transcripts, which can turn no
+        // recording into text — the same answer as one with no deployment.
+        transcribe = try container.decodeIfPresent(Bool.self, forKey: .transcribe) ?? false
+        transcribeMaxBytes = try container.decodeIfPresent(Int64.self, forKey: .transcribeMaxBytes)
+        // Tolerant: anything that is not a list of names reads as "no
+        // source" rather than failing the whole roster, and so do blank
+        // names and an empty list — a footnote naming nobody is the hole
+        // the consent screen exists to avoid.
+        let names = ((try? container.decodeIfPresent([String].self, forKey: .lookups)) ?? nil)?
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        lookups = (names?.isEmpty ?? true) ? nil : names
+        // FALSE when absent or malformed: a server that predates the field
+        // fetches no weather for a greeting, and the place editor is absent.
+        greetingWeather = ((try? container.decodeIfPresent(Bool.self, forKey: .greetingWeather)) ?? nil) ?? false
     }
 }
 
@@ -1343,6 +1591,23 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     /// It rides along on the call every client already makes on resync, so
     /// learning whether a board catch-up is needed costs no extra request.
     let maxBoardSeq: Int64?
+    /// The sticker pack's cursor, omitted while the pack has never been
+    /// written to — the board's arrangement, on the same call
+    /// (docs/protocol.md, "Sticker pack").
+    let maxPackSeq: Int64?
+    /// How many stickers one family's pack may hold, and how many bytes one
+    /// of them may be. ALWAYS present on a server that has packs, so their
+    /// ABSENCE is the capability check: a server that predates the pack
+    /// sends neither, and this client then offers no sticker button and no
+    /// pack management rather than discovering a 404 when somebody taps.
+    let maxPackItems: Int?
+    let maxPackItemBytes: Int?
+    /// Video messages (#79; docs/protocol.md, "Video messages"): the longest
+    /// one, and the most bytes one may be. ALWAYS present on a server that
+    /// has them, so their absence is the capability check — a server that
+    /// predates them is offered no video entry and never sent `round`.
+    let maxRoundVideoMS: UInt64?
+    let maxRoundVideoBytes: Int?
 
     enum CodingKeys: String, CodingKey {
         case family
@@ -1350,6 +1615,11 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         case formerMembers = "former_members"
         case assistant
         case maxBoardSeq = "max_board_seq"
+        case maxPackSeq = "max_pack_seq"
+        case maxPackItems = "max_pack_items"
+        case maxPackItemBytes = "max_pack_item_bytes"
+        case maxRoundVideoMS = "max_round_video_ms"
+        case maxRoundVideoBytes = "max_round_video_bytes"
         case blockedUserIDs = "blocked_user_ids"
         case nextOwnerUserID = "next_owner_user_id"
     }
@@ -1361,8 +1631,15 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         assistant: AssistantDTO? = nil,
         maxBoardSeq: Int64? = nil,
         blockedUserIDs: [Int64] = [],
-        nextOwnerUserID: Int64? = nil
+        nextOwnerUserID: Int64? = nil,
+        maxPackSeq: Int64? = nil,
+        maxPackItems: Int? = nil,
+        maxPackItemBytes: Int? = nil,
+        maxRoundVideoMS: UInt64? = nil,
+        maxRoundVideoBytes: Int? = nil
     ) {
+        self.maxRoundVideoMS = maxRoundVideoMS
+        self.maxRoundVideoBytes = maxRoundVideoBytes
         self.blockedUserIDs = blockedUserIDs
         self.nextOwnerUserID = nextOwnerUserID
         self.family = family
@@ -1370,6 +1647,9 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         self.formerMembers = formerMembers
         self.assistant = assistant
         self.maxBoardSeq = maxBoardSeq
+        self.maxPackSeq = maxPackSeq
+        self.maxPackItems = maxPackItems
+        self.maxPackItemBytes = maxPackItemBytes
     }
 
     /// Hand-written for the reason UserDTO's is: a property default is not
@@ -1383,6 +1663,13 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         formerMembers = try container.decodeIfPresent([MemberDTO].self, forKey: .formerMembers) ?? []
         assistant = try container.decodeIfPresent(AssistantDTO.self, forKey: .assistant)
         maxBoardSeq = try container.decodeIfPresent(Int64.self, forKey: .maxBoardSeq)
+        maxPackSeq = try container.decodeIfPresent(Int64.self, forKey: .maxPackSeq)
+        maxPackItems = try container.decodeIfPresent(Int.self, forKey: .maxPackItems)
+        maxPackItemBytes = try container.decodeIfPresent(Int.self, forKey: .maxPackItemBytes)
+        // Lenient: a malformed value reads as absent — no video entry —
+        // rather than failing the whole roster.
+        maxRoundVideoMS = (try? container.decodeIfPresent(UInt64.self, forKey: .maxRoundVideoMS)) ?? nil
+        maxRoundVideoBytes = (try? container.decodeIfPresent(Int.self, forKey: .maxRoundVideoBytes)) ?? nil
         blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
         nextOwnerUserID = try container.decodeIfPresent(Int64.self, forKey: .nextOwnerUserID)
     }
@@ -1536,6 +1823,86 @@ nonisolated struct BoardChangesResponse: Codable, Equatable, Sendable {
 
 nonisolated struct NoteResponse: Codable, Equatable, Sendable {
     let note: NoteDTO
+}
+
+/// One sticker of the family's pack (docs/protocol.md, "Sticker pack").
+///
+/// "Pack" on the wire, "sticker" to people — and NOT the board's sticker
+/// note, which is `NoteDTO` above. The vocabulary is split on purpose so no
+/// type has to be read twice to know which is meant.
+///
+/// A TOMBSTONE is the same object with `deleted: true` and nothing else but
+/// `id` and `pack_seq`, for the reason a note's is: the change feed has to
+/// be able to say "this one is gone". Every content field is therefore
+/// optional.
+nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
+    let id: Int64
+    /// Who added it. Still names them after they have left or deleted their
+    /// account — the item is the family's, and stays.
+    let addedBy: Int64?
+    /// An ordinary `kind=photo` attachment whose bytes ARE the sticker. It
+    /// never carries `sticker: true`; that flag is a message's.
+    let attachment: AttachmentDTO?
+    /// A few words for a screen reader, present when (and only when)
+    /// whoever added it gave some. Never drawn over the picture.
+    let label: String?
+    let createdAt: Date?
+    let packSeq: Int64
+    let deleted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case addedBy = "added_by"
+        case attachment
+        case label
+        case createdAt = "created_at"
+        case packSeq = "pack_seq"
+        case deleted
+    }
+
+    var isTombstone: Bool { deleted == true }
+
+    init(
+        id: Int64,
+        addedBy: Int64? = nil,
+        attachment: AttachmentDTO? = nil,
+        label: String? = nil,
+        createdAt: Date? = nil,
+        packSeq: Int64,
+        deleted: Bool? = nil
+    ) {
+        self.id = id
+        self.addedBy = addedBy
+        self.attachment = attachment
+        self.label = label
+        self.createdAt = createdAt
+        self.packSeq = packSeq
+        self.deleted = deleted
+    }
+}
+
+/// `GET /families/mine/pack` — the WHOLE pack as it now stands, in the
+/// order the items were added, with no tombstones. `maxPackSeq` is 0 for a
+/// pack nobody has ever written to.
+nonisolated struct PackResponse: Codable, Equatable, Sendable {
+    let items: [PackItemDTO]
+    let maxPackSeq: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case maxPackSeq = "max_pack_seq"
+    }
+}
+
+/// `GET /families/mine/pack/changes` — one catch-up page, tombstones
+/// included, ascending by `pack_seq`.
+nonisolated struct PackChangesResponse: Codable, Equatable, Sendable {
+    let items: [PackItemDTO]
+}
+
+/// `POST /families/mine/pack` — the item, new (201) or already there (200).
+nonisolated struct PackItemResponse: Codable, Equatable, Sendable {
+    let item: PackItemDTO
 }
 
 nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
@@ -1764,19 +2131,40 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
     /// reason this field is on the wire and the whole reason a client
     /// draws it.
     let images: Int
+    /// Recordings turned into text by a provider call, charged to the
+    /// member who ASKED (protocol.md, "Transcripts on request"). A kept
+    /// answer handed out again counts nothing. Its own number because a
+    /// speech model is billed by audio length, not tokens.
+    let transcripts: Int
+    /// The total length of those recordings, in milliseconds — the bill.
+    let transcriptDurationMS: Int64
+    /// Paid WEB SEARCHES that came back with an answer, charged to the
+    /// member who asked (protocol.md, "Family statistics"). Weather and
+    /// Wikipedia are free and not counted. Its own number for the reason
+    /// `images` is: it maps to a per-search bill no token count shows.
+    let searches: Int
 
     enum CodingKeys: String, CodingKey {
         case questions
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case images
+        case transcripts
+        case transcriptDurationMS = "transcript_duration_ms"
+        case searches
     }
 
-    init(questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0) {
+    init(
+        questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0,
+        transcripts: Int = 0, transcriptDurationMS: Int64 = 0, searches: Int = 0
+    ) {
         self.questions = questions
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.images = images
+        self.transcripts = transcripts
+        self.transcriptDurationMS = transcriptDurationMS
+        self.searches = searches
     }
 
     /// Hand-written for the reason `UserDTO`'s is: a property default is
@@ -1789,5 +2177,26 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
         promptTokens = try container.decode(Int.self, forKey: .promptTokens)
         completionTokens = try container.decode(Int.self, forKey: .completionTokens)
         images = try container.decodeIfPresent(Int.self, forKey: .images) ?? 0
+        // Zero for a server that predates transcripts, for the reason
+        // `images` is: it has made none and can make none.
+        transcripts = try container.decodeIfPresent(Int.self, forKey: .transcripts) ?? 0
+        transcriptDurationMS = try container.decodeIfPresent(
+            Int64.self, forKey: .transcriptDurationMS) ?? 0
+        // Zero for a server that predates lookups: it has searched nothing.
+        searches = try container.decodeIfPresent(Int.self, forKey: .searches) ?? 0
     }
+}
+
+/// The answer to `POST …/attachments/{id}/transcript` (protocol.md,
+/// "Transcripts on request"). `text` is always present, and EMPTY means
+/// the recording had no speech in it — an answer, drawn as "No speech",
+/// never an error. `language` only when the provider named one, spelled
+/// as the provider spells it; shown at most, never depended on.
+nonisolated struct TranscriptDTO: Codable, Equatable, Sendable {
+    let text: String
+    let language: String?
+}
+
+nonisolated struct TranscriptResponse: Codable, Equatable, Sendable {
+    let transcript: TranscriptDTO
 }

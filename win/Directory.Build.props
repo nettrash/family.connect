@@ -23,7 +23,7 @@
       for the assembly, so a release bump is this line and nothing else. Keep it a single
       <Version> element: the stamp step refuses to guess when it finds none or several.
     -->
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <NeutralLanguage>en</NeutralLanguage>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
@@ -124,7 +125,11 @@ class SessionRepository @Inject constructor(
     // unchanged. Production always injects the Hilt singleton (whose
     // provider actually asks Firebase — see AppModule).
     private val pushTokenRepository: PushTokenRepository =
-        PushTokenRepository(authApi, settings, tokenStore, PushTokenProvider { null }),
+        PushTokenRepository(authApi, settings, tokenStore, PushTokenProvider { null }, PushLanguageProvider { "en" }),
+    // Same trick again: tests that never race a late write against a wipe
+    // get a private epoch; production shares the singleton with the
+    // repositories whose writes it guards (TranscriptRepository).
+    private val epoch: SessionEpoch = SessionEpoch(),
 ) {
 
     // Bumped on every token save/clear so sessionFlow re-emits — the
@@ -275,8 +280,19 @@ class SessionRepository @Inject constructor(
     suspend fun clearSession() {
         tokenStore.clear()
         tokenVersion.update { it + 1 }
-        wiper.wipeAll()
+        wipe()
         settings.resetKeepingServerUrl()
+    }
+
+    /**
+     * Every wipe of local data, with the [SessionEpoch] advanced FIRST: a
+     * request still out — a transcript, above all — then finds its session
+     * gone and drops its answer instead of writing it into the emptied
+     * database for whoever signs in next.
+     */
+    private suspend fun wipe() {
+        epoch.advance()
+        wiper.wipeAll()
     }
 
     // -- Membership reconciliation ------------------------------------------------
@@ -300,6 +316,10 @@ class SessionRepository @Inject constructor(
                 // withdrawal from another device arrives exactly here
                 // (protocol.md, "Consenting to the assistant").
                 settings.setAssistantConsentAt(me.assistantConsentAt)
+                // …and the lookup consent beside it, by the same rule
+                // (protocol.md, "Consenting to the assistant", amended
+                // 2026-10-03). Absent from an older server, so null.
+                settings.setAssistantLookupConsentAt(me.assistantLookupConsentAt)
                 // The AUTHORITATIVE apply. `/me` is step 1 of the resync,
                 // it is the only one on the login path, and it is the only
                 // one a caller with NO family reaches at all — a block is a
@@ -320,6 +340,11 @@ class SessionRepository @Inject constructor(
                 }
                 settings.setFamilyStatus(next)
                 settings.setFamilyName(me.family?.name ?: me.pendingJoinRequest?.familyName)
+                // The owner's transcripts switch rides on `/me` too
+                // (docs/protocol.md, "Transcripts on request"). Only from a
+                // family that is there: without one the teardown below
+                // takes it with everything else.
+                me.family?.let { settings.setFamilyAiTranscripts(it.aiTranscripts) }
                 if (previous == FamilyStatus.PENDING && next == FamilyStatus.NONE) {
                     // Neither family nor pending request: the request was
                     // rejected (protocol GET /me note). The waiting screen
@@ -331,7 +356,12 @@ class SessionRepository @Inject constructor(
                 ) {
                     // Removed while we weren't looking — the chats aren't
                     // ours to show any more.
-                    wiper.wipeAll()
+                    wipe()
+                    // The pack's cursor goes with the pack: its seqs are
+                    // server-wide, so the next family's must not be caught
+                    // up from this one's mark (docs/protocol.md, "Sticker
+                    // pack").
+                    settings.setPackCursor(0L)
                     _sessionEvents.tryEmit(SessionEvent.RemovedFromFamily)
                 }
                 ApiResult.Ok(snapshot())
@@ -344,7 +374,9 @@ class SessionRepository @Inject constructor(
     /** Live `member_left` for *my* user id — FamilyRepository calls this. */
     fun onRemovedFromFamily() {
         scope.launch {
-            wiper.wipeAll()
+            wipe()
+            // See refreshMe: the pack's cursor goes with the pack.
+            settings.setPackCursor(0L)
             settings.setFamilyStatus(FamilyStatus.NONE)
             settings.setFamilyName(null)
             _sessionEvents.emit(SessionEvent.RemovedFromFamily)

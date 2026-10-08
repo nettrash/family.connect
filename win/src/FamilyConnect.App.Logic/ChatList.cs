@@ -154,6 +154,16 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
         {
             return string.Empty;
         }
+        if (message.StickerPicture is not null)
+        {
+            // The word, in the reader's language, where a photo's row says so of a photo.
+            return say.Get("Sticker");
+        }
+        if (message.RoundVideo is not null)
+        {
+            // Asked BEFORE "Video" (S5.7): a circle is a video on the wire and a video message to the reader.
+            return say.Get("Video message");
+        }
         return media[0].Kind switch
         {
             "photo" when media.Count > 1 => say.Format("%lld Photos", media.Count),

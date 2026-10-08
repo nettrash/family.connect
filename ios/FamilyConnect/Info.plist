@@ -53,6 +53,11 @@
 	  (the App Store build lands straight on Register/Login). Users can
 	  still switch servers via "Change server…" on the auth screen.
 	-->
+	<!-- Video messages (#79, S3.5): a thumbs-up must not burn fireworks into
+	     a family message. A DEFAULT, from iOS 17.4: a choice made in Control
+	     Center still wins, and it applies app-wide — video calls included. -->
+	<key>NSCameraReactionEffectGesturesEnabledDefault</key>
+	<false/>
 	<key>FCDefaultServerURL</key>
 	<string>$(FC_DEFAULT_SERVER_URL)</string>
 	<key>CFBundleURLTypes</key>

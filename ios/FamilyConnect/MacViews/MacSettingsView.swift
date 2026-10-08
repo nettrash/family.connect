@@ -49,6 +49,18 @@ struct MacSettingsView: View {
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
+    /// The menu bar (#80): this Mac's, mirrored the same way — and Open at
+    /// Login read back from SMAppService after every change, because macOS
+    /// can refuse it or have it switched off in System Settings.
+    @State private var keepsRunningInMenuBar = AppSettings.keepsRunningInMenuBar
+    @State private var opensWithHotKey = AppSettings.opensWithHotKey
+    @State private var hotKeyTaken = MacHotKey.shared.isTaken
+    @State private var loginItem = MacLoginItem.state
+    /// The Mac's own notifications (#84): the switch, and what macOS itself
+    /// allows — read again whenever the app comes back to the front, since
+    /// the place it is changed is System Settings.
+    @State private var desktopNotifications = AppSettings.desktopNotificationsEnabled
+    @State private var notificationAccess = MacNotificationAccess.unknown
     /// The assistant question, and what went wrong answering it — the
     /// phone's two fields (protocol.md, "Consenting to the assistant").
     @State private var reviewingAssistant = false
@@ -139,6 +151,92 @@ struct MacSettingsView: View {
         session.currentUser?.birthday?.formatted() ?? String(localized: "Not set")
     }
 
+    /// "Tell me when a message arrives" (#84) — Windows' switch — and, under
+    /// it, what macOS is doing with them: a Mac where the app was never
+    /// allowed, or where its banners were turned to None, shows nothing at
+    /// all and says nothing about why, which is how this issue was found.
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Tell me when a message arrives", isOn: $desktopNotifications)
+                .onChange(of: desktopNotifications) { _, newValue in
+                    AppSettings.desktopNotificationsEnabled = newValue
+                    // Off is off for the server's pushes too: this Mac's
+                    // device is withdrawn, and switching on registers it
+                    // again — asking macOS first if it never has (PR #86).
+                    Task {
+                        await MacAppDelegate.registrar?.ensureRegistered()
+                        notificationAccess = await MacNotificationAccess.current()
+                    }
+                }
+            if desktopNotifications, notificationAccess.needsSystemSettings {
+                Button("Open Notification Settings…") { MacNotificationAccess.openSystemSettings() }
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            switch notificationAccess {
+            case .denied:
+                Text("macOS is not showing notifications for Family Connect. Allow them in System Settings, under Notifications.")
+            case .noBanners:
+                Text("macOS keeps Family Connect's notifications out of sight. Choose Banners or Alerts in System Settings, under Notifications.")
+            case .unknown, .allowed:
+                Text("When a message arrives in a chat you are not reading, a notification says who wrote — never what they wrote.")
+            }
+        }
+        .task { notificationAccess = await MacNotificationAccess.current() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { notificationAccess = await MacNotificationAccess.current() }
+        }
+    }
+
+    /// Keep running in the menu bar, open at login, and the shortcut that
+    /// brings the window forward from any app (#80,
+    /// docs/mac-menu-bar-2026-10-07.md) — Windows' two switches, plus the key.
+    private var menuBarSection: some View {
+        Section {
+            Toggle("Keep Running in the Menu Bar", isOn: $keepsRunningInMenuBar)
+                .onChange(of: keepsRunningInMenuBar) { _, newValue in
+                    AppSettings.keepsRunningInMenuBar = newValue
+                    MacMenuBar.shared.apply()
+                }
+            Toggle(
+                "Open at Login",
+                isOn: Binding(
+                    get: { MenuBarRules.loginSwitchOn(loginItem) },
+                    set: { on in
+                        MacLoginItem.set(on)
+                        loginItem = MacLoginItem.state
+                    })
+            )
+            .disabled(!MenuBarRules.loginSwitchEnabled(loginItem))
+            if loginItem == .needsApproval {
+                Text("macOS is keeping this off. Turn it back on in System Settings, under Login Items.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Open Login Items…") { MacLoginItem.openSystemSettings() }
+            }
+            Toggle("Open with \(MacHotKey.shortcut)", isOn: $opensWithHotKey)
+                .onChange(of: opensWithHotKey) { _, newValue in
+                    AppSettings.opensWithHotKey = newValue
+                    MacMenuBar.shared.apply()
+                    hotKeyTaken = MacHotKey.shared.isTaken
+                }
+            if opensWithHotKey, hotKeyTaken {
+                Label("Another app is using \(MacHotKey.shortcut).", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Menu Bar")
+        } footer: {
+            Text("When you close the window, Family Connect stays in the menu bar, so messages and calls still reach you. Quit it from its icon there. At login it opens in the menu bar, and the shortcut brings it forward from any app.")
+        }
+        .onAppear {
+            // Changed in System Settings while this window was closed.
+            loginItem = MacLoginItem.state
+            hotKeyTaken = MacHotKey.shared.isTaken
+        }
+    }
+
     /// The panel itself: who you are, then everything you can do.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -179,6 +277,7 @@ struct MacSettingsView: View {
                     Button("Statistics…") { showingStatistics = true }
                 }
                 assistantConsentSection
+                AssistantLookupConsentSection { reviewingAssistant = true }
                 // The Mac's only setting that changes who the app talks
                 // to, so it says so plainly. Link previews are not drawn
                 // here at all, so there is nothing to switch for them; a
@@ -207,6 +306,9 @@ struct MacSettingsView: View {
                 } footer: {
                     Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this Mac. With maps off, a shared location still shows its pin and opens in Maps when you click it.")
                 }
+
+                notificationsSection
+                menuBarSection
 
                 Section("Server") {
                     LabeledContent(
@@ -333,8 +435,12 @@ struct MacSettingsView: View {
                 processor: AppSettings.assistantProcessor ?? "",
                 familyHistory: session.family?.aiHistory == true,
                 familyVision: session.family?.aiVision == true,
-                onAgree: {
-                    try await session.setAssistantConsent(true)
+                // Settings raises this for both questions: the first for
+                // somebody who has not agreed, and only the lookup one —
+                // from "Review and Allow Lookups…" — for somebody who has.
+                assistantAgreed: session.assistantConsentAt != nil,
+                onAgree: { answer in
+                    try await session.agreeToAssistant(answer)
                     assistantConsentError = nil
                     reviewingAssistant = false
                 },

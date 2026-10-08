@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- sr. Informal register — see values/strings.xml. -->
 <resources>
+    <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
+         language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
+    <string name="push_language">sr</string>
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Додај белешку — виде је сви у породици.</string>
     <string name="s_add_note">Додај белешку</string>
     <string name="s_approval">Одобрење</string>
@@ -77,6 +80,7 @@
     <string name="s_album">Албум</string>
     <string name="s_n_of_m">%1$d од %2$d</string>
     <string name="s_take_photo">Сликај</string>
+    <string name="s_camera">Камера</string>
     <string name="s_statistics">Статистика</string>
     <string name="s_messages">Поруке</string>
     <string name="s_new_message">Нова порука</string>
@@ -96,17 +100,35 @@
     <string name="s_couldnt_load_statistics">Статистика није учитана</string>
     <string name="s_check_connection_try_again">Провери везу и покушај поново.</string>
     <string name="s_saved_by_one_copy">%1$s уштеђено — исте датотеке се чувају у једном примерку.</string>
-    <string name="s_attachments_and_size">прилога: %1$d, %2$s</string>
-    <string name="s_questions_to_assistant">питања асистенту: %1$d</string>
-    <string name="s_record_audio">Сними аудио</string>
-    <string name="s_stop">Заустави</string>
+    <plurals name="s_attachments_and_size">
+        <item quantity="one">%1$d прилог, %2$s</item>
+        <item quantity="few">%1$d прилога, %2$s</item>
+        <item quantity="other">%1$d прилога, %2$s</item>
+    </plurals>
+    <plurals name="s_questions_to_assistant">
+        <item quantity="one">%1$d питање асистенту</item>
+        <item quantity="few">%1$d питања асистенту</item>
+        <item quantity="other">%1$d питања асистенту</item>
+    </plurals>
+    <string name="s_stats_pictures">Слике</string>
+    <string name="s_stats_recordings_as_text">Снимци у текст</string>
+    <string name="s_stats_recording_time">Трајање снимака</string>
+    <plurals name="s_pictures_from_assistant">
+        <item quantity="one">%1$d слика од асистента</item>
+        <item quantity="few">%1$d слике од асистента</item>
+        <item quantity="other">%1$d слика од асистента</item>
+    </plurals>
+    <plurals name="s_recordings_as_text">
+        <item quantity="one">%1$d снимак у текст</item>
+        <item quantity="few">%1$d снимка у текст</item>
+        <item quantity="other">%1$d снимака у текст</item>
+    </plurals>
     <string name="s_audio">Аудио</string>
     <string name="s_play">Пусти</string>
     <string name="s_pause">Пауза</string>
     <string name="e_record_failed">Снимање није могло да почне.</string>
     <string name="e_recording_too_short">Снимак је прекратак.</string>
     <string name="e_microphone_permission">Family треба дозволу за коришћење микрофона.</string>
-    <string name="s_record_video">Сними видео</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Додај поруку или пошаљи овако.</string>
     <string name="s_remove_attachment">Уклони прилог</string>
     <string name="s_photo_or_video">Фотографија или видео</string>
@@ -394,7 +416,6 @@
     <string name="s_safety_for">Безбедносне опције за %1$s</string>
     <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
     <string name="s_show_the_assistant_a_picture">Покажи асистенту фотографију</string>
-    <string name="s_show_the_assistant_a_picture_note">Она напушта овај сервер и иде моделу с којим он разговара</string>
     <string name="s_ask_for_a_picture">Затражи слику</string>
     <string name="s_assistant_sees_this_picture">Асистенту ће бити приказана ова фотографија. Она напушта овај сервер и иде моделу с којим он разговара.</string>
     <string name="s_assistant_sees_these_pictures">Асистенту ће бити приказане ове фотографије. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
@@ -415,6 +436,7 @@
     <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Овај одговор помиње асистента, па ће му бити приказане фотографије на које одговараш, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
     <string name="s_assistant_mention_sees_both_and_recent">Овај одговор помиње асистента, па ће му бити приказане фотографије одавде и оне на које одговараш, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
     <string name="s_assistant_answer_failed">Асистент није успео да заврши овај одговор. Питајте поново.</string>
+    <string name="s_assistant_provider_refused">Добављач асистента је то одбио. Покушај да то кажеш другачије.</string>
     <string name="s_assistant_vision">Асистент сме да гледа фотографије</string>
     <string name="s_assistant_vision_explanation">Када неко у свом чету с асистентом приложи фотографију уз питање, приложи је уз поруку која помиње асистента у породичном чету, или одговори на фотографију помињући га, та фотографија иде моделу заједно с питањем — највише 4 по питању. Фотографија на коју асистенту нико није указао не шаље се никада, ни из раније поруке осим ако је укључено „Асистент види недавне фотографије“, као ни видео, фајлови, аудио и локације. Искључено док га не укључите; кад је искључено, ниједна фотографија се не шаље.</string>
     <string name="e_change_assistant_vision_failed">Није успела промена подешавања</string>
@@ -551,6 +573,7 @@
     <string name="s_draw_another_backdrop">Нацртај другу позадину</string>
     <string name="s_drawing">Црта…</string>
     <string name="s_draw_failed">Није могло да се нацрта.</string>
+    <string name="s_describe_in_general_words">Опиши људе и ствари општим речима — права имена и брендови се често одбијају.</string>
     <string name="s_tick_failed">Није могло да се означи.</string>
     <string name="s_no_calendar_app">Нема апликације календара за додавање.</string>
     <string name="s_the_assistant">Асистент</string>
@@ -572,4 +595,143 @@
     <string name="s_consent_until_you_agree_nothing_is_sent">Док не прихватиш, ништа што напишеш не иде ка %1$s и асистент ти не одговара.</string>
     <string name="s_consent_stopping_takes_effect_at_once">Оно што напишеш асистенту иде ка %1$s. Заустављање важи одмах; оно што је већ послато не може да се врати.</string>
     <string name="s_couldnt_save_your_answer">Твој одговор није сачуван. Покушај поново.</string>
+    <!-- The family's chat stickers (docs/protocol.md, "Sticker pack") - the picture sent in a chat, NOT a board note. -->
+    <string name="s_sticker">Стикер</string>
+    <string name="s_stickers">Стикери</string>
+    <string name="s_family_stickers">Породични стикери</string>
+    <string name="s_family_stickers_count">%1$d од %2$d</string>
+    <string name="s_family_stickers_explanation">Свако у породици може да дода стикер. Може да га уклони онај ко га је додао или власник породице.</string>
+    <string name="s_recently_used">Недавно коришћени</string>
+    <string name="s_no_stickers_yet">Још нема стикера</string>
+    <string name="s_no_stickers_hint">Додај их на екрану Породица.</string>
+    <string name="s_add_sticker">Додај стикер</string>
+    <string name="s_add_to_family_stickers">Додај у породичне стикере</string>
+    <string name="s_sticker_label">Опис (необавезно)</string>
+    <string name="s_sticker_label_hint">Неколико речи за читач екрана. Никада се не исцртавају преко слике.</string>
+    <string name="s_remove_sticker">Уклони стикер</string>
+    <string name="s_remove_sticker_q">Уклонити овај стикер?</string>
+    <string name="s_remove_sticker_explanation">Нестаје из породичних стикера. Већ послате поруке га задржавају.</string>
+    <string name="s_sticker_added">Додато у породичне стикере</string>
+    <string name="s_sticker_already_in_pack">Већ је у породичним стикерима</string>
+    <string name="s_sticker_pack_full">Породица већ има %1$d стикера. Уклони један да би додао нови.</string>
+    <string name="s_sticker_too_large">Тај је превелик. Стикер може да има највише %1$s.</string>
+    <string name="s_sticker_add_failed">Стикер није додат. Покушај поново.</string>
+    <string name="s_sticker_unreadable">Та слика не може да се прочита.</string>
+    <string name="s_sticker_animated_must_be_webp">Анимирани стикери морају бити WebP. Овај се не може додати.</string>
+    <string name="s_sticker_label_too_long">Опис може имати највише %1$d знакова.</string>
+    <string name="s_sticker_remove_not_allowed">Стикер може да уклони само онај ко га је додао или власник породице.</string>
+    <string name="s_sticker_remove_failed">Стикер није уклоњен. Покушај поново.</string>
+    <string name="s_sticker_not_available_offline">Тај стикер још није на овом телефону. Покушај поново кад будеш на мрежи.</string>
+
+    <!-- Transcripts on request (#62): text under a recording, the owner's switch, the consent line. -->
+    <string name="s_transcript_show">Прикажи текст</string>
+    <string name="s_transcript_hide">Сакриј текст</string>
+    <string name="s_transcript_getting">Текст се припрема…</string>
+    <string name="s_transcript_no_speech">Нема говора</string>
+    <string name="s_transcript_failed">Текст није добијен. Покушај поново.</string>
+    <string name="s_transcript_refused">Добављач асистента је одбио овај снимак.</string>
+    <string name="s_transcript_unavailable">Није доступно за ову поруку.</string>
+    <string name="s_transcript_too_long">Овај снимак је предугачак да би се претворио у текст.</string>
+    <string name="s_transcript_unreadable">Звук у овој датотеци није прочитан.</string>
+    <string name="s_transcript_a11y">Текст снимка</string>
+    <string name="s_assistant_transcripts">Глас и видео као текст</string>
+    <string name="s_assistant_transcripts_explanation">Када је ово укључено, чланови могу да затраже текст гласовних порука, аудио снимака и видео снимака других чланова у породичном чету, и тада се звук тог снимка шаље ка %1$s. Шаље се само када неко затражи, и само ако је члан који га је послао прихватио асистента. Свако може да добије текст својих снимака и без овога. Искључено је док га не укључиш.</string>
+    <string name="s_assistant_transcripts_no_server">Овде није доступно: овај сервер не може да претвори снимке у текст.</string>
+    <string name="s_consent_transcript_sound_sent">Ако затражиш текст гласовне поруке, аудио датотеке или видеа, звук се шаље ка %1$s.</string>
+    <string name="e_change_assistant_transcripts_failed">Није успела промена подешавања</string>
+    <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
+    <string name="s_looking_things_up">Тражење података</string>
+    <string name="s_assistant_lookups">Може да тражи податке</string>
+    <string name="s_assistant_lookups_explanation">Када је ово укључено, асистент може да потражи податке када питање то захтева — временску прогнозу, вести, чињеницу у коју није сигуран — у %1$s. Тамо се шаље само кратак упит за претрагу или назив места који асистент састави из питања, никада сам разговор, и само ако је члан који пита то прихватио. Одговори тада наводе своје изворе. Искључено је док га не укључиш.</string>
+    <string name="s_consent_lookups_with_history">Ако власник породице укључи тражење података, асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твог питања — у породичном разговору можда и из недавних порука — а његов одговор онда наводи изворе.</string>
+    <string name="s_consent_lookups_alone">Ако власник породице укључи тражење података, асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твог питања, а његов одговор онда наводи изворе.</string>
+    <string name="s_agree_with_lookups">Прихвати и тражење</string>
+    <string name="s_agree_without_lookups">Прихвати без тражења</string>
+    <string name="s_review_and_allow_lookups">Прочитај и дозволи тражење…</string>
+    <string name="s_stop_lookups">Заустави тражење</string>
+    <string name="s_lookups_until_you_allow">Док не дозволиш тражење, асистент ти одговара оним што већ зна и ништа из твојих питања не иде ка %1$s.</string>
+    <string name="s_lookups_stopping_takes_effect">Асистент може да пошаље ка %1$s кратак упит за претрагу или назив места који састави из твојих питања. Заустављање важи одмах; оно што је већ послато не може да се врати.</string>
+    <string name="s_list_two">%1$s и %2$s</string>
+    <string name="s_list_three">%1$s, %2$s и %3$s</string>
+    <string name="s_stats_web_searches">Претраге на вебу</string>
+    <string name="e_change_assistant_lookups_failed">Није успела промена подешавања</string>
+    <plurals name="s_web_searches">
+        <item quantity="one">%1$d претрага на вебу</item>
+        <item quantity="few">%1$d претраге на вебу</item>
+        <item quantity="other">%1$d претрага на вебу</item>
+    </plurals>
+    <string name="s_greeting_weather">Временска прогноза у поздраву</string>
+    <string name="s_greeting_weather_place_placeholder">Град или место</string>
+    <string name="s_greeting_weather_add_place">Додај место</string>
+    <string name="s_greeting_weather_remove_place">Уклони место</string>
+    <string name="s_greeting_weather_limit">Највише 3 места.</string>
+    <string name="s_greeting_weather_footer">Дневни поздрав ће поменути и данашњу временску прогнозу за ова места. Сервису Open-Meteo шаљу се само називи места да би се преузела прогноза. Ништа друго се не шаље.</string>
+    <!-- Voice messages made safe (#79, Phase 0): docs/audio-video-messages-2026-10-04.md, S2.8 and S4 -->
+    <string name="s_voice_message_not_sent">Гласовна порука није послата · %1$s</string>
+    <string name="s_send_voice_message">Пошаљи гласовну поруку</string>
+    <string name="s_delete_recording">Обриши снимак</string>
+    <string name="s_keep">Задржи</string>
+    <string name="s_delete_this_recording">Обрисати овај снимак?</string>
+    <string name="e_record_after_the_call">Поруку можеш да снимиш после позива.</string>
+    <string name="e_send_or_delete_the_unsent_first">Прво пошаљи или обриши гласовну поруку која није послата.</string>
+    <string name="s_recording_stopped_at_five_minutes">Снимање је заустављено после пет минута.</string>
+    <string name="e_recording_stopped_unexpectedly">Снимање је неочекивано прекинуто.</string>
+    <string name="s_voice_message_with_length">Гласовна порука · %1$s</string>
+    <!-- Voice in the Send slot (#79, Phase 1): docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9 -->
+    <string name="s_record_voice_message">Сними гласовну поруку</string>
+    <string name="s_take_video">Направи видео</string>
+    <string name="s_open_settings">Отвори Подешавања</string>
+    <string name="s_stop_recording">Заустави снимање</string>
+    <string name="s_stop_and_listen_first">Заустави и прво преслушај</string>
+    <string name="s_start_recording_action">започни снимање</string>
+    <string name="s_play_after_recording">Ово можеш да пустиш после снимања.</string>
+    <string name="s_thirty_seconds_left">Још 30 секунди</string>
+    <string name="s_cant_hear_microphone_muted">Ништа се не чује. Да ли је микрофон искључен?</string>
+    <string name="s_announce_recording">Снимање у току</string>
+    <string name="s_announce_recording_deleted">Снимак обрисан</string>
+    <string name="s_announce_voice_message_sent">Гласовна порука послата</string>
+    <string name="s_announce_ready_to_review">Спремно за проверу, %1$s</string>
+    <string name="e_wait_for_the_attachment">Сачекај да се тренутни прилог заврши.</string>
+    <!-- Video messages received (#79, Phase 2): docs/audio-video-messages-2026-10-04.md, S5, S6 -->
+    <string name="s_video_message">Видео-порука</string>
+    <string name="s_video_message_a11y">Видео-порука, %1$s</string>
+    <string name="s_not_played">Није пуштено</string>
+    <string name="s_open_full_screen">Отвори преко целог екрана</string>
+    <string name="s_couldnt_load_video_tap">Видео није учитан. Додирни да покушаш поново.</string>
+    <!-- Recording a video message (#79, Phase 3): docs/audio-video-messages-2026-10-04.md, S3, S4, S6, S10 -->
+    <string name="s_record_video_message">Сними видео-поруку</string>
+    <string name="s_send_video_message">Пошаљи видео-поруку</string>
+    <string name="s_retake">Сними поново</string>
+    <string name="s_record">Сними</string>
+    <string name="s_switch_camera">Промени камеру</string>
+    <string name="s_video_message_with_length">Видео-порука · %1$s</string>
+    <string name="s_not_recording">Снимање није у току</string>
+    <string name="s_only_you_can_see_this">Док не почнеш снимање, ово видиш само ти.</string>
+    <string name="s_starting_camera">Камера се покреће…</string>
+    <string name="s_cant_see_anything">Ништа се не види. Да ли је камера искључена или прекривена?</string>
+    <string name="s_ten_seconds_left">Још 10 секунди</string>
+    <string name="s_recording_stopped_at_one_minute">Снимање је заустављено после једног минута.</string>
+    <string name="s_video_too_short">Видео је прекратак.</string>
+    <string name="s_delete_video_message">Обрисати видео-поруку?</string>
+    <string name="s_video_messages_need_camera_and_microphone">За видео-поруке су потребни камера и микрофон.</string>
+    <string name="e_camera_permission_settings">Family треба дозволу за приступ твојој камери. Укључи је у Подешавањима.</string>
+    <string name="s_camera_in_use_by_another_app">Камеру користи друга апликација.</string>
+    <string name="s_couldnt_make_it_round">Видео није могао да постане округао. Биће послат као обичан видео.</string>
+    <string name="s_too_big_for_video_message">Превелик за видео-поруку. Биће послат као обичан видео.</string>
+    <string name="s_announce_camera_ready">Камера је спремна</string>
+    <string name="s_announce_recording_video">Снимање видеа у току</string>
+    <string name="s_announce_video_message_sent">Видео-порука послата</string>
+    <string name="s_announce_camera_turned_off">Камера искључена</string>
+    <string name="s_record_voice_message_instead">Сними гласовну поруку уместо тога</string>
+    <!-- Voice and video message polish (#79): the approved design, long-press menu, speed chip, accessibility -->
+    <string name="s_voice_message_a11y">Гласовна порука, %1$s</string>
+    <string name="s_played">Пуштено</string>
+    <string name="s_playback_speed">Брзина репродукције</string>
+    <string name="s_playback_speed_a11y">Брзина репродукције, %1$s</string>
+    <string name="s_speed_1x">1×</string>
+    <string name="s_speed_1_5x">1,5×</string>
+    <string name="s_speed_2x">2×</string>
+    <string name="s_not_sent">Није послато</string>
+    <string name="s_switch">Промени</string>
+    <string name="s_stop">Заустави</string>
 </resources>

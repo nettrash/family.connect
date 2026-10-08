@@ -23,6 +23,8 @@ public class CacheConcurrencyTests : IDisposable
     private readonly ChatStore chats;
     private readonly BoardStore board;
     private readonly OutboxStore outbox;
+    private readonly PackStore pack;
+    private readonly TranscriptStore transcripts;
 
     public CacheConcurrencyTests()
     {
@@ -30,6 +32,10 @@ public class CacheConcurrencyTests : IDisposable
         chats = new ChatStore(cache, () => 7);
         board = new BoardStore(cache);
         outbox = new OutboxStore(cache);
+        pack = new PackStore(cache);
+        transcripts = new TranscriptStore(cache);
+        transcripts.Keep(new KeptTranscript(34, "See you at six"), DateTimeOffset.UnixEpoch);
+        pack.Replace([PackItem(1, 5)], 5);
         chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
         chats.Replace([new MemberDto(7, "anna", "Anna", Role: "owner"), new MemberDto(11, "bob", "Bob")]);
         chats.Apply(new MessageDto(1, 42, 11, "c-1", "hello", Sent));
@@ -55,6 +61,9 @@ public class CacheConcurrencyTests : IDisposable
         }
     }
 
+    private static PackItemDto PackItem(long id, long seq) =>
+        new(id, 7, new AttachmentDto(70 + id, "photo", "image/webp", 4096, 512, 512), Sent, seq);
+
     /// <summary>Every public operation of the stores and the cache, by name.</summary>
     private Dictionary<string, Action> Operations() => new()
     {
@@ -77,6 +86,9 @@ public class CacheConcurrencyTests : IDisposable
         ["chats.Newest"] = () => chats.Newest(42),
         ["chats.CatchUpCursor"] = () => chats.CatchUpCursor(42),
         ["chats.CatchUpCursors"] = () => chats.CatchUpCursors(),
+        ["chats.FlagRepairCandidates"] = () => chats.FlagRepairCandidates(25),
+        ["chats.SettleFlags"] = () => chats.SettleFlags(1),
+        ["chats.RepairMedia"] = () => chats.RepairMedia(new MessageDto(1, 42, 11, "c-1", "", Sent)),
         ["chats.Replace(members)"] = () => chats.Replace([new MemberDto(7, "anna", "Anna", Role: "owner")]),
         ["chats.Members"] = () => chats.Members(),
         ["chats.Member"] = () => chats.Member(11),
@@ -98,6 +110,24 @@ public class CacheConcurrencyTests : IDisposable
         ["board.Mark"] = () => board.Mark(new BoardMarks(1, 5)),
         ["board.MarkShown"] = () => board.MarkShown(),
         ["board.Unread"] = () => board.Unread(),
+        ["pack.Items"] = () => pack.Items(),
+        ["pack.Item"] = () => pack.Item(1),
+        ["pack.Count"] = () => pack.Count(),
+        ["pack.Replace"] = () => pack.Replace([PackItem(2, 6)], 6),
+        ["pack.Apply(item)"] = () => pack.Apply(PackItem(3, 7)),
+        ["pack.Apply(page)"] = () => pack.Apply([PackItem(4, 8)]),
+        ["pack.Removed"] = () => pack.Removed(1),
+        ["pack.Cursor"] = () => _ = pack.Cursor,
+        ["pack.Reconnected"] = () => pack.Reconnected(),
+        ["pack.Connection"] = () => _ = pack.Connection,
+        ["pack.CaughtUp"] = () => pack.CaughtUp(0),
+        ["pack.IsCaughtUp"] = () => _ = pack.IsCaughtUp,
+        ["pack.Limits"] = () => _ = pack.Limits,
+        ["pack.SetLimits"] = () => pack.SetLimits(new PackLimits(200, 524_288)),
+        ["pack.Used"] = () => pack.Used(1, DateTimeOffset.UnixEpoch),
+        ["pack.Recents"] = () => pack.Recents(),
+        ["transcripts.Find"] = () => transcripts.Find(34),
+        ["transcripts.Keep"] = () => transcripts.Keep(new KeptTranscript(35, ""), DateTimeOffset.UnixEpoch),
         ["outbox.Queue"] = () => outbox.Queue(new OutboxRow("c-10", 42, "more", QueuedAt: DateTimeOffset.UnixEpoch)),
         ["outbox.All"] = () => outbox.All(),
         ["outbox.ForChat"] = () => outbox.ForChat(42),
@@ -122,11 +152,15 @@ public class CacheConcurrencyTests : IDisposable
         "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.IsListed", "chats.Unread",
         "chats.MarkRead", "chats.Advance", "chats.Apply(message)", "chats.Apply(page)",
         "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread", "chats.Refresh", "chats.Polls",
-        "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",
+        "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.FlagRepairCandidates", "chats.SettleFlags", "chats.RepairMedia", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",
         "chats.Left", "chats.Deleted", "chats.SetOwner", "chats.ReplaceBlocked", "chats.SetBlocked",
         "chats.Blocked", "chats.IsBlocked",
         "board.Notes", "board.Note", "board.Replace", "board.Apply(note)", "board.Apply(page)",
         "board.Cursor", "board.Marks", "board.Mark", "board.MarkShown", "board.Unread",
+        "pack.Items", "pack.Item", "pack.Count", "pack.Replace", "pack.Apply(item)", "pack.Apply(page)", "pack.Removed",
+        "pack.Cursor", "pack.Reconnected", "pack.Connection", "pack.CaughtUp", "pack.IsCaughtUp", "pack.Limits", "pack.SetLimits",
+        "pack.Used", "pack.Recents",
+        "transcripts.Find", "transcripts.Keep",
         "outbox.Queue", "outbox.All", "outbox.ForChat", "outbox.Due", "outbox.Find",
         "outbox.Delivered", "outbox.Failed", "outbox.Uploaded", "outbox.Refuse", "outbox.Reupload",
         "outbox.Retry", "outbox.Discard",
@@ -147,16 +181,33 @@ public class CacheConcurrencyTests : IDisposable
     {
         var operation = Operations()[name];
         using var started = new ManualResetEventSlim();
-        Task running;
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task running = finished.Task;
         // Entered and left on THIS thread with no await in between: the cache's lock belongs to the
         // thread that took it.
         using (cache.Hold())
         {
-            running = Task.Run(() =>
+            // A thread of its own, not the pool's: on a busy CI runner (windows-2025, 2026-10-07) a
+            // Task.Run waited more than five seconds for a pool thread while other test classes held
+            // theirs, and "never started" was the pool's answer, not the cache's.
+            var worker = new Thread(() =>
             {
                 started.Set();
-                operation();
-            });
+                try
+                {
+                    operation();
+                    finished.SetResult();
+                }
+                catch (Exception e)
+                {
+                    finished.SetException(e);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = $"cache-concurrency {name}",
+            };
+            worker.Start();
             Assert.True(started.Wait(TimeSpan.FromSeconds(5)), $"{name} never started");
             Thread.Sleep(150);
             Assert.False(running.IsCompleted, $"{name} used the cache while another operation held it");
@@ -176,6 +227,7 @@ public class CacheConcurrencyTests : IDisposable
         foreach (var (prefix, type) in new[]
                  {
                      ("chats", typeof(ChatStore)), ("board", typeof(BoardStore)), ("outbox", typeof(OutboxStore)),
+                     ("pack", typeof(PackStore)), ("transcripts", typeof(TranscriptStore)),
                  })
         {
             var members = type

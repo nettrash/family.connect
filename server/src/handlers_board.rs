@@ -386,6 +386,7 @@ async fn claim_picture(
     let row = sqlx::query(
         "UPDATE attachments SET note_id = $3
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
+           AND pack_item_id IS NULL
            AND kind = $4
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m",
@@ -418,7 +419,7 @@ async fn claim_picture(
         }
         return Err(ApiError::conflict(
             codes::ATTACHMENT_ALREADY_USED,
-            "that attachment is already on a message or another note",
+            "that attachment is already on a message, another note or in the sticker pack",
         ));
     }
     // The one a client can act on: an upload this caller made and the
@@ -1393,13 +1394,16 @@ pub async fn delete_rsvp(
 /// THE AUTHOR'S, AND AN EVENT'S. A backdrop is part of what the note looks
 /// like, which is the author's business like its colour; the other kinds
 /// have nowhere to put one — a photo note IS its picture
-/// (docs/protocol.md, "Board").
+/// (docs/protocol.md, "Board"). And only with the author's consent to the
+/// assistant, because the title is the author's words going to the model.
 ///
 /// WHAT LEAVES THE SERVER IS THE TITLE. No place, no times, no answers, no
 /// history, no language instruction — the `/draw` rule unchanged, which is
 /// also why this takes no request body: a prompt from the client would be a
 /// second way to send words to a model from a screen that is not the
-/// assistant's chat.
+/// assistant's chat. A title the images deployment refuses also goes, once
+/// and alone, to the text deployment to be reworded — still the title and
+/// nothing else (`handlers_ai::draw_or_reword`).
 ///
 /// THE MODEL IS CALLED WITH NO LOCK HELD. The board's row lock serialises
 /// every write to a family's wall, and an image model takes seconds — so
@@ -1408,6 +1412,14 @@ pub async fn delete_rsvp(
 /// deleted or handed over meanwhile loses the picture that was drawn for it,
 /// which is why the bytes are discarded on that path rather than left for
 /// the sweeper: no row ever pointed at them.
+///
+/// AND IT IS AWAITED IN THE REQUEST, on purpose. A reworded backdrop is
+/// three provider calls in a row, longer than an ordinary client timeout;
+/// a client that stops waiting closes the connection, the server drops this
+/// future with it, and nothing lands afterwards to contradict the failure
+/// the client showed. Spawning the work would buy exactly that
+/// contradiction (protocol.md, "Board": a client gives this request a
+/// timeout of its own).
 pub async fn draw_backdrop(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1451,26 +1463,60 @@ pub async fn draw_backdrop(
     if held.get::<String, _>("kind") != Note::KIND_EVENT {
         return Err(ApiError::validation("only an event has a backdrop"));
     }
+    // NOTHING REACHES THE MODEL WITHOUT THIS MEMBER'S OWN PERMISSION
+    // (protocol.md, "Consenting to the assistant"). The title is words the
+    // author wrote, and it goes to the images deployment — and, refused,
+    // to the text deployment as well — so it is asked here exactly as a
+    // send to the assistant asks it (`handlers_chat`), and refused the same
+    // way. Last of the checks, because it is the one a client answers with
+    // the consent screen: a caller who could not have this backdrop anyway
+    // is told that instead.
+    if !crate::handlers_ai::has_assistant_consent(&state, auth.user_id).await? {
+        return Err(ApiError::forbidden(
+            codes::ASSISTANT_CONSENT_REQUIRED,
+            "you have not agreed that your words may be sent to the assistant",
+        ));
+    }
     let title: String = held.get("text");
 
     // The slow part, with nothing locked.
-    let image = crate::ai::generate_image(&state.http, &route, &state.cfg.ai.images, title.trim())
+    //
+    // A refusal by the provider's own filter is TERMINAL and says so
+    // (`picture_refused`): the same title gets the same refusal, and an
+    // `internal` would have a client retry it for nothing. Every other
+    // failure stays `internal` — the provider failing is transient.
+    //
+    // A refused title is reworded once by the text deployment and the
+    // rewrite drawn, exactly as a refused `/draw` is: the one shared
+    // `draw_or_reword`, so the three paths cannot drift. Only when that
+    // does not produce a picture either is the answer `picture_refused`
+    // (protocol.md, "A refused description is reworded once").
+    let drawn = crate::handlers_ai::draw_or_reword(&state, &route, "backdrop", title.trim())
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "the assistant could not draw a backdrop");
-            ApiError::Internal(error)
+            let refused = crate::ai::is_refusal(&error);
+            tracing::warn!(%note_id, refused, error = %format!("{error:#}"), "the assistant could not draw a backdrop");
+            if refused {
+                ApiError::bad_request(
+                    codes::PICTURE_REFUSED,
+                    "the assistant's provider refused to draw this",
+                )
+            } else {
+                ApiError::Internal(error)
+            }
         })?;
 
     // Written to disk first, and bound in the transaction below: the note
     // holds ONE backdrop (a unique index over `attachments(note_id)` says
     // so), so the row it replaces has to go in the same breath as the new
     // one arrives.
-    let written = crate::handlers_ai::write_picture(&state, &format!("ai-note-{note_id}"), &image)
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "could not write a drawn backdrop");
-            ApiError::Internal(error)
-        })?;
+    let written =
+        crate::handlers_ai::write_picture(&state, &format!("ai-note-{note_id}"), &drawn.image)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "could not write a drawn backdrop");
+                ApiError::Internal(error)
+            })?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;
@@ -1546,18 +1592,20 @@ pub async fn draw_backdrop(
         crate::handlers_attachment::remove_if_unreferenced(&state, &key).await?;
     }
 
-    // What it cost, for Family Statistics: one image and no tokens, as a
-    // `/draw` is — and no message, because there is none (protocol.md,
-    // "Family statistics"). Best effort, like the chat's own accounting: a
-    // picture the family can see must not fail because a counter did not
-    // save.
+    // What it cost, for Family Statistics: one image, as a `/draw` is — no
+    // tokens unless the title had to be reworded, and then the rewrite's —
+    // and no message, because there is none (protocol.md, "Family
+    // statistics"). Best effort, like the chat's own accounting: a picture
+    // the family can see must not fail because a counter did not save.
     if let Err(error) = sqlx::query(
         "INSERT INTO ai_usage (user_id, family_id, message_id, prompt_tokens,
                                completion_tokens, images)
-         VALUES ($1, $2, NULL, 0, 0, 1)",
+         VALUES ($1, $2, NULL, $3, $4, 1)",
     )
     .bind(auth.user_id)
     .bind(family_id)
+    .bind(drawn.usage.prompt_tokens)
+    .bind(drawn.usage.completion_tokens)
     .execute(&state.pool)
     .await
     {

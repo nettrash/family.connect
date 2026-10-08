@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crate::error::ApiError;
 use crate::handlers_chat::ReactionState;
 use crate::handlers_poll::PollState;
-use crate::models::{Member, Message, Note, UserBrief};
+use crate::models::{Member, Message, Note, PackItem, UserBrief};
 use crate::push::DevicePush;
 use crate::push_payload::{self, CallPush, Notification};
 use crate::state::AppState;
@@ -166,6 +166,26 @@ async fn deliver_board_note_inner(
         batch.push((user_devices, notification));
     }
     spawn_notify(state, batch);
+    Ok(())
+}
+
+/// One item of the family's sticker pack — added, or a tombstone — to every
+/// member of the family, the actor's own connections included.
+///
+/// Family-wide, like a board note, and quieter than one: NOTHING about the
+/// pack notifies, not even an add. A new sticker is something to find in
+/// the panel the next time it is opened, not something to be woken for
+/// (protocol.md, "Sticker pack"). And nobody is filtered out: an item is a
+/// picture the family keeps rather than something a person said, so a
+/// member who has blocked whoever added it receives it like everyone else.
+pub async fn deliver_pack_item(
+    state: &AppState,
+    family_id: i64,
+    item: &PackItem,
+) -> Result<(), ApiError> {
+    let members = family_member_ids(&state.pool, family_id).await?;
+    let frame = ServerFrame::PackItem { item: item.clone() };
+    state.registry.fan_out(&members, &frame, None).await;
     Ok(())
 }
 
@@ -563,7 +583,7 @@ struct DeviceTarget {
 /// has not changed for it.
 async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
-        "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id
+        "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id, d.language
          FROM devices d
          LEFT JOIN sessions s ON s.id = d.session_id
          WHERE d.user_id = ANY($1)
@@ -581,6 +601,7 @@ async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<Device
                 user_id: row.get("user_id"),
                 platform: row.get("platform"),
                 push_token: row.get("push_token"),
+                language: row.get("language"),
             },
             session_id: row.get("session_id"),
         })
@@ -720,7 +741,7 @@ pub async fn has_wakeable_device(pool: &PgPool, user_id: i64) -> Result<bool, Ap
 /// `DevicePush.push_token`; an Android row uses its ordinary push token.
 async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
-        "SELECT d.id, d.user_id, d.platform, d.session_id,
+        "SELECT d.id, d.user_id, d.platform, d.session_id, d.language,
                 CASE WHEN d.platform = 'android' THEN d.push_token ELSE d.voip_token END AS token
          FROM devices d
          LEFT JOIN sessions s ON s.id = d.session_id
@@ -740,6 +761,7 @@ async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<Device
                 user_id: row.get("user_id"),
                 platform: row.get("platform"),
                 push_token: row.get("token"),
+                language: row.get("language"),
             },
             session_id: row.get("session_id"),
         })
@@ -1059,6 +1081,7 @@ mod tests {
                 user_id,
                 platform: "ios".to_string(),
                 push_token: format!("token-{device_id}"),
+                language: None,
             },
             session_id: session,
         }

@@ -233,9 +233,29 @@ public sealed class ConversationModel
         IReadOnlyList<long>? attachmentIds = null,
         IReadOnlyList<string>? pendingFiles = null,
         IReadOnlyList<string>? pollOptions = null,
-        IReadOnlyList<MentionDto>? mentions = null) =>
+        IReadOnlyList<MentionDto>? mentions = null,
+        bool sticker = false,
+        bool round = false) =>
         sending.Enqueue(
-            ChatId, body, replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions);
+            ChatId, body, replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker, round);
+
+    /// <summary>
+    /// Send a sticker: ONE staged file, no words, and the flag — a message like any other from
+    /// here on, so the outbox, the dedup key, the upload it owes and "Sending on an unreliable
+    /// network" are all unchanged (docs/protocol.md, "Sending one"). It may be a reply, which is
+    /// how one answers something with a sticker.
+    /// </summary>
+    public OutboxRow SendSticker(string stagedFile, long? replyToMessageId = null) =>
+        Send(string.Empty, replyToMessageId, pendingFiles: [stagedFile], sticker: true);
+
+    /// <summary>
+    /// Send a VIDEO MESSAGE: ONE staged square video with its poster, no words, and the flag (docs/protocol.md, "Video
+    /// messages") — the sticker's pattern, so the outbox, the dedup key, the upload it owes and its retries are a
+    /// message's. It may be a reply. The caller offers it only where <c>GET /families/mine</c> named
+    /// <c>max_round_video_ms</c>: an older server would ignore the flag and deliver a square video.
+    /// </summary>
+    public OutboxRow SendRound(string stagedFile, long? replyToMessageId = null) =>
+        Send(string.Empty, replyToMessageId, pendingFiles: [stagedFile], round: true);
 
     /// <summary>Show a hidden bubble after all. Per message, and it outlives the redraw.</summary>
     public void Reveal(long messageId) => revealed.Add(messageId);
@@ -365,8 +385,18 @@ public sealed class ConversationModel
     /// Whether a bubble's words may be edited: the reader's own, with words to edit. A call record's
     /// body is a placeholder nobody wrote, and a poll's question is the poll.
     /// </summary>
+    /// <remarks>
+    /// NEVER A STICKER, and said here in as many words rather than left to follow from its empty
+    /// body: the server refuses the edit (<c>validation</c>), because it would put words on a
+    /// message drawn with no bubble to hold them (docs/protocol.md, "And it cannot be edited"). NOR A VIDEO MESSAGE, for
+    /// the same reason (docs/protocol.md, "Video messages"; S5.4) — even one some server stored words beside, which is
+    /// DRAWN as the ordinary video it otherwise is (<see cref="MessageDto.RoundVideo"/> asks for no body) but which the
+    /// server, refusing an edit to any message whose attachment carries <c>round: true</c>, would still refuse.
+    /// </remarks>
     public static bool MayEdit(Bubble bubble) =>
         bubble.Mine
+        && bubble.Message.StickerPicture is null
+        && !bubble.Message.Media.Any(attachment => attachment.Round)
         && bubble.Message.Call is null
         && bubble.Message.Poll is null
         && bubble.Message.Body.Length > 0;

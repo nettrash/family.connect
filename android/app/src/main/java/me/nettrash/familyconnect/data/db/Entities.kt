@@ -163,6 +163,12 @@ data class PendingAttachmentEntity(
     @ColumnInfo(defaultValue = "0") val posterUploaded: Boolean = false,
     /** Answered upload failures spent on THIS item. */
     @ColumnInfo(defaultValue = "0") val uploadAttempts: Int = 0,
+    /**
+     * A voice note's waveform, the wire's 48 hex digits (#79; docs/protocol.md,
+     * "A voice note's waveform"), sent as `waveform=` with the upload. Null
+     * for everything else, and for a note recorded where nothing was measured.
+     */
+    val waveform: String? = null,
 )
 
 @Entity(
@@ -345,6 +351,24 @@ data class MessageEntity(
      * columns; [attachmentList] reads through both.
      */
     val attachmentsJson: String? = null,
+    /**
+     * Whether the stored set was written by a build that reads the video
+     * message flag (`round`, #79). A build before it wrote every received
+     * set back with only the fields it knew
+     * (docs/audio-video-messages-2026-10-04.md, S5.8), so a circle that
+     * arrived before the upgrade is stored as a plain video — and the
+     * catch-up only ever ADDS, so nothing would read it again: it drew
+     * square for good. `MessageRepository.repairUnknownRoundFlags` reads
+     * the false rows that could be circles once more.
+     *
+     * The SQL default is 0 — every row an older build wrote, as
+     * MIGRATION_30_31 leaves it — while the Kotlin default is TRUE: every
+     * entity this build constructs carries a set this build decoded (its
+     * own send, or the server's copy), so it knows the flag, and a write
+     * site added later cannot forget to say so. The UPDATEs that rewrite a
+     * set (the ack, an edit, an own send's uploads) set it too.
+     */
+    @ColumnInfo(defaultValue = "0") val attachmentsKnowRound: Boolean = true,
 ) {
     /** The wire shape back out of the call columns, or null for a message that is not a call. */
     val call: CallDto?
@@ -605,6 +629,8 @@ fun PendingAttachmentEntity.placeholderDto(): me.nettrash.familyconnect.data.net
         latitude = latitude,
         longitude = longitude,
         accuracyM = accuracyM,
+        // The sender's own bubble draws its shape from the first frame.
+        waveform = waveform,
     )
 
 /** This item as the wire shape, once its bytes are on the server. */
@@ -623,5 +649,89 @@ fun PendingAttachmentEntity.uploadedDto(): me.nettrash.familyconnect.data.net.dt
         latitude = latitude,
         longitude = longitude,
         accuracyM = accuracyM,
+        // Kept from the queue, so the bubble keeps its shape across the claim;
+        // the server's echo (absent from a server before waveforms) has the
+        // last word once the message arrives back.
+        waveform = waveform,
     )
+}
+
+/**
+ * One item of the family's STICKER PACK (docs/protocol.md, "Sticker pack")
+ * — a picture the family keeps, which anybody in it may send in a chat.
+ *
+ * Named `pack` and not `sticker` for the reason the wire is: in this file
+ * "sticker" already means [NoteEntity], the note on the wall. The two never
+ * meet.
+ *
+ * Tombstones are NOT stored, exactly as for notes: a removed item loses its
+ * row and its id is remembered in [GonePackItemEntity].
+ *
+ * [packSeq] is the apply guard, the same shape as [NoteEntity.boardSeq]: an
+ * item is written only when the incoming seq is greater than the one held.
+ */
+@Entity(tableName = "packItems")
+data class PackItemEntity(
+    /** The server's id. Ascending id IS the order added, which is panel order. */
+    @PrimaryKey val id: Long,
+    /** Who added it — and, with the family owner, who may remove it. */
+    val addedBy: Long,
+    /**
+     * The picture, as the wire's Attachment stored verbatim in a one-element
+     * array (AttachmentsCodec) — the same spelling a note's picture uses.
+     * It never carries the `sticker` flag; that is a message's.
+     */
+    val attachmentJson: String,
+    /** A few words for a screen reader; null when nobody gave any. */
+    val label: String? = null,
+    val createdAt: Long,
+    val packSeq: Long,
+) {
+    /** The wire shape back out of the column, or null for a row that will not parse. */
+    val attachment: AttachmentDto?
+        get() = AttachmentsCodec.decode(attachmentJson)?.firstOrNull()
+}
+
+/**
+ * A pack item a TOMBSTONE has taken, and it never comes back — the pack's
+ * gone set, exactly as [GoneNoteEntity] is the board's. Item ids are never
+ * reused, so remembering the id is the whole of it: an older copy of the
+ * item still travelling (a catch-up page, a late answer) is refused.
+ */
+@Entity(tableName = "gonePackItems")
+data class GonePackItemEntity(
+    @PrimaryKey val itemId: Long,
+)
+
+/**
+ * The text of one recording, as the server answered THIS member's request
+ * for it (docs/protocol.md, "Transcripts on request"). Keyed by attachment:
+ * the device keeps what it was given, so reopening the chat shows the text
+ * without asking again, and "Hide text" only folds it away.
+ *
+ * Never pushed, never in history, never on the attachment: a row exists
+ * only because this member tapped "Show text". Wiped with every other table
+ * on logout.
+ */
+@Entity(tableName = "transcripts")
+data class TranscriptEntity(
+    @PrimaryKey val attachmentId: Long,
+    /** `""` is an answer — nothing was said — drawn as "No speech". */
+    val text: String,
+    /** The provider's own spelling, when it named one. Never relied on. */
+    val language: String?,
+    /**
+     * Where the sound came from: [SOURCE_STORED] (the server's own copy,
+     * whose answer the server also keeps and shares) or [SOURCE_SUPPLIED]
+     * (sound this device took out of a file, whose answer is this
+     * device's alone — the server keeps none).
+     */
+    val source: String,
+    /** Folded away with "Hide text"; the text is kept either way. */
+    val hidden: Boolean,
+) {
+    companion object {
+        const val SOURCE_STORED = "stored"
+        const val SOURCE_SUPPLIED = "supplied"
+    }
 }

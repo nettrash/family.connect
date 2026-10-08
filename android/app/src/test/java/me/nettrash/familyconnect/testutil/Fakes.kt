@@ -26,7 +26,9 @@ import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantDto
 import me.nettrash.familyconnect.data.net.dto.AssistantConsentResponse
+import me.nettrash.familyconnect.data.net.dto.AssistantLookupConsentResponse
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
@@ -61,6 +63,11 @@ import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.IceServersResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.PackApi
+import me.nettrash.familyconnect.data.net.dto.PackChangesResponse
+import me.nettrash.familyconnect.data.net.dto.PackItemDto
+import me.nettrash.familyconnect.data.net.dto.PackItemResponse
+import me.nettrash.familyconnect.data.net.dto.PackResponse
 import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
@@ -130,6 +137,17 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(supportContact = contact)
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<me.nettrash.familyconnect.data.repo.ParkedRecording>) ->
+        List<me.nettrash.familyconnect.data.repo.ParkedRecording>,
+    ) {
+        _state.value = _state.value.copy(parkedRecordings = transform(_state.value.parkedRecordings))
+    }
+
+    override suspend fun setRoundPreviewTaught() {
+        _state.value = _state.value.copy(roundPreviewTaught = true)
+    }
+
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         val next = ids.toSet()
         blockedWrites += next
@@ -166,6 +184,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(pushDeviceId = deviceId)
     }
 
+    override suspend fun setPushLanguage(language: String?) {
+        _state.value = _state.value.copy(pushLanguage = language)
+    }
+
     override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(linkPreviewsEnabled = enabled)
     }
@@ -187,6 +209,29 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setPackCursor(seq: Long) {
+        _state.value = _state.value.copy(packCursor = seq)
+    }
+
+    override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
+        _state.value = _state.value.copy(
+            packMaxItems = maxItems ?: 0,
+            packMaxItemBytes = maxItemBytes ?: 0L,
+        )
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        val limits = me.nettrash.familyconnect.data.repo.RoundVideoLimits.of(maxMs, maxBytes)
+        _state.value = _state.value.copy(
+            roundVideoMaxMs = limits?.maxMs ?: 0L,
+            roundVideoMaxBytes = limits?.maxBytes ?: 0L,
+        )
+    }
+
+    override suspend fun setPackRecents(itemIds: List<Long>) {
+        _state.value = _state.value.copy(packRecents = itemIds)
+    }
+
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
     }
@@ -197,8 +242,16 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         vision: Boolean,
         images: Boolean,
         processor: String?,
+        transcribe: Boolean,
+        transcribeMaxBytes: Long?,
+        lookups: List<String>?,
     ) {
         _state.value = _state.value.copy(
+            assistantLookups = if (userId != null) {
+                lookups.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+            } else {
+                emptyList()
+            },
             assistantUserId = userId,
             assistantName = displayName,
             // Cleared with the assistant, like the real one: an absent
@@ -206,11 +259,21 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
             assistantVision = userId != null && vision,
             assistantImages = userId != null && images,
             assistantProcessor = if (userId != null) processor?.ifBlank { null } else null,
+            assistantTranscribe = userId != null && transcribe,
+            assistantTranscribeMaxBytes = if (userId != null && transcribe) {
+                transcribeMaxBytes ?: AssistantDto.DEFAULT_TRANSCRIBE_MAX_BYTES
+            } else {
+                0L
+            },
         )
     }
 
     override suspend fun setAssistantConsentAt(at: String?) {
         _state.value = _state.value.copy(assistantConsentAt = at?.ifBlank { null })
+    }
+
+    override suspend fun setAssistantLookupConsentAt(at: String?) {
+        _state.value = _state.value.copy(assistantLookupConsentAt = at?.ifBlank { null })
     }
 
     override suspend fun setFamilyAiVision(enabled: Boolean) {
@@ -227,6 +290,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyAiGreeting(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiGreeting = enabled)
+    }
+
+    override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiTranscripts = enabled)
+    }
+
+    override suspend fun setFamilyAiLookups(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiLookups = enabled)
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {
@@ -292,7 +363,11 @@ class FakeChatSocket : ChatSocket {
     /** When false, trySend reports failure even while Open. */
     var sendSucceeds = true
 
+    override var connectionSerial: Long = 0L
+        private set
+
     override fun connect(wsUrl: String, token: String) {
+        if (_state.value != SocketState.Open) connectionSerial += 1
         _state.value = SocketState.Open
     }
 
@@ -307,6 +382,8 @@ class FakeChatSocket : ChatSocket {
     }
 
     fun setOpen(open: Boolean) {
+        // A new connection each time it opens, as the real socket counts.
+        if (open && _state.value != SocketState.Open) connectionSerial += 1
         _state.value = if (open) SocketState.Open else SocketState.Disconnected
     }
 
@@ -337,6 +414,8 @@ class FakeAuthApi : AuthApi {
 
     /** Every push_token handed to POST /devices, in call order. */
     val deviceRegistrations = mutableListOf<String?>()
+    /** The `language` each POST /devices carried, in order (#82). */
+    val deviceLanguages = mutableListOf<String?>()
 
     /** Every id handed to DELETE /devices/{id}, in call order. */
     val deletedDeviceIds = mutableListOf<Long>()
@@ -368,7 +447,24 @@ class FakeAuthApi : AuthApi {
         granted: Boolean,
     ): ApiResult<AssistantConsentResponse> {
         assistantConsentAnswers += granted
+        consentCalls += "assistant:$granted"
         return assistantConsentResult
+    }
+
+    /** Every answer handed to POST /me/assistant-lookup-consent, in call order. */
+    val lookupConsentAnswers = mutableListOf<Boolean>()
+
+    /** Both consent endpoints, interleaved in call order — "assistant:true", "lookups:true". */
+    val consentCalls = mutableListOf<String>()
+    var lookupConsentResult: ApiResult<AssistantLookupConsentResponse> =
+        ApiResult.Ok(AssistantLookupConsentResponse(assistantLookupConsentAt = "2026-10-03T09:00:00Z"))
+
+    override suspend fun setAssistantLookupConsent(
+        granted: Boolean,
+    ): ApiResult<AssistantLookupConsentResponse> {
+        lookupConsentAnswers += granted
+        consentCalls += "lookups:$granted"
+        return lookupConsentResult
     }
 
     override suspend fun deleteAccount(password: String): ApiResult<Unit> {
@@ -419,9 +515,10 @@ class FakeAuthApi : AuthApi {
 
     override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> = probeResult
 
-    override suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse> {
+    override suspend fun registerDevice(pushToken: String?, language: String?): ApiResult<DeviceResponse> {
         deviceCalls += 1
         deviceRegistrations += pushToken
+        deviceLanguages += language
         return deviceResult
     }
 
@@ -511,6 +608,12 @@ class FakeChatApi : ChatApi {
     /** Every mention list a REST send carried, in order (null = names nobody). */
     val postedMentions = mutableListOf<List<MentionDto>?>()
 
+    /** Every `sticker` flag a REST send carried, in order (null = an ordinary message). */
+    val postedStickerFlags = mutableListOf<Boolean?>()
+
+    /** Every send's `round` flag, in order — null when the key was omitted (#79). */
+    val postedRoundFlags = mutableListOf<Boolean?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -519,7 +622,11 @@ class FakeChatApi : ChatApi {
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
         mentions: List<MentionDto>?,
+        sticker: Boolean?,
+        round: Boolean?,
     ): ApiResult<MessageResponse> {
+        postedStickerFlags += sticker
+        postedRoundFlags += round
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
@@ -667,7 +774,13 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun create(name: String): ApiResult<FamilyResponse> = createResult
     override suspend fun join(inviteCode: String): ApiResult<JoinResponse> = joinResult
-    override suspend fun mine(): ApiResult<FamilyMineResponse> = mineResult
+    /** Runs while `GET /families/mine` is "in flight" — for what happens meanwhile. */
+    var onMine: (() -> Unit)? = null
+
+    override suspend fun mine(): ApiResult<FamilyMineResponse> {
+        onMine?.invoke()
+        return mineResult
+    }
 
     var statsResult: ApiResult<FamilyStatsDto> =
         ApiResult.NetworkError(IllegalStateException("unscripted"))
@@ -729,6 +842,30 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> {
         aiFacesSet += enabled
+        return createResult
+    }
+
+    /** Every ai_transcripts PATCH, in order. */
+    val aiTranscriptsSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiTranscriptsSet += enabled
+        return createResult
+    }
+
+    /** Every ai_lookups PATCH, in order. */
+    val aiLookupsSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiLookupsSet += enabled
+        return createResult
+    }
+
+    /** Every greeting_places PATCH, in order. */
+    val greetingPlacesSet = mutableListOf<List<String>>()
+
+    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> {
+        greetingPlacesSet += places
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
@@ -1016,8 +1153,12 @@ class FakeBoardApi : BoardApi {
     /** Every backdrop asked for, and the picture this fake draws. */
     val backdrops = mutableListOf<Long>()
 
+    /** What the server answers instead of a picture, when set — a refusal, a 500. */
+    var backdropFailure: ApiResult<NoteResponse>? = null
+
     override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> {
         backdrops += noteId
+        backdropFailure?.let { return it }
         return ApiResult.Ok(
             NoteResponse(
                 noteDto(
@@ -1167,6 +1308,91 @@ fun messageDto(
 )
 
 /**
+ * Scripted PackApi — the sticker pack's four endpoints, with the server's
+ * own two habits built in: an add takes the next seq, and a removal is
+ * idempotent.
+ */
+class FakePackApi : PackApi {
+    var pack: PackResponse = PackResponse(emptyList(), 0)
+    /** What `getPack` answers; defaults to [pack]. */
+    var packResult: (() -> ApiResult<PackResponse>)? = null
+    /** Pages the catch-up will serve, oldest first. */
+    var changePages: MutableList<List<PackItemDto>> = mutableListOf()
+    /** Every `after_seq` the change feed was asked from, in order. */
+    val changeRequests = mutableListOf<Long>()
+    var fullReads = 0
+
+    /** Every claim, as (attachment id, label). */
+    val added = mutableListOf<Pair<Long, String?>>()
+    val removed = mutableListOf<Long>()
+    var nextId = 5L
+    var nextSeq = 12L
+
+    /**
+     * What an add answers; null = a fresh `201` item for the claimed
+     * attachment. Suspending, so a test can do what the server does BEFORE
+     * it answers — deliver the `pack_item` frame.
+     */
+    var addResult: (suspend (Long, String?) -> ApiResult<PackItemResponse>)? = null
+    var removeResult: (Long) -> ApiResult<Unit> = { ApiResult.Ok(Unit) }
+
+    override suspend fun getPack(): ApiResult<PackResponse> {
+        fullReads += 1
+        return packResult?.invoke() ?: ApiResult.Ok(pack)
+    }
+
+    override suspend fun getPackChanges(afterSeq: Long, limit: Int): ApiResult<PackChangesResponse> {
+        changeRequests += afterSeq
+        return ApiResult.Ok(
+            PackChangesResponse(if (changePages.isEmpty()) emptyList() else changePages.removeAt(0)),
+        )
+    }
+
+    override suspend fun addItem(attachmentId: Long, label: String?): ApiResult<PackItemResponse> {
+        added += attachmentId to label
+        addResult?.let { return it(attachmentId, label) }
+        return ApiResult.Ok(
+            PackItemResponse(
+                packItemDto(id = nextId++, packSeq = nextSeq++, attachmentId = attachmentId, label = label),
+            ),
+        )
+    }
+
+    override suspend fun removeItem(id: Long): ApiResult<Unit> {
+        removed += id
+        return removeResult(id)
+    }
+}
+
+/** A live pack item as the wire carries one. */
+fun packItemDto(
+    id: Long,
+    packSeq: Long,
+    addedBy: Long = 7L,
+    attachmentId: Long = 70L + id,
+    mime: String = "image/webp",
+    size: Long = 2048,
+    label: String? = null,
+) = PackItemDto(
+    id = id,
+    addedBy = addedBy,
+    attachment = AttachmentDto(
+        id = attachmentId,
+        kind = AttachmentDto.KIND_PHOTO,
+        mime = mime,
+        size = size,
+        width = 512,
+        height = 512,
+    ),
+    createdAt = "2026-09-13T10:00:00Z",
+    packSeq = packSeq,
+    label = label,
+)
+
+/** `{"id": 5, "deleted": true, "pack_seq": 14}` — nothing else. */
+fun packTombstone(id: Long, packSeq: Long) = PackItemDto(id = id, packSeq = packSeq, deleted = true)
+
+/**
  * A `photo` attachment as the server reports one.
  *
  * `has_preview` defaults to FALSE because the case this fixture exists
@@ -1263,6 +1489,8 @@ class FakeAttachmentApi : AttachmentApi {
     val uploadedMetadata = mutableListOf<Triple<String, Int?, Int?>>()
     /** Every name a file upload carried, in order. */
     val uploadedNames = mutableListOf<String?>()
+    /** Every waveform an upload carried, in order (#79). */
+    val uploadedWaveforms = mutableListOf<String?>()
     val uploadedPreviews = mutableListOf<Pair<Long, Int>>()
 
     override suspend fun upload(
@@ -1273,11 +1501,13 @@ class FakeAttachmentApi : AttachmentApi {
         height: Int?,
         durationMs: Int?,
         name: String?,
+        waveform: String?,
     ): ApiResult<AttachmentResponse> {
         calls += "upload"
         uploadedFiles += file
         uploadedMetadata += Triple(kind, width, height)
         uploadedNames += name
+        uploadedWaveforms += waveform
         return uploadHandler(file, mime, kind)
     }
 
@@ -1408,3 +1638,152 @@ fun testChatRepository(
     settings,
     scope,
 )
+
+/**
+ * The transcript endpoint, scripted: [answers] are handed out in order
+ * (then [fallback]), and every call is recorded so a test can prove a held
+ * text asked nothing.
+ */
+class FakeTranscriptApi : me.nettrash.familyconnect.data.net.TranscriptApi {
+    data class Call(val chatId: Long, val messageId: Long, val attachmentId: Long)
+
+    val calls = mutableListOf<Call>()
+    val answers = ArrayDeque<ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse>>()
+    var fallback: ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> =
+        ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    override suspend fun transcribeStored(
+        chatId: Long,
+        messageId: Long,
+        attachmentId: Long,
+    ): ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> {
+        calls += Call(chatId, messageId, attachmentId)
+        return answers.removeFirstOrNull() ?: fallback
+    }
+
+    /** One supplied-sound request: where, and the size of the sound sent. */
+    data class Supplied(val chatId: Long, val messageId: Long, val attachmentId: Long, val soundBytes: Long)
+
+    val supplied = mutableListOf<Supplied>()
+    val suppliedAnswers = ArrayDeque<ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse>>()
+
+    override suspend fun transcribeSupplied(
+        chatId: Long,
+        messageId: Long,
+        attachmentId: Long,
+        sound: java.io.File,
+    ): ApiResult<me.nettrash.familyconnect.data.net.dto.TranscriptResponse> {
+        supplied += Supplied(chatId, messageId, attachmentId, sound.length())
+        return suppliedAnswers.removeFirstOrNull() ?: fallback
+    }
+}
+
+/**
+ * The sound a transcript request supplies, scripted: [next] is what the
+ * next ask comes to (a Ready file is made in [dir] when [readyBytes] is set).
+ */
+class FakeTranscriptSound : me.nettrash.familyconnect.data.repo.TranscriptSoundSource {
+    val asked = mutableListOf<Pair<Long, Long>>()
+    var next: me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result =
+        me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result.Unreadable
+
+    override suspend fun soundFor(
+        attachment: me.nettrash.familyconnect.data.net.dto.AttachmentDto,
+        maxBytes: Long,
+    ): me.nettrash.familyconnect.data.repo.TranscriptSoundPlan.Result {
+        asked += attachment.id to maxBytes
+        return next
+    }
+}
+
+/**
+ * The microphone, scripted (#79). [elapsed] is the recorder's own clock —
+ * what the counter shows and what a stopped recording measures — and [end]
+ * is the recorder ending a recording by itself: the cap, a failure, another
+ * app, another chat starting one. Each kept recording is a real file in
+ * [dir] whose first bytes are an M4A header, so MediaPrep's magic check
+ * takes it for the voice note it is.
+ */
+class FakeVoiceRecorder(private val dir: java.io.File) :
+    me.nettrash.familyconnect.data.repo.VoiceRecorder {
+
+    var elapsed: Long = 0
+    var startResult = true
+
+    /** The peak [maxAmplitude] reports: loud enough to count as heard unless a test says otherwise. */
+    var amplitude: Int = 2_000
+    var starts = 0
+        private set
+    var stops = 0
+        private set
+    var cancels = 0
+        private set
+    var owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener? = null
+        private set
+
+    /** Every file a recording left, in order — so a test can see which survived. */
+    val files = mutableListOf<java.io.File>()
+
+    override var isRecording: Boolean = false
+        private set
+
+    override val elapsedMs: Long get() = if (isRecording) elapsed else 0
+
+    override fun start(owner: me.nettrash.familyconnect.data.repo.VoiceRecorder.Listener): Boolean {
+        if (!startResult) return false
+        starts++
+        this.owner = owner
+        isRecording = true
+        elapsed = 0
+        return true
+    }
+
+    /** A stop that keeps nothing — under the recorder's floor, a recording that never got audio. */
+    var keepsNothing = false
+
+    /** The waveform each kept recording carries (#79): what the real recorder makes of the meter's reads. */
+    var waveform: String? = null
+
+    override fun stop(): me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording? {
+        if (!isRecording) return null
+        stops++
+        isRecording = false
+        owner = null
+        if (keepsNothing) return null
+        return me.nettrash.familyconnect.data.repo.VoiceRecorder.Recording(newFile(), elapsed, waveform)
+    }
+
+    override fun cancel() {
+        if (!isRecording) return
+        cancels++
+        isRecording = false
+        owner = null
+    }
+
+    override fun maxAmplitude(): Int = if (isRecording) amplitude else 0
+
+    /** The recorder ends it by itself; [keep] false is a recording that left nothing usable. */
+    fun end(ending: me.nettrash.familyconnect.data.repo.VoiceRecorder.Ending, keep: Boolean = true) {
+        val told = owner ?: return
+        val kept = if (keep) {
+            stop()
+        } else {
+            cancel()
+            null
+        }
+        told.onEnded(ending, kept)
+    }
+
+    private fun newFile(): java.io.File {
+        dir.mkdirs()
+        val file = java.io.File.createTempFile("voice-", ".m4a", dir)
+        file.writeBytes(M4A_HEAD + ByteArray(4096) { 5 })
+        files += file
+        return file
+    }
+
+    companion object {
+        /** `....ftypM4A ` — the ISO base media header the server's magic check reads. */
+        val M4A_HEAD: ByteArray = byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray(Charsets.US_ASCII)
+    }
+}

@@ -18,6 +18,10 @@ and the file is checked in formatted like every other.
 
 Pass --sync to write every English-only key into web/i18n/web.json, so that
 file names exactly the strings a translator has left to do.
+
+Pass --check (CI) to write nothing and exit 1 when anything is owed: a key
+with no translation at all, a key some language lacks, a translation that
+lost an argument, or a checked-in table that no longer matches (issue #82).
 """
 import json
 import pathlib
@@ -152,15 +156,20 @@ def main() -> int:
     own = own_file.get("strings", {})
     wanted = used_keys(repo) | set(own_file.get("indirect", []))
 
+    checking = "--check" in sys.argv
     singular = {lang: [] for lang in LANGS}
     plural = {lang: [] for lang in LANGS}
     missing = []
+    # Keys some language has nothing for — counted as translated above, and
+    # shown in English to that language's reader all the same.
+    incomplete = []
     for key in sorted(wanted):
         apple_locs = (apple.get(key) or {}).get("localizations", {})
         own_locs = own.get(key) or {}
         if not apple_locs and not own_locs:
             missing.append(key)
             continue
+        lacking = []
         for lang in LANGS:
             # The web's own file wins: it is where the web says a string the
             # apps do not, and where it says one BETTER than the apps do —
@@ -170,11 +179,15 @@ def main() -> int:
             else:
                 forms = apple_forms(key, lang, apple_locs.get(lang))
             if not forms:
+                if lang != "en":
+                    lacking.append(lang)
                 continue
             if len(forms) == 1 and forms[0][0] == "one form":
                 singular[lang].append((key, forms[0][1]))
             else:
                 plural[lang].append((key, forms))
+        if lacking:
+            incomplete.append((key, lacking))
 
     out = ['//! GENERATED — do not edit. `web/i18n/generate.py` writes it',
            '//! from the apps\' `Localizable.xcstrings` (the nine languages\' source of',
@@ -204,6 +217,7 @@ def main() -> int:
         out.append('')
     target = repo / "web/text/src/i18n/catalogue.rs"
     target.parent.mkdir(parents=True, exist_ok=True)
+    before = target.read_text() if target.exists() else None
     target.write_text("\n".join(out))
     # One row per line is how this is written and not how it is kept: the
     # file is checked in rustfmt's shape like every other.
@@ -211,8 +225,15 @@ def main() -> int:
         ["cargo", "fmt"], cwd=repo / "web/text", capture_output=True, text=True)
     if formatted.returncode != 0:
         print("!! cargo fmt failed; run it by hand:", formatted.stderr.strip()[:200])
+    table_stale = target.read_text() != before
+    if checking:
+        # Written and formatted to compare, and put back as it was.
+        if before is None:
+            target.unlink()
+        else:
+            target.write_text(before)
 
-    if "--sync" in sys.argv:
+    if "--sync" in sys.argv and not checking:
         # Every key nothing says yet is written down as the web's own, so
         # the file IS the list a translator works from.
         for key in missing:
@@ -244,8 +265,25 @@ def main() -> int:
     print(f"English only, no entry anywhere: {len(missing)}")
     for key in missing[:20]:
         print("   ", key[:90])
+    if incomplete:
+        print(f"{len(incomplete)} keys some language lacks:")
+        for key, lacking in incomplete:
+            print(f"    {key[:70]!r}: {', '.join(lacking)}")
     for lang in LANGS:
         print(f"  {lang}: {len(singular[lang])} strings, {len(plural[lang])} plural")
+    if checking:
+        owed = []
+        if missing:
+            owed.append(f"{len(missing)} keys with no translation")
+        if incomplete:
+            owed.append(f"{len(incomplete)} keys some language lacks")
+        if shapes:
+            owed.append(f"{len(shapes)} translations that lost an argument")
+        if table_stale:
+            owed.append("web/text/src/i18n/catalogue.rs is out of date: run this without --check")
+        if owed:
+            print("\nNOT DONE: " + "; ".join(owed))
+            return 1
     return 0
 
 

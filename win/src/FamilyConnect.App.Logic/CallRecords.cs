@@ -19,4 +19,11 @@ public static class CallRecords
     public static (bool Offered, bool Video) CallBack(
         CallRecordDto call, bool directChat, bool callsEnabled, bool videoCallsEnabled, bool inThread) =>
         (directChat && callsEnabled && !inThread, call.Video && videoCallsEnabled);
+
+    /// <summary>
+    /// Whether a call can be placed from the window now — the toolbar's Call and Video Call and every record's "Call back"
+    /// alike: never while a call is on, and never while something records (docs/audio-video-messages-2026-10-04.md, S1.7
+    /// and decision 14: a call over a recording has no right answer).
+    /// </summary>
+    public static bool CanPlaceCall(bool callBusy, bool recording) => !callBusy && !recording;
 }

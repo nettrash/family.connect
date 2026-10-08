@@ -58,16 +58,17 @@ use sqlx::Row;
 use time::{Duration as TimeDuration, OffsetDateTime, UtcOffset};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::ai::{self, ChatTurn, GeneratedImage, InlineImage};
 use crate::config::ModelRoute;
 use crate::events;
 use crate::handlers_chat;
+use crate::lookups::{self, Ledger, LookupLanguage, LookupPlan, LookupResult, LookupTool};
 use crate::models::{Attachment, Message};
 use crate::state::AppState;
-use crate::ws::ServerFrame;
+use crate::ws::{AiErrorReason, ServerFrame};
 
 /// The reserved account the assistant sends under (migration 0015). Looked
 /// up rather than hard-coded: the id is whatever the sequence gave it.
@@ -105,6 +106,21 @@ pub async fn assistant_consent_at(
 ) -> Result<Option<OffsetDateTime>> {
     let at: Option<Option<OffsetDateTime>> =
         sqlx::query_scalar("SELECT assistant_consent_at FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    Ok(at.flatten())
+}
+
+/// When this member agreed that queries the assistant writes from their
+/// words may go to the lookup providers, or `None` (protocol.md, "Looking
+/// things up"). Read by `GET /me`, and by the gate on every lookup tool.
+pub async fn assistant_lookup_consent_at(
+    state: &AppState,
+    user_id: i64,
+) -> Result<Option<OffsetDateTime>> {
+    let at: Option<Option<OffsetDateTime>> =
+        sqlx::query_scalar("SELECT assistant_lookup_consent_at FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(&state.pool)
             .await?;
@@ -209,7 +225,7 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
 pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64, language: Option<String>) {
     tokio::spawn(async move {
         if let Err(error) = reply(&state, chat_id, user_id, language.as_deref()).await {
-            warn!(%chat_id, %error, "assistant reply failed");
+            warn!(%chat_id, error = %format!("{error:#}"), "assistant reply failed");
         }
     });
 }
@@ -228,7 +244,7 @@ pub fn spawn_mention_reply(
         if let Err(error) =
             mention_reply(&state, chat_id, user_id, message_id, language.as_deref()).await
         {
-            warn!(%chat_id, %message_id, %error, "assistant mention reply failed");
+            warn!(%chat_id, %message_id, error = %format!("{error:#}"), "assistant mention reply failed");
         }
     });
 }
@@ -1400,7 +1416,7 @@ pub async fn family_chat_history(
     before_message_id: i64,
     assistant_id: i64,
 ) -> Result<Option<String>> {
-    let messages = load_history(state, chat_id, before_message_id, assistant_id).await?;
+    let messages = load_history(state, chat_id, before_message_id, assistant_id, false).await?;
     Ok(history_note(
         OffsetDateTime::now_utc(),
         &messages,
@@ -1414,11 +1430,19 @@ pub async fn family_chat_history(
 /// renderer can number them (protocol.md, "Recent photos from the family
 /// chat"). The three caps are applied by [`window`], never here: this
 /// bounds what is FETCHED, that bounds what is SENT.
+///
+/// `lookups` narrows it once more for a mention that declares lookup tools:
+/// only the words of members who have ALSO given the lookup consent, because
+/// a query written from this transcript leaves for a party that is not
+/// `processor` (protocol.md, "Looking things up") — and of the assistant's
+/// own rows, only its answers to such members. False, and the query is the
+/// one it always was.
 async fn load_history(
     state: &AppState,
     chat_id: i64,
     before_message_id: i64,
     assistant_id: i64,
+    lookups: bool,
 ) -> Result<Vec<HistoryMessage>> {
     let rows = sqlx::query(
         "SELECT m.id, m.created_at, m.body, m.sender_id, u.display_name
@@ -1436,6 +1460,29 @@ async fn load_history(
            -- own rows stay: its account has no consent to give, and its
            -- answers are already the model's.
            AND (u.assistant_consent_at IS NOT NULL OR m.sender_id = $5)
+           -- And, when this mention may look things up, only the words of
+           -- members who agreed to THAT as well (protocol.md, Looking
+           -- things up).
+           AND (NOT $6 OR u.assistant_lookup_consent_at IS NOT NULL OR (
+               -- The assistant's own rows stay only when they answered a
+               -- member who agreed — its answer restates the question, so
+               -- an answer to anybody else is THEIR words again — about a
+               -- quote, if there was one, by somebody who agreed too (or by
+               -- the assistant). A row answering nothing that is still
+               -- here — the greeting, or an answer whose question is gone —
+               -- cannot be vouched for and stays out.
+               m.sender_id = $5 AND EXISTS (
+                   SELECT 1 FROM messages p
+                   JOIN users pu ON pu.id = p.sender_id
+                   WHERE p.id = m.reply_to_message_id
+                     AND p.chat_id = m.chat_id
+                     AND pu.assistant_lookup_consent_at IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM messages q
+                         JOIN users qu ON qu.id = q.sender_id
+                         WHERE q.id = p.reply_to_message_id
+                           AND q.sender_id <> $5
+                           AND qu.assistant_lookup_consent_at IS NULL))))
          ORDER BY m.id DESC
          LIMIT $4",
     )
@@ -1444,6 +1491,7 @@ async fn load_history(
     .bind(HISTORY_WINDOW_DAYS)
     .bind(HISTORY_MAX_MESSAGES as i64)
     .bind(assistant_id)
+    .bind(lookups)
     .fetch_all(&state.pool)
     .await?;
 
@@ -1624,10 +1672,82 @@ enum Ask {
         /// declares the tool, so the two cannot disagree (protocol.md,
         /// "Drawing without being told to").
         draw: Option<ModelRoute>,
+        /// The asker's OWN words — the body of the one message that asked,
+        /// with every `@ai` taken out (`mentions::without_mentions`) —
+        /// for the one moment they may go to the images deployment: after
+        /// it REFUSED the prompt the model wrote (protocol.md, "The
+        /// member's own words, after a refused prompt"). `None` when there
+        /// are none (a captionless photo, a lone `@ai`), and on a server
+        /// that cannot draw, where nothing could use them.
+        own_words: Option<String>,
+        /// What this question may look up, or `None` — which is every
+        /// question on a server, a family or from a member without all three
+        /// keys turned, and is then the request it always was, byte for byte
+        /// (protocol.md, "Looking things up").
+        /// Boxed: it is the one large field, and a picture ask carries none.
+        lookups: Option<Box<LookupPlan>>,
     },
     /// A picture, from the images deployment. `prompt` is the whole of what
     /// leaves the server (protocol.md, "Pictures").
     Picture { prompt: String, route: ModelRoute },
+}
+
+/// What a question may look up, or `None` (protocol.md, "Looking things
+/// up", "Who decides").
+///
+/// THREE KEYS, each held by the person it belongs to, and all three must be
+/// turned: the operator's sources (`[ai.lookups]`), the family owner's
+/// `ai_lookups`, and the ASKER's own lookup consent — on top of the
+/// assistant consent the send already required. The web search is offered
+/// only while the family is under its daily cap; past it the tool is simply
+/// not declared. `None` is the request this server always sent.
+async fn lookup_plan(
+    state: &AppState,
+    asker: i64,
+    family_id: i64,
+    family_switch: bool,
+    language: Option<&str>,
+) -> Result<Option<LookupPlan>> {
+    if !state.cfg.ai.lookups_usable() || !family_switch {
+        return Ok(None);
+    }
+    let consented: Option<bool> = sqlx::query_scalar(
+        "SELECT assistant_consent_at IS NOT NULL AND assistant_lookup_consent_at IS NOT NULL
+         FROM users WHERE id = $1",
+    )
+    .bind(asker)
+    .fetch_optional(&state.pool)
+    .await?;
+    if consented != Some(true) {
+        return Ok(None);
+    }
+    let cfg = &state.cfg.ai.lookups;
+    let mut tools = Vec::new();
+    if cfg.search.is_some() && lookups::searches_left_today(state, family_id).await? {
+        tools.push(LookupTool::WebSearch);
+    }
+    if cfg.weather {
+        tools.push(LookupTool::Weather);
+    }
+    if cfg.wikipedia {
+        tools.push(LookupTool::Wikipedia);
+    }
+    if tools.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(LookupPlan {
+        tools,
+        family_id,
+        language: lookups::lookup_language(language),
+    }))
+}
+
+/// What the lookups of one reply left behind: what reached the model, for
+/// the footer and the link filter, and the paid searches, for statistics.
+#[derive(Default)]
+struct LookupSummary {
+    ledger: Ledger,
+    searches: i32,
 }
 
 async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&str>) -> Result<()> {
@@ -1635,9 +1755,32 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
         warn!("the assistant account is missing; run migrations");
         return Ok(());
     };
-    let Some(prompt) = thread_prompt(state, chat_id, user_id, assistant_id).await? else {
+    let Some(mut prompt) = thread_prompt(state, chat_id, user_id, assistant_id).await? else {
         return Ok(());
     };
+    // The member's own thread may look things up when the server has a
+    // source, the member's FAMILY has `ai_lookups` on, and the member gave
+    // the lookup consent (protocol.md, "Looking things up").
+    if let Ask::Words { lookups, .. } = &mut prompt.ask {
+        let family = sqlx::query(
+            "SELECT f.id, f.ai_lookups FROM users u JOIN families f ON f.id = u.family_id
+             WHERE u.id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await?;
+        if let Some(family) = family {
+            *lookups = lookup_plan(
+                state,
+                user_id,
+                family.get("id"),
+                family.get("ai_lookups"),
+                language,
+            )
+            .await?
+            .map(Box::new);
+        }
+    }
     answer(state, chat_id, user_id, assistant_id, prompt, language).await
 }
 
@@ -1682,7 +1825,8 @@ async fn mention_reply(
     // it depends on, so that a `true` stored in the column is inert — not
     // refused, inert — whenever any of that is missing.
     let settings = sqlx::query(
-        "SELECT f.language, f.ai_history, f.ai_vision, f.ai_history_photos, f.ai_faces
+        "SELECT f.id, f.language, f.ai_history, f.ai_vision, f.ai_history_photos, f.ai_faces,
+                f.ai_lookups
          FROM chats c JOIN families f ON f.id = c.family_id
          WHERE c.id = $1",
     )
@@ -1718,6 +1862,23 @@ async fn mention_reply(
     // in the transcript, so with `ai_history` off there is nothing to attach
     // one to (protocol.md, "Profile pictures of members").
     let faces = with_faces && with_history && vision.is_some();
+    let language = family_language.as_deref().or(language);
+    // The seventh switch, with the other two keys: a source on this server
+    // and the ASKER's lookup consent. Decided BEFORE the prompt is built,
+    // because it narrows the transcript (protocol.md, "Looking things up").
+    let plan = match &settings {
+        Some(row) => {
+            lookup_plan(
+                state,
+                user_id,
+                row.get("id"),
+                row.get("ai_lookups"),
+                language,
+            )
+            .await?
+        }
+        None => None,
+    };
 
     let Some(prompt) = mention_prompt(
         state,
@@ -1730,13 +1891,27 @@ async fn mention_reply(
             faces,
         },
         assistant_id,
+        plan,
     )
     .await?
     else {
         return Ok(());
     };
-    let language = family_language.as_deref().or(language);
     answer(state, chat_id, user_id, assistant_id, prompt, language).await
+}
+
+/// What the asker said in the one message that asked, with every `@ai`
+/// taken out by the mention grammar and trimmed — or `None` when nothing is
+/// left, or when this server declares no tool and so could never fall back
+/// to them (protocol.md, "The member's own words, after a refused prompt").
+///
+/// Only ever handed the asking message's own BODY: not a turn rendered from
+/// it (which may carry placeholders or a poll's options), not the quote,
+/// not the transcript.
+fn own_words(draw: &Option<ModelRoute>, body: &str) -> Option<String> {
+    draw.as_ref()?;
+    let words = crate::mentions::without_mentions(body);
+    (!words.is_empty()).then_some(words)
 }
 
 /// The private thread: the last N turns of THIS member's own assistant chat.
@@ -1857,12 +2032,16 @@ async fn thread_prompt(
         }
     }
 
+    let draw = state.cfg.ai.contextual_images_route();
     Ok(Some(Prompt {
         ask: Ask::Words {
             turns,
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            own_words: own_words(&draw, &question_body),
+            draw,
+            // Decided by the caller, which knows the family's switch.
+            lookups: None,
         },
         reply_to: None,
         // A private thread is private in both directions: nobody else sees
@@ -2316,6 +2495,7 @@ async fn mention_prompt(
     with_history: bool,
     pictures: MentionPictures,
     assistant_id: i64,
+    lookups: Option<LookupPlan>,
 ) -> Result<Option<Prompt>> {
     let MentionPictures {
         vision,
@@ -2324,8 +2504,11 @@ async fn mention_prompt(
     } = pictures;
     let row = sqlx::query(
         "SELECT m.body,
+                m.sender_id,
                 p.id AS quoted_id,
                 p.body AS quoted_body,
+                p.sender_id AS quoted_sender_id,
+                (qu.assistant_lookup_consent_at IS NOT NULL) AS quoted_lookup_consent,
                 qu.display_name AS quoted_author
          FROM messages m
          LEFT JOIN messages p ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id
@@ -2367,9 +2550,30 @@ async fn mention_prompt(
         }));
     }
 
+    // The asker's own words, kept aside BEFORE the body is folded into the
+    // turn below: the mentioning message alone, never the quote or the
+    // transcript, for the fallback after a refused `draw_picture` prompt.
+    let draw = state.cfg.ai.contextual_images_route();
+    let own_words = own_words(&draw, &body);
+
     let quoted_id: Option<i64> = row.get("quoted_id");
     let quoted: Option<String> = row.get("quoted_body");
     let quoted_author: Option<String> = row.get("quoted_author");
+
+    // A quote is somebody else's words, deliberately pointed at — and the
+    // asker cannot agree on its author's behalf to a query written from
+    // them reaching a lookup provider. So a mention quoting a member who has
+    // NOT given the lookup consent declares no lookup tool, and is answered
+    // exactly as it would be without lookups (protocol.md, "Looking things
+    // up"). The asker's own message and the assistant's need nobody else's.
+    let asker: i64 = row.get("sender_id");
+    let quoted_sender: Option<i64> = row.get("quoted_sender_id");
+    let quoted_consent: Option<bool> = row.get("quoted_lookup_consent");
+    let lookups = lookups.filter(|_| match quoted_sender {
+        None => true,
+        Some(sender) if sender == asker || sender == assistant_id => true,
+        Some(_) => quoted_consent == Some(true),
+    });
 
     // The polls on the two messages that reach the model here, from the one
     // query that is ever allowed to read a poll for a model — counts, never
@@ -2404,7 +2608,7 @@ async fn mention_prompt(
     // `ai_history` off there are no rows, no transcript, and nothing for
     // that switch to widen.
     let recent: Vec<HistoryMessage> = if with_history {
-        load_history(state, chat_id, message_id, assistant_id).await?
+        load_history(state, chat_id, message_id, assistant_id, lookups.is_some()).await?
     } else {
         Vec::new()
     };
@@ -2651,7 +2855,9 @@ async fn mention_prompt(
             turns: vec![turn],
             notes,
             route,
-            draw: state.cfg.ai.contextual_images_route(),
+            draw,
+            own_words,
+            lookups: lookups.map(Box::new),
         },
         // The answer quotes the question. In a chat where several
         // conversations run at once, an unattached answer belongs to
@@ -2680,6 +2886,8 @@ enum Finished {
     Text {
         text: String,
         usage: ai::Usage,
+        /// Why the model stopped — only ever read to explain an empty answer.
+        finish_reason: String,
     },
     /// A picture — from `/draw`, with no tokens to report, or from the text
     /// model asking for one, with the tokens it spent deciding. Both are one
@@ -2702,6 +2910,11 @@ enum Finished {
 /// Hands back everything the stream carried — the words, and the tool call
 /// the model may have made instead — because which of the two the reply IS
 /// is `answer`'s decision, not this pump's.
+///
+/// Two things only the lookup loop passes (`None` everywhere else, where
+/// the stream is the stream it always was): a [`lookups::StreamGuard`],
+/// which every fragment goes through before it may leave, and the reply's
+/// overall deadline, past which the call is abandoned as an error.
 #[allow(clippy::too_many_arguments)]
 async fn stream_words(
     state: &AppState,
@@ -2711,7 +2924,10 @@ async fn stream_words(
     route: &ModelRoute,
     system_prompt: &str,
     turns: &[ChatTurn],
+    tail: &[Value],
     tools: &[Value],
+    mut guard: Option<&mut lookups::StreamGuard>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<ai::Streamed> {
     // One ordered pump, rather than a task per fragment.
     //
@@ -2752,12 +2968,34 @@ async fn stream_words(
         })
     };
 
-    let outcome = ai::stream_reply(&state.http, route, system_prompt, turns, tools, |delta| {
-        // A closed channel means the pump is gone; the row is still the
-        // truth, so losing a cosmetic fragment is not worth an error.
-        let _ = deltas.send(delta.to_string());
-    })
-    .await;
+    let call = ai::stream_reply_with_tail(
+        &state.http,
+        route,
+        system_prompt,
+        turns,
+        tail,
+        tools,
+        |delta| {
+            let piece = match guard.as_deref_mut() {
+                Some(guard) => guard.push(delta),
+                None => Some(delta.to_string()),
+            };
+            // A closed channel means the pump is gone; the row is still the
+            // truth, so losing a cosmetic fragment is not worth an error.
+            if let Some(piece) = piece {
+                let _ = deltas.send(piece);
+            }
+        },
+    );
+    let outcome = match deadline {
+        None => call.await,
+        Some(deadline) => match tokio::time::timeout_at(deadline, call).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(anyhow::anyhow!(
+                "the reply ran past its overall deadline during a call to the text deployment"
+            )),
+        },
+    };
 
     // Drop the sender, then WAIT. Every fragment must be on its way before
     // the finished body goes out: a delta arriving after `message_edited`
@@ -2769,14 +3007,265 @@ async fn stream_words(
     outcome
 }
 
+/// Everything the lookup loop needs about the reply it is answering.
+struct LookupReply<'a> {
+    chat_id: i64,
+    message_id: i64,
+    audience: &'a [i64],
+    route: &'a ModelRoute,
+    turns: &'a [ChatTurn],
+    draw: Option<ModelRoute>,
+    own_words: Option<&'a str>,
+    plan: &'a LookupPlan,
+    language: Option<&'a str>,
+}
+
+/// A question that may look things up, answered: the BOUNDED loop
+/// (protocol.md, "Looking things up").
+///
+/// - Each round streams like any answer. A round with no tool call IS the
+///   answer, and its words are the reply — earlier rounds' deltas are
+///   replaced when the row lands.
+/// - At most `rounds` rounds declare the lookup tools; the round after them
+///   declares none, so the last word is always an answer. At most
+///   `lookups_per_reply` lookups in all; a call over that, or past the
+///   lookup deadline (`[ai] timeout_secs` from the start), is answered
+///   "limit reached" and never made. Every call id gets its `role: "tool"`
+///   answer, because the provider refuses a follow-up that leaves one out.
+/// - The whole reply ends at twice `[ai] timeout_secs` from the start: a
+///   call to the text deployment still running then fails the reply, and a
+///   lookup still running is told to the model as cut short.
+/// - Once a result has reached the model, the words streamed as `ai_delta`
+///   go through the same link filter as the finished row
+///   ([`lookups::StreamGuard`]).
+/// - A failed lookup is TOLD to the model, which answers without it. The
+///   reply fails only where any reply fails: the text deployment itself.
+/// - `draw_picture` stays terminal, once: a round that calls it ends the
+///   reply as a picture by the path it always took, and any lookup called
+///   in that same round is not made.
+/// - The date line and the lookup instruction go into the system prompt,
+///   before the language line, and the language line is repeated after the
+///   results in every follow-up.
+///
+/// One log line per lookup, of outcome words and counts — never the query,
+/// a place, a title or a URL.
+async fn answer_with_lookups(
+    state: &AppState,
+    reply: LookupReply<'_>,
+    mut notes: Vec<String>,
+    summary: &mut LookupSummary,
+) -> Result<Finished> {
+    let LookupReply {
+        chat_id,
+        message_id,
+        audience,
+        route,
+        turns,
+        draw,
+        own_words,
+        plan,
+        language,
+    } = reply;
+    let cfg = &state.cfg.ai.lookups;
+    notes.push(lookups::date_note(OffsetDateTime::now_utc().date()));
+    notes.push(lookups::LOOKUP_INSTRUCTION.to_string());
+    let system_prompt = compose_system_prompt(&state.cfg.ai.system_prompt, &notes, language);
+    let language_line = serde_json::json!({
+        "role": "system",
+        "content": language_instruction(language)
+            .unwrap_or_else(|| MIRROR_LANGUAGE_INSTRUCTION.to_string()),
+    });
+    let lookup_tools = plan.declarations(cfg);
+    let draw_tool: Vec<Value> = draw.iter().map(|_| ai::draw_picture_tool()).collect();
+    // Two deadlines. Lookups stop being offered or made once the reply has
+    // run for `[ai] timeout_secs`; the whole reply — every call to the text
+    // deployment and every lookup — ends one more `timeout_secs` after that,
+    // so the answer round after the last lookup always has a full model
+    // timeout and the reply as a whole has a bound (protocol.md, "Looking
+    // things up"). Without the second, every round kept its own 180 s and a
+    // reply could run for several times that.
+    let model_timeout = Duration::from_secs(state.cfg.ai.timeout_secs);
+    let deadline = tokio::time::Instant::now() + model_timeout;
+    let overall = deadline + model_timeout;
+    let max_lookups = cfg.lookups_per_reply as usize;
+    let rounds = cfg.rounds as usize;
+
+    let mut tail: Vec<Value> = Vec::new();
+    let mut used = 0usize;
+    let mut usage = ai::Usage::default();
+    let mut guard = lookups::StreamGuard::default();
+    for round in 0..=rounds {
+        // Once anything the model was shown came from outside, what it
+        // writes streams through the link filter (protocol.md, "The words a
+        // member sees are the last round's").
+        if summary.ledger.passed_anything() {
+            guard.filter_against(summary.ledger.allowed());
+        }
+        let offer = round < rounds && used < max_lookups && tokio::time::Instant::now() < deadline;
+        let mut tools = if offer {
+            lookup_tools.clone()
+        } else {
+            Vec::new()
+        };
+        tools.extend(draw_tool.iter().cloned());
+        let mut request_tail = tail.clone();
+        if !tail.is_empty() {
+            request_tail.push(language_line.clone());
+        }
+        let streamed = stream_words(
+            state,
+            chat_id,
+            message_id,
+            audience,
+            route,
+            &system_prompt,
+            turns,
+            &request_tail,
+            &tools,
+            Some(&mut guard),
+            Some(overall),
+        )
+        .await?;
+        usage = usage.plus(streamed.usage);
+
+        if streamed.tool_calls.is_empty() {
+            return Ok(Finished::Text {
+                text: streamed.text,
+                usage,
+                finish_reason: streamed.finish_reason,
+            });
+        }
+        // A call the provider cut off is a fragment, here as on the picture
+        // path: nothing is made from it.
+        if ai::finish_is_refusal(&streamed.finish_reason) {
+            return Err(anyhow::Error::new(ai::Refused)
+                .context("the stream ended with finish_reason content_filter mid tool call"));
+        }
+        if draw.is_some()
+            && let Some(call) = streamed
+                .tool_calls
+                .iter()
+                .find(|call| call.name == ai::DRAW_TOOL_NAME)
+        {
+            return draw_as_asked(state, draw.clone(), call, usage, own_words).await;
+        }
+        if !offer {
+            // The final round declared no lookup tool and the model called
+            // one anyway. Its words, if it wrote any, are the answer; with
+            // none it has failed the question like any undeclared call.
+            if !streamed.text.trim().is_empty() {
+                return Ok(Finished::Text {
+                    text: streamed.text,
+                    usage,
+                    finish_reason: streamed.finish_reason,
+                });
+            }
+            anyhow::bail!(
+                "the assistant called a lookup tool on round {round}, which declared none"
+            );
+        }
+
+        let mut calls = streamed.tool_calls.clone();
+        for (index, call) in calls.iter_mut().enumerate() {
+            if call.id.is_empty() {
+                call.id = format!("call_{round}_{index}");
+            }
+        }
+        tail.push(ai::assistant_tool_calls_message(&streamed.text, &calls));
+        for call in &calls {
+            let started = std::time::Instant::now();
+            let tool = LookupTool::from_name(&call.name).filter(|tool| plan.declares(*tool));
+            let result = match tool {
+                None => LookupResult::no_such_tool(&call.name),
+                Some(_) if used >= max_lookups => LookupResult::over_limit(
+                    "the limit of lookups for one answer is reached; answer with what you have",
+                ),
+                Some(_) if tokio::time::Instant::now() >= deadline => LookupResult::over_limit(
+                    "there is no time left for lookups; answer with what you have",
+                ),
+                Some(tool) => tokio::time::timeout_at(
+                    overall,
+                    lookups::run(state, plan, tool, call, &mut summary.ledger),
+                )
+                .await
+                .unwrap_or_else(|_| LookupResult::cut_short()),
+            };
+            if result.attempted {
+                used += 1;
+            }
+            if result.paid_search {
+                summary.searches = summary.searches.saturating_add(1);
+            }
+            // Outcome words and counts ONLY. The tool's name is logged only
+            // when it is one of the server's own: anything else the model
+            // wrote is not ours to repeat.
+            info!(
+                %chat_id,
+                %message_id,
+                tool = tool.map(LookupTool::name).unwrap_or("unknown"),
+                round,
+                host = result.host.as_deref().unwrap_or("-"),
+                outcome = result.outcome,
+                status = result.status.unwrap_or(0),
+                latency_ms = started.elapsed().as_millis() as u64,
+                results = result.results,
+                query_chars = result.query_chars,
+                "assistant lookup"
+            );
+            tail.push(ai::tool_result_message(&call.id, &result.content));
+        }
+    }
+    // The last round declares no lookup tool and returns on every path.
+    anyhow::bail!("the lookup loop ended without an answer")
+}
+
+/// The member's own words as the `draw_picture` fallback may send them:
+/// trimmed, and `None` when nothing is left or when they are longer than a
+/// draw prompt may be (`max_chars`, the message-body ceiling). Over it they
+/// are no words at all rather than words cut short — cutting them would
+/// send something nobody wrote (protocol.md, "The member's own words, after
+/// a refused prompt").
+fn fallback_words(own_words: Option<&str>, max_chars: usize) -> Option<&str> {
+    own_words
+        .map(str::trim)
+        .filter(|words| !words.is_empty() && words.chars().count() <= max_chars)
+}
+
 /// The text model asked for a picture: make it.
 ///
-/// This is where the tool call becomes the ONE thing that leaves for the
-/// images deployment — the `prompt`, checked and bounded by
-/// `ToolCall::draw_prompt`, through the same `generate_image` a `/draw`
-/// goes through. Not the question, not the thread, not the transcript, not
-/// the system prompt, and not any photograph (protocol.md, "Drawing without
-/// being told to").
+/// This is where the tool call becomes the thing that leaves for the images
+/// deployment — the `prompt`, checked and bounded by `ToolCall::draw_prompt`,
+/// through the same `generate_image` a `/draw` goes through. Not the
+/// thread, not the transcript, not the system prompt, and not any
+/// photograph (protocol.md, "Drawing without being told to").
+///
+/// And, since 2026-10-01, one thing more, only after the images deployment
+/// REFUSED that prompt: the asker's own words (`own_words`, the asking
+/// message's body with the `@ai` taken out), through `draw_or_reword`
+/// exactly as `/draw` followed by them would have gone — so a refusal of
+/// THEM gets the one rewrite. Once the model's prompt is refused, the
+/// member's words get the attempts that `/draw` would have — but a failure
+/// still ends as the first refusal, even a 5xx a `/draw` would have ended
+/// without a reason (protocol.md, "The member's own words, after a refused
+/// prompt"). In order, at most:
+///
+/// 1. the model's prompt;
+/// 2. the member's words — only on a refusal of 1, never on a 5xx, a
+///    timeout or any other 4xx;
+/// 3. the one rewrite of the member's words, inside `draw_or_reword`.
+///
+/// Three requests to the images deployment and one rewrite. The model's
+/// prompt is NOT reworded on the way: the one rewrite is spent on the words
+/// a `/draw` proved the filter accepts, not on the words it just refused.
+/// Two cases have no step 2, and each ends as the path did before it was
+/// added — the one rewrite of the text that was refused: no words of the
+/// member's (a captionless photo, a lone `@ai`, or words over the bound),
+/// and words that ARE the model's prompt, which are not sent a second time
+/// unchanged.
+///
+/// Anything that stops the fallback from becoming a picture hands back the
+/// FIRST refusal, as `draw_or_reword` does with its rewrite: the member's
+/// picture was refused, and that is what they hear.
 ///
 /// `draw` is `None` only if a model called a tool no request declared —
 /// which is an error, like every other way a call can be wrong: the member
@@ -2786,6 +3275,7 @@ async fn draw_as_asked(
     draw: Option<ModelRoute>,
     call: &ai::ToolCall,
     usage: ai::Usage,
+    own_words: Option<&str>,
 ) -> Result<Finished> {
     let Some(route) = draw else {
         anyhow::bail!(
@@ -2796,9 +3286,208 @@ async fn draw_as_asked(
     // The message-body ceiling, because a prompt is the same kind of thing
     // as the words after `/draw`, and those could never be longer than a
     // message.
-    let prompt = call.draw_prompt(state.cfg.limits.max_message_chars)?;
-    let image = ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt).await?;
-    Ok(Finished::Picture { image, usage })
+    let max_chars = state.cfg.limits.max_message_chars;
+    let prompt = call.draw_prompt(max_chars)?;
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, &route, images, &prompt).await {
+        Ok(image) => {
+            return Ok(Finished::Picture { image, usage });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+
+    // The member's own words, bounded like a draw prompt. They are a stored
+    // message's body, so the ceiling cannot really be crossed — checked
+    // rather than trusted, and over it they are no words to fall back to:
+    // cutting them would send something nobody wrote.
+    let drawn = match fallback_words(own_words, max_chars) {
+        Some(words) if words != prompt.trim() => {
+            match draw_or_reword(state, &route, "draw_picture_own_words", words).await {
+                Ok(drawn) => {
+                    info!(
+                        origin = "draw_picture",
+                        outcome = "own_words_drawn",
+                        "a refused picture prompt fell back to the member's own words, which were drawn"
+                    );
+                    drawn
+                }
+                Err(error) => {
+                    let outcome = if ai::is_refusal(&error) {
+                        "own_words_refused"
+                    } else {
+                        "own_words_failed"
+                    };
+                    // The error itself, because nothing else says it: the
+                    // member is handed the FIRST refusal below, so the
+                    // final failure line carries that one's chain, and
+                    // `draw_or_reword` logs nothing of a first attempt
+                    // that was not a refusal. A provider error carries a
+                    // status, a URL and a bounded detail, never the words
+                    // (`ai::loggable_detail`) — as the rewrite's lines log
+                    // theirs.
+                    warn!(
+                        origin = "draw_picture",
+                        outcome,
+                        error = %format!("{error:#}"),
+                        "a refused picture prompt fell back to the member's own words, which were not drawn either"
+                    );
+                    return Err(refused.context(
+                        "the images deployment refused the description, and the member's own words did not produce a picture",
+                    ));
+                }
+            }
+        }
+        // The prompt the filter just refused, then: reworded once, which
+        // is the rewrite of the member's words when they are the same text.
+        other => {
+            let outcome = if other.is_some() {
+                "own_words_same_as_prompt"
+            } else {
+                "no_own_words"
+            };
+            info!(
+                origin = "draw_picture",
+                outcome,
+                "a refused picture prompt has no other words of the member's to fall back to"
+            );
+            reword_refused(state, &route, "draw_picture", &prompt, refused).await?
+        }
+    };
+    // Two bills against one picture when a description had to be reworded:
+    // the tokens spent deciding, and the tokens spent rewording.
+    Ok(Finished::Picture {
+        image: drawn.image,
+        usage: usage.plus(drawn.usage),
+    })
+}
+
+/// A picture, and what the TEXT deployment was paid on the way to it.
+pub(crate) struct Drawn {
+    pub image: GeneratedImage,
+    /// The rewrite's tokens when the description had to be reworded; zero
+    /// when the images deployment drew it first time.
+    pub usage: ai::Usage,
+}
+
+/// Draw a description — and, if the images deployment's filter REFUSES it,
+/// have the text deployment reword it once and draw the rewrite.
+///
+/// The one place this rule lives, for all three paths that send a
+/// description to the images deployment: a `/draw`, the text model's own
+/// `draw_picture` call, and the board's event backdrop (`origin` says which,
+/// for the log). protocol.md, "A refused description is reworded once".
+/// On the `draw_picture` path it is the member's own words that come here,
+/// after the model's prompt was refused, or that prompt's refusal that goes
+/// straight to [`reword_refused`] — `draw_as_asked` decides which, so the
+/// one rewrite per picture holds there too.
+///
+/// - ONLY a refusal starts it. A 5xx, a timeout, any other 4xx comes back
+///   exactly as it always did, and the text deployment is asked nothing.
+/// - ONCE: one rewrite and one more picture request, never a loop.
+/// - Anything that stops the rewrite from becoming a picture — the rewrite
+///   request failing or refused, a rewrite `ai::rephrase_description` turns
+///   away, the second picture request refused or failing — hands back the
+///   FIRST refusal, so the member hears exactly what they would have heard
+///   without this: their description was refused.
+/// - What is logged is that a rewrite was tried and how it ended, and the
+///   provider's identifying fields. Never the description and never the
+///   rewrite: no member's words reach a log.
+///
+/// Consent is not looked at here, and needs no second look: this follows
+/// only a first attempt that was already allowed to run, to the same
+/// provider the member agreed to. Every caller asks it before it gets here —
+/// a `/draw` and the model's own call at the send (`handlers_chat`), the
+/// backdrop in `handlers_board::draw_backdrop` — so the rewrite inherits
+/// that answer rather than repeating it.
+pub(crate) async fn draw_or_reword(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
+    let refused = match ai::generate_image(&state.http, route, images, description).await {
+        Ok(image) => {
+            return Ok(Drawn {
+                image,
+                usage: ai::Usage::default(),
+            });
+        }
+        Err(error) if !ai::is_refusal(&error) => return Err(error),
+        Err(error) => error,
+    };
+    reword_refused(state, route, origin, description, refused).await
+}
+
+/// The second half of [`draw_or_reword`]: `description` has just been
+/// REFUSED (`refused` is that refusal) — reword it once and draw the
+/// rewrite, or hand the refusal back.
+///
+/// Split out for the one caller that must decide between its two halves:
+/// `draw_as_asked`, which sends the model's prompt itself and, when there is
+/// no other text of the member's to fall back to, comes here with the
+/// refusal it already has rather than sending the same text a second time.
+async fn reword_refused(
+    state: &AppState,
+    route: &ModelRoute,
+    origin: &'static str,
+    description: &str,
+    refused: anyhow::Error,
+) -> Result<Drawn> {
+    let images = &state.cfg.ai.images;
+    // Said once the attempt has run, alongside the first refusal's own
+    // line from the caller, so the two read together.
+    let not_drawn = |refused: anyhow::Error| {
+        refused.context("the images deployment refused the description, and rewording it once did not produce a picture")
+    };
+
+    let rewrite = ai::rephrase_description(
+        &state.http,
+        &state.cfg.ai.text_route(),
+        description,
+        state.cfg.limits.max_message_chars,
+    )
+    .await;
+    let (rewrite, usage) = match rewrite {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(
+                origin,
+                outcome = "no_usable_rewrite",
+                error = %format!("{error:#}"),
+                "a refused picture description could not be reworded"
+            );
+            return Err(not_drawn(refused));
+        }
+    };
+
+    match ai::generate_image(&state.http, route, images, &rewrite).await {
+        Ok(image) => {
+            info!(
+                origin,
+                outcome = "drawn",
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                "a refused picture description was reworded and drawn"
+            );
+            Ok(Drawn { image, usage })
+        }
+        Err(error) => {
+            let outcome = if ai::is_refusal(&error) {
+                "refused_again"
+            } else {
+                "failed_again"
+            };
+            warn!(
+                origin,
+                outcome,
+                error = %format!("{error:#}"),
+                "a reworded picture description was not drawn either"
+            );
+            Err(not_drawn(refused))
+        }
+    }
 }
 
 /// Write a generated picture to disk and bind it to the message that is
@@ -2928,6 +3617,29 @@ async fn store_picture(
     Ok(())
 }
 
+/// Tell the audience the reply stopped early, and — when the server knows
+/// one worth a different sentence — why (protocol.md, "The assistant").
+async fn fan_out_ai_error(
+    state: &AppState,
+    audience: &[i64],
+    chat_id: i64,
+    message_id: i64,
+    reason: Option<AiErrorReason>,
+) {
+    state
+        .registry
+        .fan_out(
+            audience,
+            &ServerFrame::AiError {
+                chat_id,
+                message_id,
+                reason,
+            },
+            None,
+        )
+        .await;
+}
+
 /// The half that is the same for both kinds of question: create the row,
 /// stream into it, and finish it through the edit path.
 async fn answer(
@@ -2983,12 +3695,48 @@ async fn answer(
     // into the row, a picture is fetched whole and attached to it. Both come
     // back as one `Finished`, so everything after — the seq, the edit, the
     // usage row, the fan-out and the single push — is written once.
+    // What the lookups left behind, when this question could make any.
+    let mut looked_up: Option<(LookupSummary, LookupLanguage)> = None;
     let outcome = match prompt.ask {
+        // A question that may look things up: the bounded loop (protocol.md,
+        // "Looking things up"). Every other question takes the arm below,
+        // which is the request it always was.
         Ask::Words {
             turns,
             notes,
             route,
             draw,
+            own_words,
+            lookups: Some(plan),
+        } => {
+            let mut summary = LookupSummary::default();
+            let finished = answer_with_lookups(
+                state,
+                LookupReply {
+                    chat_id,
+                    message_id,
+                    audience: &prompt.audience,
+                    route: &route,
+                    turns: &turns,
+                    draw,
+                    own_words: own_words.as_deref(),
+                    plan: &plan,
+                    language,
+                },
+                notes,
+                &mut summary,
+            )
+            .await;
+            looked_up = Some((summary, plan.language));
+            finished
+        }
+        Ask::Words {
+            turns,
+            notes,
+            route,
+            draw,
+            own_words,
+            lookups: None,
         } => {
             let system_prompt =
                 compose_system_prompt(&state.cfg.ai.system_prompt, &notes, language);
@@ -3004,7 +3752,10 @@ async fn answer(
                 &route,
                 &system_prompt,
                 &turns,
+                &[],
                 &tools,
+                None,
+                None,
             )
             .await
             {
@@ -3013,30 +3764,49 @@ async fn answer(
                     text,
                     tool_call: None,
                     usage,
-                }) => Ok(Finished::Text { text, usage }),
+                    finish_reason,
+                    ..
+                }) => Ok(Finished::Text {
+                    text,
+                    usage,
+                    finish_reason,
+                }),
                 // The model asked for a picture. If it ALSO wrote words, the
                 // picture wins and the words are dropped: one reply, one
                 // attachment, the shape `/draw` already has — and the words
                 // were most likely "here it is". Any that streamed as deltas
                 // are gone when the finished row lands, because the row is
                 // the truth (protocol.md, "Drawing without being told to").
+                //
+                // Unless the filter is what ended it: a call the provider
+                // cut off is a fragment, and drawing from it would be
+                // drawing whatever the fragment happened to say.
+                Ok(ai::Streamed {
+                    tool_call: Some(_),
+                    finish_reason,
+                    ..
+                }) if ai::finish_is_refusal(&finish_reason) => Err(anyhow::Error::new(ai::Refused)
+                    .context("the stream ended with finish_reason content_filter mid tool call")),
                 Ok(ai::Streamed {
                     tool_call: Some(call),
                     usage,
                     ..
-                }) => draw_as_asked(state, draw, &call, usage).await,
+                }) => draw_as_asked(state, draw, &call, usage, own_words.as_deref()).await,
             }
         }
         // No deltas and no pump: an image model produces no token stream,
         // and the empty row IS the "still working" state (protocol.md,
         // "Pictures"). No language instruction either — a picture has none
         // to come back in.
+        // A refused description is reworded once before it is called
+        // refused (`draw_or_reword`), and a rewrite's tokens ride on the
+        // picture it produced.
         Ask::Picture { prompt, route } => {
-            ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt)
+            draw_or_reword(state, &route, "draw", &prompt)
                 .await
-                .map(|image| Finished::Picture {
-                    image,
-                    usage: ai::Usage::default(),
+                .map(|drawn| Finished::Picture {
+                    image: drawn.image,
+                    usage: drawn.usage,
                 })
         }
     };
@@ -3044,18 +3814,19 @@ async fn answer(
     let finished = match outcome {
         Ok(finished) => finished,
         Err(error) => {
-            warn!(%chat_id, %error, "assistant reply failed");
-            state
-                .registry
-                .fan_out(
-                    &prompt.audience,
-                    &ServerFrame::AiError {
-                        chat_id,
-                        message_id,
-                    },
-                    None,
-                )
-                .await;
+            // The whole chain on one line — the provider's detail is folded
+            // flat by `ai` — and the refusal named as a field of its own, so
+            // a log search for it needs no knowledge of Azure's wording.
+            let refused = ai::is_refusal(&error);
+            warn!(%chat_id, refused, error = %format!("{error:#}"), "assistant reply failed");
+            fan_out_ai_error(
+                state,
+                &prompt.audience,
+                chat_id,
+                message_id,
+                refused.then_some(AiErrorReason::Refused),
+            )
+            .await;
             return Ok(());
         }
     };
@@ -3063,25 +3834,55 @@ async fn answer(
     // What the row will say, and what it will carry. A picture answers with
     // no words at all: the picture IS the answer, and the member's own
     // request handed back to them is not a caption.
-    let (text, usage, image) = match finished {
-        Finished::Text { text, usage } => (text, usage, None),
-        Finished::Picture { image, usage } => (String::new(), usage, Some(image)),
+    let (text, usage, image, finish_reason) = match finished {
+        Finished::Text {
+            text,
+            usage,
+            finish_reason,
+        } => (text, usage, None, finish_reason),
+        Finished::Picture { image, usage } => (String::new(), usage, Some(image), String::new()),
     };
 
     if image.is_none() && text.trim().is_empty() {
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        // SAID, because it used to be silent: the provider answered 200 and
+        // the stream ended cleanly, so nothing above counts it as a failure,
+        // and the member was told "Couldn't answer that" with not a line in
+        // the log to say why. The reason and the counts are the whole
+        // diagnosis — `content_filter` is the provider refusing the answer,
+        // `length` with many completion tokens and no words is a reasoning
+        // model that spent its allowance thinking — and neither is the
+        // member's text, which never goes in a log.
+        warn!(
+            %chat_id,
+            %message_id,
+            finish_reason = %if finish_reason.is_empty() { "(none given)" } else { finish_reason.as_str() },
+            prompt_tokens = usage.prompt_tokens,
+            completion_tokens = usage.completion_tokens,
+            "assistant returned an empty answer"
+        );
+        // Of those, only the filter is the provider REFUSING, and only it
+        // earns the member a different sentence: asking again unchanged is
+        // good advice after `length` and useless after `content_filter`.
+        let reason = ai::finish_is_refusal(&finish_reason).then_some(AiErrorReason::Refused);
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, reason).await;
         return Ok(());
     }
+
+    // A lookup answer's own words lose every link that is not a returned
+    // source, and gain the footer the SERVER writes — the credit CC BY and
+    // CC BY-SA require, and the only links in the reply (protocol.md, "How
+    // sources are shown"). Only when a lookup result actually reached the
+    // model; and never on a picture, which has no body to carry it.
+    let searches = looked_up
+        .as_ref()
+        .map(|(summary, _)| summary.searches)
+        .unwrap_or(0);
+    let text = match &looked_up {
+        Some((summary, language)) if image.is_none() => {
+            lookups::finish_answer(&text, &summary.ledger, language)
+        }
+        _ => text,
+    };
 
     // The picture is bound to the row BEFORE the edit, so that the
     // `message_edited` frame and every later read of this message carry it
@@ -3091,18 +3892,9 @@ async fn answer(
     if let Some(image) = &image
         && let Err(error) = store_picture(state, chat_id, message_id, assistant_id, image).await
     {
-        warn!(%chat_id, %error, "storing the generated picture failed");
-        state
-            .registry
-            .fan_out(
-                &prompt.audience,
-                &ServerFrame::AiError {
-                    chat_id,
-                    message_id,
-                },
-                None,
-            )
-            .await;
+        warn!(%chat_id, error = %format!("{error:#}"), "storing the generated picture failed");
+        // Ours, not the provider's: no reason, and asking again may work.
+        fan_out_ai_error(state, &prompt.audience, chat_id, message_id, None).await;
         return Ok(());
     }
 
@@ -3153,8 +3945,9 @@ async fn answer(
     if let Some(family_id) = family_id
         && let Err(error) = sqlx::query(
             "INSERT INTO ai_usage
-                 (user_id, family_id, message_id, prompt_tokens, completion_tokens, images)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+                 (user_id, family_id, message_id, prompt_tokens, completion_tokens, images,
+                  searches)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(user_id)
         .bind(family_id)
@@ -3166,9 +3959,14 @@ async fn answer(
         // one image — and a family reading only the token counts would see
         // the expensive half of the assistant as free. A picture the text
         // model asked for is one question, the tokens it spent deciding, and
-        // one image: the only reply that carries both (protocol.md, "Family
-        // statistics").
+        // one image (protocol.md, "Family statistics"). A picture drawn from
+        // a reworded description is still ONE image — two requests to the
+        // images deployment, one picture — with the rewrite's tokens added.
         .bind(i32::from(image.is_some()))
+        // The PAID web searches this reply made — calls to the search
+        // provider that came back with an answer (protocol.md, "Looking
+        // things up"). Weather and Wikipedia are free and not counted.
+        .bind(searches)
         .execute(&state.pool)
         .await
     {
@@ -3195,9 +3993,9 @@ mod tests {
         HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage,
         HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
         MENTION_WITH_HISTORY_INSTRUCTION, MIRROR_LANGUAGE_INSTRUCTION, Numbered, POLL_NOTE,
-        compose_system_prompt, history_note_header, language_instruction, mention_poll_note,
-        mention_vision_note, numbered_turn_content, poll_line, render_history, turn_content,
-        vision_note, window,
+        compose_system_prompt, fallback_words, history_note_header, language_instruction,
+        mention_poll_note, mention_vision_note, numbered_turn_content, poll_line, render_history,
+        turn_content, vision_note, window,
     };
     use crate::models::Attachment;
     use time::macros::datetime;
@@ -3261,6 +4059,9 @@ mod tests {
             latitude: None,
             longitude: None,
             accuracy_m: None,
+            sticker: false,
+            round: false,
+            waveform: None,
         }
     }
 
@@ -5200,5 +6001,28 @@ mod tests {
             "and the newest line carries its number: {}",
             transcript_of(&note)
         );
+    }
+
+    /// The fallback's bound: the member's words go only whole, trimmed and
+    /// within the message-body ceiling — counted in characters, as a
+    /// message body is, so an accented ceiling-length message is not "over
+    /// it" by its bytes. Over it, empty, or absent are all no words, and
+    /// the refused prompt gets the one rewrite instead.
+    #[test]
+    fn the_members_own_words_fall_back_only_whole_and_within_the_bound() {
+        assert_eq!(fallback_words(None, 10), None);
+        assert_eq!(fallback_words(Some(""), 10), None);
+        assert_eq!(fallback_words(Some(" \n\t "), 10), None);
+        assert_eq!(fallback_words(Some("  a cat \n"), 10), Some("a cat"));
+        // At the ceiling, by characters and not bytes; trimmed before it
+        // is measured.
+        assert_eq!(fallback_words(Some("éééééééééé"), 10), Some("éééééééééé"));
+        assert_eq!(
+            fallback_words(Some("  0123456789  "), 10),
+            Some("0123456789")
+        );
+        // One over: no words — never cut to fit.
+        assert_eq!(fallback_words(Some("0123456789a"), 10), None);
+        assert_eq!(fallback_words(Some("ééééééééééé"), 10), None);
     }
 }

@@ -17,7 +17,13 @@ public sealed record StagedMedia(
     /// <summary>A place's numbers — <c>kind=location</c> only, which has no bytes and is these instead.</summary>
     double? Latitude = null,
     double? Longitude = null,
-    double? AccuracyM = null);
+    double? AccuracyM = null,
+    /// <summary>
+    /// A voice note's shape, as the wire spells it (docs/protocol.md, "A voice note's waveform") — measured from the
+    /// recording itself (<see cref="VoiceWaveform"/>) and sent with the upload; null for everything else and for a note
+    /// whose sound could not be read.
+    /// </summary>
+    string? Waveform = null);
 
 /// <summary>
 /// Where a send's bytes wait while it is being sent. The seam exists because WHERE that is, is a
@@ -83,6 +89,14 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
     public event Action<OutboxRow, ApiError>? Refused;
 
     /// <summary>
+    /// One file landed: the row it was for, what the server made of it, and the bytes that went. It
+    /// is how a sent STICKER is drawn from the bytes this device already holds — the message it
+    /// becomes names a new attachment id for the very same bytes, and fetching them back would be a
+    /// download, and a blank box while it ran, for a picture that never left this machine.
+    /// </summary>
+    public event Action<OutboxRow, AttachmentDto, StagedMedia>? Landed;
+
+    /// <summary>
     /// Push what is owed. Answers how many files landed; a transient failure leaves the rest
     /// owed, and the next flush comes back to them.
     /// </summary>
@@ -118,7 +132,7 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                     ? await api.UploadLocation(latitude, longitude, staged.AccuracyM, staged.Name, ct).ConfigureAwait(false)
                     : await api.Upload(
                         staged.Kind, staged.Mime, staged.Bytes,
-                        staged.Width, staged.Height, staged.DurationMs, staged.Name, ct)
+                        staged.Width, staged.Height, staged.DurationMs, staged.Name, ct, staged.Waveform)
                         .ConfigureAwait(false);
                 if (answer.Ok && answer.Value is not null)
                 {
@@ -126,6 +140,7 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                     // costs the remainder rather than the lot.
                     outbox.Uploaded(row.ClientMsgId, answer.Value.Attachment.Id, handle);
                     landed++;
+                    Landed?.Invoke(row, answer.Value.Attachment, staged);
                     if (staged.Preview is { IsEmpty: false } preview)
                     {
                         await SendPreviewAsync(answer.Value.Attachment.Id, preview, PreviewAttempts, ct)

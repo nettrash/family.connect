@@ -18,10 +18,12 @@
 
 package me.nettrash.familyconnect.data.settings
 
+import me.nettrash.familyconnect.data.net.dto.AssistantDto
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -29,6 +31,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.data.repo.RoundVideoLimits
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -81,6 +85,8 @@ data class SettingsState(
     val pushToken: String? = null,
     /** `device_id` from POST /devices — account-scoped, cleared on logout. */
     val pushDeviceId: Long? = null,
+    /** The language POST /devices last confirmed (#82) — a new one re-POSTs. */
+    val pushLanguage: String? = null,
     /**
      * Whether a message's first web link gets a preview card. On by
      * default, but switchable because building one means THIS device
@@ -110,6 +116,42 @@ data class SettingsState(
      * rule; these two are only where the numbers live.
      */
     val boardSeenContentSeq: Long = 0,
+    /**
+     * Highest pack_seq applied on this device; 0 = nothing yet. The
+     * sticker pack's own sync cursor, the board's twin (docs/protocol.md,
+     * "Sticker pack").
+     */
+    val packCursor: Long = 0,
+    /**
+     * The pack's two ceilings, from `GET /families/mine`. **0 means the
+     * server has no packs** (or has not said yet): the field is always
+     * present on a server that has them, so its absence is the whole of the
+     * capability check — no sticker button, no pack management.
+     *
+     * Stored rather than held in memory so the sticker button is there on
+     * a launch with no network, which is exactly when a cached pack is
+     * worth having.
+     */
+    val packMaxItems: Int = 0,
+    val packMaxItemBytes: Long = 0,
+    /**
+     * Video messages' limits from `GET /families/mine` (#79): the longest a
+     * clip may be and the most bytes it may take. **0 means the server has
+     * no video messages** (or has not said yet) — the keys are always
+     * present on a server that has them, so their absence is the whole
+     * capability check: no video button, no menu item, never `round`.
+     * Stored for the same reason as the pack's: the door is there on a
+     * launch with no network.
+     */
+    val roundVideoMaxMs: Long = 0,
+    val roundVideoMaxBytes: Long = 0,
+    /**
+     * The pack items this DEVICE sent most recently, newest first — what
+     * the sticker panel puts at the top. Never on the wire and never
+     * synced: it says something about a person's habits and nothing about
+     * the family's pack (docs/protocol.md, "Sticker pack").
+     */
+    val packRecents: List<Long> = emptyList(),
     /**
      * The assistant's reserved account id, or null when the server has no
      * assistant configured.
@@ -160,6 +202,20 @@ data class SettingsState(
      */
     val assistantProcessor: String? = null,
     /**
+     * Whether this server can turn a recording into text on request
+     * (`assistant.transcribe`, docs/protocol.md, "Transcripts on request").
+     * Without it "Show text" is not offered anywhere. Cleared with the
+     * assistant, like the two capabilities above.
+     */
+    val assistantTranscribe: Boolean = false,
+    /**
+     * The largest stored recording the server will transcribe
+     * (`assistant.transcribe_max_bytes`); 0 while [assistantTranscribe] is
+     * false. A recording over it is not offered "Show text" from the
+     * stored copy.
+     */
+    val assistantTranscribeMaxBytes: Long = 0L,
+    /**
      * When this member agreed that their words may go to the model
      * (`GET /me` → `assistant_consent_at`), or null until they have.
      *
@@ -169,6 +225,22 @@ data class SettingsState(
      * agreed on their phone has agreed, not agreed-on-that-phone.
      */
     val assistantConsentAt: String? = null,
+    /**
+     * The providers the assistant may look things up in, as the server
+     * named them (`assistant.lookups`, docs/protocol.md, "Looking things
+     * up"), in the server's order. EMPTY when this server has no source —
+     * and then no lookup line, switch or consent is offered anywhere.
+     * Cleared with the assistant, like the capabilities above.
+     */
+    val assistantLookups: List<String> = emptyList(),
+    /**
+     * When this member agreed that the assistant may send a query it wrote
+     * from their words to [assistantLookups] (`GET /me` →
+     * `assistant_lookup_consent_at`), or null until they have. The
+     * SERVER's answer, for [assistantConsentAt]'s reasons, and never
+     * inferred from it.
+     */
+    val assistantLookupConsentAt: String? = null,
     /**
      * Whether the family's OWNER has allowed a photograph a member points
      * the assistant at to be shown to the model (`Family.ai_vision`) — in
@@ -208,6 +280,20 @@ data class SettingsState(
      */
     val familyAiGreeting: Boolean = false,
     /**
+     * The owner's transcripts switch (`Family.ai_transcripts`): whether a
+     * member may ask for the text of OTHER members' recordings in the
+     * family chat (docs/protocol.md, "Transcripts on request"). FALSE by
+     * default and bound to no other switch. Mirrored so a bubble can
+     * decide whether to offer "Show text" without a round trip.
+     */
+    val familyAiTranscripts: Boolean = false,
+    /**
+     * The owner's lookups switch (`Family.ai_lookups`): whether the
+     * assistant may look things up for this family (docs/protocol.md,
+     * "Looking things up"). FALSE by default and bound to no other switch.
+     */
+    val familyAiLookups: Boolean = false,
+    /**
      * Whether the SERVER posts daily greetings at all (`GET /me` →
      * greetings_enabled). Account-scoped like the assistant's own
      * capabilities: a different server may post none. False disables the
@@ -241,6 +327,22 @@ data class SettingsState(
      * family"). The family gate says so under its two doors.
      */
     val familylessAccountTtlDays: Int = 0,
+    /**
+     * The voice messages that were not sent, waiting in their chats' "Voice
+     * message not sent" rows (#79, docs/audio-video-messages-2026-10-04.md,
+     * S2.8). The INDEX only — the bytes live in `filesDir`, and
+     * ParkedRecordings is the one thing that reads or writes either. Kept here
+     * so it survives the app being closed, and account-scoped, so it goes at
+     * sign-out with everything else: nothing one account recorded may
+     * surface in the next.
+     */
+    val parkedRecordings: List<ParkedRecording> = emptyList(),
+    /**
+     * The video recorder's PREVIEW has said "Only you can see this until you
+     * start recording." on this device (#79, S3.4, S7.5): once per DEVICE,
+     * so it survives a sign-out like the preview switches.
+     */
+    val roundPreviewTaught: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -259,6 +361,7 @@ interface SettingsRepository {
     suspend fun setFamilyName(name: String?)
     suspend fun setPushToken(token: String?)
     suspend fun setPushDeviceId(deviceId: Long?)
+    suspend fun setPushLanguage(language: String?)
     suspend fun setLinkPreviewsEnabled(enabled: Boolean)
 
     /**
@@ -283,6 +386,33 @@ interface SettingsRepository {
     suspend fun setBoardSeenContentSeq(seq: Long)
 
     /**
+     * The sticker pack's catch-up cursor: the highest pack_seq this device
+     * has APPLIED. Account- and family-scoped like the board's — and,
+     * unlike the board's, also set back to 0 when this member leaves a
+     * family, because pack seqs are server-wide and another family's pack
+     * must never be caught up from this one's mark.
+     */
+    suspend fun setPackCursor(seq: Long)
+
+    /**
+     * Record what `GET /families/mine` said the pack's ceilings are. Null
+     * for either means the server predates packs, and is stored as 0 — a
+     * complete state-set, so a server rolled back to an older build takes
+     * the sticker button away again.
+     */
+    suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?)
+
+    /**
+     * Record what `GET /families/mine` said video messages' limits are. Null
+     * for either means the server predates them, stored as 0 — a complete
+     * state-set, so a server rolled back takes the video entry away again.
+     */
+    suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?)
+
+    /** REPLACE the recently-sent list (newest first). Device-local. */
+    suspend fun setPackRecents(itemIds: List<Long>)
+
+    /**
      * Record (or clear) the assistant the server just reported. Account-
      * scoped, so it goes with the session on logout — a different server
      * may have no assistant, or a differently named one.
@@ -295,6 +425,12 @@ interface SettingsRepository {
         vision: Boolean = false,
         images: Boolean = false,
         processor: String? = null,
+        /** `assistant.transcribe`: whether recordings can be turned into text here. */
+        transcribe: Boolean = false,
+        /** `assistant.transcribe_max_bytes`, present only while [transcribe] is. */
+        transcribeMaxBytes: Long? = null,
+        /** `assistant.lookups`: the providers named; empty or null when there are none. */
+        lookups: List<String>? = null,
     )
 
     /**
@@ -304,6 +440,14 @@ interface SettingsRepository {
      * another device has to reach this one.
      */
     suspend fun setAssistantConsentAt(at: String?)
+
+    /**
+     * Record what `GET /me` — or this member's own answer — said about the
+     * lookup question (docs/protocol.md, "Consenting to the assistant",
+     * amended 2026-10-03). Unconditional, null included, for
+     * [setAssistantConsentAt]'s reason.
+     */
+    suspend fun setAssistantLookupConsentAt(at: String?)
 
     /**
      * Record the family's own picture switch, from `GET /families/mine`
@@ -332,6 +476,22 @@ interface SettingsRepository {
      * write this device did not make.
      */
     suspend fun setFamilyAiGreeting(enabled: Boolean)
+
+    /**
+     * Record the family's transcripts switch (`ai_transcripts`), from
+     * `GET /families/mine`, `GET /me` or the owner's own PATCH.
+     * Unconditional, `false` included: an owner turning it off must reach
+     * every device, or a bubble would go on offering "Show text" on other
+     * members' recordings the server will refuse.
+     */
+    suspend fun setFamilyAiTranscripts(enabled: Boolean)
+
+    /**
+     * Record the family's lookups switch (`ai_lookups`), from
+     * `GET /families/mine` or the owner's own PATCH. Unconditional, `false`
+     * included.
+     */
+    suspend fun setFamilyAiLookups(enabled: Boolean)
 
     /** Record what `GET /me` said about daily greetings on this server. */
     suspend fun setGreetingsEnabled(enabled: Boolean)
@@ -369,8 +529,27 @@ interface SettingsRepository {
     /** Record the operator's published support contact, or clear it. */
     suspend fun setSupportContact(contact: String?)
 
+    /**
+     * Rewrite the not-sent voice messages' index in ONE transaction: [transform]
+     * gets what is stored and returns what to store. A transform rather than a
+     * setter because a park and a removal can land together, and a
+     * read-then-write from either would lose the other's entry.
+     */
+    suspend fun updateParkedRecordings(transform: (List<ParkedRecording>) -> List<ParkedRecording>)
+
+    /** The recorder's first-time PREVIEW line has been shown on this device (#79, S3.4). */
+    suspend fun setRoundPreviewTaught()
+
     suspend fun resetKeepingServerUrl()
 }
+
+/**
+ * How fast voice messages play on this device (#79) — 1, 1.5 or 2. Read and
+ * written by the now-playing owner (ui/chat/NowPlaying.kt, StoredVoiceSpeed)
+ * outside SettingsState, so a change never re-emits the app's settings; named
+ * here so a sign-out keeps it with the other voice-message choices.
+ */
+val VOICE_PLAYBACK_SPEED_KEY = floatPreferencesKey("voice_playback_speed")
 
 @Singleton
 class DataStoreSettingsRepository @Inject constructor(
@@ -395,6 +574,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val FAMILY_NAME = stringPreferencesKey("family_name")
         val PUSH_TOKEN = stringPreferencesKey("push_token")
         val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
+        val PUSH_LANGUAGE = stringPreferencesKey("push_language")
         // Stored inverted so a missing key reads as "on".
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
@@ -404,6 +584,14 @@ class DataStoreSettingsRepository @Inject constructor(
         // that updates has a meaningful value for the old one and none for
         // the new (BoardBadge.contentMarkSeed).
         val BOARD_SEEN_CONTENT_SEQ = longPreferencesKey("board_seen_content_seq")
+        val PACK_CURSOR = longPreferencesKey("pack_cursor")
+        val PACK_MAX_ITEMS = intPreferencesKey("pack_max_items")
+        val PACK_MAX_ITEM_BYTES = longPreferencesKey("pack_max_item_bytes")
+        val ROUND_VIDEO_MAX_MS = longPreferencesKey("round_video_max_ms")
+        val ROUND_VIDEO_MAX_BYTES = longPreferencesKey("round_video_max_bytes")
+        // One joined string rather than a string SET: the order is the
+        // whole meaning of "recent", and a set has none.
+        val PACK_RECENTS = stringPreferencesKey("pack_recents")
         // Stored inverted so a missing key reads as "on", like the link
         // preview key above.
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
@@ -412,7 +600,13 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_VISION = booleanPreferencesKey("assistant_vision")
         val ASSISTANT_IMAGES = booleanPreferencesKey("assistant_images")
         val ASSISTANT_PROCESSOR = stringPreferencesKey("assistant_processor")
+        val ASSISTANT_TRANSCRIBE = booleanPreferencesKey("assistant_transcribe")
+        val ASSISTANT_TRANSCRIBE_MAX_BYTES = longPreferencesKey("assistant_transcribe_max_bytes")
         val ASSISTANT_CONSENT_AT = stringPreferencesKey("assistant_consent_at")
+        // One newline-joined string rather than a string SET: the order is
+        // the server's (web search, weather, Wikipedia) and a set has none.
+        val ASSISTANT_LOOKUPS = stringPreferencesKey("assistant_lookups")
+        val ASSISTANT_LOOKUP_CONSENT_AT = stringPreferencesKey("assistant_lookup_consent_at")
         // Stored PLAIN, not inverted like the two preview keys above: this
         // one's default is already `false`, so a missing key and an
         // explicit `false` say the same thing and neither can be read as
@@ -427,11 +621,28 @@ class DataStoreSettingsRepository @Inject constructor(
         // Both plain, for FAMILY_AI_VISION's reason: a missing key and an
         // explicit `false` say the same thing — no greeting.
         val FAMILY_AI_GREETING = booleanPreferencesKey("family_ai_greeting")
+        // Plain, for FAMILY_AI_VISION's reason: missing and `false` both
+        // mean nobody else's recording is offered.
+        val FAMILY_AI_TRANSCRIPTS = booleanPreferencesKey("family_ai_transcripts")
+        // Plain, for FAMILY_AI_VISION's reason: missing and `false` both
+        // mean nothing is looked up.
+        val FAMILY_AI_LOOKUPS = booleanPreferencesKey("family_ai_lookups")
         val GREETINGS_ENABLED = booleanPreferencesKey("greetings_enabled")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
         val FAMILYLESS_ACCOUNT_TTL_DAYS = intPreferencesKey("familyless_account_ttl_days")
+        // JSON, through ParkedRecording's own codec: a list of small records,
+        // which no Preferences key type can hold. Account-scoped: NOT among
+        // the keys resetKeepingServerUrl keeps.
+        val PARKED_RECORDINGS = stringPreferencesKey("parked_recordings")
+        // Device-scoped (#79): kept by resetKeepingServerUrl, like the
+        // preview switches — it is about this phone, not about the account.
+        // (The hold's three device keys — review_before_sending,
+        // held_release_taught, voice_coach_mark_shown — went with the hold
+        // on 2026-10-06; a value a test build stored is never read, and the
+        // next sign-out clears it.)
+        val ROUND_PREVIEW_TAUGHT = booleanPreferencesKey("round_preview_taught")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -447,6 +658,7 @@ class DataStoreSettingsRepository @Inject constructor(
             myAvatarVersion = prefs[Keys.MY_AVATAR_VERSION] ?: 0,
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
+            pushLanguage = prefs[Keys.PUSH_LANGUAGE],
             // `toLongOrNull` rather than `toLong`: a corrupt entry must
             // not throw inside the map every screen collects.
             maxFamilyMembers = prefs[Keys.MAX_FAMILY_MEMBERS],
@@ -459,22 +671,46 @@ class DataStoreSettingsRepository @Inject constructor(
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
             boardSeenContentSeq = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L,
+            packCursor = prefs[Keys.PACK_CURSOR] ?: 0L,
+            packMaxItems = prefs[Keys.PACK_MAX_ITEMS] ?: 0,
+            packMaxItemBytes = prefs[Keys.PACK_MAX_ITEM_BYTES] ?: 0L,
+            roundVideoMaxMs = prefs[Keys.ROUND_VIDEO_MAX_MS] ?: 0L,
+            roundVideoMaxBytes = prefs[Keys.ROUND_VIDEO_MAX_BYTES] ?: 0L,
+            // `toLongOrNull`, for the block list's reason: a corrupt entry
+            // must not throw inside the map every screen collects.
+            packRecents = prefs[Keys.PACK_RECENTS]
+                ?.split(',')
+                ?.mapNotNull(String::toLongOrNull)
+                .orEmpty(),
             mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
             assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
             assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
             assistantProcessor = prefs[Keys.ASSISTANT_PROCESSOR],
+            assistantTranscribe = prefs[Keys.ASSISTANT_TRANSCRIBE] == true,
+            assistantTranscribeMaxBytes = prefs[Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES] ?: 0L,
             assistantConsentAt = prefs[Keys.ASSISTANT_CONSENT_AT],
+            assistantLookups = prefs[Keys.ASSISTANT_LOOKUPS]
+                ?.split('\n')
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
+            assistantLookupConsentAt = prefs[Keys.ASSISTANT_LOOKUP_CONSENT_AT],
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
             familyAiGreeting = prefs[Keys.FAMILY_AI_GREETING] == true,
+            familyAiTranscripts = prefs[Keys.FAMILY_AI_TRANSCRIPTS] == true,
+            familyAiLookups = prefs[Keys.FAMILY_AI_LOOKUPS] == true,
             greetingsEnabled = prefs[Keys.GREETINGS_ENABLED] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
             familylessAccountTtlDays = prefs[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] ?: 0,
+            // Never throws: a corrupt index reads as empty, like the block
+            // list's `toLongOrNull`, and the sweep reclaims the files.
+            parkedRecordings = ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]),
+            roundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT] == true,
         )
     }
 
@@ -522,6 +758,12 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setPushLanguage(language: String?) {
+        dataStore.edit {
+            if (language == null) it.remove(Keys.PUSH_LANGUAGE) else it[Keys.PUSH_LANGUAGE] = language
+        }
+    }
+
     override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.LINK_PREVIEWS_DISABLED] = !enabled }
     }
@@ -546,6 +788,30 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setPackCursor(seq: Long) {
+        dataStore.edit { it[Keys.PACK_CURSOR] = seq }
+    }
+
+    override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
+        dataStore.edit {
+            it[Keys.PACK_MAX_ITEMS] = maxItems ?: 0
+            it[Keys.PACK_MAX_ITEM_BYTES] = maxItemBytes ?: 0L
+        }
+    }
+
+    override suspend fun setRoundVideoLimits(maxMs: Long?, maxBytes: Long?) {
+        dataStore.edit {
+            // Both or neither: one without the other is not a server that has them.
+            val limits = RoundVideoLimits.of(maxMs, maxBytes)
+            it[Keys.ROUND_VIDEO_MAX_MS] = limits?.maxMs ?: 0L
+            it[Keys.ROUND_VIDEO_MAX_BYTES] = limits?.maxBytes ?: 0L
+        }
+    }
+
+    override suspend fun setPackRecents(itemIds: List<Long>) {
+        dataStore.edit { it[Keys.PACK_RECENTS] = itemIds.joinToString(",") }
+    }
+
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.MAP_PREVIEWS_DISABLED] = !enabled }
     }
@@ -556,6 +822,9 @@ class DataStoreSettingsRepository @Inject constructor(
         vision: Boolean,
         images: Boolean,
         processor: String?,
+        transcribe: Boolean,
+        transcribeMaxBytes: Long?,
+        lookups: List<String>?,
     ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -570,6 +839,23 @@ class DataStoreSettingsRepository @Inject constructor(
                 } else {
                     prefs[Keys.ASSISTANT_PROCESSOR] = processor
                 }
+                prefs[Keys.ASSISTANT_TRANSCRIBE] = transcribe
+                if (transcribe) {
+                    // Absent while transcribe is true means the
+                    // protocol's default (docs/protocol.md, "Transcripts
+                    // on request").
+                    prefs[Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES] =
+                        transcribeMaxBytes ?: AssistantDto.DEFAULT_TRANSCRIBE_MAX_BYTES
+                } else {
+                    prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
+                }
+                // Absent and empty are the same answer: nobody to name.
+                val named = lookups.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+                if (named.isEmpty()) {
+                    prefs.remove(Keys.ASSISTANT_LOOKUPS)
+                } else {
+                    prefs[Keys.ASSISTANT_LOOKUPS] = named.joinToString("\n")
+                }
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
@@ -581,6 +867,9 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_VISION)
                 prefs.remove(Keys.ASSISTANT_IMAGES)
                 prefs.remove(Keys.ASSISTANT_PROCESSOR)
+                prefs.remove(Keys.ASSISTANT_TRANSCRIBE)
+                prefs.remove(Keys.ASSISTANT_TRANSCRIBE_MAX_BYTES)
+                prefs.remove(Keys.ASSISTANT_LOOKUPS)
             }
         }
     }
@@ -591,6 +880,16 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_CONSENT_AT)
             } else {
                 prefs[Keys.ASSISTANT_CONSENT_AT] = at
+            }
+        }
+    }
+
+    override suspend fun setAssistantLookupConsentAt(at: String?) {
+        dataStore.edit { prefs ->
+            if (at.isNullOrBlank()) {
+                prefs.remove(Keys.ASSISTANT_LOOKUP_CONSENT_AT)
+            } else {
+                prefs[Keys.ASSISTANT_LOOKUP_CONSENT_AT] = at
             }
         }
     }
@@ -611,6 +910,16 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setFamilyAiGreeting(enabled: Boolean) {
         dataStore.edit { it[Keys.FAMILY_AI_GREETING] = enabled }
+    }
+
+    override suspend fun setFamilyAiTranscripts(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_TRANSCRIPTS] = enabled }
+    }
+
+    override suspend fun setFamilyAiLookups(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_LOOKUPS] = enabled }
     }
 
     override suspend fun setGreetingsEnabled(enabled: Boolean) {
@@ -650,6 +959,23 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun updateParkedRecordings(
+        transform: (List<ParkedRecording>) -> List<ParkedRecording>,
+    ) {
+        dataStore.edit { prefs ->
+            val next = transform(ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]))
+            if (next.isEmpty()) {
+                prefs.remove(Keys.PARKED_RECORDINGS)
+            } else {
+                prefs[Keys.PARKED_RECORDINGS] = ParkedRecording.encode(next)
+            }
+        }
+    }
+
+    override suspend fun setRoundPreviewTaught() {
+        dataStore.edit { it[Keys.ROUND_PREVIEW_TAUGHT] = true }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
@@ -664,11 +990,18 @@ class DataStoreSettingsRepository @Inject constructor(
             // previews back on would resume asking Google for tiles that
             // this person opted out of.
             val keepMapPreviews = prefs[Keys.MAP_PREVIEWS_DISABLED]
+            // The recorder's first-time line is this DEVICE's (#79): a
+            // sign-out must not teach the same hand twice.
+            val keepRoundPreviewTaught = prefs[Keys.ROUND_PREVIEW_TAUGHT]
+            // The voice-message speed is this device's too (#79).
+            val keepVoiceSpeed = prefs[VOICE_PLAYBACK_SPEED_KEY]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
             keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
             keepMapPreviews?.let { prefs[Keys.MAP_PREVIEWS_DISABLED] = it }
+            keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
+            keepVoiceSpeed?.let { prefs[VOICE_PLAYBACK_SPEED_KEY] = it }
         }
     }
 }

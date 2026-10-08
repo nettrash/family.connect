@@ -120,6 +120,18 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
+/// The system's "Save to Files" picker, exporting a COPY of one file — a
+/// voice or video message from its menu (#79). The file stays where it is.
+struct FileExportPicker: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+}
+
 /// The actions under the bubble, beside the reaction capsule above it.
 /// All three are local — the message text is already in hand, and Reply
 /// only primes the composer — so none waits on the network. The parent
@@ -131,12 +143,32 @@ struct MessageContextMenu: View {
     let onShare: () -> Void
     /// Open the chain this message belongs to (docs/protocol.md, "Threads").
     var onViewThread: () -> Void = {}
+    /// The existing viewer, with scrubbing — offered on a video message,
+    /// which a tap plays in place instead (#79, S5.4).
+    var onOpenFullScreen: () -> Void = {}
     /// Reply needs a server id to quote, so it is hidden on a message that
     /// has not been acked yet rather than shown and doing nothing. The
     /// menu's height follows, since the overlay places it by size.
     var canReply: Bool = true
     /// A message that is in a chain — a reply, or a root somebody answered.
     var canViewThread: Bool = false
+    /// The message is a video message (`MessagePresentation.isRoundVideo`).
+    var canOpenFullScreen: Bool = false
+    /// The message IS a recording — a voice message or a video message
+    /// (`MessagePresentation.isRecordingMessage`, #79): no Copy, no Edit and
+    /// no Share, which have no text or nothing more to act on; "Save to
+    /// Files" puts the recording itself where the person wants it.
+    var isRecording: Bool = false
+    /// Show text / Hide text for the recording, when the transcript door
+    /// offers it (`TranscriptStore.menuRow`).
+    var transcriptRow: TranscriptStore.MenuRow? = nil
+    /// A voice message: Playback speed, with the device's speed beside it.
+    var offersSpeed: Bool = false
+    var speedLabel: String = ""
+    var onTranscript: () -> Void = {}
+    /// Moves round 1× → 1.5× → 2×; the menu stays open to show it.
+    var onSpeed: () -> Void = {}
+    var onSaveToFiles: () -> Void = {}
     /// Only the author may edit, and only once the message has an id.
     var canEdit: Bool = false
     /// A photo sent without a caption has nothing to copy.
@@ -176,7 +208,10 @@ struct MessageContextMenu: View {
     /// `(n - 1)` hairline term was exact only by that accident. Appending
     /// anything after Share broke it two ways at once, a missing divider
     /// (1pt, invisible) and a stale row count (45pt, not).
-    private enum Item: Hashable { case reply, thread, edit, copy, share, safety, back, report, block, unblock }
+    private enum Item: Hashable {
+        case reply, thread, showText, hideText, speed, saveToFiles, fullScreen, edit, copy, share
+        case safety, back, report, block, unblock
+    }
 
     /// Which page the menu is showing.
     ///
@@ -188,8 +223,10 @@ struct MessageContextMenu: View {
     enum Page: Hashable { case main, safety }
 
     private static func items(
-        canReply: Bool, canViewThread: Bool, canEdit: Bool, canCopy: Bool, canReport: Bool,
-        blockState: BlockState?, page: Page
+        canReply: Bool, canViewThread: Bool, canOpenFullScreen: Bool, canEdit: Bool,
+        canCopy: Bool, canReport: Bool, blockState: BlockState?, page: Page,
+        isRecording: Bool = false, transcriptRow: TranscriptStore.MenuRow? = nil,
+        offersSpeed: Bool = false
     ) -> [Item] {
         let hasSafety = canReport || blockState != nil
         switch page {
@@ -197,9 +234,23 @@ struct MessageContextMenu: View {
             var items: [Item] = []
             if canReply { items.append(.reply) }
             if canViewThread { items.append(.thread) }
-            if canEdit { items.append(.edit) }
-            if canCopy { items.append(.copy) }
-            items.append(.share)
+            if isRecording {
+                // A recording's menu (#79, the approved design): only what
+                // acts on a recording.
+                switch transcriptRow {
+                case .show: items.append(.showText)
+                case .hide: items.append(.hideText)
+                case nil: break
+                }
+                if offersSpeed { items.append(.speed) }
+                items.append(.saveToFiles)
+                if canOpenFullScreen { items.append(.fullScreen) }
+            } else {
+                if canOpenFullScreen { items.append(.fullScreen) }
+                if canEdit { items.append(.edit) }
+                if canCopy { items.append(.copy) }
+                items.append(.share)
+            }
             if hasSafety { items.append(.safety) }
             return items
         case .safety:
@@ -227,28 +278,39 @@ struct MessageContextMenu: View {
     ///
     /// The maximum is SIX rows: `canEdit` requires the message to be the
     /// reader's own and `canReport`/`blockState` require it not to be, so
-    /// Edit can never coexist with Report or Block.
+    /// Edit can never coexist with Report or Block — and a recording offers
+    /// none of Edit, Copy or Share: Reply, View thread, Show text, then
+    /// Playback speed (voice) or Open Full Screen (video), Save to Files and
+    /// Safety.
     static func size(
         canReply: Bool,
         canViewThread: Bool = false,
+        canOpenFullScreen: Bool = false,
         canEdit: Bool = false,
         canCopy: Bool = true,
         canReport: Bool = false,
         blockState: BlockState? = nil,
-        page: Page = .main
+        page: Page = .main,
+        isRecording: Bool = false,
+        transcriptRow: TranscriptStore.MenuRow? = nil,
+        offersSpeed: Bool = false
     ) -> CGSize {
         let n = CGFloat(
             items(
-                canReply: canReply, canViewThread: canViewThread, canEdit: canEdit,
-                canCopy: canCopy, canReport: canReport, blockState: blockState, page: page
+                canReply: canReply, canViewThread: canViewThread,
+                canOpenFullScreen: canOpenFullScreen, canEdit: canEdit,
+                canCopy: canCopy, canReport: canReport, blockState: blockState, page: page,
+                isRecording: isRecording, transcriptRow: transcriptRow, offersSpeed: offersSpeed
             ).count)
         return CGSize(width: menuWidth, height: rowHeight * n + (n - 1))
     }
 
     var body: some View {
         let items = Self.items(
-            canReply: canReply, canViewThread: canViewThread, canEdit: canEdit,
-            canCopy: canCopy, canReport: canReport, blockState: blockState, page: page)
+            canReply: canReply, canViewThread: canViewThread,
+            canOpenFullScreen: canOpenFullScreen, canEdit: canEdit,
+            canCopy: canCopy, canReport: canReport, blockState: blockState, page: page,
+            isRecording: isRecording, transcriptRow: transcriptRow, offersSpeed: offersSpeed)
         return VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element) { index, item in
                 self.row(for: item)
@@ -275,6 +337,34 @@ struct MessageContextMenu: View {
             row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
         case .thread:
             row("View thread", systemImage: "text.bubble", action: onViewThread)
+        case .showText:
+            row("Show text", systemImage: "text.alignleft", action: onTranscript)
+        case .hideText:
+            row("Hide text", systemImage: "text.badge.minus", action: onTranscript)
+        case .speed:
+            // The value beside the words, where a person looks for it; a tap
+            // moves round the cycle and the menu stays to show the new one.
+            Button(action: onSpeed) {
+                HStack {
+                    Label("Playback speed", systemImage: "gauge.with.dots.needle.67percent")
+                    Spacer(minLength: 8)
+                    Text(verbatim: speedLabel)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: Self.rowHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityLabel(Text(String(localized: "Playback speed, \(speedLabel)")))
+        case .saveToFiles:
+            row("Save to Files", systemImage: "folder", action: onSaveToFiles)
+        case .fullScreen:
+            row(
+                "Open Full Screen", systemImage: "arrow.up.left.and.arrow.down.right",
+                action: onOpenFullScreen)
         case .edit:
             row("Edit", systemImage: "pencil", action: onEdit)
         case .copy:

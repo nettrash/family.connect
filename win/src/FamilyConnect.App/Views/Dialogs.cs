@@ -76,6 +76,20 @@ internal static class Dialogs
     }
 
     /// <summary>
+    /// The question before a recording of ten seconds or more is deleted (docs/audio-video-messages-2026-10-04.md, S2.5,
+    /// S2.8): "Delete this recording?" [Delete] [Keep]. Keep is the default, so a reflex Enter keeps what cannot be
+    /// recorded again. Handed back unshown, so whoever asks can take the question away again when something else ends it.
+    /// </summary>
+    public static ContentDialog DeleteRecording(XamlRoot root, IStringCatalog say)
+    {
+        var dialog = Create(root, say.Get("Delete this recording?"), string.Empty);
+        dialog.PrimaryButtonText = say.Get("Delete");
+        dialog.CloseButtonText = say.Get("Keep");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return dialog;
+    }
+
+    /// <summary>
     /// A birthday: a month and a day, no year. <paramref name="name"/> is null for the reader's own and
     /// names the member for an owner setting somebody else's. Answers whether anything changed.
     /// </summary>
@@ -260,8 +274,62 @@ internal static class Dialogs
     }
 
     /// <summary>
+    /// Adding a sticker: the few words it may be given, for a screen reader (docs/protocol.md, "label"). OPTIONAL —
+    /// Add with the box empty adds it with none — and fixed once the item is added, which is why it is asked here.
+    /// Answers whether to add, and the label as it will be sent.
+    /// </summary>
+    /// <remarks>
+    /// AN OVER-LONG LABEL IS REFUSED HERE, IN WORDS, with the dialog still open and nothing sent: 64 characters,
+    /// counted the way the server counts them (<see cref="PackLabel"/>). The box's own MaxLength is not used for
+    /// this — it counts UTF-16 units, and would stop thirty-three emoji that the server takes.
+    /// </remarks>
+    /// <param name="name">Which picture this is, when several were chosen at once: the file's name.</param>
+    public static async Task<(bool Add, string? Label)> StickerLabelAsync(XamlRoot root, IStringCatalog say, string? name = null)
+    {
+        var box = new TextBox { Header = say.Get("Label (optional)") };
+        var problem = Problem();
+        var content = Column();
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            content.Children.Add(Secondary(name));
+        }
+        content.Children.Add(box);
+        content.Children.Add(Footnote(say.Get("A few words for a screen reader. They are never drawn over the picture.")));
+        content.Children.Add(problem);
+        var dialog = Create(root, say.Get("Add a sticker"), content);
+        dialog.PrimaryButtonText = say.Get("Add");
+        dialog.CloseButtonText = say.Get("Cancel");
+        void Judge()
+        {
+            var tooLong = PackLabel.TooLong(box.Text);
+            dialog.IsPrimaryButtonEnabled = !tooLong;
+            if (tooLong)
+            {
+                ShowProblem(problem, PackText.LabelTooLong(say));
+            }
+            else
+            {
+                problem.Visibility = Visibility.Collapsed;
+            }
+        }
+        box.TextChanged += (_, _) => Judge();
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            // Enter in the box presses this whether or not the button is enabled.
+            if (PackLabel.TooLong(box.Text))
+            {
+                args.Cancel = true;
+                Judge();
+            }
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary
+            ? (true, PackLabel.Clean(box.Text))
+            : (false, null);
+    }
+
+    /// <summary>
     /// The assistant question, asked once before anything a member writes goes to the model
-    /// (docs/protocol.md, "Consenting to the assistant"). Answers whether they agreed.
+    /// (docs/protocol.md, "Consenting to the assistant"). Answers what they agreed to.
     /// </summary>
     /// <remarks>
     /// Everything they need is ON THIS DIALOG and not only behind the policy link: who receives
@@ -269,9 +337,134 @@ internal static class Dialogs
     /// recall what has already gone. The two family-chat lines follow the owner's own switches,
     /// because a screen promising the wrong one would be asking permission for something that
     /// does not happen.
+    /// <para>
+    /// Where the server can look things up (<paramref name="lookups"/>, as <see cref="Lookups.Providers"/> reads it), the
+    /// screen says so in one more line naming the providers, and the yes splits in two — "Agree With Lookups" and "Agree
+    /// Without Lookups" — so the second consent is asked on the same screen and never assumed (docs/protocol.md,
+    /// "Looking things up").
+    /// </para>
     /// </remarks>
-    public static async Task<bool> AssistantConsentAsync(
-        XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision)
+    public static async Task<ConsentAnswer> AssistantConsentAsync(
+        XamlRoot root, IStringCatalog say, string processor, bool familyHistory, bool familyVision, bool transcribe = false,
+        IReadOnlyList<string>? lookups = null)
+    {
+        var offered = lookups is { Count: > 0 };
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision, transcribe, lookups);
+        var dialog = Create(root, say.Get("The Assistant"), content);
+        dialog.PrimaryButtonText = offered ? say.Get("Agree With Lookups") : say.Get("I Agree");
+        if (offered)
+        {
+            dialog.SecondaryButtonText = say.Get("Agree Without Lookups");
+        }
+        dialog.CloseButtonText = say.Get("Not Now");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        var pressed = await dialog.ShowAsync();
+        return Lookups.AnswerFor(pressed == ContentDialogResult.Primary, pressed == ContentDialogResult.Secondary, offered);
+    }
+
+    /// <summary>
+    /// The lookup question alone, for a member who has ALREADY agreed to the assistant (Settings' "Review and Allow
+    /// Lookups…"): the line naming the providers and the way back out, under "Looking things up". Answers whether they
+    /// agreed.
+    /// </summary>
+    public static async Task<bool> LookupConsentAsync(
+        XamlRoot root, IStringCatalog say, IReadOnlyList<string> lookups, bool familyHistory)
+    {
+        var content = Column();
+        foreach (var line in Lookups.Disclosure(lookups, familyHistory, say))
+        {
+            content.Children.Add(Text(line));
+        }
+        content.Children.Add(PolicyLink(say));
+        var dialog = Create(root, say.Get("Looking things up"), content);
+        dialog.PrimaryButtonText = say.Get("I Agree");
+        dialog.CloseButtonText = say.Get("Not Now");
+        dialog.DefaultButton = ContentDialogButton.Close;
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// The same question, asked from INSIDE a dialog — the board's note sheet, whose "Draw a backdrop" sends the event's
+    /// title to the model (docs/protocol.md, "Consenting to the assistant", amended 2026-09-30). A flyout over the
+    /// sheet and not a second dialog, because two cannot be open at once; everything on it is what
+    /// <see cref="AssistantConsentAsync"/> shows, built by the same method, with the same answers. Dismissing it
+    /// is Not Now.
+    /// </summary>
+    public static Task<ConsentAnswer> AssistantConsentOverAsync(
+        FrameworkElement anchor, IStringCatalog say, string processor, bool familyHistory, bool familyVision,
+        bool transcribe = false, IReadOnlyList<string>? lookups = null)
+    {
+        var offered = lookups is { Count: > 0 };
+        var answered = new TaskCompletionSource<ConsentAnswer>();
+        var content = AssistantConsentContent(say, processor, familyHistory, familyVision, transcribe, lookups);
+        content.Children.Insert(0, new TextBlock
+        {
+            Text = say.Get("The Assistant"),
+            FontSize = 20,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var agree = new Button { Content = offered ? say.Get("Agree With Lookups") : say.Get("I Agree") };
+        // Looked up rather than assumed, and applied only to what it styles: a style applied by key is not type-checked.
+        if (Application.Current?.Resources is { } resources
+            && resources.TryGetValue("AccentButtonStyle", out var accent)
+            && accent is Style style
+            && style.TargetType is { } target
+            && target.IsAssignableFrom(typeof(Button)))
+        {
+            agree.Style = style;
+        }
+        var without = offered ? new Button { Content = say.Get("Agree Without Lookups") } : null;
+        var notNow = new Button { Content = say.Get("Not Now") };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        buttons.Children.Add(agree);
+        if (without is not null)
+        {
+            buttons.Children.Add(without);
+        }
+        buttons.Children.Add(notNow);
+        content.Children.Add(buttons);
+        var presenter = new Style(typeof(FlyoutPresenter));
+        presenter.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 560.0));
+        var flyout = new Flyout
+        {
+            Content = content,
+            FlyoutPresenterStyle = presenter,
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Full,
+        };
+        agree.Click += (_, _) =>
+        {
+            answered.TrySetResult(Lookups.AnswerFor(first: true, second: false, offered));
+            flyout.Hide();
+        };
+        if (without is not null)
+        {
+            without.Click += (_, _) =>
+            {
+                answered.TrySetResult(Lookups.AnswerFor(first: false, second: true, offered));
+                flyout.Hide();
+            };
+        }
+        notNow.Click += (_, _) => flyout.Hide();
+        flyout.Closed += (_, _) => answered.TrySetResult(ConsentAnswer.NotNow);
+        flyout.ShowAt(anchor);
+        return answered.Task;
+    }
+
+    /// <summary>What the assistant question says, wherever it is asked: every line of it, and the policy.</summary>
+    /// <remarks>
+    /// <paramref name="transcribe"/> is the server's <c>assistant.transcribe</c>: where a member can ask for a recording's
+    /// text, the screen says in a line of its own that its sound goes to the processor. <paramref name="lookups"/> adds
+    /// the line naming the lookup providers.
+    /// </remarks>
+    private static StackPanel AssistantConsentContent(
+        IStringCatalog say, string processor, bool familyHistory, bool familyVision, bool transcribe,
+        IReadOnlyList<string>? lookups)
     {
         var content = Column(new TextBlock
         {
@@ -279,25 +472,22 @@ internal static class Dialogs
             Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
             TextWrapping = TextWrapping.Wrap,
         });
-        foreach (var line in AssistantConsent.Disclosure(processor, familyHistory, familyVision, say))
+        foreach (var line in AssistantConsent.Disclosure(processor, familyHistory, familyVision, say, transcribe, lookups))
         {
             content.Children.Add(Text(line));
         }
 
         // The policy is still linked, because the guideline asks for both: the disclosure where
         // the answer is given, and a policy that holds the same promises.
-        var policy = new HyperlinkButton
-        {
-            Content = say.Get("Privacy Policy"),
-            NavigateUri = new Uri("https://nettrash.me/appstore/familyconnect/privacy.html"),
-        };
-        content.Children.Add(policy);
-        var dialog = Create(root, say.Get("The Assistant"), content);
-        dialog.PrimaryButtonText = say.Get("I Agree");
-        dialog.CloseButtonText = say.Get("Not Now");
-        dialog.DefaultButton = ContentDialogButton.Close;
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        content.Children.Add(PolicyLink(say));
+        return content;
     }
+
+    private static HyperlinkButton PolicyLink(IStringCatalog say) => new()
+    {
+        Content = say.Get("Privacy Policy"),
+        NavigateUri = new Uri("https://nettrash.me/appstore/familyconnect/privacy.html"),
+    };
 
     public static StackPanel Column(params UIElement[] children)
     {

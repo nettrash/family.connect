@@ -45,7 +45,7 @@ val storedVersionCode: Int = run {
 }
 
 val resolvedVersionName: String =
-    (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.1"
+    (project.findProperty("versionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.2"
 
 // Allow opting out of the bump for a single build, e.g. when running a
 // throwaway test or when CI does not want the local file mutated:
@@ -124,6 +124,9 @@ android {
         versionCode = storedVersionCode
         versionName = resolvedVersionName
 
+        // Only MediaPrepDeviceTest uses it: a transcode needs a real encoder.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // Read by the manifest's com.google.android.geo.API_KEY meta-data.
         // Empty is fine: the map is never drawn without HAS_MAPS_KEY, so an
         // unkeyed build shows the pin card and asks Google for nothing.
@@ -198,6 +201,15 @@ android {
             // (Room DAO tests and Keystore-free settings tests run on it).
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
+            // The default test JVM heap is 512 MB. With #79's Robolectric
+            // screen and pixel tests the suite outgrew it on CI
+            // (OutOfMemoryError in ChatViewModelTest, run 37441628640), and
+            // Robolectric holds on to each class's environment. A larger
+            // heap, and a fresh JVM every 150 classes, keep it bounded.
+            all {
+                it.maxHeapSize = "3g"
+                it.forkEvery = 150
+            }
         }
     }
     packaging {
@@ -290,6 +302,15 @@ dependencies {
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.effect)
 
+    // CameraX — recording a video message in the app (#79): the preview,
+    // the recording, and a lifecycle of the recorder's own so a rebuilt
+    // activity does not end a take. See the catalog's header note.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.video)
+
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no
     // analytics, no crashlytics — the app's privacy posture is that user
@@ -331,6 +352,14 @@ dependencies {
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Instrumented tests — MediaPrepDeviceTest only (issue #74): the one
+    // thing Robolectric cannot do is run MediaCodec, so the transcode itself
+    // (size, frame rate, codecs, moov first) is asserted on a device or an
+    // emulator. Not run by CI, which has no emulator lane.
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.truth)
 }
 
 // ---- IDE compatibility: legacy aggregate test-class tasks --------------

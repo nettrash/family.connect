@@ -35,6 +35,13 @@ nonisolated enum MediaOutbox {
     /// The prefix `MediaPrep` gives every file it writes for an upload.
     static let filePrefix = "fc-upload-"
 
+    /// Everything the sweep takes: upload files, and the recorder's own
+    /// `fc-voice-*` files. A recording is only ever a file in `tmp` while it
+    /// runs or until its upload copy is staged, so at launch — when this
+    /// process is recording nothing — every one of them is a dead run's
+    /// microphone, or a leftover from before staging deleted it (#79).
+    static let sweptPrefixes = [filePrefix, AudioRecorder.filePrefix]
+
     /// Delete prepared upload files nobody owns.
     ///
     /// - Parameters:
@@ -57,7 +64,7 @@ nonisolated enum MediaOutbox {
         let manager = FileManager.default
         guard let names = try? manager.contentsOfDirectory(atPath: directory.path) else { return 0 }
         var removed = 0
-        for name in names where name.hasPrefix(filePrefix) {
+        for name in names where sweptPrefixes.contains(where: { name.hasPrefix($0) }) {
             let url = directory.appendingPathComponent(name)
             if age > 0 {
                 let created = (try? manager.attributesOfItem(atPath: url.path)[.creationDate]) as? Date

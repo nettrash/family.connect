@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
+import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.MessageEntity
@@ -28,6 +29,7 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.ChatListItemDto
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
+import me.nettrash.familyconnect.data.net.dto.PackResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
@@ -44,6 +46,9 @@ import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeBoardApi
+import me.nettrash.familyconnect.testutil.FakePackApi
+import me.nettrash.familyconnect.testutil.packItemDto
+import me.nettrash.familyconnect.testutil.packTombstone
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeFamilyApi
@@ -87,6 +92,7 @@ class SyncEngineTest {
     private val attachmentApi = FakeAttachmentApi()
     private val familyApi = FakeFamilyApi()
     private val boardApi = FakeBoardApi()
+    private val packApi = FakePackApi()
     private val socket = FakeChatSocket()
     private val tokenStore = FakeTokenStore("tok")
     private val wiper = RecordingWiper()
@@ -165,12 +171,22 @@ class SyncEngineTest {
             socket = socket,
             scope = repoScope,
         )
+        val packRepository = PackRepository(
+            context = RuntimeEnvironment.getApplication(),
+            packApi = packApi,
+            attachmentApi = attachmentApi,
+            packDao = db.packDao(),
+            settings = settings,
+            socket = socket,
+            scope = repoScope,
+        )
         return SyncEngine(
             sessionRepository = sessionRepository,
             chatRepository = chatRepository,
             familyRepository = familyRepository,
             messageRepository = messageRepository,
             boardRepository = boardRepository,
+            packRepository = packRepository,
             chatDao = db.chatDao(),
             messageDao = db.messageDao(),
         )
@@ -493,5 +509,199 @@ class SyncEngineTest {
         assertThat(notes.map { it.id }).containsExactly(1L, 2L)
         assertThat(notes.single { it.id == 1L }.contentSeq).isEqualTo(12)
         assertThat(settings.state.first().boardCursor).isEqualTo(40)
+    }
+
+    // -- The sticker pack (docs/protocol.md, "Sticker pack") ------------------
+
+    private fun scriptFamily(
+        maxPackSeq: Long? = null,
+        maxPackItems: Int? = 200,
+        maxPackItemBytes: Long? = 524_288,
+        maxRoundVideoMs: Long? = null,
+        maxRoundVideoBytes: Long? = null,
+    ) {
+        familyApi.mineResult = ApiResult.Ok(
+            FamilyMineResponse(
+                family = FamilyDto(id = 1, name = "The Smiths", joinPolicy = "open"),
+                members = listOf(MemberDto(ME, "anna", "Anna", "owner")),
+                maxPackSeq = maxPackSeq,
+                maxPackItems = maxPackItems,
+                maxPackItemBytes = maxPackItemBytes,
+                maxRoundVideoMs = maxRoundVideoMs,
+                maxRoundVideoBytes = maxRoundVideoBytes,
+            ),
+        )
+    }
+
+    /**
+     * After `GET /families/mine`: a device that holds no pack reads the
+     * whole of it, and learns the two ceilings the panel and the picker
+     * are drawn from.
+     */
+    @Test
+    fun resyncReadsTheWholePackOnADeviceThatHoldsNone() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxPackSeq = 14)
+        packApi.pack = PackResponse(
+            items = listOf(packItemDto(id = 5, packSeq = 12), packItemDto(id = 6, packSeq = 14)),
+            maxPackSeq = 14,
+        )
+
+        engine.resync()
+
+        assertThat(db.packDao().items().map { it.id }).containsExactly(5L, 6L).inOrder()
+        assertThat(packApi.fullReads).isEqualTo(1)
+        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packLimits).isEqualTo(PackLimits(200, 524_288))
+    }
+
+    /**
+     * The resync that a socket opening starts is what lets a `pack_item`
+     * frame move the cursor from then on: "the frame only once this
+     * connection has caught up".
+     */
+    @Test
+    fun aResyncOnAnOpenSocketLetsPackFramesMoveTheCursor() = runTest(dispatcher) {
+        val engine = newEngine()
+        runCurrent()
+        scriptChats()
+        scriptFamily(maxPackSeq = 14)
+        packApi.pack = PackResponse(listOf(packItemDto(id = 5, packSeq = 12)), maxPackSeq = 14)
+        socket.setOpen(true)
+
+        engine.resync()
+        assertThat(settings.current.packCursor).isEqualTo(14)
+
+        socket.emit(ServerFrame.PackItem(packItemDto(id = 7, packSeq = 15)))
+        runCurrent()
+        assertThat(settings.current.packCursor).isEqualTo(15)
+    }
+
+    /**
+     * The mark a pass catches up to is the one `GET /families/mine`
+     * reported. A reconnect DURING that read means the mark predates the
+     * new connection, so the pass must not call it caught up — whatever
+     * changed while the wire was down is below the first frame it delivers.
+     */
+    @Test
+    fun aResyncOvertakenByAReconnectDoesNotVouchForTheNewConnection() = runTest(dispatcher) {
+        val engine = newEngine()
+        runCurrent()
+        scriptChats()
+        scriptFamily(maxPackSeq = 14)
+        packApi.pack = PackResponse(listOf(packItemDto(id = 5, packSeq = 12)), maxPackSeq = 14)
+        socket.setOpen(true)
+        familyApi.onMine = {
+            familyApi.onMine = null
+            socket.setOpen(false)
+            socket.setOpen(true)
+        }
+
+        engine.resync()
+        assertThat(settings.current.packCursor).isEqualTo(14)
+
+        socket.emit(ServerFrame.PackItem(packItemDto(id = 7, packSeq = 19)))
+        runCurrent()
+
+        assertThat(db.packDao().items().map { it.id }).containsExactly(5L, 7L)
+        assertThat(settings.current.packCursor).isEqualTo(14)
+    }
+
+    /** One that holds a pack loops the change feed instead — tombstones and all. */
+    @Test
+    fun resyncCatchesAHeldPackUpFromItsCursor() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxPackSeq = 14)
+        packApi.pack = PackResponse(listOf(packItemDto(id = 5, packSeq = 12)), maxPackSeq = 12)
+        engine.resync()
+        scriptFamily(maxPackSeq = 20)
+        packApi.changePages = mutableListOf(
+            listOf(packItemDto(id = 7, packSeq = 18), packTombstone(id = 5, packSeq = 20)),
+        )
+
+        engine.resync()
+
+        // The cursor the first read left is where the feed is asked from.
+        assertThat(packApi.changeRequests).containsExactly(12L)
+        assertThat(packApi.fullReads).isEqualTo(1)
+        assertThat(db.packDao().items().map { it.id }).containsExactly(7L)
+        assertThat(settings.current.packCursor).isEqualTo(20)
+    }
+
+    /**
+     * `max_pack_items` absent is how a client knows the server predates
+     * packs: no request is made, and nothing about stickers is offered.
+     */
+    @Test
+    fun resyncAsksNothingOfAServerThatPredatesPacks() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxPackSeq = null, maxPackItems = null, maxPackItemBytes = null)
+
+        engine.resync()
+
+        assertThat(packApi.fullReads).isEqualTo(0)
+        assertThat(packApi.changeRequests).isEmpty()
+        assertThat(settings.current.packLimits).isNull()
+    }
+
+    /** A pack with ceilings and no mark has never been written to: no request either. */
+    @Test
+    fun resyncAsksNothingOfAnUntouchedPack() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxPackSeq = null)
+
+        engine.resync()
+
+        assertThat(packApi.fullReads).isEqualTo(0)
+        // …but the sticker button is there: the server HAS packs.
+        assertThat(settings.current.packLimits).isNotNull()
+    }
+
+    /** A server rolled back to a build without packs takes the affordances away again. */
+    @Test
+    fun theCeilingsAreAStateSetAndNotADelta() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxPackSeq = null)
+        engine.resync()
+        assertThat(settings.current.packLimits).isNotNull()
+
+        scriptFamily(maxPackSeq = null, maxPackItems = null, maxPackItemBytes = null)
+        engine.resync()
+
+        assertThat(settings.current.packLimits).isNull()
+    }
+
+    // -- Video messages' limits (#79, "Discovery and limits") -----------------------
+
+    /** The two keys are how this device learns the server has video messages. */
+    @Test
+    fun resyncLearnsTheVideoMessageLimits() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxRoundVideoMs = 60_000, maxRoundVideoBytes = 12_582_912)
+
+        engine.resync()
+
+        assertThat(settings.current.roundVideoLimits).isEqualTo(RoundVideoLimits(60_000, 12_582_912))
+    }
+
+    /** Their absence is the server predating video messages: no video entry anywhere — and a state-set. */
+    @Test
+    fun aServerWithoutTheKeysOffersNoVideoMessages() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        scriptFamily(maxRoundVideoMs = 60_000, maxRoundVideoBytes = 4_194_304)
+        engine.resync()
+        assertThat(settings.current.roundVideoLimits).isNotNull()
+
+        scriptFamily()
+        engine.resync()
+
+        assertThat(settings.current.roundVideoLimits).isNull()
     }
 }

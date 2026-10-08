@@ -125,6 +125,42 @@ public static class ErrorCodes
     public const string InvalidPoll = "invalid_poll";
     public const string PollClosed = "poll_closed";
     public const string PicturesUnavailable = "pictures_unavailable";
+
+    /// <summary>
+    /// The provider's own filter refused to draw a backdrop's title (docs/protocol.md, "Board"): a
+    /// 400, so terminal — asking again with the same title gets the same refusal.
+    /// </summary>
+    public const string PictureRefused = "picture_refused";
+
+    /// <summary>
+    /// The member has not agreed that their words may go to the model, so nothing was sent (docs/protocol.md,
+    /// "Consenting to the assistant"): a 403, and the answer to it is the consent question, then asking again.
+    /// </summary>
+    /// <remarks>
+    /// In <see cref="All"/> since 2026-10-02: the document's list under "Error shape" was missing it until the
+    /// transcript endpoint answered it too, and that list is what <see cref="All"/> is held to.
+    /// </remarks>
+    public const string AssistantConsentRequired = "assistant_consent_required";
+
+    /// <summary>
+    /// This server has no transcription deployment (docs/protocol.md, "Transcripts on request"): a 403 about the SERVER,
+    /// which <c>assistant.transcribe</c> already says before anybody asks.
+    /// </summary>
+    public const string TranscriptsUnavailable = "transcripts_unavailable";
+
+    /// <summary>
+    /// The rule says no for this member and this recording — another member's, with the owner's
+    /// <c>ai_transcripts</c> off or that sender not having agreed to the assistant, or another member's in a direct chat.
+    /// Terminal until the switch or that consent changes.
+    /// </summary>
+    public const string TranscriptNotAllowed = "transcript_not_allowed";
+
+    /// <summary>The recording cannot be sent in the form asked for: wrong kind, a type the provider does not read, too big.</summary>
+    public const string NotTranscribable = "not_transcribable";
+
+    /// <summary>The provider's own content filter refused the recording: a 400, terminal — asking again gets the same.</summary>
+    public const string TranscriptRefused = "transcript_refused";
+
     public const string CallsDisabled = "calls_disabled";
     public const string VideoCallsDisabled = "video_calls_disabled";
     public const string InvalidCall = "invalid_call";
@@ -140,6 +176,10 @@ public static class ErrorCodes
     public const string AttachmentExpired = "attachment_expired";
     public const string AttachmentAlreadyUsed = "attachment_already_used";
     public const string StorageFull = "storage_full";
+    public const string PackFull = "pack_full";
+    public const string PackItemTooLarge = "pack_item_too_large";
+    public const string PackItemNotFound = "pack_item_not_found";
+    public const string NotPackItemAuthor = "not_pack_item_author";
     public const string TooManyRequests = "too_many_requests";
     public const string Internal = "internal";
 
@@ -154,9 +194,11 @@ public static class ErrorCodes
         MessageTooLong, MessageNotFound, NotMessageAuthor, InvalidEmoji, NoteNotFound,
         NotNoteAuthor, InvalidNoteColor, InvalidNoteSize, InvalidNoteFont, InvalidNoteKind,
         InvalidRsvp, InvalidTask, InvalidLanguage, BoardFull, InvalidPagination, DeviceNotFound,
-        InvalidPoll, PollClosed, PicturesUnavailable, CallsDisabled, VideoCallsDisabled,
+        InvalidPoll, PollClosed, AssistantConsentRequired, PicturesUnavailable, PictureRefused,
+        TranscriptsUnavailable, TranscriptNotAllowed, NotTranscribable, TranscriptRefused, CallsDisabled, VideoCallsDisabled,
         InvalidCall, CallNotFound, CallBusy, PeerBusy, PeerUnreachable, AvatarTooLarge,
         InvalidImage, AttachmentTooLarge, InvalidAttachment, AttachmentNotFound,
-        AttachmentExpired, AttachmentAlreadyUsed, StorageFull, TooManyRequests, Internal,
+        AttachmentExpired, AttachmentAlreadyUsed, StorageFull, PackFull, PackItemTooLarge,
+        PackItemNotFound, NotPackItemAuthor, TooManyRequests, Internal,
     ];
 }

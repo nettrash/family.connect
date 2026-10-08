@@ -93,8 +93,42 @@ pub mod codes {
     /// the SERVER rather than the request, and a client checks
     /// `assistant.images` before it offers the action at all.
     pub const PICTURES_UNAVAILABLE: &str = "pictures_unavailable";
+    /// The AI provider's own filter refused to draw what was asked — the
+    /// board's backdrop, whose answer is HTTP rather than an `ai_error`
+    /// frame. A 400 because it is terminal: the same title gets the same
+    /// refusal, and a client that retried it would be retrying for nothing
+    /// (protocol.md, "Board").
+    pub const PICTURE_REFUSED: &str = "picture_refused";
+    /// This server has no transcription deployment (`[ai.transcribe]`), so
+    /// no recording can be turned into text. A 403 for the reason
+    /// `transcripts_unavailable`: a fact about the SERVER, which a client
+    /// reads as `assistant.transcribe` before it offers the action at all    
+    /// (protocol.md, "Transcripts on request").
+    pub const TRANSCRIPTS_UNAVAILABLE: &str = "transcripts_unavailable";
+    /// The rule says no: another member's recording outside the family
+    /// chat, or inside it while the owner's `ai_transcripts` is off or that
+    /// sender has not agreed to the assistant, or the assistant's own
+    /// message. One code for every reason, so the answer says no more about
+    /// the sender than the rule already does.
+    pub const TRANSCRIPT_NOT_ALLOWED: &str = "transcript_not_allowed";
+    /// This recording cannot be sent in the form asked: wrong kind, a stored
+    /// type the provider does not read, over the ceiling, or a supplied
+    /// part that is missing, empty, too large or not MPEG-4. A 400 and
+    /// terminal for that form — a client that sent no body may still send
+    /// a sound track of its own.
+    pub const NOT_TRANSCRIBABLE: &str = "not_transcribable";
+    /// The provider's own content filter refused the recording — decided
+    /// exactly as a refused answer is (`ai::is_refusal`). A 400 because it
+    /// is terminal: the same sound gets the same refusal.
+    pub const TRANSCRIPT_REFUSED: &str = "transcript_refused";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
+    /// The family's sticker pack (docs/protocol.md, "Sticker pack"). `pack`
+    /// and not `sticker`, which in this codebase already means a board note.
+    pub const PACK_FULL: &str = "pack_full";
+    pub const PACK_ITEM_TOO_LARGE: &str = "pack_item_too_large";
+    pub const PACK_ITEM_NOT_FOUND: &str = "pack_item_not_found";
+    pub const NOT_PACK_ITEM_AUTHOR: &str = "not_pack_item_author";
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";

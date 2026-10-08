@@ -90,8 +90,10 @@ nonisolated enum ChatNotifier {
         namesMe: Bool = false
     ) -> String {
         guard chatKind == "family" else { return senderName }
+        // Localized, as every other word on this banner is: it was the one
+        // English sentence a Russian Mac still showed (#84).
         return namesMe
-            ? "\(chatTitle) — \(senderName) mentioned you"
+            ? String(localized: "\(chatTitle) — \(senderName) mentioned you")
             : "\(chatTitle) — \(senderName)"
     }
 
@@ -195,10 +197,30 @@ nonisolated enum ChatNotifier {
         center.removePendingNotificationRequests(withIdentifiers: ["call-\(callID)"])
     }
 
+    /// A board note's banner (#84): who pinned it, and "New note" — never
+    /// the note's words (DesktopNotificationRules). Clicking it opens the
+    /// board, exactly as a `board_note` push does (PushRoute).
+    static func announceNote(noteID: Int64, title: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = String(localized: "New note")
+        content.sound = .default
+        content.threadIdentifier = "board"
+        content.userInfo = ["kind": "board_note", "note_id": noteID, localKey: true]
+        let request = UNNotificationRequest(identifier: "board-\(noteID)", content: content, trigger: nil)
+        Task {
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+            } catch {
+                AppLog.push.error("Local notification failed for note \(noteID, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     /// Tell the person at the Mac that something arrived.
     ///
-    /// The caller decides WHETHER — that is ChatPresence and nothing else
-    /// (see ChatSyncCoordinator.announce). This only says it.
+    /// The caller decides WHETHER — DesktopNotificationRules and
+    /// ChatPresence (see ChatSyncCoordinator.announce). This only says it.
     static func announce(chatID: Int64, messageID: Int64, title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

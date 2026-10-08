@@ -258,6 +258,41 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "assistant_consent",
         sql: include_str!("../migrations/0047_assistant_consent.sql"),
     },
+    Migration {
+        version: 48,
+        name: "sticker_pack",
+        sql: include_str!("../migrations/0048_sticker_pack.sql"),
+    },
+    Migration {
+        version: 49,
+        name: "transcripts",
+        sql: include_str!("../migrations/0049_transcripts.sql"),
+    },
+    Migration {
+        version: 50,
+        name: "lookups",
+        sql: include_str!("../migrations/0050_lookups.sql"),
+    },
+    Migration {
+        version: 51,
+        name: "greeting_places",
+        sql: include_str!("../migrations/0051_greeting_places.sql"),
+    },
+    Migration {
+        version: 52,
+        name: "round_video",
+        sql: include_str!("../migrations/0052_round_video.sql"),
+    },
+    Migration {
+        version: 53,
+        name: "audio_waveform",
+        sql: include_str!("../migrations/0053_audio_waveform.sql"),
+    },
+    Migration {
+        version: 54,
+        name: "device_language",
+        sql: include_str!("../migrations/0054_device_language.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

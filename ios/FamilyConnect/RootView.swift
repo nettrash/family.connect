@@ -71,6 +71,12 @@ struct RootView: View {
                 #endif
             }
         }
+        // The round-video recorder (#79, Phase 3): a layer of THIS root,
+        // drawn over everything in the window — the Mac's sidebar included —
+        // and, on iPhone and iPad, BENEATH the call's `.fullScreenCover`
+        // below: a call's cover rises over it, never a second cover (S8.1).
+        // Applied before the cover so nothing it does reaches the call.
+        .videoMessageRecorderHost()
         .task {
             // Before bootstrap on purpose: this is the number that has to
             // be right on a launch with no network at all, where the store

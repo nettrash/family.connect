@@ -1,12 +1,75 @@
 {
   "strings": {
-    "%@ GB": {},
-    "%@ KB": {},
-    "%@ MB": {},
-    "%@ and %@ are typing…": {},
-    "%@ — %@": {},
-    "%@ — %@ mentioned you": {},
-    "%@. %@. Open in Maps": {},
+    "%@ GB": {
+      "de": "%@ GB",
+      "es": "%@ GB",
+      "fr": "%@ Go",
+      "ja": "%@ GB",
+      "ru": "%@ ГБ",
+      "sr": "%@ GB",
+      "sr-Latn": "%@ GB",
+      "zh-Hans": "%@ GB"
+    },
+    "%@ KB": {
+      "de": "%@ KB",
+      "es": "%@ KB",
+      "fr": "%@ Ko",
+      "ja": "%@ KB",
+      "ru": "%@ КБ",
+      "sr": "%@ KB",
+      "sr-Latn": "%@ KB",
+      "zh-Hans": "%@ KB"
+    },
+    "%@ MB": {
+      "de": "%@ MB",
+      "es": "%@ MB",
+      "fr": "%@ Mo",
+      "ja": "%@ MB",
+      "ru": "%@ МБ",
+      "sr": "%@ MB",
+      "sr-Latn": "%@ MB",
+      "zh-Hans": "%@ MB"
+    },
+    "%@ and %@ are typing…": {
+      "de": "%@ und %@ schreiben …",
+      "es": "%@ y %@ están escribiendo…",
+      "fr": "%@ et %@ écrivent…",
+      "ja": "%@と%@が入力中…",
+      "ru": "%@ и %@ печатают…",
+      "sr": "%@ и %@ куцају…",
+      "sr-Latn": "%@ i %@ kucaju…",
+      "zh-Hans": "%@ 和 %@ 正在输入…"
+    },
+    "%@ — %@": {
+      "de": "%@ — %@",
+      "es": "%@ — %@",
+      "fr": "%@ — %@",
+      "ja": "%@ — %@",
+      "ru": "%@ — %@",
+      "sr": "%@ — %@",
+      "sr-Latn": "%@ — %@",
+      "zh-Hans": "%@ — %@"
+    },
+    "%@ — %@ mentioned you": {
+      "de": "%@ — %@ hat dich erwähnt",
+      "es": "%@ — %@ te mencionó",
+      "fr": "%@ — %@ vous a mentionné",
+      "ja": "%@ — %@があなたをメンションしました",
+      "ru": "%@ — %@ упоминает тебя",
+      "sr": "%@ — %@ те је поменуо/ла",
+      "sr-Latn": "%@ — %@ te je pomenuo/la",
+      "zh-Hans": "%@ — %@ 提到了你"
+    },
+    "%@. %@. Open in Maps": {
+      "de": "%@. %@. In Karten öffnen",
+      "es": "%@. %@. Abrir en Mapas",
+      "fr": "%@. %@. Ouvrir dans Plans",
+      "ja": "%@。%@。マップで開く",
+      "ru": "%@. %@. Открыть на карте",
+      "sr": "%@. %@. Отвори у мапама",
+      "sr-Latn": "%@. %@. Otvori u mapama",
+      "zh-Hans": "%@。%@。在地图中打开"
+    },
     "%lld attachments, %@": {
       "en": {
         "one": "%lld attachment, %@",
@@ -17,6 +80,40 @@
       "en": {
         "one": "%lld byte",
         "other": "%lld bytes"
+      },
+      "de": {
+        "one": "%lld Byte",
+        "other": "%lld Bytes"
+      },
+      "es": {
+        "one": "%lld byte",
+        "other": "%lld bytes"
+      },
+      "fr": {
+        "one": "%lld octet",
+        "other": "%lld octets"
+      },
+      "ja": {
+        "other": "%lld バイト"
+      },
+      "ru": {
+        "one": "%lld байт",
+        "few": "%lld байта",
+        "many": "%lld байт",
+        "other": "%lld байта"
+      },
+      "sr": {
+        "one": "%lld бајт",
+        "few": "%lld бајта",
+        "other": "%lld бајтова"
+      },
+      "sr-Latn": {
+        "one": "%lld bajt",
+        "few": "%lld bajta",
+        "other": "%lld bajtova"
+      },
+      "zh-Hans": {
+        "other": "%lld 字节"
       }
     },
     "%lld members now. Nobody new can join until somebody leaves; no one is removed.": {
@@ -37,136 +134,1462 @@
         "other": "%lld questions to the assistant"
       }
     },
-    "+%lld": {},
-    "A display name is 1 to 64 characters.": {},
-    "A family name is 1 to 64 characters.": {},
-    "A password needs at least 8 characters.": {},
-    "A photo is still being pinned. Add the next one when it is on the board.": {},
-    "A poll has at most ten options.": {},
-    "A username is 3 to 32 characters.": {},
-    "A username may use only letters, digits, “_” and “.”.": {},
-    "Add Event": {},
-    "Album, 1 of %lld": {},
+    "+%lld": {
+      "de": "+%lld",
+      "es": "+%lld",
+      "fr": "+%lld",
+      "ja": "+%lld",
+      "ru": "+%lld",
+      "sr": "+%lld",
+      "sr-Latn": "+%lld",
+      "zh-Hans": "+%lld"
+    },
+    "A description is at most 64 characters.": {
+      "de": "Eine Beschreibung hat höchstens 64 Zeichen.",
+      "en": "A description is at most 64 characters.",
+      "es": "Una descripción tiene como máximo 64 caracteres.",
+      "fr": "Une description compte au plus 64 caractères.",
+      "ja": "説明は64文字までです。",
+      "ru": "Описание — не длиннее 64 символов.",
+      "sr": "Опис може имати највише 64 знака.",
+      "sr-Latn": "Opis može imati najviše 64 znaka.",
+      "zh-Hans": "描述最多 64 个字符。"
+    },
+    "A display name is 1 to 64 characters.": {
+      "de": "Ein Anzeigename hat 1 bis 64 Zeichen.",
+      "es": "Un nombre visible tiene de 1 a 64 caracteres.",
+      "fr": "Un nom affiché compte de 1 à 64 caractères.",
+      "ja": "表示名は1〜64文字です。",
+      "ru": "Отображаемое имя — от 1 до 64 символов.",
+      "sr": "Име за приказ има од 1 до 64 знака.",
+      "sr-Latn": "Ime za prikaz ima od 1 do 64 znaka.",
+      "zh-Hans": "显示名称为 1 到 64 个字符。"
+    },
+    "A family name is 1 to 64 characters.": {
+      "de": "Ein Familienname hat 1 bis 64 Zeichen.",
+      "es": "El nombre de la familia tiene de 1 a 64 caracteres.",
+      "fr": "Un nom de famille compte de 1 à 64 caractères.",
+      "ja": "ファミリー名は1〜64文字です。",
+      "ru": "Название семьи — от 1 до 64 символов.",
+      "sr": "Име породице има од 1 до 64 знака.",
+      "sr-Latn": "Ime porodice ima od 1 do 64 znaka.",
+      "zh-Hans": "家庭名称为 1 到 64 个字符。"
+    },
+    "A password needs at least 8 characters.": {
+      "de": "Ein Passwort braucht mindestens 8 Zeichen.",
+      "es": "La contraseña necesita al menos 8 caracteres.",
+      "fr": "Un mot de passe doit compter au moins 8 caractères.",
+      "ja": "パスワードは8文字以上必要です。",
+      "ru": "В пароле должно быть не меньше 8 символов.",
+      "sr": "Лозинка мора да има најмање 8 знакова.",
+      "sr-Latn": "Lozinka mora da ima najmanje 8 znakova.",
+      "zh-Hans": "密码至少需要 8 个字符。"
+    },
+    "A photo is still being pinned. Add the next one when it is on the board.": {
+      "de": "Ein Foto wird noch angeheftet. Füge das nächste hinzu, wenn es an der Pinnwand ist.",
+      "es": "Todavía se está fijando una foto. Añade la siguiente cuando ya esté en el tablón.",
+      "fr": "Une photo est encore en cours d’épinglage. Ajoutez la suivante quand elle sera sur le tableau.",
+      "ja": "写真をまだ貼っています。ボードに表示されてから次を追加してください。",
+      "ru": "Фото ещё прикрепляется. Добавь следующее, когда оно появится на доске.",
+      "sr": "Фотографија се још качи. Додај следећу када се појави на табли.",
+      "sr-Latn": "Fotografija se još kači. Dodaj sledeću kada se pojavi na tabli.",
+      "zh-Hans": "一张照片还在钉上。等它出现在留言板上再添加下一张。"
+    },
+    "A poll has at most ten options.": {
+      "de": "Eine Umfrage hat höchstens zehn Antworten.",
+      "es": "Una encuesta tiene como máximo diez respuestas.",
+      "fr": "Un sondage a au plus dix réponses.",
+      "ja": "アンケートの選択肢は最大10個です。",
+      "ru": "В опросе не больше десяти вариантов.",
+      "sr": "Анкета има највише десет одговора.",
+      "sr-Latn": "Anketa ima najviše deset odgovora.",
+      "zh-Hans": "一个投票最多十个选项。"
+    },
+    "A sticker is a WebP or PNG picture.": {
+      "de": "Ein Sticker ist ein WebP- oder PNG-Bild.",
+      "en": "A sticker is a WebP or PNG picture.",
+      "es": "Un sticker es una imagen WebP o PNG.",
+      "fr": "Un autocollant est une image WebP ou PNG.",
+      "ja": "ステッカーにできるのは WebP または PNG の画像です。",
+      "ru": "Стикер — это картинка в формате WebP или PNG.",
+      "sr": "Стикер је слика у формату WebP или PNG.",
+      "sr-Latn": "Stiker je slika u formatu WebP ili PNG.",
+      "zh-Hans": "贴纸必须是 WebP 或 PNG 图片。"
+    },
+    "A sticker is still being added. Add the next one when it is in the pack.": {
+      "de": "Ein Sticker wird noch hinzugefügt. Füge den nächsten hinzu, sobald er im Paket ist.",
+      "en": "A sticker is still being added. Add the next one when it is in the pack.",
+      "es": "Aún se está añadiendo un sticker. Añade el siguiente cuando ya esté en el paquete.",
+      "fr": "Un autocollant est encore en cours d’ajout. Ajoutez le suivant quand il sera dans le pack.",
+      "ja": "ステッカーを追加中です。パックに入ってから次を追加してください。",
+      "ru": "Стикер ещё добавляется. Добавьте следующий, когда этот появится в наборе.",
+      "sr": "Стикер се још додаје. Додајте следећи када овај буде у пакету.",
+      "sr-Latn": "Stiker se još dodaje. Dodajte sledeći kada ovaj bude u paketu.",
+      "zh-Hans": "仍在添加一个贴纸。等它进入贴纸包后再添加下一个。"
+    },
+    "A username is 3 to 32 characters.": {
+      "de": "Ein Benutzername hat 3 bis 32 Zeichen.",
+      "es": "Un nombre de usuario tiene de 3 a 32 caracteres.",
+      "fr": "Un nom d’utilisateur compte de 3 à 32 caractères.",
+      "ja": "ユーザ名は3〜32文字です。",
+      "ru": "Имя пользователя — от 3 до 32 символов.",
+      "sr": "Корисничко име има од 3 до 32 знака.",
+      "sr-Latn": "Korisničko ime ima od 3 do 32 znaka.",
+      "zh-Hans": "用户名为 3 到 32 个字符。"
+    },
+    "A username may use only letters, digits, “_” and “.”.": {
+      "de": "Ein Benutzername darf nur Buchstaben, Ziffern, „_“ und „.“ enthalten.",
+      "es": "Un nombre de usuario solo puede tener letras, números, «_» y «.».",
+      "fr": "Un nom d’utilisateur ne peut contenir que des lettres, des chiffres, « _ » et « . ».",
+      "ja": "ユーザ名に使えるのは文字、数字、「_」と「.」だけです。",
+      "ru": "В имени пользователя можно использовать только буквы, цифры, «_» и «.».",
+      "sr": "Корисничко име може да садржи само слова, цифре, „_“ и „.“.",
+      "sr-Latn": "Korisničko ime može da sadrži samo slova, cifre, „_“ i „.“.",
+      "zh-Hans": "用户名只能使用字母、数字、“_”和“.”。"
+    },
+    "Add Event": {
+      "de": "Termin hinzufügen",
+      "es": "Añadir evento",
+      "fr": "Ajouter un évènement",
+      "ja": "イベントを追加",
+      "ru": "Добавить событие",
+      "sr": "Додај догађај",
+      "sr-Latn": "Dodaj događaj",
+      "zh-Hans": "添加活动"
+    },
+    "Add Sticker…": {
+      "de": "Sticker hinzufügen …",
+      "en": "Add Sticker…",
+      "es": "Añadir sticker…",
+      "fr": "Ajouter un autocollant…",
+      "ja": "ステッカーを追加…",
+      "ru": "Добавить стикер…",
+      "sr": "Додај стикер…",
+      "sr-Latn": "Dodaj stiker…",
+      "zh-Hans": "添加贴纸…"
+    },
+    "Add to family stickers": {
+      "de": "Zu den Familien-Stickern hinzufügen",
+      "en": "Add to family stickers",
+      "es": "Añadir a los stickers de la familia",
+      "fr": "Ajouter aux autocollants de la famille",
+      "ja": "家族のステッカーに追加",
+      "ru": "Добавить в семейные стикеры",
+      "sr": "Додај у породичне стикере",
+      "sr-Latn": "Dodaj u porodične stikere",
+      "zh-Hans": "添加到家庭贴纸"
+    },
+    "Added to the family's stickers.": {
+      "de": "Zu den Familien-Stickern hinzugefügt.",
+      "en": "Added to the family's stickers.",
+      "es": "Añadido a los stickers de la familia.",
+      "fr": "Ajouté aux autocollants de la famille.",
+      "ja": "家族のステッカーに追加しました。",
+      "ru": "Добавлено в семейные стикеры.",
+      "sr": "Додато у породичне стикере.",
+      "sr-Latn": "Dodato u porodične stikere.",
+      "zh-Hans": "已添加到家庭贴纸。"
+    },
+    "Adding…": {
+      "de": "Wird hinzugefügt …",
+      "en": "Adding…",
+      "es": "Añadiendo…",
+      "fr": "Ajout…",
+      "ja": "追加中…",
+      "ru": "Добавление…",
+      "sr": "Додавање…",
+      "sr-Latn": "Dodavanje…",
+      "zh-Hans": "正在添加…"
+    },
+    "Album, 1 of %lld": {
+      "de": "Album, 1 von %lld",
+      "es": "Álbum, 1 de %lld",
+      "fr": "Album, 1 sur %lld",
+      "ja": "アルバム、%lld件中1件目",
+      "ru": "Альбом, 1 из %lld",
+      "sr": "Албум, 1 од %lld",
+      "sr-Latn": "Album, 1 od %lld",
+      "zh-Hans": "相册，第 1 项，共 %lld 项"
+    },
+    "Already in the family's stickers.": {
+      "de": "Bereits bei den Familien-Stickern.",
+      "en": "Already in the family's stickers.",
+      "es": "Ya está entre los stickers de la familia.",
+      "fr": "Déjà dans les autocollants de la famille.",
+      "ja": "すでに家族のステッカーに入っています。",
+      "ru": "Уже есть в семейных стикерах.",
+      "sr": "Већ је међу породичним стикерима.",
+      "sr-Latn": "Već je među porodičnim stikerima.",
+      "zh-Hans": "已在家庭贴纸中。"
+    },
     "An account that doesn't join a family within %lld days is removed from this server.": {
       "en": {
         "one": "An account that doesn't join a family within %lld day is removed from this server.",
         "other": "An account that doesn't join a family within %lld days is removed from this server."
       }
     },
-    "An option can be at most 100 characters.": {},
-    "Any family member can read the code to you; the owner finds it under Family.": {},
-    "Ask a question.": {},
-    "Attachments to send": {},
+    "An animated sticker must be a WebP file.": {
+      "de": "Ein animierter Sticker muss eine WebP-Datei sein.",
+      "en": "An animated sticker must be a WebP file.",
+      "es": "Un sticker animado debe ser un archivo WebP.",
+      "fr": "Un autocollant animé doit être un fichier WebP.",
+      "ja": "アニメーションするステッカーは WebP ファイルである必要があります。",
+      "ru": "Анимированный стикер должен быть файлом WebP.",
+      "sr": "Анимирани стикер мора бити датотека у формату WebP.",
+      "sr-Latn": "Animirani stiker mora biti datoteka u formatu WebP.",
+      "zh-Hans": "动态贴纸必须是 WebP 文件。"
+    },
+    "An option can be at most 100 characters.": {
+      "de": "Eine Antwort darf höchstens 100 Zeichen haben.",
+      "es": "Una respuesta puede tener como máximo 100 caracteres.",
+      "fr": "Une réponse peut compter au plus 100 caractères.",
+      "ja": "選択肢は100文字以内です。",
+      "ru": "Вариант — не длиннее 100 символов.",
+      "sr": "Одговор може да има највише 100 знакова.",
+      "sr-Latn": "Odgovor može da ima najviše 100 znakova.",
+      "zh-Hans": "一个选项最多 100 个字符。"
+    },
+    "Any family member can read the code to you; the owner finds it under Family.": {
+      "de": "Jedes Familienmitglied kann ihn dir vorlesen; der Eigentümer findet ihn unter „Familie“.",
+      "es": "Cualquier miembro de la familia puede leerte el código; el propietario lo encuentra en Familia.",
+      "fr": "N’importe quel membre de la famille peut vous lire le code ; le propriétaire le trouve sous Famille.",
+      "ja": "コードはファミリーの誰でも読み上げられます。オーナーは「ファミリー」で確認できます。",
+      "ru": "Код может продиктовать любой из семьи; владелец найдёт его в разделе «Семья».",
+      "sr": "Било који члан породице може да ти прочита код; власник га налази под Породица.",
+      "sr-Latn": "Bilo koji član porodice može da ti pročita kod; vlasnik ga nalazi pod Porodica.",
+      "zh-Hans": "任何家庭成员都可以把邀请码念给你；拥有者可以在“家庭”中找到它。"
+    },
+    "Anyone in the family can add a sticker. Whoever added one, or the family owner, can remove it.": {
+      "de": "Jedes Familienmitglied kann einen Sticker hinzufügen. Entfernen kann ihn, wer ihn hinzugefügt hat, oder der Eigentümer der Familie.",
+      "en": "Anyone in the family can add a sticker. Whoever added one, or the family owner, can remove it.",
+      "es": "Cualquier miembro de la familia puede añadir un sticker. Puede eliminarlo quien lo añadió o el propietario de la familia.",
+      "fr": "Chaque membre de la famille peut ajouter un autocollant. La personne qui l’a ajouté, ou le propriétaire de la famille, peut le supprimer.",
+      "ja": "家族の誰でもステッカーを追加できます。削除できるのは、追加した人か家族のオーナーです。",
+      "ru": "Любой член семьи может добавить стикер. Удалить его может тот, кто добавил, или владелец семьи.",
+      "sr": "Свако у породици може да дода стикер. Може да га уклони онај ко га је додао или власник породице.",
+      "sr-Latn": "Svako u porodici može da doda stiker. Može da ga ukloni onaj ko ga je dodao ili vlasnik porodice.",
+      "zh-Hans": "任何家庭成员都可以添加贴纸。添加者或家庭所有者可以将其移除。"
+    },
+    "Ask a question.": {
+      "de": "Stell eine Frage.",
+      "es": "Haz una pregunta.",
+      "fr": "Posez une question.",
+      "ja": "質問を入力してください。",
+      "ru": "Задай вопрос.",
+      "sr": "Постави питање.",
+      "sr-Latn": "Postavi pitanje.",
+      "zh-Hans": "请提出一个问题。"
+    },
+    "Attachments to send": {
+      "de": "Anhänge zum Senden",
+      "es": "Adjuntos para enviar",
+      "fr": "Pièces jointes à envoyer",
+      "ja": "送信する添付ファイル",
+      "ru": "Вложения для отправки",
+      "sr": "Прилози за слање",
+      "sr-Latn": "Prilozi za slanje",
+      "zh-Hans": "待发送的附件"
+    },
     "Board, %lld new notes": {
       "en": {
         "one": "Board, %lld new note",
         "other": "Board, %lld new notes"
+      },
+      "de": {
+        "one": "Pinnwand, %lld neue Notiz",
+        "other": "Pinnwand, %lld neue Notizen"
+      },
+      "es": {
+        "one": "Tablón, %lld nota nueva",
+        "other": "Tablón, %lld notas nuevas"
+      },
+      "fr": {
+        "one": "Tableau, %lld nouvelle note",
+        "other": "Tableau, %lld nouvelles notes"
+      },
+      "ja": {
+        "other": "ボード、新しいメモ %lld 件"
+      },
+      "ru": {
+        "one": "Доска, %lld новая заметка",
+        "few": "Доска, %lld новые заметки",
+        "many": "Доска, %lld новых заметок",
+        "other": "Доска, %lld новой заметки"
+      },
+      "sr": {
+        "one": "Табла, %lld нова белешка",
+        "few": "Табла, %lld нове белешке",
+        "other": "Табла, %lld нових белешки"
+      },
+      "sr-Latn": {
+        "one": "Tabla, %lld nova beleška",
+        "few": "Tabla, %lld nove beleške",
+        "other": "Tabla, %lld novih beleški"
+      },
+      "zh-Hans": {
+        "other": "留言板，%lld 条新便签"
       }
     },
-    "Call with %@": {},
-    "Caption": {},
-    "Chat": {},
-    "Check now": {},
-    "Close the thread": {},
-    "Connected": {},
-    "Couldn't move the note.": {},
-    "Couldn't send your answer.": {},
-    "Delete the family?": {},
-    "Discard": {},
-    "Earlier messages": {},
-    "Enter opens it; the arrow keys move it.": {},
-    "Event": {},
-    "Family Connect for the web %@": {},
-    "Family needs permission to use your location. Allow it in your browser's settings for this site.": {},
+    "Call with %@": {
+      "de": "Anruf mit %@",
+      "es": "Llamada con %@",
+      "fr": "Appel avec %@",
+      "ja": "%@との通話",
+      "ru": "Звонок с %@",
+      "sr": "Позив са %@",
+      "sr-Latn": "Poziv sa %@",
+      "zh-Hans": "与 %@ 通话"
+    },
+    "Caption": {
+      "de": "Bildunterschrift",
+      "es": "Pie de foto",
+      "fr": "Légende",
+      "ja": "キャプション",
+      "ru": "Подпись",
+      "sr": "Опис",
+      "sr-Latn": "Opis",
+      "zh-Hans": "说明"
+    },
+    "Chat": {
+      "de": "Chat",
+      "es": "Chat",
+      "fr": "Discussion",
+      "ja": "チャット",
+      "ru": "Чат",
+      "sr": "Ћаскање",
+      "sr-Latn": "Ćaskanje",
+      "zh-Hans": "对话"
+    },
+    "Check now": {
+      "de": "Jetzt prüfen",
+      "es": "Comprobar ahora",
+      "fr": "Vérifier maintenant",
+      "ja": "今すぐ確認",
+      "ru": "Проверить сейчас",
+      "sr": "Провери сада",
+      "sr-Latn": "Proveri sada",
+      "zh-Hans": "立即检查"
+    },
+    "Close the thread": {
+      "de": "Thread schließen",
+      "es": "Cerrar el hilo",
+      "fr": "Fermer le fil",
+      "ja": "スレッドを閉じる",
+      "ru": "Закрыть ветку",
+      "sr": "Затвори нит",
+      "sr-Latn": "Zatvori nit",
+      "zh-Hans": "关闭话题"
+    },
+    "Connected": {
+      "de": "Verbunden",
+      "es": "Conectado",
+      "fr": "Connecté",
+      "ja": "接続済み",
+      "ru": "Подключено",
+      "sr": "Повезано",
+      "sr-Latn": "Povezano",
+      "zh-Hans": "已连接"
+    },
+    "Couldn't move the note.": {
+      "de": "Die Notiz konnte nicht verschoben werden.",
+      "es": "No se pudo mover la nota.",
+      "fr": "Impossible de déplacer la note.",
+      "ja": "メモを移動できませんでした。",
+      "ru": "Не удалось переместить заметку.",
+      "sr": "Белешка није могла да се помери.",
+      "sr-Latn": "Beleška nije mogla da se pomeri.",
+      "zh-Hans": "无法移动便签。"
+    },
+    "Couldn't send that sticker.": {
+      "de": "Dieser Sticker konnte nicht gesendet werden.",
+      "en": "Couldn't send that sticker.",
+      "es": "No se pudo enviar ese sticker.",
+      "fr": "Impossible d’envoyer cet autocollant.",
+      "ja": "そのステッカーを送信できませんでした。",
+      "ru": "Не удалось отправить этот стикер.",
+      "sr": "Није успело слање тог стикера.",
+      "sr-Latn": "Nije uspelo slanje tog stikera.",
+      "zh-Hans": "无法发送该贴纸。"
+    },
+    "Couldn't send your answer.": {
+      "de": "Deine Antwort konnte nicht gesendet werden.",
+      "es": "No se pudo enviar tu respuesta.",
+      "fr": "Impossible d’envoyer votre réponse.",
+      "ja": "回答を送信できませんでした。",
+      "ru": "Не удалось отправить твой ответ.",
+      "sr": "Твој одговор није могао да се пошаље.",
+      "sr-Latn": "Tvoj odgovor nije mogao da se pošalje.",
+      "zh-Hans": "无法发送你的选择。"
+    },
+    "Delete the family?": {
+      "de": "Familie löschen?",
+      "es": "¿Eliminar la familia?",
+      "fr": "Supprimer la famille ?",
+      "ja": "ファミリーを削除しますか？",
+      "ru": "Удалить семью?",
+      "sr": "Обрисати породицу?",
+      "sr-Latn": "Obrisati porodicu?",
+      "zh-Hans": "删除这个家庭？"
+    },
+    "Description (optional)": {
+      "de": "Beschreibung (optional)",
+      "en": "Description (optional)",
+      "es": "Descripción (opcional)",
+      "fr": "Description (facultative)",
+      "ja": "説明（任意）",
+      "ru": "Описание (необязательно)",
+      "sr": "Опис (необавезно)",
+      "sr-Latn": "Opis (neobavezno)",
+      "zh-Hans": "描述（可选）"
+    },
+    "Discard": {
+      "de": "Verwerfen",
+      "es": "Descartar",
+      "fr": "Abandonner",
+      "ja": "破棄",
+      "ru": "Отменить",
+      "sr": "Одбаци",
+      "sr-Latn": "Odbaci",
+      "zh-Hans": "丢弃"
+    },
+    "Earlier messages": {
+      "de": "Frühere Nachrichten",
+      "es": "Mensajes anteriores",
+      "fr": "Messages précédents",
+      "ja": "以前のメッセージ",
+      "ru": "Более ранние сообщения",
+      "sr": "Раније поруке",
+      "sr-Latn": "Ranije poruke",
+      "zh-Hans": "更早的消息"
+    },
+    "Enter opens it; the arrow keys move it.": {
+      "de": "Eingabe öffnet sie; die Pfeiltasten verschieben sie.",
+      "es": "Intro la abre; las flechas la mueven.",
+      "fr": "Entrée l’ouvre ; les flèches la déplacent.",
+      "ja": "Enter で開き、矢印キーで移動します。",
+      "ru": "Enter открывает, стрелки перемещают.",
+      "sr": "Enter је отвара; тастери са стрелицама је померају.",
+      "sr-Latn": "Enter je otvara; tasteri sa strelicama je pomeraju.",
+      "zh-Hans": "按 Enter 打开，用方向键移动。"
+    },
+    "Event": {
+      "de": "Termin",
+      "es": "Evento",
+      "fr": "Évènement",
+      "ja": "イベント",
+      "ru": "Событие",
+      "sr": "Догађај",
+      "sr-Latn": "Događaj",
+      "zh-Hans": "活动"
+    },
+    "Family Connect for the web %@": {
+      "de": "Family Connect für das Web %@",
+      "es": "Family Connect para la web %@",
+      "fr": "Family Connect pour le Web %@",
+      "ja": "Family Connect for the web %@",
+      "ru": "Family Connect для веба %@",
+      "sr": "Family Connect за веб %@",
+      "sr-Latn": "Family Connect za veb %@",
+      "zh-Hans": "Family Connect 网页版 %@"
+    },
+    "Family needs permission to use your location. Allow it in your browser's settings for this site.": {
+      "de": "Family braucht die Erlaubnis, deinen Standort zu verwenden. Erlaube es in den Einstellungen deines Browsers für diese Website.",
+      "es": "Family necesita permiso para usar tu ubicación. Permítelo en la configuración de tu navegador para este sitio.",
+      "fr": "Family a besoin de l’autorisation d’utiliser votre position. Autorisez-la dans les réglages de votre navigateur pour ce site.",
+      "ja": "Family が現在地を使うには許可が必要です。ブラウザのこのサイトの設定で許可してください。",
+      "ru": "Family нужно разрешение на доступ к местоположению. Разреши его в настройках браузера для этого сайта.",
+      "sr": "Family треба дозволу да користи твоју локацију. Дозволи је у подешавањима прегледача за овај сајт.",
+      "sr-Latn": "Family treba dozvolu da koristi tvoju lokaciju. Dozvoli je u podešavanjima pregledača za ovaj sajt.",
+      "zh-Hans": "Family 需要使用你的位置的权限。请在浏览器中为此网站允许。"
+    },
     "Family needs permission to use your microphone. Allow it in your browser's settings for this site.": {},
-    "Fewer": {},
-    "Finding your location…": {},
-    "Give at least two options.": {},
-    "Jump to the newest message": {},
-    "Keep": {},
-    "Leave and Delete": {},
-    "Loading": {},
-    "Loading the board…": {},
-    "Loading video…": {},
-    "Loading…": {},
-    "Locations": {},
-    "Log in or register": {},
-    "Message %@": {},
-    "Message actions": {},
-    "Message them": {},
-    "Messages stay on the family server; this tab forgets its session.": {},
-    "More": {},
-    "More for %@": {},
-    "New note": {},
-    "Not sent.": {},
-    "Not sent: %@": {},
-    "Not sent: a file was moved, changed or deleted before it could go. Attach it again.": {},
-    "Not sent: an attachment is no longer there. Attach it again.": {},
-    "Not sent: an attachment is over this server's size limit.": {},
-    "Not sent: its attachments expired on the server. Attach them again.": {},
-    "Not sent: its attachments were lost when the page reloaded. Attach them again.": {},
-    "Not sent: join a family before sending attachments.": {},
-    "Not sent: the message is too long.": {},
-    "Not sent: the server can't take one of the attachments.": {},
-    "Not sent: you are no longer in this chat.": {},
-    "Not sent: you have blocked this person.": {},
-    "Notifications": {},
-    "Notifications are blocked for this site. Allow them in your browser's site settings and switch this on again.": {},
-    "Only the person who wrote a note can change it.": {},
-    "Open %@": {},
-    "Open in Maps": {},
-    "Option %lld": {},
-    "Pick when it ends, or turn the end off.": {},
-    "Pick when it starts.": {},
-    "Pinning…": {},
-    "Position": {},
-    "Recording %@": {},
-    "Recording a voice note": {},
-    "Remove %@": {},
-    "Report sent.": {},
-    "Safety for %@": {},
-    "Save %@": {},
-    "Saving…": {},
+    "Fewer": {
+      "de": "Weniger",
+      "es": "Menos",
+      "fr": "Moins",
+      "ja": "少なく",
+      "ru": "Меньше",
+      "sr": "Мање",
+      "sr-Latn": "Manje",
+      "zh-Hans": "收起"
+    },
+    "Finding your location…": {
+      "de": "Standort wird ermittelt …",
+      "es": "Buscando tu ubicación…",
+      "fr": "Recherche de votre position…",
+      "ja": "現在地を取得しています…",
+      "ru": "Определяем местоположение…",
+      "sr": "Тражи се твоја локација…",
+      "sr-Latn": "Traži se tvoja lokacija…",
+      "zh-Hans": "正在获取你的位置…"
+    },
+    "Give at least two options.": {
+      "de": "Gib mindestens zwei Antworten an.",
+      "es": "Da al menos dos respuestas.",
+      "fr": "Indiquez au moins deux réponses.",
+      "ja": "選択肢を2つ以上入力してください。",
+      "ru": "Укажи хотя бы два варианта.",
+      "sr": "Унеси најмање два одговора.",
+      "sr-Latn": "Unesi najmanje dva odgovora.",
+      "zh-Hans": "至少提供两个选项。"
+    },
+    "Jump to the newest message": {
+      "de": "Zur neuesten Nachricht springen",
+      "es": "Ir al mensaje más reciente",
+      "fr": "Aller au message le plus récent",
+      "ja": "最新のメッセージへ移動",
+      "ru": "К последнему сообщению",
+      "sr": "Иди на најновију поруку",
+      "sr-Latn": "Idi na najnoviju poruku",
+      "zh-Hans": "跳到最新消息"
+    },
+    "Leave and Delete": {
+      "de": "Verlassen und löschen",
+      "es": "Salir y eliminar",
+      "fr": "Quitter et supprimer",
+      "ja": "離れて削除",
+      "ru": "Покинуть и удалить",
+      "sr": "Напусти и обриши",
+      "sr-Latn": "Napusti i obriši",
+      "zh-Hans": "退出并删除"
+    },
+    "Loading": {
+      "de": "Wird geladen",
+      "es": "Cargando",
+      "fr": "Chargement",
+      "ja": "読み込み中",
+      "ru": "Загрузка",
+      "sr": "Учитава се",
+      "sr-Latn": "Učitava se",
+      "zh-Hans": "正在加载"
+    },
+    "Loading the board…": {
+      "de": "Pinnwand wird geladen …",
+      "es": "Cargando el tablón…",
+      "fr": "Chargement du tableau…",
+      "ja": "ボードを読み込んでいます…",
+      "ru": "Загружаем доску…",
+      "sr": "Табла се учитава…",
+      "sr-Latn": "Tabla se učitava…",
+      "zh-Hans": "正在加载留言板…"
+    },
+    "Loading video…": {
+      "de": "Video wird geladen …",
+      "es": "Cargando vídeo…",
+      "fr": "Chargement de la vidéo…",
+      "ja": "ビデオを読み込んでいます…",
+      "ru": "Загружаем видео…",
+      "sr": "Видео се учитава…",
+      "sr-Latn": "Video se učitava…",
+      "zh-Hans": "正在加载视频…"
+    },
+    "Loading…": {
+      "de": "Wird geladen …",
+      "es": "Cargando…",
+      "fr": "Chargement…",
+      "ja": "読み込み中…",
+      "ru": "Загрузка…",
+      "sr": "Учитава се…",
+      "sr-Latn": "Učitava se…",
+      "zh-Hans": "正在加载…"
+    },
+    "Locations": {
+      "de": "Standorte",
+      "es": "Ubicaciones",
+      "fr": "Positions",
+      "ja": "位置情報",
+      "ru": "Местоположения",
+      "sr": "Локације",
+      "sr-Latn": "Lokacije",
+      "zh-Hans": "位置"
+    },
+    "Log in or register": {
+      "de": "Anmelden oder registrieren",
+      "es": "Inicia sesión o regístrate",
+      "fr": "Se connecter ou s’inscrire",
+      "ja": "ログインまたは登録",
+      "ru": "Войти или зарегистрироваться",
+      "sr": "Пријави се или се региструј",
+      "sr-Latn": "Prijavi se ili se registruj",
+      "zh-Hans": "登录或注册"
+    },
+    "Message %@": {
+      "de": "Nachricht an %@",
+      "es": "Mensaje a %@",
+      "fr": "Message à %@",
+      "ja": "%@にメッセージ",
+      "ru": "Написать %@",
+      "sr": "Порука за %@",
+      "sr-Latn": "Poruka za %@",
+      "zh-Hans": "给 %@ 发消息"
+    },
+    "Message actions": {
+      "de": "Nachrichtenaktionen",
+      "es": "Acciones del mensaje",
+      "fr": "Actions sur le message",
+      "ja": "メッセージの操作",
+      "ru": "Действия с сообщением",
+      "sr": "Радње за поруку",
+      "sr-Latn": "Radnje za poruku",
+      "zh-Hans": "消息操作"
+    },
+    "Message them": {
+      "de": "Nachricht schreiben",
+      "es": "Enviarle un mensaje",
+      "fr": "Lui écrire",
+      "ja": "メッセージを送る",
+      "ru": "Написать",
+      "sr": "Пошаљи поруку",
+      "sr-Latn": "Pošalji poruku",
+      "zh-Hans": "给对方发消息"
+    },
+    "Messages already sent with it keep it.": {
+      "de": "Bereits damit gesendete Nachrichten behalten ihn.",
+      "en": "Messages already sent with it keep it.",
+      "es": "Los mensajes ya enviados con él lo conservan.",
+      "fr": "Les messages déjà envoyés avec lui le conservent.",
+      "ja": "すでに送信されたメッセージのステッカーはそのまま残ります。",
+      "ru": "В уже отправленных сообщениях он останется.",
+      "sr": "У већ послатим порукама он остаје.",
+      "sr-Latn": "U već poslatim porukama on ostaje.",
+      "zh-Hans": "已用它发送的消息不受影响。"
+    },
+    "Messages stay on the family server; this tab forgets its session.": {
+      "de": "Die Nachrichten bleiben auf dem Familienserver; dieser Tab vergisst seine Sitzung.",
+      "es": "Los mensajes se quedan en el servidor de la familia; esta pestaña olvida su sesión.",
+      "fr": "Les messages restent sur le serveur de la famille ; cet onglet oublie sa session.",
+      "ja": "メッセージはファミリーサーバに残り、このタブはセッションを忘れます。",
+      "ru": "Сообщения останутся на сервере семьи; эта вкладка забудет свою сессию.",
+      "sr": "Поруке остају на серверу породице; ова картица заборавља своју сесију.",
+      "sr-Latn": "Poruke ostaju na serveru porodice; ova kartica zaboravlja svoju sesiju.",
+      "zh-Hans": "消息仍保留在家庭服务器上；此标签页只会忘记登录状态。"
+    },
+    "More": {
+      "de": "Mehr",
+      "es": "Más",
+      "fr": "Plus",
+      "ja": "その他",
+      "ru": "Ещё",
+      "sr": "Још",
+      "sr-Latn": "Još",
+      "zh-Hans": "更多"
+    },
+    "More for %@": {
+      "de": "Mehr für %@",
+      "es": "Más para %@",
+      "fr": "Plus pour %@",
+      "ja": "%@のその他",
+      "ru": "Ещё для %@",
+      "sr": "Још за %@",
+      "sr-Latn": "Još za %@",
+      "zh-Hans": "%@ 的更多操作"
+    },
+    "New note": {
+      "de": "Neue Notiz",
+      "es": "Nueva nota",
+      "fr": "Nouvelle note",
+      "ja": "新しいメモ",
+      "ru": "Новая заметка",
+      "sr": "Нова белешка",
+      "sr-Latn": "Nova beleška",
+      "zh-Hans": "新便签"
+    },
+    "No stickers yet. Anyone in the family can add one on the Family screen.": {
+      "de": "Noch keine Sticker. Jedes Familienmitglied kann unter „Familie“ welche hinzufügen.",
+      "en": "No stickers yet. Anyone in the family can add one on the Family screen.",
+      "es": "Aún no hay stickers. Cualquier miembro de la familia puede añadir uno en la pantalla Familia.",
+      "fr": "Pas encore d’autocollants. Chaque membre de la famille peut en ajouter dans l’écran Famille.",
+      "ja": "ステッカーはまだありません。家族の誰でも「家族」画面で追加できます。",
+      "ru": "Стикеров пока нет. Любой член семьи может добавить их на экране «Семья».",
+      "sr": "Још нема стикера. Свако у породици може да их дода на екрану „Породица“.",
+      "sr-Latn": "Još nema stikera. Svako u porodici može da ih doda na ekranu „Porodica“.",
+      "zh-Hans": "还没有贴纸。任何家庭成员都可以在“家庭”页面添加。"
+    },
+    "Not sent.": {
+      "de": "Nicht gesendet.",
+      "es": "No enviado.",
+      "fr": "Non envoyé.",
+      "ja": "未送信です。",
+      "ru": "Не отправлено.",
+      "sr": "Није послато.",
+      "sr-Latn": "Nije poslato.",
+      "zh-Hans": "未发送。"
+    },
+    "Not sent: %@": {
+      "de": "Nicht gesendet: %@",
+      "es": "No enviado: %@",
+      "fr": "Non envoyé : %@",
+      "ja": "未送信: %@",
+      "ru": "Не отправлено: %@",
+      "sr": "Није послато: %@",
+      "sr-Latn": "Nije poslato: %@",
+      "zh-Hans": "未发送：%@"
+    },
+    "Not sent: a file was moved, changed or deleted before it could go. Attach it again.": {
+      "de": "Nicht gesendet: Eine Datei wurde verschoben, geändert oder gelöscht, bevor sie gesendet werden konnte. Hänge sie erneut an.",
+      "es": "No enviado: un archivo se movió, cambió o eliminó antes de poder enviarse. Adjúntalo de nuevo.",
+      "fr": "Non envoyé : un fichier a été déplacé, modifié ou supprimé avant son envoi. Joignez-le de nouveau.",
+      "ja": "未送信: ファイルが送信前に移動、変更、または削除されました。もう一度添付してください。",
+      "ru": "Не отправлено: файл переместили, изменили или удалили до отправки. Прикрепи его снова.",
+      "sr": "Није послато: датотека је премештена, измењена или обрисана пре слања. Приложи је поново.",
+      "sr-Latn": "Nije poslato: datoteka je premeštena, izmenjena ili obrisana pre slanja. Priloži je ponovo.",
+      "zh-Hans": "未发送：文件在发送前被移动、更改或删除。请重新添加。"
+    },
+    "Not sent: an attachment is no longer there. Attach it again.": {
+      "de": "Nicht gesendet: Ein Anhang ist nicht mehr da. Hänge ihn erneut an.",
+      "es": "No enviado: un adjunto ya no está. Adjúntalo de nuevo.",
+      "fr": "Non envoyé : une pièce jointe n’est plus là. Joignez-la de nouveau.",
+      "ja": "未送信: 添付ファイルが見つかりません。もう一度添付してください。",
+      "ru": "Не отправлено: вложения больше нет. Прикрепи его снова.",
+      "sr": "Није послато: прилог више не постоји. Приложи га поново.",
+      "sr-Latn": "Nije poslato: prilog više ne postoji. Priloži ga ponovo.",
+      "zh-Hans": "未发送：附件已不存在。请重新添加。"
+    },
+    "Not sent: an attachment is over this server's size limit.": {
+      "de": "Nicht gesendet: Ein Anhang ist größer, als dieser Server erlaubt.",
+      "es": "No enviado: un adjunto supera el límite de tamaño de este servidor.",
+      "fr": "Non envoyé : une pièce jointe dépasse la taille autorisée par ce serveur.",
+      "ja": "未送信: 添付ファイルがこのサーバのサイズ上限を超えています。",
+      "ru": "Не отправлено: вложение больше, чем разрешает этот сервер.",
+      "sr": "Није послато: прилог прелази ограничење величине на овом серверу.",
+      "sr-Latn": "Nije poslato: prilog prelazi ograničenje veličine na ovom serveru.",
+      "zh-Hans": "未发送：附件超出此服务器的大小限制。"
+    },
+    "Not sent: its attachments expired on the server. Attach them again.": {
+      "de": "Nicht gesendet: Die Anhänge sind auf dem Server abgelaufen. Hänge sie erneut an.",
+      "es": "No enviado: sus adjuntos caducaron en el servidor. Adjúntalos de nuevo.",
+      "fr": "Non envoyé : ses pièces jointes ont expiré sur le serveur. Joignez-les de nouveau.",
+      "ja": "未送信: 添付ファイルがサーバで期限切れになりました。もう一度添付してください。",
+      "ru": "Не отправлено: срок хранения вложений на сервере истёк. Прикрепи их снова.",
+      "sr": "Није послато: прилози су истекли на серверу. Приложи их поново.",
+      "sr-Latn": "Nije poslato: prilozi su istekli na serveru. Priloži ih ponovo.",
+      "zh-Hans": "未发送：附件在服务器上已过期。请重新添加。"
+    },
+    "Not sent: its attachments were lost when the page reloaded. Attach them again.": {
+      "de": "Nicht gesendet: Die Anhänge gingen beim Neuladen der Seite verloren. Hänge sie erneut an.",
+      "es": "No enviado: sus adjuntos se perdieron al recargar la página. Adjúntalos de nuevo.",
+      "fr": "Non envoyé : ses pièces jointes ont été perdues au rechargement de la page. Joignez-les de nouveau.",
+      "ja": "未送信: ページの再読み込みで添付ファイルが失われました。もう一度添付してください。",
+      "ru": "Не отправлено: вложения потерялись при перезагрузке страницы. Прикрепи их снова.",
+      "sr": "Није послато: прилози су изгубљени при поновном учитавању странице. Приложи их поново.",
+      "sr-Latn": "Nije poslato: prilozi su izgubljeni pri ponovnom učitavanju stranice. Priloži ih ponovo.",
+      "zh-Hans": "未发送：页面重新加载时附件丢失。请重新添加。"
+    },
+    "Not sent: join a family before sending attachments.": {
+      "de": "Nicht gesendet: Tritt einer Familie bei, bevor du Anhänge sendest.",
+      "es": "No enviado: únete a una familia antes de enviar adjuntos.",
+      "fr": "Non envoyé : rejoignez une famille avant d’envoyer des pièces jointes.",
+      "ja": "未送信: 添付ファイルを送るにはファミリーに参加してください。",
+      "ru": "Не отправлено: чтобы отправлять вложения, вступи в семью.",
+      "sr": "Није послато: придружи се породици пре слања прилога.",
+      "sr-Latn": "Nije poslato: pridruži se porodici pre slanja priloga.",
+      "zh-Hans": "未发送：请先加入一个家庭再发送附件。"
+    },
+    "Not sent: that sticker is no longer in the family's stickers.": {
+      "de": "Nicht gesendet: Dieser Sticker ist nicht mehr bei den Familien-Stickern.",
+      "en": "Not sent: that sticker is no longer in the family's stickers.",
+      "es": "No enviado: ese sticker ya no está entre los stickers de la familia.",
+      "fr": "Non envoyé : cet autocollant n’est plus dans les autocollants de la famille.",
+      "ja": "未送信：そのステッカーは家族のステッカーにもうありません。",
+      "ru": "Не отправлено: этого стикера больше нет в семейных стикерах.",
+      "sr": "Није послато: тог стикера више нема међу породичним стикерима.",
+      "sr-Latn": "Nije poslato: tog stikera više nema među porodičnim stikerima.",
+      "zh-Hans": "未发送：该贴纸已不在家庭贴纸中。"
+    },
+    "Not sent: the message is too long.": {
+      "de": "Nicht gesendet: Die Nachricht ist zu lang.",
+      "es": "No enviado: el mensaje es demasiado largo.",
+      "fr": "Non envoyé : le message est trop long.",
+      "ja": "未送信: メッセージが長すぎます。",
+      "ru": "Не отправлено: сообщение слишком длинное.",
+      "sr": "Није послато: порука је предугачка.",
+      "sr-Latn": "Nije poslato: poruka je predugačka.",
+      "zh-Hans": "未发送：消息太长。"
+    },
+    "Not sent: the server can't take one of the attachments.": {
+      "de": "Nicht gesendet: Der Server kann einen der Anhänge nicht annehmen.",
+      "es": "No enviado: el servidor no puede aceptar uno de los adjuntos.",
+      "fr": "Non envoyé : le serveur ne peut pas accepter l’une des pièces jointes.",
+      "ja": "未送信: サーバが添付ファイルの1つを受け付けられません。",
+      "ru": "Не отправлено: сервер не может принять одно из вложений.",
+      "sr": "Није послато: сервер не може да прими један од прилога.",
+      "sr-Latn": "Nije poslato: server ne može da primi jedan od priloga.",
+      "zh-Hans": "未发送：服务器无法接收其中一个附件。"
+    },
+    "Not sent: you are no longer in this chat.": {
+      "de": "Nicht gesendet: Du bist nicht mehr in diesem Chat.",
+      "es": "No enviado: ya no estás en este chat.",
+      "fr": "Non envoyé : vous ne faites plus partie de cette discussion.",
+      "ja": "未送信: このチャットにもう参加していません。",
+      "ru": "Не отправлено: ты больше не в этом чате.",
+      "sr": "Није послато: више ниси у овом ћаскању.",
+      "sr-Latn": "Nije poslato: više nisi u ovom ćaskanju.",
+      "zh-Hans": "未发送：你已不在此对话中。"
+    },
+    "Not sent: you have blocked this person.": {
+      "de": "Nicht gesendet: Du hast diese Person blockiert.",
+      "es": "No enviado: has bloqueado a esta persona.",
+      "fr": "Non envoyé : vous avez bloqué cette personne.",
+      "ja": "未送信: この人をブロックしています。",
+      "ru": "Не отправлено: ты заблокировал(а) этого человека.",
+      "sr": "Није послато: блокирао/ла си ову особу.",
+      "sr-Latn": "Nije poslato: blokirao/la si ovu osobu.",
+      "zh-Hans": "未发送：你已屏蔽此人。"
+    },
+    "Notifications": {
+      "de": "Mitteilungen",
+      "es": "Notificaciones",
+      "fr": "Notifications",
+      "ja": "通知",
+      "ru": "Уведомления",
+      "sr": "Обавештења",
+      "sr-Latn": "Obaveštenja",
+      "zh-Hans": "通知"
+    },
+    "Notifications are blocked for this site. Allow them in your browser's site settings and switch this on again.": {
+      "de": "Mitteilungen sind für diese Website blockiert. Erlaube sie in den Website-Einstellungen deines Browsers und schalte dies wieder ein.",
+      "es": "Las notificaciones están bloqueadas para este sitio. Permítelas en la configuración del sitio de tu navegador y vuelve a activar esto.",
+      "fr": "Les notifications sont bloquées pour ce site. Autorisez-les dans les réglages du site de votre navigateur, puis réactivez cette option.",
+      "ja": "このサイトの通知はブロックされています。ブラウザのサイト設定で許可してから、もう一度オンにしてください。",
+      "ru": "Уведомления для этого сайта заблокированы. Разреши их в настройках сайта в браузере и снова включи этот переключатель.",
+      "sr": "Обавештења су блокирана за овај сајт. Дозволи их у подешавањима сајта у прегледачу и поново укључи ово.",
+      "sr-Latn": "Obaveštenja su blokirana za ovaj sajt. Dozvoli ih u podešavanjima sajta u pregledaču i ponovo uključi ovo.",
+      "zh-Hans": "此网站的通知已被阻止。请在浏览器的网站设置中允许后再次打开此开关。"
+    },
+    "Only the person who added a sticker, or the family owner, can remove it.": {
+      "de": "Einen Sticker kann nur entfernen, wer ihn hinzugefügt hat, oder der Eigentümer der Familie.",
+      "en": "Only the person who added a sticker, or the family owner, can remove it.",
+      "es": "Solo quien añadió un sticker, o el propietario de la familia, puede eliminarlo.",
+      "fr": "Seule la personne qui a ajouté un autocollant, ou le propriétaire de la famille, peut le supprimer.",
+      "ja": "ステッカーを削除できるのは、追加した人か家族のオーナーだけです。",
+      "ru": "Удалить стикер может только тот, кто его добавил, или владелец семьи.",
+      "sr": "Стикер може да уклони само онај ко га је додао или власник породице.",
+      "sr-Latn": "Stiker može da ukloni samo onaj ko ga je dodao ili vlasnik porodice.",
+      "zh-Hans": "只有添加者或家庭所有者可以移除贴纸。"
+    },
+    "Only the person who wrote a note can change it.": {
+      "de": "Nur wer eine Notiz geschrieben hat, kann sie ändern.",
+      "es": "Solo quien escribió una nota puede cambiarla.",
+      "fr": "Seule la personne qui a écrit une note peut la modifier.",
+      "ja": "メモを変更できるのは書いた本人だけです。",
+      "ru": "Изменить заметку может только её автор.",
+      "sr": "Само особа која је написала белешку може да је промени.",
+      "sr-Latn": "Samo osoba koja je napisala belešku može da je promeni.",
+      "zh-Hans": "只有写便签的人才能修改它。"
+    },
+    "Open %@": {
+      "de": "%@ öffnen",
+      "es": "Abrir %@",
+      "fr": "Ouvrir %@",
+      "ja": "%@を開く",
+      "ru": "Открыть %@",
+      "sr": "Отвори %@",
+      "sr-Latn": "Otvori %@",
+      "zh-Hans": "打开 %@"
+    },
+    "Open in Maps": {
+      "de": "In Karten öffnen",
+      "es": "Abrir en Mapas",
+      "fr": "Ouvrir dans Plans",
+      "ja": "マップで開く",
+      "ru": "Открыть на карте",
+      "sr": "Отвори у мапама",
+      "sr-Latn": "Otvori u mapama",
+      "zh-Hans": "在地图中打开"
+    },
+    "Open sticker": {
+      "de": "Sticker öffnen",
+      "en": "Open sticker",
+      "es": "Abrir sticker",
+      "fr": "Ouvrir l’autocollant",
+      "ja": "ステッカーを開く",
+      "ru": "Открыть стикер",
+      "sr": "Отвори стикер",
+      "sr-Latn": "Otvori stiker",
+      "zh-Hans": "打开贴纸"
+    },
+    "Option %lld": {
+      "de": "Antwort %lld",
+      "es": "Respuesta %lld",
+      "fr": "Réponse %lld",
+      "ja": "選択肢 %lld",
+      "ru": "Вариант %lld",
+      "sr": "Одговор %lld",
+      "sr-Latn": "Odgovor %lld",
+      "zh-Hans": "选项 %lld"
+    },
+    "Pick when it ends, or turn the end off.": {
+      "de": "Wähle, wann er endet, oder schalte das Ende aus.",
+      "es": "Elige cuándo termina o desactiva el final.",
+      "fr": "Choisissez quand il se termine, ou désactivez la fin.",
+      "ja": "終了日時を選ぶか、終了をオフにしてください。",
+      "ru": "Выбери, когда оно заканчивается, или выключи окончание.",
+      "sr": "Изабери када се завршава или искључи крај.",
+      "sr-Latn": "Izaberi kada se završava ili isključi kraj.",
+      "zh-Hans": "选择结束时间，或关闭结束时间。"
+    },
+    "Pick when it starts.": {
+      "de": "Wähle, wann er beginnt.",
+      "es": "Elige cuándo empieza.",
+      "fr": "Choisissez quand il commence.",
+      "ja": "開始日時を選んでください。",
+      "ru": "Выбери, когда оно начинается.",
+      "sr": "Изабери када почиње.",
+      "sr-Latn": "Izaberi kada počinje.",
+      "zh-Hans": "选择开始时间。"
+    },
+    "Pinning…": {
+      "de": "Wird angeheftet …",
+      "es": "Fijando…",
+      "fr": "Épinglage…",
+      "ja": "貼っています…",
+      "ru": "Прикрепляем…",
+      "sr": "Качи се…",
+      "sr-Latn": "Kači se…",
+      "zh-Hans": "正在钉上…"
+    },
+    "Position": {
+      "de": "Wiedergabeposition",
+      "en": "Position",
+      "es": "Posición de reproducción",
+      "fr": "Position de lecture",
+      "ja": "再生位置",
+      "ru": "Позиция воспроизведения",
+      "sr": "Позиција репродукције",
+      "sr-Latn": "Pozicija reprodukcije",
+      "zh-Hans": "播放位置"
+    },
+    "Remove %@": {
+      "de": "%@ entfernen",
+      "es": "Quitar %@",
+      "fr": "Retirer %@",
+      "ja": "%@を削除",
+      "ru": "Убрать %@",
+      "sr": "Уклони %@",
+      "sr-Latn": "Ukloni %@",
+      "zh-Hans": "移除 %@"
+    },
+    "Remove sticker": {
+      "de": "Sticker entfernen",
+      "en": "Remove sticker",
+      "es": "Eliminar sticker",
+      "fr": "Supprimer l’autocollant",
+      "ja": "ステッカーを削除",
+      "ru": "Удалить стикер",
+      "sr": "Уклони стикер",
+      "sr-Latn": "Ukloni stiker",
+      "zh-Hans": "移除贴纸"
+    },
+    "Remove sticker: %@": {
+      "de": "Sticker entfernen: %@",
+      "en": "Remove sticker: %@",
+      "es": "Eliminar sticker: %@",
+      "fr": "Supprimer l’autocollant : %@",
+      "ja": "ステッカーを削除：%@",
+      "ru": "Удалить стикер: %@",
+      "sr": "Уклони стикер: %@",
+      "sr-Latn": "Ukloni stiker: %@",
+      "zh-Hans": "移除贴纸：%@"
+    },
+    "Remove this sticker?": {
+      "de": "Diesen Sticker entfernen?",
+      "en": "Remove this sticker?",
+      "es": "¿Eliminar este sticker?",
+      "fr": "Supprimer cet autocollant ?",
+      "ja": "このステッカーを削除しますか？",
+      "ru": "Удалить этот стикер?",
+      "sr": "Уклонити овај стикер?",
+      "sr-Latn": "Ukloniti ovaj stiker?",
+      "zh-Hans": "移除这个贴纸？"
+    },
+    "Report sent.": {
+      "de": "Meldung gesendet.",
+      "es": "Denuncia enviada.",
+      "fr": "Signalement envoyé.",
+      "ja": "報告を送信しました。",
+      "ru": "Жалоба отправлена.",
+      "sr": "Пријава је послата.",
+      "sr-Latn": "Prijava je poslata.",
+      "zh-Hans": "举报已发送。"
+    },
+    "Safety for %@": {
+      "de": "Sicherheit für %@",
+      "es": "Seguridad para %@",
+      "fr": "Sécurité pour %@",
+      "ja": "%@の安全",
+      "ru": "Безопасность для %@",
+      "sr": "Безбедност за %@",
+      "sr-Latn": "Bezbednost za %@",
+      "zh-Hans": "%@ 的安全"
+    },
+    "Save %@": {
+      "de": "%@ sichern",
+      "es": "Guardar %@",
+      "fr": "Enregistrer %@",
+      "ja": "%@を保存",
+      "ru": "Сохранить %@",
+      "sr": "Сачувај %@",
+      "sr-Latn": "Sačuvaj %@",
+      "zh-Hans": "保存 %@"
+    },
+    "Saving…": {
+      "de": "Wird gesichert …",
+      "es": "Guardando…",
+      "fr": "Enregistrement…",
+      "ja": "保存しています…",
+      "ru": "Сохраняем…",
+      "sr": "Чува се…",
+      "sr-Latn": "Čuva se…",
+      "zh-Hans": "正在保存…"
+    },
     "Say something about it (optional)": {},
-    "Seen": {},
-    "Several people are typing…": {},
-    "Sign in": {},
-    "Tell me when a message arrives": {},
-    "That image couldn't be read.": {},
-    "That note has been taken down.": {},
-    "That username is reserved.": {},
-    "The Smiths": {},
-    "The answer could not be read.": {},
-    "The assistant is answering": {},
-    "The board pins one photo at a time — the first is on its way.": {},
-    "The end can't be before the start.": {},
-    "The family owner needs to approve your request. This page updates automatically — or check right now.": {},
-    "The file changed or is gone.": {},
-    "The photo took too long to pin. Try again.": {},
-    "The server answered %lld.": {},
-    "The server did not answer in time.": {},
-    "The server is busy. Try again in a moment.": {},
-    "This browser cannot time a request out.": {},
-    "This browser didn't let Family read the clipboard. Paste with ⌘V or Ctrl+V instead.": {},
-    "This browser doesn't show notifications.": {},
-    "This note has been taken down.": {},
-    "Title": {},
-    "Two options are the same.": {},
-    "View the photo": {},
-    "Voice message": {},
-    "Voice note · %@": {},
-    "What hasn't been sent yet is lost.": {},
-    "While this tab is not in front, a notification says who wrote — never what they wrote, which stays on this page.": {},
-    "Who reacted": {},
-    "You were mentioned": {},
-    "You're not in a family, so there is no board.": {},
-    "You've blocked them.": {},
+    "Seen": {
+      "de": "Gesehen",
+      "es": "Visto",
+      "fr": "Vu",
+      "ja": "既読",
+      "ru": "Просмотрено",
+      "sr": "Виђено",
+      "sr-Latn": "Viđeno",
+      "zh-Hans": "已读"
+    },
+    "Several people are typing…": {
+      "de": "Mehrere Personen schreiben …",
+      "es": "Varias personas están escribiendo…",
+      "fr": "Plusieurs personnes écrivent…",
+      "ja": "複数の人が入力中…",
+      "ru": "Несколько человек печатают…",
+      "sr": "Више особа куца…",
+      "sr-Latn": "Više osoba kuca…",
+      "zh-Hans": "多人正在输入…"
+    },
+    "Sign in": {
+      "de": "Anmelden",
+      "es": "Iniciar sesión",
+      "fr": "Se connecter",
+      "ja": "サインイン",
+      "ru": "Войти",
+      "sr": "Пријави се",
+      "sr-Latn": "Prijavi se",
+      "zh-Hans": "登录"
+    },
+    "Sticker": {
+      "de": "Sticker",
+      "en": "Sticker",
+      "es": "Sticker",
+      "fr": "Autocollant",
+      "ja": "ステッカー",
+      "ru": "Стикер",
+      "sr": "Стикер",
+      "sr-Latn": "Stiker",
+      "zh-Hans": "贴纸"
+    },
+    "Stickers": {
+      "de": "Sticker",
+      "en": "Stickers",
+      "es": "Stickers",
+      "fr": "Autocollants",
+      "ja": "ステッカー",
+      "ru": "Стикеры",
+      "sr": "Стикери",
+      "sr-Latn": "Stikeri",
+      "zh-Hans": "贴纸"
+    },
+    "Tell me when a message arrives": {
+      "de": "Benachrichtigen, wenn eine Nachricht kommt",
+      "es": "Avisarme cuando llegue un mensaje",
+      "fr": "Me prévenir quand un message arrive",
+      "ja": "メッセージが届いたら知らせる",
+      "ru": "Сообщать о новых сообщениях",
+      "sr": "Обавести ме када стигне порука",
+      "sr-Latn": "Obavesti me kada stigne poruka",
+      "zh-Hans": "收到消息时通知我"
+    },
+    "That image couldn't be read.": {
+      "de": "Dieses Bild konnte nicht gelesen werden.",
+      "es": "No se pudo leer esa imagen.",
+      "fr": "Impossible de lire cette image.",
+      "ja": "その画像を読み込めませんでした。",
+      "ru": "Не удалось прочитать это изображение.",
+      "sr": "Та слика није могла да се прочита.",
+      "sr-Latn": "Ta slika nije mogla da se pročita.",
+      "zh-Hans": "无法读取该图片。"
+    },
+    "That note has been taken down.": {
+      "de": "Diese Notiz wurde entfernt.",
+      "es": "Esa nota se ha retirado.",
+      "fr": "Cette note a été retirée.",
+      "ja": "そのメモは外されました。",
+      "ru": "Эту заметку сняли.",
+      "sr": "Та белешка је скинута.",
+      "sr-Latn": "Ta beleška je skinuta.",
+      "zh-Hans": "那张便签已被取下。"
+    },
+    "That picture is too large for a sticker.": {
+      "de": "Dieses Bild ist zu groß für einen Sticker.",
+      "en": "That picture is too large for a sticker.",
+      "es": "Esa imagen es demasiado grande para un sticker.",
+      "fr": "Cette image est trop volumineuse pour un autocollant.",
+      "ja": "その画像はステッカーにするには大きすぎます。",
+      "ru": "Эта картинка слишком велика для стикера.",
+      "sr": "Та слика је превелика за стикер.",
+      "sr-Latn": "Ta slika je prevelika za stiker.",
+      "zh-Hans": "这张图片太大，无法用作贴纸。"
+    },
+    "That sticker has already been removed.": {
+      "de": "Dieser Sticker wurde bereits entfernt.",
+      "en": "That sticker has already been removed.",
+      "es": "Ese sticker ya se ha eliminado.",
+      "fr": "Cet autocollant a déjà été supprimé.",
+      "ja": "そのステッカーはすでに削除されています。",
+      "ru": "Этот стикер уже удалён.",
+      "sr": "Тај стикер је већ уклоњен.",
+      "sr-Latn": "Taj stiker je već uklonjen.",
+      "zh-Hans": "该贴纸已被移除。"
+    },
+    "That username is reserved.": {
+      "de": "Dieser Benutzername ist reserviert.",
+      "es": "Ese nombre de usuario está reservado.",
+      "fr": "Ce nom d’utilisateur est réservé.",
+      "ja": "そのユーザ名は予約されています。",
+      "ru": "Это имя пользователя зарезервировано.",
+      "sr": "То корисничко име је резервисано.",
+      "sr-Latn": "To korisničko ime je rezervisano.",
+      "zh-Hans": "该用户名已被保留。"
+    },
+    "That's more things than one list holds.": {
+      "de": "Das sind mehr Punkte, als eine Liste fassen kann.",
+      "es": "Son más elementos de los que caben en una lista.",
+      "fr": "C’est plus d’éléments qu’une liste ne peut en contenir.",
+      "ja": "1つのリストに入る数を超えています。",
+      "ru": "Это больше пунктов, чем вмещает один список.",
+      "sr": "То је више ставки него што једна листа може да прими.",
+      "sr-Latn": "To je više stavki nego što jedna lista može da primi.",
+      "zh-Hans": "超出了一个清单能容纳的条数。"
+    },
+    "The Smiths": {
+      "de": "The Smiths",
+      "es": "The Smiths",
+      "fr": "The Smiths",
+      "ja": "The Smiths",
+      "ru": "The Smiths",
+      "sr": "The Smiths",
+      "sr-Latn": "The Smiths",
+      "zh-Hans": "The Smiths"
+    },
+    "The answer could not be read.": {
+      "de": "Die Antwort konnte nicht gelesen werden.",
+      "es": "No se pudo leer la respuesta.",
+      "fr": "Impossible de lire la réponse.",
+      "ja": "応答を読み取れませんでした。",
+      "ru": "Не удалось прочитать ответ.",
+      "sr": "Одговор није могао да се прочита.",
+      "sr-Latn": "Odgovor nije mogao da se pročita.",
+      "zh-Hans": "无法读取服务器的回应。"
+    },
+    "The assistant is answering": {
+      "de": "Der Assistent antwortet",
+      "es": "El asistente está respondiendo",
+      "fr": "L’assistant répond",
+      "ja": "アシスタントが回答しています",
+      "ru": "Ассистент отвечает",
+      "sr": "Асистент одговара",
+      "sr-Latn": "Asistent odgovara",
+      "zh-Hans": "助手正在回答"
+    },
+    "The board pins one photo at a time — the first is on its way.": {
+      "de": "Die Pinnwand heftet immer nur ein Foto an – das erste ist unterwegs.",
+      "es": "El tablón fija una foto cada vez: la primera ya está en camino.",
+      "fr": "Le tableau épingle une photo à la fois — la première est en route.",
+      "ja": "ボードに貼れる写真は一度に1枚です — 最初の写真を送信中です。",
+      "ru": "Доска прикрепляет по одному фото — первое уже в пути.",
+      "sr": "Табла качи једну по једну фотографију — прва је на путу.",
+      "sr-Latn": "Tabla kači jednu po jednu fotografiju — prva je na putu.",
+      "zh-Hans": "留言板一次只能钉一张照片——第一张正在上传。"
+    },
+    "The end can't be before the start.": {
+      "de": "Das Ende kann nicht vor dem Beginn liegen.",
+      "es": "El final no puede ser anterior al inicio.",
+      "fr": "La fin ne peut pas précéder le début.",
+      "ja": "終了を開始より前にはできません。",
+      "ru": "Окончание не может быть раньше начала.",
+      "sr": "Крај не може бити пре почетка.",
+      "sr-Latn": "Kraj ne može biti pre početka.",
+      "zh-Hans": "结束时间不能早于开始时间。"
+    },
+    "The family owner needs to approve your request. This page updates automatically — or check right now.": {
+      "de": "Der Eigentümer der Familie muss deine Anfrage annehmen. Diese Seite aktualisiert sich von selbst – oder prüfe jetzt gleich.",
+      "es": "El propietario de la familia tiene que aprobar tu solicitud. Esta página se actualiza sola, o compruébalo ahora mismo.",
+      "fr": "Le propriétaire de la famille doit approuver votre demande. Cette page se met à jour toute seule — ou vérifiez maintenant.",
+      "ja": "ファミリーのオーナーがリクエストを承認する必要があります。このページは自動で更新されます。今すぐ確認することもできます。",
+      "ru": "Владелец семьи должен одобрить твой запрос. Страница обновится сама — или проверь прямо сейчас.",
+      "sr": "Власник породице треба да одобри твој захтев. Ова страница се сама ажурира — или провери одмах.",
+      "sr-Latn": "Vlasnik porodice treba da odobri tvoj zahtev. Ova stranica se sama ažurira — ili proveri odmah.",
+      "zh-Hans": "需要家庭拥有者批准你的请求。此页面会自动更新——你也可以现在检查。"
+    },
+    "The family's sticker pack is full. Remove one to make room.": {
+      "de": "Das Sticker-Paket der Familie ist voll. Entferne einen Sticker, um Platz zu schaffen.",
+      "en": "The family's sticker pack is full. Remove one to make room.",
+      "es": "El paquete de stickers de la familia está lleno. Elimina uno para hacer sitio.",
+      "fr": "Le pack d’autocollants de la famille est plein. Supprimez-en un pour faire de la place.",
+      "ja": "家族のステッカーパックがいっぱいです。1つ削除して空きを作ってください。",
+      "ru": "Набор семейных стикеров заполнен. Удалите один, чтобы освободить место.",
+      "sr": "Породични пакет стикера је пун. Уклоните један да направите места.",
+      "sr-Latn": "Porodični paket stikera je pun. Uklonite jedan da napravite mesta.",
+      "zh-Hans": "家庭贴纸包已满。请移除一个以腾出空间。"
+    },
+    "The file changed or is gone.": {
+      "de": "Die Datei hat sich geändert oder ist weg.",
+      "es": "El archivo cambió o ya no está.",
+      "fr": "Le fichier a changé ou a disparu.",
+      "ja": "ファイルが変更されたか、見つかりません。",
+      "ru": "Файл изменился или пропал.",
+      "sr": "Датотека је измењена или је нема.",
+      "sr-Latn": "Datoteka je izmenjena ili je nema.",
+      "zh-Hans": "文件已更改或不存在。"
+    },
+    "The photo took too long to pin. Try again.": {
+      "de": "Das Anheften des Fotos hat zu lange gedauert. Versuch es noch einmal.",
+      "es": "Fijar la foto tardó demasiado. Inténtalo de nuevo.",
+      "fr": "L’épinglage de la photo a pris trop de temps. Réessayez.",
+      "ja": "写真を貼るのに時間がかかりすぎました。もう一度お試しください。",
+      "ru": "Фото прикреплялось слишком долго. Попробуй ещё раз.",
+      "sr": "Качење фотографије је трајало предуго. Покушај поново.",
+      "sr-Latn": "Kačenje fotografije je trajalo predugo. Pokušaj ponovo.",
+      "zh-Hans": "钉照片用时过长。请重试。"
+    },
+    "The server answered %lld.": {
+      "de": "Der Server hat mit %lld geantwortet.",
+      "es": "El servidor respondió %lld.",
+      "fr": "Le serveur a répondu %lld.",
+      "ja": "サーバの応答: %lld。",
+      "ru": "Сервер ответил %lld.",
+      "sr": "Сервер је одговорио %lld.",
+      "sr-Latn": "Server je odgovorio %lld.",
+      "zh-Hans": "服务器返回了 %lld。"
+    },
+    "The server did not answer in time.": {
+      "de": "Der Server hat nicht rechtzeitig geantwortet.",
+      "es": "El servidor no respondió a tiempo.",
+      "fr": "Le serveur n’a pas répondu à temps.",
+      "ja": "サーバが時間内に応答しませんでした。",
+      "ru": "Сервер не ответил вовремя.",
+      "sr": "Сервер није одговорио на време.",
+      "sr-Latn": "Server nije odgovorio na vreme.",
+      "zh-Hans": "服务器未能及时响应。"
+    },
+    "The server is busy. Try again in a moment.": {
+      "de": "Der Server ist ausgelastet. Versuch es gleich noch einmal.",
+      "es": "El servidor está ocupado. Inténtalo de nuevo en un momento.",
+      "fr": "Le serveur est occupé. Réessayez dans un instant.",
+      "ja": "サーバが混み合っています。少し待ってからもう一度お試しください。",
+      "ru": "Сервер занят. Попробуй ещё раз чуть позже.",
+      "sr": "Сервер је заузет. Покушај поново за тренутак.",
+      "sr-Latn": "Server je zauzet. Pokušaj ponovo za trenutak.",
+      "zh-Hans": "服务器繁忙。请稍后重试。"
+    },
+    "The sticker took too long to add. Try again.": {
+      "de": "Das Hinzufügen des Stickers hat zu lange gedauert. Versuch es noch einmal.",
+      "en": "The sticker took too long to add. Try again.",
+      "es": "El sticker tardó demasiado en añadirse. Inténtalo de nuevo.",
+      "fr": "L’ajout de l’autocollant a pris trop de temps. Réessayez.",
+      "ja": "ステッカーの追加に時間がかかりすぎました。もう一度お試しください。",
+      "ru": "Стикер добавлялся слишком долго. Попробуйте ещё раз.",
+      "sr": "Додавање стикера је трајало предуго. Покушајте поново.",
+      "sr-Latn": "Dodavanje stikera je trajalo predugo. Pokušajte ponovo.",
+      "zh-Hans": "添加贴纸用时过长。请重试。"
+    },
+    "This browser cannot time a request out.": {
+      "de": "Dieser Browser kann eine Anfrage nicht zeitlich begrenzen.",
+      "es": "Este navegador no puede limitar el tiempo de una solicitud.",
+      "fr": "Ce navigateur ne peut pas limiter la durée d’une requête.",
+      "ja": "このブラウザはリクエストのタイムアウトを設定できません。",
+      "ru": "Этот браузер не умеет ограничивать время запроса.",
+      "sr": "Овај прегледач не може да ограничи трајање захтева.",
+      "sr-Latn": "Ovaj pregledač ne može da ograniči trajanje zahteva.",
+      "zh-Hans": "此浏览器无法为请求设置超时。"
+    },
+    "This browser didn't let Family read the clipboard. Paste with ⌘V or Ctrl+V instead.": {
+      "de": "Dieser Browser hat Family den Zugriff auf die Zwischenablage verweigert. Füge stattdessen mit ⌘V oder Strg+V ein.",
+      "es": "Este navegador no dejó que Family leyera el portapapeles. Pega con ⌘V o Ctrl+V.",
+      "fr": "Ce navigateur n’a pas laissé Family lire le presse-papiers. Collez plutôt avec ⌘V ou Ctrl+V.",
+      "ja": "このブラウザでは Family がクリップボードを読めませんでした。⌘V または Ctrl+V で貼り付けてください。",
+      "ru": "Браузер не дал Family прочитать буфер обмена. Вставь с помощью ⌘V или Ctrl+V.",
+      "sr": "Овај прегледач није дозволио да Family прочита оставу. Налепи помоћу ⌘V или Ctrl+V.",
+      "sr-Latn": "Ovaj pregledač nije dozvolio da Family pročita ostavu. Nalepi pomoću ⌘V ili Ctrl+V.",
+      "zh-Hans": "此浏览器不允许 Family 读取剪贴板。请改用 ⌘V 或 Ctrl+V 粘贴。"
+    },
+    "This browser doesn't show notifications.": {
+      "de": "Dieser Browser zeigt keine Mitteilungen an.",
+      "es": "Este navegador no muestra notificaciones.",
+      "fr": "Ce navigateur n’affiche pas de notifications.",
+      "ja": "このブラウザは通知を表示しません。",
+      "ru": "Этот браузер не показывает уведомления.",
+      "sr": "Овај прегледач не приказује обавештења.",
+      "sr-Latn": "Ovaj pregledač ne prikazuje obaveštenja.",
+      "zh-Hans": "此浏览器不显示通知。"
+    },
+    "This note has been taken down.": {
+      "de": "Diese Notiz wurde entfernt.",
+      "es": "Esta nota se ha retirado.",
+      "fr": "Cette note a été retirée.",
+      "ja": "このメモは外されました。",
+      "ru": "Эту заметку сняли.",
+      "sr": "Ова белешка је скинута.",
+      "sr-Latn": "Ova beleška je skinuta.",
+      "zh-Hans": "这张便签已被取下。"
+    },
+    "Title": {
+      "de": "Titel",
+      "es": "Título",
+      "fr": "Titre",
+      "ja": "タイトル",
+      "ru": "Название",
+      "sr": "Наслов",
+      "sr-Latn": "Naslov",
+      "zh-Hans": "标题"
+    },
+    "Two options are the same.": {
+      "de": "Zwei Antworten sind gleich.",
+      "es": "Dos respuestas son iguales.",
+      "fr": "Deux réponses sont identiques.",
+      "ja": "同じ選択肢が2つあります。",
+      "ru": "Два варианта совпадают.",
+      "sr": "Два одговора су иста.",
+      "sr-Latn": "Dva odgovora su ista.",
+      "zh-Hans": "有两个选项相同。"
+    },
+    "View the photo": {
+      "de": "Foto ansehen",
+      "es": "Ver la foto",
+      "fr": "Voir la photo",
+      "ja": "写真を表示",
+      "ru": "Посмотреть фото",
+      "sr": "Погледај фотографију",
+      "sr-Latn": "Pogledaj fotografiju",
+      "zh-Hans": "查看照片"
+    },
+    "What hasn't been sent yet is lost.": {
+      "de": "Was noch nicht gesendet wurde, geht verloren.",
+      "es": "Lo que aún no se ha enviado se perderá.",
+      "fr": "Ce qui n’a pas encore été envoyé sera perdu.",
+      "ja": "まだ送信されていないものは失われます。",
+      "ru": "Всё, что ещё не отправлено, будет потеряно.",
+      "sr": "Оно што још није послато биће изгубљено.",
+      "sr-Latn": "Ono što još nije poslato biće izgubljeno.",
+      "zh-Hans": "尚未发送的内容将会丢失。"
+    },
+    "While this tab is not in front, a notification says who wrote — never what they wrote, which stays on this page.": {
+      "de": "Solange dieser Tab nicht vorne ist, sagt eine Mitteilung, wer geschrieben hat – nie, was; das bleibt auf dieser Seite.",
+      "es": "Mientras esta pestaña no esté delante, una notificación dice quién escribió, nunca qué escribió: eso se queda en esta página.",
+      "fr": "Tant que cet onglet n’est pas au premier plan, une notification indique qui a écrit — jamais ce qui a été écrit, qui reste sur cette page.",
+      "ja": "このタブが前面にないとき、通知には誰が書いたかだけが表示されます。内容はこのページにとどまり、表示されません。",
+      "ru": "Пока эта вкладка не на переднем плане, уведомление сообщает, кто написал, — но никогда не что: это остаётся на странице.",
+      "sr": "Док ова картица није у првом плану, обавештење каже ко је писао — никад шта је написао; то остаје на овој страници.",
+      "sr-Latn": "Dok ova kartica nije u prvom planu, obaveštenje kaže ko je pisao — nikad šta je napisao; to ostaje na ovoj stranici.",
+      "zh-Hans": "当此标签页不在最前面时，通知只会显示谁发来了消息，绝不显示内容——内容只留在此页面。"
+    },
+    "Who reacted": {
+      "de": "Wer reagiert hat",
+      "es": "Quién reaccionó",
+      "fr": "Qui a réagi",
+      "ja": "リアクションした人",
+      "ru": "Кто отреагировал",
+      "sr": "Ко је реаговао",
+      "sr-Latn": "Ko je reagovao",
+      "zh-Hans": "谁回应了"
+    },
+    "You were mentioned": {
+      "de": "Du wurdest erwähnt",
+      "es": "Te mencionaron",
+      "fr": "Vous avez été mentionné",
+      "ja": "あなたがメンションされました",
+      "ru": "Тебя упомянули",
+      "sr": "Поменут/а си",
+      "sr-Latn": "Pomenut/a si",
+      "zh-Hans": "有人提到了你"
+    },
+    "You're not in a family, so there is no board.": {
+      "de": "Du bist in keiner Familie, also gibt es keine Pinnwand.",
+      "es": "No estás en ninguna familia, así que no hay tablón.",
+      "fr": "Vous n’êtes dans aucune famille, il n’y a donc pas de tableau.",
+      "ja": "ファミリーに参加していないため、ボードはありません。",
+      "ru": "Ты не состоишь в семье, поэтому доски нет.",
+      "sr": "Ниси у породици, па нема табле.",
+      "sr-Latn": "Nisi u porodici, pa nema table.",
+      "zh-Hans": "你不在任何家庭中，所以没有留言板。"
+    },
+    "You've blocked them.": {
+      "de": "Du hast diese Person blockiert.",
+      "es": "Has bloqueado a esta persona.",
+      "fr": "Vous avez bloqué cette personne.",
+      "ja": "この人をブロックしています。",
+      "ru": "Ты заблокировал(а) этого человека.",
+      "sr": "Блокирао/ла си ову особу.",
+      "sr-Latn": "Blokirao/la si ovu osobu.",
+      "zh-Hans": "你已屏蔽对方。"
+    },
     "Your event": {},
-    "Your session has expired.": {},
-    "Zero KB": {},
-    "Zoom in": {},
-    "Zoom out": {},
-    "a photo": {}
+    "Your session has expired.": {
+      "de": "Deine Sitzung ist abgelaufen.",
+      "es": "Tu sesión ha caducado.",
+      "fr": "Votre session a expiré.",
+      "ja": "セッションの有効期限が切れました。",
+      "ru": "Сессия истекла.",
+      "sr": "Твоја сесија је истекла.",
+      "sr-Latn": "Tvoja sesija je istekla.",
+      "zh-Hans": "你的会话已过期。"
+    },
+    "Zero KB": {
+      "de": "Null KB",
+      "es": "Cero KB",
+      "fr": "Zéro Ko",
+      "ja": "0 KB",
+      "ru": "0 КБ",
+      "sr": "Нула KB",
+      "sr-Latn": "Nula KB",
+      "zh-Hans": "0 KB"
+    },
+    "Zoom in": {
+      "de": "Vergrößern",
+      "es": "Ampliar",
+      "fr": "Zoom avant",
+      "ja": "拡大",
+      "ru": "Увеличить",
+      "sr": "Увећај",
+      "sr-Latn": "Uvećaj",
+      "zh-Hans": "放大"
+    },
+    "Zoom out": {
+      "de": "Verkleinern",
+      "es": "Reducir",
+      "fr": "Zoom arrière",
+      "ja": "縮小",
+      "ru": "Уменьшить",
+      "sr": "Умањи",
+      "sr-Latn": "Umanji",
+      "zh-Hans": "缩小"
+    },
+    "a photo": {
+      "de": "ein Foto",
+      "es": "una foto",
+      "fr": "une photo",
+      "ja": "写真",
+      "ru": "фото",
+      "sr": "фотографија",
+      "sr-Latn": "fotografija",
+      "zh-Hans": "一张照片"
+    },
+    "…": {
+      "de": "…",
+      "es": "…",
+      "fr": "…",
+      "ja": "…",
+      "ru": "…",
+      "sr": "…",
+      "sr-Latn": "…",
+      "zh-Hans": "…"
+    }
   },
   "indirect": [
     "Spam",
@@ -183,6 +1606,15 @@
     "Food & Drink",
     "Activities",
     "Travel & Places",
-    "Objects & Symbols"
+    "Objects & Symbols",
+    "You can record a message after the call.",
+    "Send or delete the voice message that wasn't sent first.",
+    "Recording",
+    "Recording deleted",
+    "Voice message sent",
+    "Ready to review, %@",
+    "Recording stopped at five minutes.",
+    "We can't hear anything. Is the microphone muted?",
+    "You can play this after recording."
   ]
 }

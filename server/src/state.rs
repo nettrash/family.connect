@@ -11,6 +11,8 @@ use sqlx::PgPool;
 
 use crate::calls::CallRegistry;
 use crate::config::Config;
+use crate::handlers_transcript::Transcriptions;
+use crate::lookups::WeatherCache;
 use crate::push::PushSender;
 use crate::registry::Registry;
 use crate::storage::Storage;
@@ -35,6 +37,15 @@ pub struct AppState {
     /// than one-per-request, so the connection pool and the TLS session
     /// cache are actually reused.
     pub http: reqwest::Client,
+    /// The transcription calls in flight, one per attachment, and the slots
+    /// that bound how many run at once (docs/protocol.md, "Transcripts on
+    /// request"). In memory only: a restart loses at most the calls in
+    /// flight, whose askers see them fail and ask again.
+    pub transcriptions: Arc<Transcriptions>,
+    /// Forecasts the assistant looked up, kept half an hour by rounded
+    /// coordinates for Open-Meteo's courtesy (docs/protocol.md, "Looking
+    /// things up"). Never search results, and never a place name.
+    pub lookup_cache: Arc<WeatherCache>,
 }
 
 impl AppState {
@@ -46,8 +57,10 @@ impl AppState {
         let storage = Storage::new(cfg.storage.attachments_dir.clone());
         // A generous timeout: a large model streaming a long answer is slow
         // by nature, and cutting it off mid-sentence is worse than waiting.
+        // The operator's to change (`[ai] timeout_secs`), because how slow an
+        // image deployment is depends on whose it is.
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
+            .timeout(std::time::Duration::from_secs(cfg.ai.timeout_secs))
             .build()
             .unwrap_or_default();
         Self {
@@ -58,6 +71,8 @@ impl AppState {
             cfg,
             http,
             storage,
+            transcriptions: Arc::new(Transcriptions::default()),
+            lookup_cache: Arc::new(WeatherCache::default()),
         }
     }
 }

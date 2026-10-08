@@ -6,7 +6,10 @@
 //  family chat: which language it answers in, how much of the chat it is
 //  shown when somebody mentions it, whether it may be shown a photograph
 //  at all, and — the third switch — whether a mention may also be shown
-//  the chat's most recent photographs.
+//  the chat's most recent photographs; and, not about the assistant's
+//  answers at all, whether members may ask for the text of each other's
+//  recordings; and whether the assistant may look things up; and the
+//  places whose weather the daily greeting mentions (GreetingPlacesSection).
 //
 //  Written once and dropped into both rosters — the phone's
 //  FamilyManageView and the Mac's MacFamilyView — because they are the
@@ -40,6 +43,7 @@ struct FamilyAssistantSettings: View {
     var onUpdated: (FamilyDTO) -> Void
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Environment(AppSession.self) private var session
     @State private var isSaving = false
     @State private var errorText: String?
 
@@ -123,6 +127,48 @@ struct FamilyAssistantSettings: View {
             footer(facesExplanation)
         }
 
+        // The SIXTH switch: whether members may ask for the text of OTHER
+        // members' recordings in the family chat (protocol.md, "Transcripts
+        // on request"). With the disclosure switches because it is one —
+        // it decides whether somebody else's VOICE may leave the server —
+        // but bound to none of them: it widens nothing the assistant is
+        // shown. Its own section, like "Sees recent history".
+        //
+        // PRESENT on a server with no transcription deployment, disabled
+        // with the reason, as the greeting is: what it promises is text an
+        // owner would otherwise wonder about, and the reason is their
+        // operator's to change. A member's OWN recordings need no switch.
+        Section {
+            Toggle("Voice and video as text", isOn: transcriptsBinding)
+                .disabled(isSaving || !AppSettings.assistantTranscribe)
+            caption(transcriptsExplanation)
+        } footer: {
+            footer(transcriptsExplanation)
+        }
+
+        // The SEVENTH switch: whether the assistant may look things up —
+        // send a short query or place name it wrote to the providers the
+        // server names (protocol.md, "Looking things up"). With the
+        // disclosure switches because it is one: it decides whether words
+        // drawn from the family's questions reach a party that is not the
+        // processor. Bound to none of the others.
+        //
+        // ABSENT, not disabled, on a server with no lookup source, like
+        // "Can be shown photos": the footnote has to NAME who receives the
+        // query, and a switch that names nobody could only promise
+        // something the server cannot do.
+        if let providers = lookupProviders {
+            Section {
+                Toggle("Can look things up", isOn: lookupsBinding)
+                    .disabled(isSaving)
+                caption(lookupsExplanation(providers))
+            } header: {
+                Text("Looking things up")
+            } footer: {
+                footer(lookupsExplanation(providers))
+            }
+        }
+
         // The FOURTH switch, and the only one on this screen that is not
         // about what leaves the server. It decides whether the assistant
         // SPEAKS without being asked (protocol.md, "The daily greeting"),
@@ -145,6 +191,31 @@ struct FamilyAssistantSettings: View {
             Text("Daily greeting")
         } footer: {
             footer(greetingExplanation)
+        }
+
+        // Not a switch: up to three place names whose weather the greeting
+        // mentions (protocol.md, "Today's weather, for places the owner
+        // chose"). Under the greeting because it is part of it — and the one
+        // thing the greeting sends anywhere, which is why its footnote names
+        // who receives the names.
+        //
+        // ABSENT on a server that fetches no weather for greetings (and on
+        // one that predates the field), like "Looking things up": the
+        // footnote promises a forecast. PRESENT and editable while the
+        // family's own greeting switch is off — see `GreetingPlaces.isOffered`.
+        if GreetingPlaces.isOffered(
+            isOwner: session.isOwner,
+            serverGreetingWeather: AppSettings.assistantGreetingWeather)
+        {
+            GreetingPlacesSection(
+                stored: family.greetingPlaces,
+                isSaving: isSaving,
+                onSave: { places in
+                    save { try await coordinator.api.setGreetingPlaces(places) }
+                },
+                onInvalid: {
+                    errorText = String(localized: "Couldn't save that. Try again.")
+                })
         }
 
         // Inline rather than in a footer: a refusal has to be visible on
@@ -256,6 +327,38 @@ struct FamilyAssistantSettings: View {
         return text
     }
 
+    /// What leaves, to whom, when, and whose recordings need nothing — the
+    /// facts "Transcripts on request" asks a client to carry; then, on a
+    /// server that cannot transcribe, why nothing will happen. Names the
+    /// processor, as the member consent lines do, because it is a voice
+    /// going to a named company and "the model your server uses" would hide
+    /// exactly that.
+    private var transcriptsExplanation: String {
+        let processor = AppSettings.assistantProcessor ?? AppSettings.assistantName ?? ""
+        var text = String(localized: "With this on, members can ask for the text of other members' voice notes, audio and videos in the family chat, and that recording's sound is then sent to \(processor). It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.")
+        if !AppSettings.assistantTranscribe {
+            text += " " + String(localized: "Not available here: this server can't turn recordings into text.")
+        }
+        return text
+    }
+
+    /// The providers, joined for a sentence, when this server may look
+    /// things up at all — the same rule as every other lookup surface
+    /// (`AssistantConsent.offersLookups`).
+    private var lookupProviders: String? {
+        guard AssistantConsent.offersLookups(
+            processor: AppSettings.assistantProcessor, lookups: AppSettings.assistantLookups)
+        else { return nil }
+        return AssistantConsent.providerList(AppSettings.assistantLookups ?? [])
+    }
+
+    /// What may leave, to whom by name, what never does, whose agreement it
+    /// also needs, and that it is off by default — the facts "Looking
+    /// things up" asks the switch's footnote to carry.
+    private func lookupsExplanation(_ providers: String) -> String {
+        String(localized: "With this on, the assistant can look things up when a question needs it — the weather, the news, a fact it isn't sure of — in \(providers). Only a short search query or place name the assistant writes from the question is sent to them, never the conversation itself, and only when the member asking has agreed to it. Answers then list their sources. It is off unless you turn it on.")
+    }
+
     /// What leaves, why, and whose never — the facts "Profile pictures of
     /// members" requires every client to carry; then the reason the switch is
     /// withheld, or that it is inert while the history switch is off. A face
@@ -356,6 +459,24 @@ struct FamilyAssistantSettings: View {
             })
     }
 
+    private var transcriptsBinding: Binding<Bool> {
+        Binding(
+            get: { family.aiTranscripts },
+            set: { enabled in
+                guard enabled != family.aiTranscripts else { return }
+                save { try await coordinator.api.setAITranscripts(enabled) }
+            })
+    }
+
+    private var lookupsBinding: Binding<Bool> {
+        Binding(
+            get: { family.aiLookups },
+            set: { enabled in
+                guard enabled != family.aiLookups else { return }
+                save { try await coordinator.api.setAILookups(enabled) }
+            })
+    }
+
     private func save(_ work: @escaping () async throws -> FamilyDTO) {
         isSaving = true
         errorText = nil
@@ -389,6 +510,13 @@ struct FamilyAssistantSettings: View {
                     // And the fifth — which, like the third, may have gone
                     // off without being asked, when `aiVision` did.
                     aiFaces: updated.aiFaces,
+                    // And the sixth, which nothing else moves — carried
+                    // because what the server answered is what this family
+                    // now is.
+                    aiTranscripts: updated.aiTranscripts,
+                    // And the seventh, which nothing else moves either.
+                    aiLookups: updated.aiLookups,
+                    greetingPlaces: updated.greetingPlaces,
                     maxMembers: updated.maxMembers))
             } catch APIError.forbidden {
                 errorText = String(localized: "Only the family owner can change this.")

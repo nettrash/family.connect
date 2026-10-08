@@ -9,6 +9,66 @@
 use serde_json::{Value, json};
 
 use crate::models::Message;
+use crate::push_text;
+
+/// What a push SAYS (docs/protocol.md, "The words of a push"; issue #82): somebody's own words,
+/// or a sentence of the server's that goes out in the language of the DEVICE it is sent to.
+///
+/// Rendered at the transport, device by device, because one event can go to a phone in Russian and
+/// another in German; everything up to there is the same notification for every device of a
+/// recipient. Compared against a `&str` it is its ENGLISH, which is what the golden tests pin and
+/// what a device with no language is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Text {
+    /// Somebody's own words or a name — a message, a caption, a note, a file's name, a display
+    /// name, "<Family> — <Sender>" — the same in every language. Nothing is machine-translated.
+    Verbatim(String),
+    /// One of the server's own sentences: its catalogue key, which is also its English, and the
+    /// arguments that fill its `%@` / `%lld`, in order.
+    Say {
+        key: &'static str,
+        args: Vec<String>,
+    },
+}
+
+impl Text {
+    pub fn say(key: &'static str, args: &[&str]) -> Self {
+        Text::Say {
+            key,
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+        }
+    }
+
+    /// The words for a device that registered `language` — English for none, or for one the table
+    /// does not speak.
+    pub fn render(&self, language: Option<&str>) -> String {
+        match self {
+            Text::Verbatim(words) => words.clone(),
+            Text::Say { key, args } => {
+                let template = push_text::words(language, key).unwrap_or(key);
+                push_text::fill(template, args)
+            }
+        }
+    }
+}
+
+impl From<String> for Text {
+    fn from(words: String) -> Self {
+        Text::Verbatim(words)
+    }
+}
+
+impl PartialEq<&str> for Text {
+    fn eq(&self, english: &&str) -> bool {
+        self.render(None) == *english
+    }
+}
+
+impl PartialEq<str> for Text {
+    fn eq(&self, english: &str) -> bool {
+        self.render(None) == english
+    }
+}
 
 /// Which protocol event a notification announces, carrying the ids the
 /// client deep-links with: `chat_id`/`message_id` open the chat, `family_id`
@@ -74,8 +134,8 @@ impl PushEvent {
 /// message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notification {
-    pub title: String,
-    pub body: String,
+    pub title: Text,
+    pub body: Text,
     /// Recipient's total unread across chats. APNs-only on the wire — the
     /// protocol's FCM shape carries no badge (Android renders its own).
     pub badge: i64,
@@ -93,6 +153,28 @@ pub struct Notification {
     pub event: PushEvent,
 }
 
+impl Notification {
+    /// The notification as a device on `platform` is told it. A Mac is pushed WHO, never WHAT
+    /// (docs/protocol.md, "A Mac is pushed who, never what"; issue #84): the body a server with
+    /// `include_message_body = false` would send, whatever the setting — the rule the desktop
+    /// clients apply to the notifications they raise themselves, so a Mac says the same thing
+    /// whether its app was running or quit. A phone is told the notification as composed.
+    pub fn for_platform(&self, platform: &str) -> Notification {
+        let mut note = self.clone();
+        if platform == "macos" {
+            match note.event {
+                PushEvent::Message { .. } => note.body = Text::say("New message", &[]),
+                PushEvent::BoardNote { .. } => note.body = Text::say("New note", &[]),
+                // A report, a join request and a join carry no family text to withhold.
+                PushEvent::JoinRequest { .. }
+                | PushEvent::Joined { .. }
+                | PushEvent::Report { .. } => {}
+            }
+        }
+        note
+    }
+}
+
 /// Compose the notification for a new message. Title rules per protocol.md:
 /// direct chat → the sender's display name; family chat →
 /// `"<Family> — <Sender>"`. Body: the message text; the KIND of attachment
@@ -107,7 +189,7 @@ pub struct Notification {
 /// `"N attachments"` (protocol.md, "Push notifications"). A location's
 /// label only ever appears alone, since a location is always a message's
 /// only attachment.
-fn attachment_summary(message: &Message) -> Option<String> {
+fn attachment_summary(message: &Message) -> Option<Text> {
     // The list, with the legacy single field as its one-element fallback —
     // the server always fills both together, so the fallback only matters
     // to a `Message` built by hand.
@@ -117,8 +199,17 @@ fn attachment_summary(message: &Message) -> Option<String> {
     };
     if let [attachment] = attachments {
         return Some(match attachment.kind.as_str() {
-            "photo" => "Photo".to_string(),
-            "video" => "Video".to_string(),
+            // A sticker is a photo on the wire and its own word on a lock
+            // screen: "Photo" for a dancing cat promises a picture of
+            // somebody (protocol.md, "Sticker pack").
+            "photo" if attachment.sticker => Text::say("Sticker", &[]),
+            "photo" => Text::say("Photo", &[]),
+            // A video message is a video on the wire and its own word on a
+            // lock screen, the sticker's case again: "Video" promises a clip
+            // somebody chose, "Video message" says somebody is talking to
+            // you (protocol.md, "Video messages").
+            "video" if attachment.round => Text::say("Video message", &[]),
+            "video" => Text::say("Video", &[]),
             // A voice note has no name worth showing, so the kind is the
             // summary; a track picked off a disk may carry one, and that
             // wins.
@@ -126,7 +217,8 @@ fn attachment_summary(message: &Message) -> Option<String> {
                 .name
                 .clone()
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "Audio".to_string()),
+                .map(Text::Verbatim)
+                .unwrap_or_else(|| Text::say("Audio", &[])),
             // A location's label if it was given one, and the word
             // otherwise. Never the coordinates: an alert on a lock screen
             // is the one place a family member's position should not be
@@ -135,15 +227,18 @@ fn attachment_summary(message: &Message) -> Option<String> {
                 .name
                 .clone()
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "Location".to_string()),
+                .map(Text::Verbatim)
+                .unwrap_or_else(|| Text::say("Location", &[])),
             _ => attachment
                 .name
                 .clone()
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "File".to_string()),
+                .map(Text::Verbatim)
+                .unwrap_or_else(|| Text::say("File", &[])),
         });
     }
-    let count = attachments.len();
+    let count = attachments.len().to_string();
+    let count = count.as_str();
     let first_kind = attachments[0].kind.as_str();
     Some(
         if attachments
@@ -151,16 +246,16 @@ fn attachment_summary(message: &Message) -> Option<String> {
             .all(|attachment| attachment.kind == first_kind)
         {
             match first_kind {
-                "photo" => format!("{count} Photos"),
-                "video" => format!("{count} Videos"),
-                "audio" => format!("{count} Audio"),
-                "file" => format!("{count} Files"),
+                "photo" => Text::say("%lld Photos", &[count]),
+                "video" => Text::say("%lld Videos", &[count]),
+                "audio" => Text::say("%lld Audio", &[count]),
+                "file" => Text::say("%lld Files", &[count]),
                 // A location is always alone, and a kind added later has no
                 // plural word here yet — the generic count is safe for both.
-                _ => format!("{count} attachments"),
+                _ => Text::say("%lld attachments", &[count]),
             }
         } else {
-            format!("{count} attachments")
+            Text::say("%lld attachments", &[count])
         },
     )
 }
@@ -174,19 +269,19 @@ pub fn message_notification(
     badge: i64,
     chat_unread: i64,
 ) -> Notification {
-    let title = if chat_kind == "family" {
+    let title = Text::Verbatim(if chat_kind == "family" {
         format!("{family_name} — {sender_name}")
     } else {
         sender_name.to_string()
-    };
+    });
     let body = if include_message_body {
         if message.body.is_empty() {
-            attachment_summary(message).unwrap_or_else(|| "New message".to_string())
+            attachment_summary(message).unwrap_or_else(|| Text::say("New message", &[]))
         } else {
-            message.body.clone()
+            Text::Verbatim(message.body.clone())
         }
     } else {
-        "New message".to_string()
+        Text::say("New message", &[])
     };
     Notification {
         title,
@@ -225,7 +320,7 @@ pub fn mention_notification(
         badge,
         chat_unread,
     );
-    note.title = format!("{family_name} — {sender_name} mentioned you");
+    note.title = Text::say("%@ — %@ mentioned you", &[family_name, sender_name]);
     note
 }
 
@@ -268,14 +363,14 @@ pub fn board_note_notification(alert: BoardNoteAlert<'_>) -> Notification {
     } = alert;
     Notification {
         title: if mentioned {
-            format!("{family_name} — {author_name} mentioned you")
+            Text::say("%@ — %@ mentioned you", &[family_name, author_name])
         } else {
-            format!("{family_name} — {author_name}")
+            Text::Verbatim(format!("{family_name} — {author_name}"))
         },
         body: if include_body {
-            text.to_string()
+            Text::Verbatim(text.to_string())
         } else {
-            "New note".to_string()
+            Text::say("New note", &[])
         },
         badge,
         // A note is not a message: no chat, and so no per-chat count.
@@ -293,11 +388,12 @@ pub fn board_note_notification(alert: BoardNoteAlert<'_>) -> Notification {
 /// excerpt is the very content somebody asked to have looked at, and a lock
 /// screen is where it must not be readable. The body is the fixed English
 /// "New report", which the switch does not vary because there is nothing
-/// there to withhold (protocol.md, "Push notifications").
+/// there to withhold (protocol.md, "Push notifications") — in the device's language, like every
+/// sentence of the server's own.
 pub fn report_notification(family_name: &str, family_id: i64, badge: i64) -> Notification {
     Notification {
-        title: family_name.to_string(),
-        body: "New report".to_string(),
+        title: Text::Verbatim(family_name.to_string()),
+        body: Text::say("New report", &[]),
         badge,
         chat_unread: None,
         event: PushEvent::Report { family_id },
@@ -311,8 +407,8 @@ pub fn join_request_notification(
     badge: i64,
 ) -> Notification {
     Notification {
-        title: family_name.to_string(),
-        body: format!("{requester_display_name} asked to join"),
+        title: Text::Verbatim(family_name.to_string()),
+        body: Text::say("%@ asked to join", &[requester_display_name]),
         badge,
         chat_unread: None,
         event: PushEvent::JoinRequest { family_id },
@@ -323,8 +419,8 @@ pub fn join_request_notification(
 /// approved.
 pub fn joined_notification(family_name: &str, family_id: i64, badge: i64) -> Notification {
     Notification {
-        title: family_name.to_string(),
-        body: format!("You're in — welcome to {family_name}"),
+        title: Text::Verbatim(family_name.to_string()),
+        body: Text::say("You're in — welcome to %@", &[family_name]),
         badge,
         chat_unread: None,
         event: PushEvent::Joined { family_id },
@@ -332,10 +428,11 @@ pub fn joined_notification(family_name: &str, family_id: i64, badge: i64) -> Not
 }
 
 /// The APNs request body, exactly as protocol.md specifies it: the `aps`
-/// dictionary plus top-level `kind` and the event's ids.
-pub fn apns_payload(note: &Notification) -> Value {
+/// dictionary plus top-level `kind` and the event's ids — its words in `language`, the one the
+/// device registered (docs/protocol.md, "The words of a push").
+pub fn apns_payload(note: &Notification, language: Option<&str>) -> Value {
     let mut aps = json!({
-        "alert": {"title": note.title, "body": note.body},
+        "alert": {"title": note.title.render(language), "body": note.body.render(language)},
         "sound": "default",
         "badge": note.badge,
     });
@@ -369,7 +466,7 @@ pub fn apns_payload(note: &Notification) -> Value {
 /// MUST be strings — ids are stringified here, never sent as numbers.
 /// `android.notification.notification_count` is the exception that is not
 /// one: it lives outside `data`, so it goes on the wire as a NUMBER.
-pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
+pub fn fcm_message(note: &Notification, push_token: &str, language: Option<&str>) -> Value {
     let mut data = json!({"kind": note.event.kind()});
     match note.event {
         PushEvent::Message {
@@ -401,7 +498,7 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
     }
     json!({"message": {
         "token": push_token,
-        "notification": {"title": note.title, "body": note.body},
+        "notification": {"title": note.title.render(language), "body": note.body.render(language)},
         "data": data,
         "android": {"priority": "HIGH", "notification": android_notification},
     }})
@@ -701,7 +798,7 @@ mod tests {
             3,
         );
         assert_eq!(
-            apns_payload(&note),
+            apns_payload(&note, None),
             json!({
                 "aps": {"alert": {"title": "Anna", "body": "Dinner at 7?"}, "sound": "default",
                         "badge": 3, "thread-id": "chat-42"},
@@ -722,7 +819,7 @@ mod tests {
             3,
         );
         assert_eq!(
-            fcm_message(&note, "token-1"),
+            fcm_message(&note, "token-1", None),
             json!({"message": {"token": "token-1",
                 "notification": {"title": "Anna", "body": "Dinner at 7?"},
                 "data": {"kind": "message", "chat_id": "42", "message_id": "1338"},
@@ -748,16 +845,16 @@ mod tests {
             2,
         );
         assert_eq!(
-            fcm_message(&note, "token-1")["message"]["android"]["notification"],
+            fcm_message(&note, "token-1", None)["message"]["android"]["notification"],
             json!({"channel_id": "messages", "tag": "chat-42", "notification_count": 2})
         );
         assert_eq!(
-            apns_payload(&note)["aps"]["badge"],
+            apns_payload(&note, None)["aps"]["badge"],
             json!(9),
             "APNs is unchanged: the badge stays the total across chats"
         );
         assert!(
-            !apns_payload(&note)
+            !apns_payload(&note, None)
                 .to_string()
                 .contains("notification_count"),
             "notification_count is an FCM field and has no place in the APNs payload"
@@ -779,12 +876,11 @@ mod tests {
             3,
             3,
         );
-        let count =
-            &fcm_message(&note, "t")["message"]["android"]["notification"]["notification_count"];
+        let count = &fcm_message(&note, "t", None)["message"]["android"]["notification"]["notification_count"];
         assert!(count.is_number(), "must be a JSON number, got {count}");
         assert_eq!(count.as_i64(), Some(3));
         assert!(
-            fcm_message(&note, "t")["message"]["data"]
+            fcm_message(&note, "t", None)["message"]["data"]
                 .as_object()
                 .expect("data is an object")
                 .values()
@@ -808,7 +904,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            fcm_message(&note, "t")["message"]["android"]["notification"]["notification_count"],
+            fcm_message(&note, "t", None)["message"]["android"]["notification"]["notification_count"],
             json!(0)
         );
     }
@@ -830,12 +926,14 @@ mod tests {
                     mentioned: false,
                 }),
                 "t",
+                None,
             ),
             fcm_message(
                 &join_request_notification("The Smiths", "Junior", 7, 0),
                 "t",
+                None,
             ),
-            fcm_message(&joined_notification("The Smiths", 7, 0), "t"),
+            fcm_message(&joined_notification("The Smiths", 7, 0), "t", None),
         ];
         for message in cases {
             let kind = message["message"]["data"]["kind"].clone();
@@ -897,6 +995,9 @@ mod tests {
                     latitude: None,
                     longitude: None,
                     accuracy_m: None,
+                    sticker: false,
+                    round: false,
+                    waveform: None,
                 }),
                 ..protocol_message()
             }
@@ -1001,6 +1102,9 @@ mod tests {
                 latitude: None,
                 longitude: None,
                 accuracy_m: None,
+                sticker: false,
+                round: false,
+                waveform: None,
             }
         }
         fn with_attachments(list: Vec<crate::models::Attachment>) -> Message {
@@ -1091,7 +1195,7 @@ mod tests {
         );
         assert_eq!(note.body, "New message");
         assert_eq!(
-            apns_payload(&note)["aps"]["alert"]["body"],
+            apns_payload(&note, None)["aps"]["alert"]["body"],
             "New message",
             "the redacted body must reach the wire payload"
         );
@@ -1101,7 +1205,7 @@ mod tests {
     fn the_join_request_payload_carries_family_id_and_kind_without_a_thread() {
         let note = join_request_notification("The Smiths", "Junior", 7, 2);
         assert_eq!(
-            apns_payload(&note),
+            apns_payload(&note, None),
             json!({
                 "aps": {"alert": {"title": "The Smiths", "body": "Junior asked to join"},
                         "sound": "default", "badge": 2},
@@ -1114,7 +1218,7 @@ mod tests {
     fn the_joined_payload_welcomes_the_requester_by_family_name() {
         let note = joined_notification("The Smiths", 7, 0);
         assert_eq!(
-            apns_payload(&note),
+            apns_payload(&note, None),
             json!({
                 "aps": {"alert": {"title": "The Smiths",
                                   "body": "You're in — welcome to The Smiths"},
@@ -1126,7 +1230,7 @@ mod tests {
 
     #[test]
     fn fcm_data_values_are_strings_for_every_event_kind() {
-        let joined = fcm_message(&joined_notification("The Smiths", 7, 0), "t");
+        let joined = fcm_message(&joined_notification("The Smiths", 7, 0), "t", None);
         assert_eq!(
             joined["message"]["data"],
             json!({"kind": "joined", "family_id": "7"})
@@ -1134,6 +1238,7 @@ mod tests {
         let request = fcm_message(
             &join_request_notification("The Smiths", "Junior", 7, 0),
             "t",
+            None,
         );
         assert_eq!(
             request["message"]["data"],
@@ -1207,5 +1312,270 @@ mod tests {
             2,
             "exactly the badge and its filtered subset, never a second count: {query}"
         );
+    }
+
+    /// A sticker is a photo on the wire and its own word on a lock screen
+    /// (protocol.md, "Sticker pack"): the flag changes what one picture is
+    /// CALLED, and nothing about how an album is counted.
+    #[test]
+    fn a_sticker_is_called_a_sticker() {
+        fn picture(sticker: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id: 90,
+                kind: "photo".to_string(),
+                mime: "image/webp".to_string(),
+                size: 4096,
+                width: None,
+                height: None,
+                duration_ms: None,
+                has_preview: false,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker,
+                round: false,
+                waveform: None,
+            }
+        }
+        fn carrying(picture: crate::models::Attachment) -> Message {
+            Message {
+                body: String::new(),
+                attachment: Some(picture.clone()),
+                attachments: Some(vec![picture]),
+                ..protocol_message()
+            }
+        }
+        assert_eq!(
+            attachment_summary(&carrying(picture(true)))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("Sticker")
+        );
+        // The same WebP sent as an ordinary photo is still a photo.
+        assert_eq!(
+            attachment_summary(&carrying(picture(false)))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("Photo")
+        );
+        // And the operator's switch still withholds it.
+        let hidden =
+            message_notification(false, "direct", "", "Anna", &carrying(picture(true)), 1, 1);
+        assert_eq!(hidden.body, "New message");
+    }
+
+    /// A Mac is pushed who, never what (docs/protocol.md; issue #84): the body a server withholding
+    /// message bodies would send, whatever the setting — and a phone is told as composed.
+    #[test]
+    fn a_mac_is_pushed_who_never_what() {
+        let message = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            1,
+            1,
+        );
+        let mac = message.for_platform("macos");
+        assert_eq!(mac.body, "New message");
+        assert_eq!(mac.body.render(Some("ru")), "Новое сообщение");
+        assert_eq!(
+            mac.title, message.title,
+            "the title is the same for everyone"
+        );
+        assert_eq!(message.for_platform("ios"), message);
+        assert_eq!(message.for_platform("android"), message);
+
+        let note = board_note_notification(BoardNoteAlert {
+            include_body: true,
+            family_name: "The Smiths",
+            author_name: "Anna",
+            family_id: 7,
+            note_id: 3,
+            text: "Milk",
+            badge: 0,
+            mentioned: false,
+        });
+        assert_eq!(note.body, "Milk");
+        assert_eq!(note.for_platform("macos").body, "New note");
+
+        // Nothing to withhold: a report, a join request and a join say the same to a Mac.
+        for other in [
+            report_notification("The Smiths", 7, 0),
+            join_request_notification("The Smiths", "Junior", 7, 0),
+            joined_notification("The Smiths", 7, 0),
+        ] {
+            assert_eq!(other.for_platform("macos"), other);
+        }
+    }
+
+    /// The server's own words go out in the device's language and somebody's own words exactly as
+    /// written (docs/protocol.md, "The words of a push"; issue #82): one message, three devices.
+    #[test]
+    fn a_push_speaks_the_devices_language_and_never_translates_what_somebody_wrote() {
+        fn video(id: i64, round: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id,
+                kind: "video".to_string(),
+                mime: "video/mp4".to_string(),
+                size: 1_649_700,
+                width: Some(480),
+                height: Some(480),
+                duration_ms: Some(23_400),
+                has_preview: true,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker: false,
+                round,
+                waveform: None,
+            }
+        }
+        let carrying = |videos: Vec<crate::models::Attachment>| Message {
+            body: String::new(),
+            attachment: videos.first().cloned(),
+            attachments: Some(videos),
+            ..protocol_message()
+        };
+        let one = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
+        assert_eq!(one.body.render(Some("ru")), "Видеосообщение");
+        assert_eq!(one.body.render(Some("de")), "Videonachricht");
+        assert_eq!(one.body.render(None), "Video message");
+        // The title is names, and names are never translated.
+        assert_eq!(one.title.render(Some("ja")), "The Smiths — Anna");
+
+        let three = message_notification(
+            true,
+            "direct",
+            "",
+            "Anna",
+            &carrying(vec![video(91, false), video(92, false), video(93, false)]),
+            1,
+            1,
+        );
+        assert_eq!(three.body, "3 Videos");
+        assert!(
+            three.body.render(Some("ru")).contains('3'),
+            "the count survives translation"
+        );
+        assert_ne!(three.body.render(Some("ru")), "3 Videos");
+
+        // A caption is somebody's words: the same in every language.
+        let captioned = Message {
+            body: "at the lake".to_string(),
+            ..carrying(vec![video(91, false)])
+        };
+        let note = message_notification(true, "direct", "", "Anna", &captioned, 1, 1);
+        for language in [None, Some("ru"), Some("zh-Hans")] {
+            assert_eq!(note.body.render(language), "at the lake");
+        }
+
+        // A sentence with arguments takes them in the translation's order.
+        let named = mention_notification(true, "The Smiths", "Anna", &protocol_message(), 1, 1);
+        assert_eq!(
+            named.title.render(Some("de")),
+            "The Smiths — Anna hat dich erwähnt"
+        );
+        assert_eq!(named.title, "The Smiths — Anna mentioned you");
+
+        // And the transports say it: APNs and FCM, the same push in two languages.
+        assert_eq!(
+            apns_payload(&joined_notification("The Smiths", 7, 0), Some("fr"))["aps"]["alert"]["body"],
+            json!("C’est fait — bienvenue dans The Smiths")
+        );
+        assert_eq!(
+            fcm_message(&report_notification("The Smiths", 7, 0), "t", Some("ru"))["message"]["notification"]
+                ["body"],
+            json!("Новая жалоба")
+        );
+    }
+
+    /// A video message is a video on the wire and its own word on a lock
+    /// screen (protocol.md, "Video messages"): the flag changes what one
+    /// video is CALLED, nothing about how several are counted, and nothing
+    /// about the operator's switch.
+    #[test]
+    fn a_video_message_is_called_a_video_message() {
+        fn video(id: i64, round: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id,
+                kind: "video".to_string(),
+                mime: "video/mp4".to_string(),
+                size: 1_649_700,
+                width: Some(480),
+                height: Some(480),
+                duration_ms: Some(23_400),
+                has_preview: true,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker: false,
+                round,
+                waveform: None,
+            }
+        }
+        fn carrying(videos: Vec<crate::models::Attachment>) -> Message {
+            Message {
+                body: String::new(),
+                attachment: videos.first().cloned(),
+                attachments: Some(videos),
+                ..protocol_message()
+            }
+        }
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, true)]))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("Video message")
+        );
+        // The same square MP4 sent as an ordinary video is still a video.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, false)]))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("Video")
+        );
+        // Two videos are counted as videos, whatever either says — the
+        // server never sends that shape, and the word is for ONE.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(91, true), video(92, false)]))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("2 Videos")
+        );
+        // The word is what a body-less message pushes; the operator's
+        // switch still withholds it.
+        let shown = message_notification(
+            true,
+            "direct",
+            "",
+            "Anna",
+            &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
+        assert_eq!(shown.body, "Video message");
+        let hidden = message_notification(
+            false,
+            "direct",
+            "",
+            "Anna",
+            &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
+        assert_eq!(hidden.body, "New message");
     }
 }

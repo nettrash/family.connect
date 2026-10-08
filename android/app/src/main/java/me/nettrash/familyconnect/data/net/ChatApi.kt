@@ -56,6 +56,16 @@ interface ChatApi {
         poll: NewPollDto? = null,
         /** The members this message names (docs/protocol.md, "Mentioning a member"). */
         mentions: List<MentionDto>? = null,
+        /**
+         * `true` sends the one attachment as a STICKER; null for every
+         * ordinary message (docs/protocol.md, "Sticker pack").
+         */
+        sticker: Boolean? = null,
+        /**
+         * `true` sends the one `kind=video` attachment as a VIDEO MESSAGE;
+         * null for every other message (docs/protocol.md, "Video messages").
+         */
+        round: Boolean? = null,
     ): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
 
@@ -165,12 +175,14 @@ class DefaultChatApi @Inject constructor(
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
         mentions: List<MentionDto>?,
+        sticker: Boolean?,
+        round: Boolean?,
     ): ApiResult<MessageResponse> =
         // 201 on first delivery, 200 when the same client_msg_id retries —
         // both are 2xx, both decode to the same message. Never a duplicate.
         client.post(
             "/chats/$chatId/messages",
-            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions),
+            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker, round),
         )
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =

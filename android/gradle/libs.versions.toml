@@ -30,6 +30,19 @@
 # Google's libwebrtc, published to Maven Central (Google's own
 # org.webrtc:google-webrtc has been unmaintained for years). Only the
 # org.webrtc.* classes are used; the app never touches Stream's service.
+#
+# CameraX is the fourth (#79, docs/audio-video-messages-2026-10-04.md,
+# Decision 27): a video message is recorded IN the app — a live, mirrored
+# preview in a circle, Record, Stop, then review — which the system camera's
+# capture intent cannot do, and which written against Camera2 directly would
+# be its own camera stack. It is what Google recommends, and its lifecycle
+# binding is the point: the recorder binds it to a LifecycleOwner of its own
+# rather than the activity's, so a fold, a resize or a dark-mode change that
+# rebuilds MainActivity (no configChanges) does not end a take. 1.5.1 is
+# Scan.Android's version, keeping the lockstep rule above; moving both apps
+# to 1.6 is a separate change. Five artifacts, nothing else: core, camera2
+# (the implementation), lifecycle, view (PreviewView) and video (Recorder,
+# VideoCapture). No camera-extensions, no ML Kit.
 
 [versions]
 agp = "9.4.1"
@@ -58,6 +71,8 @@ okhttp = "5.3.2"
 datastore = "1.2.1"
 exifinterface = "1.4.1"
 media3 = "1.11.0"
+# CameraX — the video message recorder; see the header note. Scan.Android's.
+cameraX = "1.5.1"
 firebaseBom = "34.18.0"
 streamWebrtc = "1.3.8"
 playServicesMaps = "19.2.0"
@@ -67,6 +82,10 @@ junit = "4.13.2"
 robolectric = "4.15.1"
 truth = "1.4.4"
 coroutinesTest = "1.10.2"
+# Instrumented tests: only MediaPrepDeviceTest (issue #74), because the one
+# thing a JVM cannot do is run a real encoder. Same versions as md.Android.
+androidxTestRunner = "1.6.1"
+androidxTestExtJunit = "1.2.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -117,6 +136,13 @@ androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterfa
 androidx-media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
 androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
 
+# CameraX — recording a video message (#79); see the header note.
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraX" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraX" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
+androidx-camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "cameraX" }
+
 # Firebase — messaging ONLY. Push is the sole Google service this app
 # uses; no analytics, no crashlytics, no firebase-core: the privacy
 # posture (docs/protocol.md — the server is the family's own box) means
@@ -150,6 +176,8 @@ androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

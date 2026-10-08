@@ -25,6 +25,12 @@ internal sealed class AppServices : IAsyncDisposable
     /// <summary>Whether the window is the one the reader is looking at — a read is reported only then.</summary>
     public bool Foreground { get; set; }
 
+    /// <summary>
+    /// Whether the window is minimised or hidden in the notification area — not merely behind another, which is still
+    /// running in front. Nothing records behind it (docs/audio-video-messages-2026-10-04.md, S4).
+    /// </summary>
+    public bool WindowAway { get; set; }
+
     /// <summary>The server the reader chose — or, before they have chosen one, the one a Store build was published for.</summary>
     public Uri? SavedServer => ServerSetting.Read() ?? DefaultServer.Address;
 
@@ -47,6 +53,8 @@ internal sealed class AppServices : IAsyncDisposable
         {
             // Attachment ids are one server's own: another server's files must not answer for them.
             FileBlobStore.Wipe(AppFolders.BlobsPath);
+            // Nor may another server's chats hold voice messages recorded for this one's.
+            FamilyConnect.App.Logic.ParkedRecordings.WipeAll(AppFolders.ParkedPath);
         }
         var next = new Connection(server, AppFolders.CachePath);
         if (previous is not null && previous != server)

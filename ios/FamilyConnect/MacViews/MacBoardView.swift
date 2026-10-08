@@ -66,6 +66,16 @@ struct MacBoardView: View {
     /// reader anything on its own. The web says both (docs/protocol.md,
     /// "Board").
     @State private var failure: String?
+    /// The consent question, and the backdrop waiting on its answer — the
+    /// composer's own pair (`MacConversationView`): the backdrop is drawn
+    /// from the event's title, the author's words, so it is asked first
+    /// (docs/protocol.md, "Consenting to the assistant").
+    @State private var showAssistantConsent = false
+    @State private var afterAssistantConsent: (() -> Void)?
+    /// The backdrops out right now: one request per note, and the menu item
+    /// says "Drawing…" and is disabled until it is answered — the phone's
+    /// `drawing`, for a board that shows every note's menu at once.
+    @State private var backdropsDrawing = BackdropDraws()
 
     var body: some View {
         GeometryReader { geometry in
@@ -167,7 +177,12 @@ struct MacBoardView: View {
         // marks what it is showing, whenever what it shows changes and
         // whenever it becomes the front one.
         .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
-        .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
+        .onChange(of: windowActivation, initial: true) { _, activation in
+            markSeenIfFrontmost()
+            // In front, a note landing here is not news to announce (#84).
+            coordinator.boardInFront = activation == .key
+        }
+        .onDisappear { coordinator.boardInFront = false }
         .sheet(isPresented: $composing) {
             MacNoteEditor(
                 text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
@@ -202,6 +217,26 @@ struct MacBoardView: View {
         }
         .sheet(item: $editing) { note in
             MacNoteEditorForExisting(note: note)
+        }
+        // The composer's consent sheet, as the composer shows it: the
+        // backdrop waits in `afterAssistantConsent` and is drawn on a yes;
+        // "Not Now" leaves the note as it was.
+        .sheet(isPresented: $showAssistantConsent) {
+            AssistantConsentSheet(
+                processor: AppSettings.assistantProcessor ?? "",
+                familyHistory: session.family?.aiHistory == true,
+                familyVision: session.family?.aiVision == true,
+                onAgree: { answer in
+                    try await session.agreeToAssistant(answer)
+                    showAssistantConsent = false
+                    let resume = afterAssistantConsent
+                    afterAssistantConsent = nil
+                    resume?()
+                },
+                onDecline: {
+                    showAssistantConsent = false
+                    afterAssistantConsent = nil
+                })
         }
     }
 
@@ -269,14 +304,61 @@ struct MacBoardView: View {
                 }
             },
             names: displayName(for:),
-            canDraw: AppSettings.assistantImages,
-            onDrawBackdrop: {
-                Task {
-                    if await coordinator.drawBackdrop(noteID: note.noteID) == nil {
-                        failure = String(localized: "Couldn't draw that.")
-                    }
-                }
-            })
+            backdropDoor: backdropDoor(for: note),
+            drawingBackdrop: backdropsDrawing.isDrawing(note.noteID),
+            onDrawBackdrop: { drawBackdrop(noteID: note.noteID) })
+    }
+
+    /// What "Draw a backdrop" is on this note: the phone's rule
+    /// (`BackdropDoor`), from the same facts.
+    private func backdropDoor(for note: NoteEntity) -> BackdropDoor {
+        BackdropDoor.of(
+            isEvent: NoteKind(name: note.kind) == .event,
+            // Saved by definition: a note on the wall has its id.
+            isSaved: true,
+            isAuthor: note.authorID == coordinator.currentUserID,
+            serverCanDraw: AppSettings.assistantImages,
+            processor: AppSettings.assistantProcessor,
+            agreedAt: session.assistantConsentAt)
+    }
+
+    /// Ask for a backdrop. Nothing reaches the model unasked: an author
+    /// who has not agreed is asked first and it is drawn on a yes, and the
+    /// server's own `assistant_consent_required` — a consent withdrawn on
+    /// another device — raises the same question instead of a failure
+    /// (protocol.md, "Consenting to the assistant"). The door is read
+    /// afresh here rather than captured, so the retry after a yes sees the
+    /// consent the yes just gave.
+    ///
+    /// One at a time per note: a second click while the first is out —
+    /// a wait of up to two minutes — sends nothing, since each request
+    /// costs the family a picture and its answer would only replace the
+    /// first. The answer frees it BEFORE the consent question is raised, so
+    /// the retry after a yes is not taken for a duplicate.
+    private func drawBackdrop(noteID: Int64) {
+        guard !backdropsDrawing.isDrawing(noteID) else { return }
+        guard let note = notes.first(where: { $0.noteID == noteID }) else { return }
+        if backdropDoor(for: note) == .asksFirst {
+            askConsent(thenDraw: noteID)
+            return
+        }
+        guard backdropsDrawing.begin(noteID) else { return }
+        Task {
+            let outcome = await coordinator.drawBackdrop(noteID: noteID)
+            backdropsDrawing.end(noteID)
+            if outcome.asksForConsent(processor: AppSettings.assistantProcessor) {
+                askConsent(thenDraw: noteID)
+            } else if let message = outcome.failureMessage {
+                // A refusal by the provider's own filter says so; anything
+                // else is "Couldn't draw that." (protocol.md, "Board").
+                failure = message
+            }
+        }
+    }
+
+    private func askConsent(thenDraw noteID: Int64) {
+        afterAssistantConsent = { drawBackdrop(noteID: noteID) }
+        showAssistantConsent = true
     }
 
     /// A blank note — or event — to write. An event starts on the next
@@ -339,8 +421,13 @@ fileprivate struct MacNoteView: View {
     /// Every name this family has, for naming who is coming
     /// (docs/protocol.md, "Board").
     var names: (Int64) -> String = { _ in "" }
-    /// Whether this SERVER can draw at all (`assistant.images`).
-    var canDraw: Bool = false
+    /// What "Draw a backdrop" is on this note (`BackdropDoor`): absent,
+    /// or offered — and whether a tap asks the consent question first is
+    /// the board's business, which holds the sheet.
+    var backdropDoor: BackdropDoor = .absent
+    /// Whether this note's backdrop is being drawn now: the item says so
+    /// and cannot be chosen again until it is answered.
+    var drawingBackdrop: Bool = false
     /// Ask the assistant for a backdrop — the author's.
     var onDrawBackdrop: () -> Void = {}
 
@@ -595,12 +682,21 @@ fileprivate struct MacNoteView: View {
                 // A copy for this reader's own calendar — anybody's — and
                 // the picture behind it, which is the author's.
                 Button("Add to Calendar") { addToCalendar() }
-                if isMine, canDraw {
+                if backdropDoor.isOffered {
                     Button(
-                        note.attachmentID == nil
-                            ? "Draw a backdrop"
-                            : "Draw another backdrop",
+                        drawingBackdrop
+                            ? "Drawing…"
+                            : note.attachmentID == nil
+                                ? "Draw a backdrop"
+                                : "Draw another backdrop",
                         action: onDrawBackdrop)
+                    .disabled(drawingBackdrop)
+                    // The backdrop is drawn from the note's TITLE, and the
+                    // provider's filter refuses most real names and brands
+                    // in it — the phone's hint beside the phone's control
+                    // (`PictureRequestHint`). A plain row, like "Written by
+                    // someone else": advice, not an action.
+                    Text(PictureRequestHint.text)
                 }
             }
             // ANSWERING IS NOT AUTHORSHIP: outside the isMine branch on

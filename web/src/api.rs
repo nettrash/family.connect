@@ -23,7 +23,7 @@ use web_sys::{AbortController, Blob, RequestCache};
 
 use crate::model::{
     Attachment, Birthday, Chat, ChatListItem, Family, JoinRequest, Me, Member, Mention, Message,
-    Note, Poll, Reaction, Report, Roster, Stats, User,
+    Note, PackItem, Poll, Reaction, Report, Roster, Stats, User,
 };
 use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
@@ -173,6 +173,16 @@ pub struct FamilyPatch {
     pub ai_greeting: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_faces: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_transcripts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_lookups: Option<bool>,
+    /// The places for the greeting's weather: the WHOLE list, replacing
+    /// the stored one — `Some(vec![])` clears it, `None` leaves it alone.
+    /// Never a null: the server refuses one (docs/protocol.md, "Today's
+    /// weather, for places the owner chose").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub greeting_places: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -262,6 +272,19 @@ struct SendRequest<'a> {
     /// sent).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     attachment_ids: Vec<i64>,
+    /// What makes the message a sticker (docs/protocol.md, "Sending one").
+    /// Left out when it is not one — absent is an ordinary message, and a
+    /// server from before stickers never sees a field it would ignore.
+    #[serde(skip_serializing_if = "is_false")]
+    sticker: bool,
+    /// What makes the message a video message (docs/protocol.md, "Video
+    /// messages"): left out when it is not one, never sent as `false`.
+    #[serde(skip_serializing_if = "is_false")]
+    round: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 #[derive(Debug, Serialize)]
@@ -305,6 +328,46 @@ struct NotesResponse {
 #[derive(Debug, Deserialize)]
 struct NoteResponse {
     note: Note,
+}
+
+/// `GET /families/mine/pack`: the whole sticker pack, tombstones excluded,
+/// in the order it was added to — and the high-water mark read before it
+/// (docs/protocol.md, "Sticker pack"). 0 for a pack never written to.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackRead {
+    pub items: Vec<PackItem>,
+    #[serde(default)]
+    pub max_pack_seq: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackItemsResponse {
+    items: Vec<PackItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackItemResponse {
+    item: PackItem,
+}
+
+/// A claim of an upload for the pack. The label is LEFT OUT when there is
+/// none — an empty one is no label, and absent says so without a word.
+#[derive(Debug, Serialize)]
+struct PackClaim<'a> {
+    attachment_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+}
+
+/// What a claim did. `added` is false when the pack ALREADY held it — the
+/// same upload claimed again, or other bytes identical to a live item's —
+/// which is `200` and not an error: the item that comes back is the one
+/// that was there, under the attachment id the pack already had, and may
+/// not be the id the claim named.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackClaimed {
+    pub item: PackItem,
+    pub added: bool,
 }
 
 /// A note to pin (docs/protocol.md, "Board"). Size and face always go — a
@@ -928,6 +991,8 @@ fn send_request(row: &Outgoing) -> SendRequest<'_> {
             .iter()
             .filter_map(|item| item.attachment_id)
             .collect(),
+        sticker: row.sticker,
+        round: row.round,
     }
 }
 
@@ -988,6 +1053,19 @@ pub fn upload_query(item: &OutgoingItem) -> String {
             "name={}",
             String::from(js_sys::encode_uri_component(name))
         ));
+    }
+    // A voice note's shape (docs/protocol.md, "A voice note's waveform"):
+    // on audio only, and only in the one form the server takes — anything
+    // else is a `validation` 400 the outbox could never get past, so a shape
+    // that is not exactly 48 lowercase hex digits is left off and the bubble
+    // draws the placeholder. A server from before waveforms ignores the
+    // parameter, as it ignores every query parameter it does not know.
+    if let Some(waveform) = item
+        .waveform
+        .as_deref()
+        .filter(|shape| item.kind == "audio" && fc_text::waveform::parse(shape).is_some())
+    {
+        query.push(format!("waveform={waveform}"));
     }
     query.join("&")
 }
@@ -1287,9 +1365,183 @@ pub async fn draw_backdrop(token: &str, note_id: i64) -> Result<Note, ApiError> 
     Ok(response.note)
 }
 
+/// How long asking for a recording's text may take before this client
+/// stops waiting: its OWN deadline, never an ordinary request's — the
+/// provider listens to the whole recording first, and the protocol's floor
+/// for it is 90 s. Five minutes is the reference proxy's own read timeout
+/// on this route, so waiting longer could only wait on a closed connection.
+/// Giving up loses nothing: the server finishes a stored-bytes request and
+/// keeps its answer, so asking again later is answered at once
+/// (docs/protocol.md, "Transcripts on request").
+pub const TRANSCRIPT_DEADLINE_MS: u32 = 300_000;
+
+/// `POST /chats/{id}/messages/{id}/attachments/{id}/transcript` — the text
+/// of a voice note or an audio file, from the server's STORED bytes.
+///
+/// The body is `{}`: anything that is not `multipart/form-data` asks for
+/// the stored copy. The answer is this asker's alone.
+pub async fn transcript(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    transcript_within(
+        token,
+        chat_id,
+        message_id,
+        attachment_id,
+        None,
+        TRANSCRIPT_DEADLINE_MS,
+    )
+    .await
+}
+
+/// The name the supplied sound's part goes under, as the protocol names it.
+pub const SUPPLIED_PART: &str = "audio";
+
+/// The type the supplied sound's part declares: AAC in an MPEG-4 container,
+/// the one shape the server takes.
+pub const SUPPLIED_TYPE: &str = "audio/mp4";
+
+/// The same request with SOUND THIS DEVICE SUPPLIED — the sound track of a
+/// video, or of an audio file the server's stored copy will not do for —
+/// as `multipart/form-data` with one part, [`SUPPLIED_PART`], an M4A
+/// (fc_text::transcript_sound). The server keeps nothing of the answer, so
+/// asking again asks the provider again; this device keeps it instead.
+pub async fn transcript_of_sound(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+    sound: &Blob,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    transcript_within(
+        token,
+        chat_id,
+        message_id,
+        attachment_id,
+        Some(sound),
+        TRANSCRIPT_DEADLINE_MS,
+    )
+    .await
+}
+
+/// `sound` as the multipart form the server reads: one part named `audio`,
+/// declared `audio/mp4`, under a name ending `.m4a`. The browser writes the
+/// boundary and the part's headers itself, and sets the request's
+/// `Content-Type` to match — which is why the request names none.
+fn supplied_form(sound: &Blob) -> Result<web_sys::FormData, ApiError> {
+    // Never shown as it is: a request with no code is "try again".
+    let unmade = |error: wasm_bindgen::JsValue| ApiError::Network(format!("{error:?}"));
+    let sound = if sound.type_() == SUPPLIED_TYPE {
+        sound.clone()
+    } else {
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(SUPPLIED_TYPE);
+        Blob::new_with_blob_sequence_and_options(&js_sys::Array::of1(sound), &options)
+            .map_err(unmade)?
+    };
+    let form = web_sys::FormData::new().map_err(unmade)?;
+    form.append_with_blob_and_filename(SUPPLIED_PART, &sound, "sound.m4a")
+        .map_err(unmade)?;
+    Ok(form)
+}
+
+async fn transcript_within(
+    token: &str,
+    chat_id: i64,
+    message_id: i64,
+    attachment_id: i64,
+    sound: Option<&Blob>,
+    deadline_ms: u32,
+) -> Result<fc_text::transcript::Transcript, ApiError> {
+    let controller = controller()?;
+    let url = path(&format!(
+        "/chats/{chat_id}/messages/{message_id}/attachments/{attachment_id}/transcript"
+    ));
+    let request = bearer(Request::post(&url), token).abort_signal(Some(&controller.signal()));
+    let request = match sound {
+        None => request.json(&serde_json::json!({})),
+        Some(sound) => request.body(wasm_bindgen::JsValue::from(supplied_form(sound)?)),
+    }
+    .map_err(network)?;
+    let attempt = async {
+        let response: TranscriptResponse = read(request.send().await.map_err(network)?).await?;
+        Ok(fc_text::transcript::Transcript {
+            text: response.transcript.text,
+            language: response
+                .transcript
+                .language
+                .filter(|language| !language.trim().is_empty()),
+        })
+    };
+    within(controller, deadline_ms, attempt).await
+}
+
+#[derive(Debug, Deserialize)]
+struct TranscriptResponse {
+    transcript: TranscriptBody,
+}
+
+/// `text` is always present — `""` is silence, an answer.
+#[derive(Debug, Deserialize)]
+struct TranscriptBody {
+    text: String,
+    #[serde(default)]
+    language: Option<String>,
+}
+
 /// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.
 pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
     let url = path(&format!("/families/mine/board/notes/{note_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
+/// `GET /families/mine/pack` — the whole sticker pack as it now stands.
+pub async fn pack(token: &str) -> Result<PackRead, ApiError> {
+    get(token, "/families/mine/pack").await
+}
+
+/// `GET /families/mine/pack/changes?after_seq=` — the pack catch-up,
+/// tombstones included, looped by the caller until a short page.
+pub async fn pack_changes(
+    token: &str,
+    after_seq: i64,
+    limit: u32,
+) -> Result<Vec<PackItem>, ApiError> {
+    let url = format!("/families/mine/pack/changes?after_seq={after_seq}&limit={limit}");
+    let response: PackItemsResponse = get(token, &url).await?;
+    Ok(response.items)
+}
+
+/// `POST /families/mine/pack` — claim an upload of the caller's own as a
+/// sticker. Any member may. `201` is a new item; `200` is the item the pack
+/// already held, which takes no seq and sends no frame.
+pub async fn add_pack_item(
+    token: &str,
+    attachment_id: i64,
+    label: Option<&str>,
+) -> Result<PackClaimed, ApiError> {
+    let request = bearer(Request::post(&path("/families/mine/pack")), token)
+        .json(&PackClaim {
+            attachment_id,
+            label,
+        })
+        .map_err(network)?;
+    let response = request.send().await.map_err(network)?;
+    let added = response.status() == 201;
+    let answer: PackItemResponse = read(response).await?;
+    Ok(PackClaimed {
+        item: answer.item,
+        added,
+    })
+}
+
+/// `DELETE /families/mine/pack/{id}` — whoever added it, or the family
+/// owner; idempotent.
+pub async fn remove_pack_item(token: &str, item_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/families/mine/pack/{item_id}"));
     empty::<()>(Request::delete(&url), token, None).await
 }
 
@@ -1366,6 +1618,36 @@ struct AssistantConsentRequest {
 struct AssistantConsentResponse {
     #[serde(default)]
     assistant_consent_at: Option<String>,
+}
+
+/// `POST /me/assistant-lookup-consent` — this member's own agreement that
+/// the assistant may send a query or a place name it writes from their
+/// words to the providers `assistant.lookups` names (docs/protocol.md,
+/// "Consenting to the assistant", amended 2026-10-03).
+///
+/// The same shape as the first: the stamp the server now holds comes back,
+/// a date when granted and none when withdrawn, and granting twice keeps
+/// the first date. It may only be GRANTED on top of the assistant consent —
+/// `assistant_consent_required` (403) otherwise — and a server with no
+/// lookup source answers 404.
+pub async fn set_assistant_lookup_consent(
+    token: &str,
+    granted: bool,
+) -> Result<Option<String>, ApiError> {
+    let body = AssistantConsentRequest { granted };
+    let answer: AssistantLookupConsentResponse = with_body(
+        Request::post(&path("/me/assistant-lookup-consent")),
+        token,
+        &body,
+    )
+    .await?;
+    Ok(answer.assistant_lookup_consent_at)
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantLookupConsentResponse {
+    #[serde(default)]
+    assistant_lookup_consent_at: Option<String>,
 }
 
 /// `PUT` / `DELETE /families/members/{id}/block`.
@@ -1446,6 +1728,8 @@ mod tests {
             mentions: Vec::new(),
             poll: None,
             items: Vec::new(),
+            sticker: false,
+            round: false,
             attempts: 0,
             failed: None,
         }
@@ -1470,6 +1754,8 @@ mod tests {
             accuracy_m: None,
             has_preview: false,
             attachment_id: None,
+            source_attachment_id: None,
+            waveform: None,
         }
     }
 
@@ -1487,6 +1773,82 @@ mod tests {
         assert_eq!(
             encode(&photos),
             serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [34, 35]})
+        );
+    }
+
+    /// A sticker is one attachment and one flag, with an empty body — and
+    /// the flag is left out of every other send, never sent as `false`.
+    #[wasm_bindgen_test]
+    fn a_sticker_send_carries_the_flag_and_nothing_else_does() {
+        let mut sticker = row();
+        sticker.body = String::new();
+        sticker.sticker = true;
+        sticker.reply_to_message_id = Some(1337);
+        let mut picture = item("photo", -1);
+        picture.attachment_id = Some(90);
+        sticker.items = vec![picture];
+        assert_eq!(
+            encode(&sticker),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [90],
+                               "sticker": true, "reply_to_message_id": 1337})
+        );
+        assert!(encode(&row()).get("sticker").is_none());
+    }
+
+    /// A video message is one video and one flag, with an empty body —
+    /// a reply as well as not — and the flag is left out of every other
+    /// send, never sent as `false` (docs/protocol.md, "Video messages").
+    #[wasm_bindgen_test]
+    fn a_video_message_send_carries_the_flag_and_nothing_else_does() {
+        let mut round = row();
+        round.body = String::new();
+        round.round = true;
+        round.reply_to_message_id = Some(41);
+        let mut video = item("video", -1);
+        video.attachment_id = Some(91);
+        round.items = vec![video];
+        assert_eq!(
+            encode(&round),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [91],
+                               "round": true, "reply_to_message_id": 41})
+        );
+        assert!(encode(&row()).get("round").is_none());
+        round.round = false;
+        assert!(encode(&round).get("round").is_none());
+    }
+
+    /// The pack's three answers, in the protocol's shapes: the whole pack
+    /// with its mark, a page of changes with a tombstone in it, and a claim
+    /// — with a label only when there is one.
+    #[wasm_bindgen_test]
+    fn the_pack_reads_and_claims_in_the_protocols_shapes() {
+        let read: PackRead = serde_json::from_str(
+            r#"{"items": [{"id": 5, "added_by": 7, "pack_seq": 12, "created_at": "2026-09-30T10:00:00Z",
+                           "attachment": {"id": 71, "kind": "photo", "mime": "image/webp"}}],
+                "max_pack_seq": 14}"#,
+        )
+        .expect("reads");
+        assert_eq!(read.max_pack_seq, 14);
+        assert!(read.items[0].is_usable());
+        let changes: PackItemsResponse =
+            serde_json::from_str(r#"{"items": [{"id": 5, "deleted": true, "pack_seq": 15}]}"#)
+                .expect("reads");
+        assert!(changes.items[0].deleted);
+        assert_eq!(
+            serde_json::to_value(PackClaim {
+                attachment_id: 71,
+                label: Some("party cat"),
+            })
+            .expect("encodes"),
+            serde_json::json!({"attachment_id": 71, "label": "party cat"})
+        );
+        assert_eq!(
+            serde_json::to_value(PackClaim {
+                attachment_id: 71,
+                label: None,
+            })
+            .expect("encodes"),
+            serde_json::json!({"attachment_id": 71})
         );
     }
 
@@ -1521,6 +1883,60 @@ mod tests {
             upload_query(&place),
             "kind=location&latitude=55.7558000&longitude=37.6173000",
             "no accuracy is no accuracy, never zero"
+        );
+    }
+
+    /// A VOICE NOTE'S SHAPE rides the upload's query (docs/protocol.md, "A
+    /// voice note's waveform"): on audio, exactly as the 48 hex digits it
+    /// is — and never on anything else, nor in a form the server would
+    /// refuse with a 400 no retry gets past.
+    #[wasm_bindgen_test]
+    fn a_voice_notes_waveform_rides_the_upload_query_and_nothing_else_does() {
+        let shape = "0123456789abcdef".repeat(3);
+        let mut note = item("audio", -4);
+        note.duration_ms = Some(4200);
+        note.waveform = Some(shape.clone());
+        assert_eq!(
+            upload_query(&note),
+            format!("kind=audio&duration_ms=4200&waveform={shape}")
+        );
+        for wrong in [
+            String::new(),
+            shape.to_uppercase(),
+            shape[..47].to_string(),
+            format!("{shape}0"),
+            "g".repeat(48),
+        ] {
+            note.waveform = Some(wrong.clone());
+            assert_eq!(
+                upload_query(&note),
+                "kind=audio&duration_ms=4200",
+                "{wrong:?} is left off"
+            );
+        }
+        let mut file = item("file", -5);
+        file.name = Some("a.bin".into());
+        file.waveform = Some(shape);
+        assert_eq!(upload_query(&file), "kind=file&name=a.bin");
+    }
+
+    /// A row kept by a build from before waveforms still reads, and one
+    /// without a shape is stored without the key.
+    #[wasm_bindgen_test]
+    fn an_outgoing_item_keeps_its_waveform_across_a_reload() {
+        let mut note = item("audio", -6);
+        let bare = serde_json::to_value(&note).unwrap();
+        assert!(bare.get("waveform").is_none(), "{bare}");
+        let old: OutgoingItem = serde_json::from_value(bare).unwrap();
+        assert_eq!(old.waveform, None);
+        note.waveform = Some("f".repeat(48));
+        let kept: OutgoingItem =
+            serde_json::from_value(serde_json::to_value(&note).unwrap()).unwrap();
+        assert_eq!(kept.waveform, note.waveform);
+        assert_eq!(
+            kept.as_attachment().waveform,
+            note.waveform,
+            "the pending bubble draws it"
         );
     }
 
@@ -1725,6 +2141,303 @@ mod tests {
         assert_eq!(
             person,
             serde_json::json!({"reported_user_id": 9, "reason": "harassment"})
+        );
+    }
+
+    /// THE TRANSCRIPT CALL: the stored-bytes shape (`POST`, a JSON `{}`
+    /// that is not multipart), the answer read as given — silence is `""`
+    /// and an answer — and every refusal kept as the code it is.
+    #[wasm_bindgen_test]
+    async fn a_transcript_is_asked_for_the_stored_bytes() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/34/transcript";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Json(
+            200,
+            serde_json::json!({"transcript": {"text": "Dinner at seven", "language": "en"}}),
+        )));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let said = transcript("t", 42, 1338, 34).await.expect("an answer");
+        assert_eq!(said.text, "Dinner at seven");
+        assert_eq!(said.language.as_deref(), Some("en"));
+        let asked = server.asked(&[ROUTE]);
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].method, "POST");
+        assert!(
+            asked[0].content_type.starts_with("application/json"),
+            "not multipart: {}",
+            asked[0].content_type
+        );
+        assert_eq!(asked[0].json(), serde_json::json!({}));
+
+        // Silence, with no language named.
+        *answer.borrow_mut() = Answer::Json(200, serde_json::json!({"transcript": {"text": ""}}));
+        let silence = transcript("t", 42, 1338, 34).await.expect("an answer");
+        assert!(silence.is_silence());
+        assert_eq!(silence.language, None);
+
+        for (status, code) in [
+            (400, "transcript_refused"),
+            (400, "not_transcribable"),
+            (403, "transcript_not_allowed"),
+            (403, "transcripts_unavailable"),
+            (403, "assistant_consent_required"),
+            (500, "internal"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            assert_eq!(
+                transcript("t", 42, 1338, 34).await.unwrap_err().code(),
+                Some(code)
+            );
+        }
+        // No connection at all: no code, which is worth another try.
+        *answer.borrow_mut() = Answer::Nothing;
+        assert!(matches!(
+            transcript("t", 42, 1338, 34).await,
+            Err(ApiError::Network(_))
+        ));
+    }
+
+    /// THE SUPPLIED-SOUND SHAPE: `multipart/form-data` with exactly one
+    /// part, named `audio`, declared `audio/mp4` under an `.m4a` name, the
+    /// sound byte for byte in it — and the boundary the browser chose named
+    /// in the request's own `Content-Type`. A blob that came without a type
+    /// goes declared all the same; the answer and every refusal are read as
+    /// for the stored-bytes shape.
+    #[wasm_bindgen_test]
+    async fn a_transcript_of_supplied_sound_is_one_audio_part() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/36/transcript";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Json(
+            200,
+            serde_json::json!({"transcript": {"text": "Look at the snow"}}),
+        )));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        let sound: Vec<u8> = b"\0\0\0\x18ftypM4A \0\0\0\0M4A mp42"
+            .iter()
+            .copied()
+            .chain((0..=255u8).cycle().take(3_000))
+            .collect();
+        let find = |haystack: &[u8], needle: &[u8]| {
+            haystack
+                .windows(needle.len())
+                .filter(|window| *window == needle)
+                .count()
+        };
+        for declared in ["audio/mp4", ""] {
+            let options = web_sys::BlobPropertyBag::new();
+            options.set_type(declared);
+            let blob = Blob::new_with_u8_array_sequence_and_options(
+                &js_sys::Array::of1(&js_sys::Uint8Array::from(sound.as_slice())),
+                &options,
+            )
+            .unwrap();
+            *answer.borrow_mut() = Answer::Json(
+                200,
+                serde_json::json!({"transcript": {"text": "Look at the snow"}}),
+            );
+            let said = transcript_of_sound("t", 42, 1338, 36, &blob)
+                .await
+                .expect("an answer");
+            assert_eq!(said.text, "Look at the snow");
+            assert_eq!(said.language, None);
+            let asked = server.asked(&[ROUTE]).pop().unwrap();
+            assert_eq!(asked.method, "POST");
+            let boundary = asked
+                .content_type
+                .strip_prefix("multipart/form-data; boundary=")
+                .unwrap_or_else(|| panic!("multipart: {}", asked.content_type))
+                .to_string();
+            let body = &asked.body;
+            let opening = format!("--{boundary}\r\n");
+            let closing = format!("--{boundary}--");
+            assert_eq!(find(body, opening.as_bytes()), 1, "exactly one part");
+            assert_eq!(find(body, closing.as_bytes()), 1);
+            assert_eq!(
+                find(
+                    body,
+                    b"Content-Disposition: form-data; name=\"audio\"; filename=\"sound.m4a\"\r\n"
+                ),
+                1
+            );
+            assert_eq!(
+                find(body, b"Content-Type: audio/mp4\r\n\r\n"),
+                1,
+                "{declared:?}"
+            );
+            assert_eq!(find(body, &sound), 1, "the sound, byte for byte");
+        }
+        assert_eq!(server.asked(&[ROUTE]).len(), 2);
+
+        for (status, code) in [
+            (400, "not_transcribable"),
+            (400, "validation"),
+            (403, "assistant_consent_required"),
+            (500, "internal"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            let blob = Blob::new_with_u8_array_sequence(&js_sys::Array::of1(
+                &js_sys::Uint8Array::from(sound.as_slice()),
+            ))
+            .unwrap();
+            assert_eq!(
+                transcript_of_sound("t", 42, 1338, 36, &blob)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// Its own deadline, of at least the protocol's 90 s and never the
+    /// ten seconds a message gets — and past it the request is given up
+    /// as a failure to try again, not left hanging.
+    #[wasm_bindgen_test]
+    async fn a_transcript_has_a_deadline_of_its_own() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/chats/42/messages/1338/attachments/35/transcript";
+        const { assert!(TRANSCRIPT_DEADLINE_MS >= 90_000) };
+        assert_ne!(TRANSCRIPT_DEADLINE_MS, SEND_DEADLINE_MS);
+        let _server = FakeServer::answering(|asked| {
+            if asked.path == ROUTE {
+                Answer::Hang
+            } else {
+                Answer::refusal(404, "not_found")
+            }
+        });
+        let gave_up = transcript_within("t", 42, 1338, 35, None, 50).await;
+        assert_eq!(
+            gave_up,
+            Err(ApiError::Network(
+                "The server did not answer in time.".to_string()
+            ))
+        );
+        assert_eq!(
+            fc_text::transcript::after_refusal(gave_up.unwrap_err().code()),
+            fc_text::transcript::Next::Fail(fc_text::transcript::Failure::TryAgain)
+        );
+    }
+
+    /// THE LOOKUP CONSENT, against a stand-in server: one POST to its own
+    /// route with exactly `{"granted": …}`, the server's stamp handed back
+    /// (a date granted, none withdrawn), and each refusal the protocol names
+    /// kept as its code — the first consent's route is never touched.
+    #[wasm_bindgen_test]
+    async fn the_lookup_consent_is_its_own_request() {
+        use crate::fake_server::{Answer, FakeServer};
+        const ROUTE: &str = "/me/assistant-lookup-consent";
+        let answer = std::rc::Rc::new(std::cell::RefCell::new(Answer::Nothing));
+        let server = {
+            let answer = answer.clone();
+            FakeServer::answering(move |asked| {
+                if asked.path == ROUTE {
+                    std::mem::replace(&mut *answer.borrow_mut(), Answer::Nothing)
+                } else {
+                    Answer::refusal(404, "not_found")
+                }
+            })
+        };
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": "2026-10-03T09:30:00Z"}),
+        );
+        assert_eq!(
+            set_assistant_lookup_consent("t", true).await,
+            Ok(Some("2026-10-03T09:30:00Z".to_string()))
+        );
+        *answer.borrow_mut() = Answer::Json(
+            200,
+            serde_json::json!({"assistant_lookup_consent_at": null}),
+        );
+        assert_eq!(set_assistant_lookup_consent("t", false).await, Ok(None));
+        let asked = server.asked(&[ROUTE, "/me/assistant-consent"]);
+        assert_eq!(asked.len(), 2);
+        assert!(asked.iter().all(|asked| asked.path == ROUTE));
+        assert!(asked.iter().all(|asked| asked.method == "POST"));
+        assert_eq!(asked[0].json(), serde_json::json!({"granted": true}));
+        assert_eq!(asked[1].json(), serde_json::json!({"granted": false}));
+
+        for (status, code) in [
+            (403, "assistant_consent_required"),
+            (404, "not_found"),
+            (400, "validation"),
+        ] {
+            *answer.borrow_mut() = Answer::refusal(status, code);
+            assert_eq!(
+                set_assistant_lookup_consent("t", true)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some(code)
+            );
+        }
+    }
+
+    /// The owner's switch goes as its one key, and only when it changed.
+    #[wasm_bindgen_test]
+    fn the_lookups_switch_is_one_key_of_the_patch() {
+        let patch = FamilyPatch {
+            ai_lookups: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"ai_lookups": true})
+        );
+        assert_eq!(
+            serde_json::to_value(FamilyPatch::default()).unwrap(),
+            serde_json::json!({}),
+            "absent, never false, when the owner did not touch it"
+        );
+    }
+
+    /// The greeting's places go as the WHOLE list under their one key:
+    /// `[]` to clear — never a null, which the server refuses — and absent
+    /// when the owner did not touch them.
+    #[wasm_bindgen_test]
+    fn the_greeting_places_go_as_the_whole_list_and_never_as_null() {
+        let patch = FamilyPatch {
+            greeting_places: Some(vec!["Moscow".into(), "Belgrade".into()]),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&patch).unwrap(),
+            r#"{"greeting_places":["Moscow","Belgrade"]}"#
+        );
+        let cleared = FamilyPatch {
+            greeting_places: Some(Vec::new()),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&cleared).unwrap(),
+            r#"{"greeting_places":[]}"#
+        );
+        let other = FamilyPatch {
+            ai_greeting: Some(true),
+            ..FamilyPatch::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&other).unwrap(),
+            r#"{"ai_greeting":true}"#,
+            "absent, never null, when the places were not touched"
         );
     }
 }

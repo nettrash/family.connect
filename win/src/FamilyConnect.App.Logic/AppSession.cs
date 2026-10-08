@@ -71,7 +71,19 @@ public sealed record SessionState(
     /// re-send, and somebody who agreed on their phone has agreed.
     /// </summary>
     string? AssistantConsentAt = null,
-    bool JoinDeclined = false)
+    bool JoinDeclined = false,
+    /// <summary>
+    /// When this member agreed that the assistant may send a query or place name it writes from their words to the
+    /// lookup providers, or null until they have (docs/protocol.md, "Consenting to the assistant", amended 2026-10-03).
+    /// The server's answer, like <see cref="AssistantConsentAt"/>, and never assumed: null is what an older server's
+    /// silence reads as.
+    /// </summary>
+    string? AssistantLookupConsentAt = null,
+    /// <summary>
+    /// The video message's limits from <c>GET /families/mine</c>, or null on a server that predates them — which offers
+    /// no way of recording one (docs/audio-video-messages-2026-10-04.md, S1.2's <b>round available</b>).
+    /// </summary>
+    RoundVideoLimits? RoundVideo = null)
 {
     /// <summary>Whether the socket may connect at all: signed in, and in a family.</summary>
     public bool CanChat => Gate is Gate.Member or Gate.Owner;
@@ -202,6 +214,8 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             // includes the refresh that runs right after somebody agrees. Cleared with the
             // family, because an assistant belongs to one.
             Assistant: gate is Gate.Member or Gate.Owner ? state.Assistant : null,
+            // The same for the video message's limits: only the family's own document carries them.
+            RoundVideo: gate is Gate.Member or Gate.Owner ? state.RoundVideo : null,
             PendingFamilyName: answered.PendingJoinRequest?.FamilyName,
             CallsEnabled: answered.CallsEnabled,
             VideoCallsEnabled: answered.VideoCallsEnabled,
@@ -211,7 +225,8 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             FamilylessAccountTtlDays: answered.FamilylessAccountTtlDays,
             GreetingsEnabled: answered.GreetingsEnabled,
             AssistantConsentAt: answered.AssistantConsentAt,
-            JoinDeclined: declined));
+            JoinDeclined: declined,
+            AssistantLookupConsentAt: answered.AssistantLookupConsentAt));
 
         // Two departures nothing else announces. `GET /me` is where a client finds out, because
         // a removal it slept through raises no frame it will ever see.
@@ -249,6 +264,7 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
         {
             Family = family.Value.Family,
             Assistant = family.Value.Assistant,
+            RoundVideo = RoundVideoLimits.Of(family.Value),
         });
         return null;
     }
@@ -269,6 +285,19 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             return;
         }
         Publish(state with { Assistant = assistant });
+    }
+
+    /// <summary>
+    /// The video message's limits, as a pass over the wire read them from the family's own document — published only
+    /// while there is a family, and only when they change.
+    /// </summary>
+    public void ApplyRoundVideo(RoundVideoLimits? limits)
+    {
+        if (!state.CanChat || state.RoundVideo == limits)
+        {
+            return;
+        }
+        Publish(state with { RoundVideo = limits });
     }
 
     /// <summary>

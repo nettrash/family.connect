@@ -206,6 +206,44 @@ public class LiveConnectionTests : IDisposable
     }
 
     /// <summary>
+    /// A PASS PUTS THE VIDEO MESSAGE'S LIMITS IN THE SESSION (docs/protocol.md, "Video messages"), where the composer reads
+    /// whether to offer a way of recording one: kept through a pass that could not read the family's document, and taken away
+    /// by one that read it without them — an older server.
+    /// </summary>
+    [Fact]
+    public async Task APassGivesTheSessionTheVideoMessagesLimits()
+    {
+        var server = new Server()
+            .On("/auth/login", Token)
+            .On("/me", Me)
+            .Then("/families/mine",
+                (HttpStatusCode.OK, """
+                    {"family": {"id": 3, "name": "The Smiths"}, "members": [], "blocked_user_ids": [],
+                     "max_round_video_ms": 60000, "max_round_video_bytes": 12582912}
+                    """),
+                (HttpStatusCode.BadGateway, "<html>502</html>"),
+                (HttpStatusCode.BadGateway, "<html>502</html>"),
+                (HttpStatusCode.OK, """{"family": {"id": 3, "name": "The Smiths"}, "members": [], "blocked_user_ids": []}"""))
+            .On("/chats", """{"chats": []}""");
+        var rig = Build(server);
+        await rig.Session.SignInAsync("anna", "hunter2");
+        Assert.Null(rig.Session.State.RoundVideo);
+
+        rig.Live.Start();
+        Assert.True((await NextPass(rig.Live, rig.Wire.Comes)).Complete);
+        Assert.Equal(new RoundVideoLimits(60_000, 12_582_912), rig.Session.State.RoundVideo);
+
+        rig.Wire.Goes();
+        Assert.False((await NextPass(rig.Live, rig.Wire.Comes)).Complete);
+        Assert.Equal(new RoundVideoLimits(60_000, 12_582_912), rig.Session.State.RoundVideo);
+
+        rig.Wire.Goes();
+        Assert.True((await NextPass(rig.Live, rig.Wire.Comes)).Complete);
+        Assert.Null(rig.Session.State.RoundVideo);
+        await rig.Live.DisposeAsync();
+    }
+
+    /// <summary>
     /// THE SOCKET RUNS ONLY WHILE THERE IS SOMETHING TO LISTEN TO: an account at the family gate
     /// has no chats, and a loop reconnecting on its behalf is a client hammering a door with no
     /// room behind it.

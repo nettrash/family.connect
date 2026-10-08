@@ -44,6 +44,26 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         /// `mentions`, absent when nil (docs/protocol.md, "Mentioning a
         /// member").
         mentions: [MentionDTO]?)
+    /// A STICKER (docs/protocol.md, "Sending one"): the same `send` frame on
+    /// the wire, with `"sticker": true`, exactly one attachment and an empty
+    /// body. Its own case rather than one more associated value on `.send`
+    /// because a sticker is its own message — it has no body, no poll and
+    /// names nobody — so the case cannot even express the combinations the
+    /// server refuses (`validation`, `invalid_poll`).
+    case sendSticker(
+        chatID: Int64,
+        clientMsgID: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64)
+    /// A VIDEO MESSAGE (docs/protocol.md, "Video messages", #79): the same
+    /// `send` frame with `"round": true`, exactly one attachment and an
+    /// empty body. Its own case for the sticker's reason — it cannot even
+    /// express a caption, a poll or a mention, which the server refuses.
+    case sendRound(
+        chatID: Int64,
+        clientMsgID: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -73,6 +93,8 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case lastReadMessageID = "last_read_message_id"
         case poll
         case mentions
+        case sticker
+        case round
         case callID = "call_id"
         case sdp
         case candidate
@@ -105,6 +127,26 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
                 var poll = container.nestedContainer(keyedBy: NewPollKeys.self, forKey: .poll)
                 try poll.encode(pollOptions, forKey: .options)
             }
+        case .sendSticker(let chatID, let clientMsgID, let replyToMessageID, let attachmentID):
+            try container.encode("send", forKey: .type)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(clientMsgID, forKey: .clientMsgID)
+            // Present and EMPTY, as the protocol's example writes it: a
+            // sticker beside a non-empty body is `validation`.
+            try container.encode("", forKey: .body)
+            try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encode([attachmentID], forKey: .attachmentIDs)
+            try container.encode(true, forKey: .sticker)
+        case .sendRound(let chatID, let clientMsgID, let replyToMessageID, let attachmentID):
+            try container.encode("send", forKey: .type)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(clientMsgID, forKey: .clientMsgID)
+            // Present and EMPTY: a video message beside a body is
+            // `validation`.
+            try container.encode("", forKey: .body)
+            try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encode([attachmentID], forKey: .attachmentIDs)
+            try container.encode(true, forKey: .round)
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
@@ -335,6 +377,19 @@ nonisolated struct CallOfferPayload: Decodable, Equatable, Sendable {
     }
 }
 
+/// Why an assistant reply stopped, as an `ai_error` frame's optional
+/// `reason` says it (docs/protocol.md, "The assistant").
+///
+/// Only the values the protocol defines are here. Anything else the server
+/// sends decodes to nil — the same as no reason at all — so a value added
+/// later never makes this client invent a meaning for it.
+nonisolated enum AIErrorReason: String, Equatable, Sendable {
+    /// The AI provider's OWN safety or content filter refused the question,
+    /// the answer, or a picture's description. Asking again in the same
+    /// words gets the same refusal.
+    case refused
+}
+
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case ack(clientMsgID: String, message: MessageDTO)
     case message(MessageDTO)
@@ -345,6 +400,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// One board note in whatever state it now has — created, edited,
     /// moved, or a tombstone. Never notifies, never counts as unread.
     case boardNote(NoteDTO)
+    /// One item of the family's sticker pack in whatever state it now has —
+    /// added, or a tombstone (docs/protocol.md, "Sticker pack"). Reaches
+    /// every connection of every member, the actor's own included, and is
+    /// NOT filtered by blocks. Never notifies, never counts as unread.
+    case packItem(PackItemDTO)
     /// One fragment of the assistant's reply, as it is generated.
     ///
     /// COSMETIC: the row named by `messageID` is the truth, and its final
@@ -353,7 +413,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// live-typing effect, never the answer.
     case aiDelta(chatID: Int64, messageID: Int64, text: String)
     /// The reply stopped early. Whatever arrived is already on the row.
-    case aiError(chatID: Int64, messageID: Int64)
+    ///
+    /// `reason` says WHY when the server knows, and is nil for every other
+    /// failure — including a `reason` this client does not know, which the
+    /// protocol says to read as absent (docs/protocol.md, "The assistant").
+    case aiError(chatID: Int64, messageID: Int64, reason: AIErrorReason? = nil)
     case read(chatID: Int64, userID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
@@ -414,6 +478,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case reactionSeq = "reaction_seq"
         case reactions
         case note
+        case item
         case text
         case poll
         case callID = "call_id"
@@ -436,15 +501,25 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .messageEdited(try container.decode(MessageDTO.self, forKey: .message))
         case "board_note":
             self = .boardNote(try container.decode(NoteDTO.self, forKey: .note))
+        case "pack_item":
+            self = .packItem(try container.decode(PackItemDTO.self, forKey: .item))
         case "ai_delta":
             self = .aiDelta(
                 chatID: try container.decode(Int64.self, forKey: .chatID),
                 messageID: try container.decode(Int64.self, forKey: .messageID),
                 text: try container.decode(String.self, forKey: .text))
         case "ai_error":
+            // `reason` is optional and OPEN: a value this client does not
+            // know — or one of the wrong JSON type — reads as absent, never
+            // as a malformed frame, so a later server can add a reason
+            // without costing an old client the failure it would otherwise
+            // show (docs/protocol.md, "The assistant").
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason))
+                .flatMap(AIErrorReason.init(rawValue:))
             self = .aiError(
                 chatID: try container.decode(Int64.self, forKey: .chatID),
-                messageID: try container.decode(Int64.self, forKey: .messageID))
+                messageID: try container.decode(Int64.self, forKey: .messageID),
+                reason: reason)
         case "read":
             self = .read(
                 chatID: try container.decode(Int64.self, forKey: .chatID),

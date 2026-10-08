@@ -18,7 +18,9 @@ internal sealed class Connection : IAsyncDisposable
     public Connection(Uri server, string cachePath)
     {
         Server = server;
-        Http = new HttpClient();
+        // No HttpClient.Timeout: it would cap the backdrop's own 120 s deadline at the ordinary one. The API client
+        // gives every request its deadline itself (docs/protocol.md, "Board").
+        Http = ApiClient.NewHttpClient();
         Tokens = new LockerTokenStore(server);
         Api = new ApiClient(Http, server, Tokens);
         Cache = Database.Open(cachePath);
@@ -27,20 +29,48 @@ internal sealed class Connection : IAsyncDisposable
         // sign-in as somebody else must not be drawn as the previous person's "You".
         Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0);
         Board = new BoardStore(Cache);
+        Pack = new PackStore(Cache);
         Outbox = new OutboxStore(Cache);
         Socket = new ChatSocket(() => new ClientWebSocketAdapter(), () => Api.SocketUrl, Tokens);
         Staging = new FolderMediaStore(AppFolders.StagingPath);
         Media = new MediaOutbox(Outbox, Api, Staging);
         Sending = new SendPipeline(Socket, Outbox, Chats, Api, uploads: PushMediaAsync);
-        Router = new FrameRouter(Chats, Board);
+        Router = new FrameRouter(Chats, Board, Pack);
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
+        // A sticker on its way out is bytes this device already holds: kept under the id the server just gave them, so
+        // the message it becomes is drawn at once rather than downloaded back. A video message too — its square video
+        // and the poster this device made, so the reader's own circle is drawn and opened without asking (S5.6).
+        Media.Landed += (row, attachment, staged) =>
+        {
+            if (!row.Sticker && !row.Round)
+            {
+                return;
+            }
+            try
+            {
+                Attachments.Remember(attachment, staged.Bytes);
+                if (row.Round && staged.Preview is { IsEmpty: false } poster)
+                {
+                    Attachments.RememberPreview(attachment, poster);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Diagnostics.Write($"keeping a sent {(row.Round ? "video message" : "sticker")}'s bytes: {e.GetType().Name}");
+            }
+        };
         Avatars = new AvatarCache(Api, new FileBlobStore(AppFolders.BlobsPath));
-        Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending), Sending, Router);
+        // The family's stickers: the pack this device keeps, and the bytes under their attachment ids in the same
+        // cache every other picture is kept in.
+        Stickers = new PackModel(Pack, Chats, Api, Attachments);
+        Live = new LiveConnection(Session, Socket, new Resync(Api, Chats, Board, Sending, Pack), Sending, Router);
         // What the live frames leave on screen and nowhere else, listened for from the start so a frame that lands
         // while no conversation is open is not lost.
         PeerReads = new PeerReads();
         Answers = new AssistantAnswers();
         Previews = new LinkPreviews(() => LinkPreviewSetting.Enabled);
+        // The text of recordings this member asked for: kept in the same cache file, and wiped with it at sign-out.
+        Transcripts = new TranscriptModel(Api, new TranscriptStore(Cache));
         Router.PeerRead += (chatId, _, lastRead) => PeerReads.Apply(chatId, lastRead);
         Router.AiDelta += (chatId, messageId, text) => Answers.Delta(chatId, messageId, text, Chats.Message(messageId));
         Router.AiStopped += Answers.Stopped;
@@ -49,6 +79,10 @@ internal sealed class Connection : IAsyncDisposable
         {
             PeerReads.Clear();
             Answers.Clear();
+            Transcripts.Clear();
+            // Everything recorded and not sent goes with the session, as the outbox goes with the cache
+            // (docs/audio-video-messages-2026-10-04.md, S4's sign-out row): a recording belongs to whoever made it.
+            ParkedRecordings.WipeAll(AppFolders.ParkedPath);
         };
     }
 
@@ -57,6 +91,12 @@ internal sealed class Connection : IAsyncDisposable
 
     /// <summary>The assistant's answers while they are written: the streamed text, and the ones that stopped.</summary>
     public AssistantAnswers Answers { get; }
+
+    /// <summary>
+    /// The text of voice notes and audio, asked for one at a time and kept on this device (docs/protocol.md, "Transcripts
+    /// on request").
+    /// </summary>
+    public TranscriptModel Transcripts { get; }
 
     /// <summary>The cards under links: the one place this app asks a host the family does not own, and only while switched on.</summary>
     public LinkPreviews Previews { get; }
@@ -74,6 +114,12 @@ internal sealed class Connection : IAsyncDisposable
     public ChatStore Chats { get; }
 
     public BoardStore Board { get; }
+
+    /// <summary>The family's sticker pack, kept as the board is kept (docs/protocol.md, "Sticker pack").</summary>
+    public PackStore Pack { get; }
+
+    /// <summary>What the window asks of the pack: the panel, who may remove what, and add, remove and send.</summary>
+    public PackModel Stickers { get; }
 
     public OutboxStore Outbox { get; }
 

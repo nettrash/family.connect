@@ -50,6 +50,99 @@ object AssistantConsent {
     ): Boolean =
         isAvailable(processor) && agreedAt.isNullOrBlank() && reachesTheModel(chatKind, body)
 
+    /** What becomes of a sticker tapped in a composer. */
+    enum class StickerGate {
+        /** It goes. */
+        SEND,
+
+        /** It would reach the model and this member has not agreed: ask first, send nothing. */
+        ASK,
+
+        /** It would reach a model whose owner the server will not name: it goes nowhere. */
+        WITHHELD,
+    }
+
+    /**
+     * A sticker is a send like any other, and in the member's own `ai` chat
+     * it is a photo to the assistant — so it goes through the SAME two
+     * questions a typed message does, never around them. One function for
+     * every composer that has a sticker button (the chat's and the
+     * thread's), so neither can grow a way past the question.
+     *
+     * A sticker has no body, so in the family chat it can never say `@ai`
+     * and always goes.
+     */
+    fun stickerGate(
+        chatKind: String?,
+        hasAssistant: Boolean,
+        processor: String?,
+        agreedAt: String?,
+    ): StickerGate = when {
+        isWithheldFromAnUnnamedAssistant(chatKind, "", hasAssistant, processor) -> StickerGate.WITHHELD
+        isRequired(chatKind, "", processor, agreedAt) -> StickerGate.ASK
+        else -> StickerGate.SEND
+    }
+
+    /** What becomes of "Draw a backdrop" on an event. */
+    enum class BackdropGate {
+        /** It is asked for. */
+        DRAW,
+
+        /** The title would reach the model and this author has not agreed: ask first, send nothing. */
+        ASK,
+
+        /** The server will not name who would receive it: it goes nowhere, and is not offered. */
+        WITHHELD,
+    }
+
+    /**
+     * An event's backdrop is drawn from its TITLE — words the author wrote,
+     * going to `processor` — so it is asked about exactly as a `/draw` is
+     * (docs/protocol.md, "Consenting to the assistant", amended
+     * 2026-09-30). Always reaches the model: there is no chat kind or
+     * mention to decide it, only whether the assistant can be named and
+     * whether this member has agreed.
+     */
+    fun backdropGate(processor: String?, agreedAt: String?): BackdropGate = when {
+        !isAvailable(processor) -> BackdropGate.WITHHELD
+        agreedAt.isNullOrBlank() -> BackdropGate.ASK
+        else -> BackdropGate.DRAW
+    }
+
+    /**
+     * Is "Draw a backdrop" offered at all? The server must be able to draw
+     * (`assistant.images`), and it must name who draws: a client that
+     * cannot name `processor` does not offer the assistant at all, and
+     * could not ask the consent a backdrop needs.
+     */
+    fun offersBackdrop(serverCanDraw: Boolean, processor: String?): Boolean =
+        serverCanDraw && isAvailable(processor)
+
+    /** What becomes of "Show text" under a recording. */
+    enum class TranscriptGate {
+        /** It is asked for. */
+        ASK_FOR_TEXT,
+
+        /** The sound would go to `processor` and this member has not agreed: ask first, send nothing. */
+        ASK_CONSENT,
+
+        /** The server will not name who would receive it: it goes nowhere, and is not offered. */
+        WITHHELD,
+    }
+
+    /**
+     * The member who asks for the text of a recording is the member sending
+     * its sound to `processor`, so their OWN consent is required — the same
+     * consent a `/draw` needs (docs/protocol.md, "Transcripts on request").
+     * Asked before the request when this device knows the answer is no,
+     * and again on the server's `assistant_consent_required`.
+     */
+    fun transcriptGate(processor: String?, agreedAt: String?): TranscriptGate = when {
+        !isAvailable(processor) -> TranscriptGate.WITHHELD
+        agreedAt.isNullOrBlank() -> TranscriptGate.ASK_CONSENT
+        else -> TranscriptGate.ASK_FOR_TEXT
+    }
+
     /**
      * Would this message reach a model whose owner the server will not
      * name, so this client must hold it back entirely?

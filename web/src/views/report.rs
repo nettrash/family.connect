@@ -149,7 +149,11 @@ pub fn assistant_report_dialog(props: &AssistantReportProps) -> Html {
             let written = note.trim().to_string();
             on_submit.emit((
                 (*reason).clone(),
-                if written.is_empty() { None } else { Some(written) },
+                if written.is_empty() {
+                    None
+                } else {
+                    Some(written)
+                },
             ));
         })
     };

@@ -41,6 +41,29 @@ pub struct RegisterDeviceRequest {
     /// other.
     #[serde(default, deserialize_with = "present_option")]
     pub voip_token: Option<Option<String>>,
+    /// The language the app is SHOWN in on this device, which its pushes are written in
+    /// (docs/protocol.md, "Devices" and "The words of a push"). The voip token's double option
+    /// again: absent leaves the row's language alone, `null` or `""` clears it, a string sets it.
+    ///
+    /// Read as any JSON value, not a string: a number or an object is a malformed language, stored as
+    /// none — never a refused registration (PR #85 review), which would cost the device every push.
+    #[serde(default, deserialize_with = "present_option")]
+    pub language: Option<Option<serde_json::Value>>,
+}
+
+/// A registered language as it is stored: a well-formed tag — letters, digits and `-`, at most 35
+/// characters, the longest BCP 47 tag anybody sends — or nothing. Never a refusal: a device that
+/// cannot register gets no push at all, which is a far worse failure than an English one. An `_` is
+/// read as `-`, so Java's `fr_CA` is the `fr-CA` that `push_text::language` already understands.
+pub fn stored_language(sent: Option<&str>) -> Option<String> {
+    let tag = sent?.trim().replace('_', "-");
+    let tag = tag.as_str();
+    let well_formed = !tag.is_empty()
+        && tag.len() <= 35
+        && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !tag.starts_with('-')
+        && !tag.ends_with('-');
+    well_formed.then(|| tag.to_string())
 }
 
 /// Deserialize a present key into `Some(...)`, so `#[serde(default)]` keeps
@@ -83,6 +106,14 @@ pub async fn register_device(
         .filter(|t| !t.is_empty())
         .map(str::to_string);
 
+    let language_set = req.language.is_some();
+    let language_value = stored_language(
+        req.language
+            .as_ref()
+            .and_then(|inner| inner.as_ref())
+            .and_then(serde_json::Value::as_str),
+    );
+
     let device_id: i64 = match push_token {
         Some(token) => {
             // Upsert by token: if the token moved to another account (same
@@ -97,13 +128,15 @@ pub async fn register_device(
             // key was present, so a launch carrying only the push token
             // does not wipe a VoIP token registered a moment before.
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, push_token, session_id, voip_token)
-                 VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN $6 ELSE NULL END)
+                "INSERT INTO devices (user_id, platform, push_token, session_id, voip_token, language)
+                 VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN $6 ELSE NULL END,
+                         CASE WHEN $7 THEN $8 ELSE NULL END)
                  ON CONFLICT (push_token) WHERE push_token IS NOT NULL
                  DO UPDATE SET user_id = EXCLUDED.user_id,
                                platform = EXCLUDED.platform,
                                session_id = EXCLUDED.session_id,
                                voip_token = CASE WHEN $5 THEN $6 ELSE devices.voip_token END,
+                               language = CASE WHEN $7 THEN $8 ELSE devices.language END,
                                updated_at = now()
                  RETURNING id",
             )
@@ -113,19 +146,24 @@ pub async fn register_device(
             .bind(auth.session_id)
             .bind(voip_set)
             .bind(&voip_value)
+            .bind(language_set)
+            .bind(&language_value)
             .fetch_one(&state.pool)
             .await?
         }
         None => {
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, session_id, voip_token)
-                 VALUES ($1, $2, $3, CASE WHEN $4 THEN $5 ELSE NULL END) RETURNING id",
+                "INSERT INTO devices (user_id, platform, session_id, voip_token, language)
+                 VALUES ($1, $2, $3, CASE WHEN $4 THEN $5 ELSE NULL END,
+                         CASE WHEN $6 THEN $7 ELSE NULL END) RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
             .bind(auth.session_id)
             .bind(voip_set)
             .bind(&voip_value)
+            .bind(language_set)
+            .bind(&language_value)
             .fetch_one(&state.pool)
             .await?
         }
@@ -167,5 +205,30 @@ pub async fn healthz(State(state): State<AppState>) -> Result<Response, ApiError
         Err(_elapsed) => Err(ApiError::Internal(anyhow::anyhow!(
             "database health check timed out after 2s"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_language;
+
+    #[test]
+    fn a_language_is_stored_well_formed_or_not_at_all() {
+        assert_eq!(stored_language(Some("sr-Latn")).as_deref(), Some("sr-Latn"));
+        assert_eq!(stored_language(Some(" de ")).as_deref(), Some("de"));
+        // Java's spelling is read as the tag it means.
+        assert_eq!(stored_language(Some("fr_CA")).as_deref(), Some("fr-CA"));
+        for malformed in [
+            "",
+            "  ",
+            "-de",
+            "de-",
+            "ru; DROP TABLE",
+            "日本語",
+            &"a".repeat(36),
+        ] {
+            assert_eq!(stored_language(Some(malformed)), None, "{malformed:?}");
+        }
+        assert_eq!(stored_language(None), None);
     }
 }

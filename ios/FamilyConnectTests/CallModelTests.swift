@@ -128,6 +128,16 @@ struct CallModelTests {
         #expect(SocketHold.decide(isInBackground: false, isCallInProgress: true) == .keep)
     }
 
+    @Test("a Mac kept running in the menu bar holds its socket with no window on the screen (#80)")
+    func socketHoldInTheMenuBar() {
+        // protocol.md wakes no Mac for a call: a menu-bar Mac that dropped
+        // its socket with its window could never ring.
+        #expect(SocketHold.decide(isInBackground: true, isCallInProgress: false, listensInBackground: true) == .keep)
+        #expect(SocketHold.decide(isInBackground: true, isCallInProgress: true, listensInBackground: true) == .keep)
+        #expect(SocketHold.decide(isInBackground: false, isCallInProgress: false, listensInBackground: true) == .keep)
+        #expect(SocketHold.decide(isInBackground: true, isCallInProgress: false, listensInBackground: false) == .suspend)
+    }
+
     // MARK: - The VoIP payload
 
     @Test("the VoIP push parses with numbers as NSNumber or as strings, and refuses anything else")

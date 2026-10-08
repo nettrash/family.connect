@@ -275,7 +275,28 @@ public class FrameTests
         Assert.Equal("Sure", Assert.IsType<ServerFrame.AiDelta>(delta).Text);
         var error = ServerFrame.Parse("""{"type": "ai_error", "chat_id": 42, "message_id": 1339}""");
         Assert.Equal(1339, Assert.IsType<ServerFrame.AiError>(error).MessageId);
+        // Absent is every failure that is not a refusal, exactly as before the field existed.
+        Assert.Null(Assert.IsType<ServerFrame.AiError>(error).Reason);
         Assert.IsType<ServerFrame.Pong>(ServerFrame.Parse("""{"type": "pong"}"""));
+    }
+
+    /// <summary>
+    /// <c>ai_error</c>'s optional <c>reason</c>: "refused" is the provider's own filter, and a value this client does
+    /// not know — or one that is not a string at all — is read as ABSENT, never guessed at (docs/protocol.md).
+    /// </summary>
+    [Fact]
+    public void AnAssistantFailureSaysWhyOnlyInWordsItKnows()
+    {
+        var refused = Assert.IsType<ServerFrame.AiError>(ServerFrame.Parse(
+            """{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"""));
+        Assert.Equal(new ServerFrame.AiError(42, 1339, AiErrorReason.Refused), refused);
+
+        foreach (var unknown in new[] { "\"quota\"", "\"Refused\"", "\"\"", "null", "7", "true", "{}", "[\"refused\"]" })
+        {
+            var frame = ServerFrame.Parse(
+                $$"""{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": {{unknown}}}""");
+            Assert.Equal(new ServerFrame.AiError(42, 1339), frame);
+        }
     }
 
     [Fact]
@@ -339,5 +360,216 @@ public class FrameTests
         Assert.Equal(
             new ServerFrame.CallAnswer("c", "v=0"),
             ServerFrame.Parse(ClientFrames.CallAnswer("c", "v=0")));
+    }
+
+    // ---- the sticker pack (docs/protocol.md, "Sticker pack") ---------------------------------
+
+    [Fact]
+    public void APackItemFrameCarriesALiveItem()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "pack_item", "item": {"id": 5, "added_by": 7,
+             "attachment": {"id": 71, "kind": "photo", "mime": "image/webp", "size": 40960,
+                            "width": 512, "height": 512, "has_preview": false},
+             "created_at": "2026-09-13T10:00:00Z", "pack_seq": 12, "label": "party cat"}}
+            """);
+        var item = Assert.IsType<ServerFrame.PackItem>(frame).Item;
+        Assert.Equal(5, item.Id);
+        Assert.Equal(7, item.AddedBy);
+        Assert.Equal(12, item.PackSeq);
+        Assert.Equal("party cat", item.Label);
+        Assert.False(item.Deleted);
+        Assert.Equal(71, item.Attachment!.Id);
+        Assert.Equal("image/webp", item.Attachment.Mime);
+        // A pack item's attachment NEVER carries the flag: that is a message's.
+        Assert.False(item.Attachment.Sticker);
+    }
+
+    /// <summary>A tombstone is the id, the flag and the seq — and nothing else.</summary>
+    [Fact]
+    public void APackItemFrameCarriesATombstone()
+    {
+        var frame = ServerFrame.Parse(
+            """{"type": "pack_item", "item": {"id": 5, "deleted": true, "pack_seq": 14}}""");
+        var item = Assert.IsType<ServerFrame.PackItem>(frame).Item;
+        Assert.True(item.Deleted);
+        Assert.Equal(5, item.Id);
+        Assert.Equal(14, item.PackSeq);
+        Assert.Null(item.Attachment);
+        Assert.Null(item.Label);
+        Assert.Equal(0, item.AddedBy);
+    }
+
+    [Fact]
+    public void APackItemFrameWithNoItemIsNoFrame()
+    {
+        Assert.Null(ServerFrame.Parse("""{"type": "pack_item"}"""));
+    }
+
+    /// <summary>
+    /// The flag is on the ATTACHMENT, present only when true — in <c>attachments</c> and in the
+    /// legacy singular — and it is what makes the message a sticker.
+    /// </summary>
+    [Fact]
+    public void AStickerMessageIsOneFlaggedPhotoAndNoWords()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "message", "message": {"id": 1340, "chat_id": 42, "sender_id": 9,
+             "client_msg_id": null, "body": "", "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960,
+                              "width": 512, "height": 512, "has_preview": false, "sticker": true}],
+             "attachment": {"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960,
+                            "width": 512, "height": 512, "has_preview": false, "sticker": true}}}
+            """);
+        var message = Assert.IsType<ServerFrame.Message>(frame).Value;
+        Assert.True(Assert.Single(message.Media).Sticker);
+        Assert.True(message.Attachment!.Sticker);
+        Assert.Equal(90, message.StickerPicture!.Id);
+    }
+
+    /// <summary>
+    /// OLD MESSAGES, AND OLD SERVERS: a photo without the flag is a photo — the field is absent,
+    /// never false — and nothing about it is drawn differently than it ever was.
+    /// </summary>
+    [Fact]
+    public void APhotoWithoutTheFlagIsNotASticker()
+    {
+        var plain = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-09-13T10:00:00Z",
+             "attachments": [{"id": 90, "kind": "photo", "mime": "image/webp", "size": 40960}]}
+            """)!;
+        Assert.False(plain.Media[0].Sticker);
+        Assert.Null(plain.StickerPicture);
+
+        MessageDto With(string body, params AttachmentDto[] media) =>
+            new(1, 42, 9, null, body, "2026-09-13T10:00:00Z", Attachments: media);
+        var flagged = new AttachmentDto(90, "photo", "image/webp", 40960, Sticker: true);
+        Assert.NotNull(With("", flagged).StickerPicture);
+        // THE ONE TEST, the same on every client: exactly ONE attachment, kind photo, sticker: true.
+        Assert.Null(With("", flagged, flagged).StickerPicture);
+        Assert.Null(With("", flagged with { Kind = "video" }).StickerPicture);
+        Assert.Null(With("", flagged with { Sticker = false }).StickerPicture);
+        Assert.Null(With("", flagged, flagged with { Id = 91, Sticker = false }).StickerPicture);
+        Assert.Null(With("").StickerPicture);
+        // And NOTHING ELSE is asked. Words beside the flag are a shape the server refuses; were one ever stored, every
+        // client must still agree on what it is, and the rule they share does not read the body or the type.
+        Assert.NotNull(With("look", flagged).StickerPicture);
+        Assert.NotNull(With("", flagged with { Mime = "image/jpeg" }).StickerPicture);
+    }
+
+    [Fact]
+    public void ASendSaysStickerOnlyWhenItIsOne()
+    {
+        var sticker = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [90], sticker: true)).RootElement;
+        Assert.Equal("send", sticker.GetProperty("type").GetString());
+        Assert.True(sticker.GetProperty("sticker").GetBoolean());
+        Assert.Equal("", sticker.GetProperty("body").GetString());
+        Assert.Equal(90, sticker.GetProperty("attachment_ids")[0].GetInt64());
+
+        // Absent on an ordinary message — never false — so a server that predates stickers reads
+        // exactly the frame it always read.
+        var plain = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", "Dinner at 7?", attachmentIds: [90])).RootElement;
+        Assert.False(plain.TryGetProperty("sticker", out _));
+    }
+
+    // ---- video messages (docs/protocol.md, "Video messages") -----------------------------------
+
+    /// <summary>
+    /// The flag is on the ATTACHMENT, present only when true — in <c>attachments</c> and in the legacy singular — and it
+    /// is what makes the message a circle.
+    /// </summary>
+    [Fact]
+    public void AVideoMessageIsOneFlaggedVideoAndNoWords()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "message", "message": {"id": 1341, "chat_id": 42, "sender_id": 9,
+             "client_msg_id": null, "body": "", "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                              "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}],
+             "attachment": {"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700, "width": 480,
+                            "height": 480, "duration_ms": 23400, "has_preview": true, "round": true}}}
+            """);
+        var message = Assert.IsType<ServerFrame.Message>(frame).Value;
+        var video = Assert.Single(message.Media);
+        Assert.True(video.Round);
+        Assert.False(video.Sticker);
+        Assert.True(message.Attachment!.Round);
+        Assert.Equal(91, message.RoundVideo!.Id);
+        Assert.Equal(23400, message.RoundVideo.DurationMs);
+        Assert.Null(message.StickerPicture);
+    }
+
+    /// <summary>
+    /// THE ONE TEST (S5.1), the same on every client: exactly ONE attachment, <c>kind=video</c>, <c>round: true</c>, no body. A
+    /// video without the flag — every video from before, and every one an old server delivers — is a square video.
+    /// </summary>
+    [Fact]
+    public void OnlyOneFlaggedVideoIsAVideoMessage()
+    {
+        var plain = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachments": [{"id": 91, "kind": "video", "mime": "video/mp4", "size": 1649700}]}
+            """)!;
+        Assert.False(plain.Media[0].Round);
+        Assert.Null(plain.RoundVideo);
+
+        MessageDto With(string body, params AttachmentDto[] media) =>
+            new(1, 42, 9, null, body, "2026-10-05T10:00:00Z", Attachments: media);
+        var flagged = new AttachmentDto(91, "video", "video/mp4", 1649700, 480, 480, 23400, true, Round: true);
+        Assert.NotNull(With("", flagged).RoundVideo);
+        Assert.Null(With("", flagged, flagged with { Id = 92 }).RoundVideo);
+        Assert.Null(With("", flagged with { Kind = "photo" }).RoundVideo);
+        Assert.Null(With("", flagged with { Kind = "audio" }).RoundVideo);
+        Assert.Null(With("", flagged with { Round = false }).RoundVideo);
+        Assert.Null(With("").RoundVideo);
+        // A body — any body, whitespace too, compared exactly (fc_text::record::is_round) — is an ordinary message.
+        Assert.Null(With("look", flagged).RoundVideo);
+        Assert.Null(With(" ", flagged).RoundVideo);
+        Assert.Null(With("\n", flagged).RoundVideo);
+        Assert.Null(With("\u00A0", flagged).RoundVideo);
+        // And nothing else is asked — not the type, not the shape.
+        Assert.NotNull(With("", flagged with { Width = 640, Height = 480 }).RoundVideo);
+        // A circle is not a sticker, and a sticker is not a circle.
+        Assert.Null(With("", flagged).StickerPicture);
+    }
+
+    /// <summary>The legacy singular alone — a server that predates plurality — is read the same way.</summary>
+    [Fact]
+    public void TheLegacySingularCarriesTheFlagToo()
+    {
+        var legacy = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-05T10:00:00Z",
+             "attachment": {"id": 91, "kind": "video", "mime": "video/mp4", "round": true}}
+            """)!;
+        Assert.Equal(91, legacy.RoundVideo!.Id);
+    }
+
+    [Fact]
+    public void ASendSaysRoundOnlyWhenItIsAVideoMessage()
+    {
+        var round = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [91], round: true)).RootElement;
+        Assert.Equal("send", round.GetProperty("type").GetString());
+        Assert.True(round.GetProperty("round").GetBoolean());
+        Assert.False(round.TryGetProperty("sticker", out _));
+        Assert.Equal(91, round.GetProperty("attachment_ids")[0].GetInt64());
+
+        var plain = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [91])).RootElement;
+        Assert.False(plain.TryGetProperty("round", out _));
+        var sticker = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [90], sticker: true)).RootElement;
+        Assert.False(sticker.TryGetProperty("round", out _));
     }
 }

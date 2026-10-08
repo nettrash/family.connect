@@ -1,6 +1,6 @@
 [package]
 name = "family-connect"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 authors = ["nettrash <nettrash@nettrash.me>"]
 description = "Self-hosted family chat server: REST + WebSocket API over PostgreSQL (protocol v1)"
@@ -35,7 +35,11 @@ tokio = { version = "1", features = [
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # HTTP framework; "ws" adds the WebSocket upgrade extractor used by /api/v1/ws.
-axum = { version = "0.8", features = ["ws"] }
+# "multipart" reads the ONE multipart body this server accepts: the sound
+# track a device sends with a transcript request (docs/protocol.md,
+# "Transcripts on request"). Every other upload is raw bytes in the body, and
+# stays that way — this is not a second way to upload an attachment.
+axum = { version = "0.8", features = ["ws", "multipart"] }
 
 # PostgreSQL driver. default-features off so we opt into exactly the tokio +
 # rustls stack; no "migrate" feature — migrations are hand-rolled in
@@ -97,6 +101,10 @@ reqwest = { version = "0.12", default-features = false, features = [
     # The assistant's reply arrives as a token stream, so the response body
     # is consumed as chunks rather than awaited whole.
     "stream",
+    # Azure's transcription contract is multipart/form-data, the one
+    # provider call that is not JSON (docs/protocol.md, "Transcripts on
+    # request").
+    "multipart",
 ] }
 
 # JWT signing for both push transports: ES256 for the APNs provider token,

@@ -89,11 +89,32 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(61, ErrorCodes.All.Length);
+        Assert.Equal(71, ErrorCodes.All.Length);
+        // The sticker pack's four, as the document lists them.
+        Assert.Contains(ErrorCodes.PackFull, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PackItemTooLarge, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PackItemNotFound, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.NotPackItemAuthor, ErrorCodes.All);
         Assert.Equal(ErrorCodes.All.Length, ErrorCodes.All.Distinct().Count());
         Assert.Contains(ErrorCodes.OwnerCannotLeave, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PicturesUnavailable, ErrorCodes.All);
+        Assert.Contains(ErrorCodes.PictureRefused, ErrorCodes.All);
         Assert.Contains(ErrorCodes.InvalidTask, ErrorCodes.All);
+        // Missing from the document's list until 2026-10-02, and listed there now — so listed here too. Terminal with
+        // or without its status: a socket frame carrying it has none, and it is still a refusal.
+        Assert.Contains(ErrorCodes.AssistantConsentRequired, ErrorCodes.All);
+        Assert.False(new ApiError(ErrorCodes.AssistantConsentRequired, "x", 403).Transient);
+        Assert.False(new ApiError(ErrorCodes.AssistantConsentRequired, "x").Transient);
+        // The transcript endpoint's four (docs/protocol.md, "Transcripts on request"), all refusals.
+        foreach (var code in new[]
+                 {
+                     ErrorCodes.TranscriptsUnavailable, ErrorCodes.TranscriptNotAllowed, ErrorCodes.NotTranscribable,
+                     ErrorCodes.TranscriptRefused,
+                 })
+        {
+            Assert.Contains(code, ErrorCodes.All);
+            Assert.False(new ApiError(code, "x", 400).Transient);
+        }
         // This client's own name for "it never got there" is NOT one of the protocol's.
         Assert.DoesNotContain(ErrorCodes.Transport, ErrorCodes.All);
         Assert.All(ErrorCodes.All, code => Assert.DoesNotContain("_", code[..1]));

@@ -50,18 +50,58 @@ pub struct UploadParams {
     /// `kind=location` only, optional: the radius in metres the sending
     /// device believed its fix good to.
     pub accuracy_m: Option<i32>,
+    /// Audio only, optional: the recording's shape, 48 lowercase hex digits
+    /// the SENDER computed from the peaks it metered (protocol.md, "A voice
+    /// note's waveform"). Checked for its form and stored; never computed
+    /// here, because this server decodes nothing.
+    pub waveform: Option<String>,
 }
 
 const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, \
-                               has_preview, name, latitude, longitude, accuracy_m";
+                               has_preview, name, latitude, longitude, accuracy_m, waveform";
+
+/// The waveform an upload of `kind` may carry, or the `validation` 400 it
+/// earns (protocol.md, "A voice note's waveform"). Asked before a byte of
+/// the body is written and before the row exists — 0053's CHECK says the
+/// same two things, and a constraint that fired on the insert would be a
+/// 500 an outbox retries for ever.
+///
+/// Refused rather than dropped, both ways: a waveform on a photo or a
+/// malformed one on a voice note is a sender's bug, and silently storing
+/// nothing would hide it behind a placeholder on every member's screen.
+fn checked_waveform<'a>(
+    kind: &str,
+    waveform: Option<&'a str>,
+) -> Result<Option<&'a str>, ApiError> {
+    let Some(waveform) = waveform else {
+        return Ok(None);
+    };
+    if kind != Attachment::KIND_AUDIO {
+        return Err(ApiError::validation(format!(
+            "a waveform is for audio only, not a {kind}"
+        )));
+    }
+    if !Attachment::is_waveform(waveform) {
+        return Err(ApiError::validation(format!(
+            "a waveform is exactly {} lowercase hex digits",
+            Attachment::WAVEFORM_LEVELS
+        )));
+    }
+    Ok(Some(waveform))
+}
 
 /// The declared type must match the bytes. Same rule as avatars: a magic
 /// number is the whole check, because deciding otherwise would mean an
 /// image and video codec in the server.
-fn matches_magic(mime: &str, head: &[u8]) -> bool {
+pub(crate) fn matches_magic(mime: &str, head: &[u8]) -> bool {
     match mime {
         "image/jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
         "image/png" => head.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+        // A RIFF container whose form type is WEBP. The four bytes between
+        // are the file's length and say nothing about what it is. Still or
+        // animated is not asked: an animated WebP is a WebP, and this
+        // server stores what it is given (protocol.md, "Sticker pack").
+        "image/webp" => head.len() >= 12 && head.starts_with(b"RIFF") && &head[8..12] == b"WEBP",
         // HEIC/HEIF and MP4/MOV are all ISO base media: "ftyp" at offset 4,
         // with the brand that follows telling them apart.
         // HEIC/HEIF, MP4/MOV and m4a/aac are all ISO base media: "ftyp" at
@@ -119,6 +159,7 @@ async fn upload_location(
     user_id: i64,
     params: &UploadParams,
 ) -> Result<Response, ApiError> {
+    checked_waveform(Attachment::KIND_LOCATION, params.waveform.as_deref())?;
     let (Some(latitude), Some(longitude)) = (params.latitude, params.longitude) else {
         return Err(ApiError::bad_request(
             codes::INVALID_ATTACHMENT,
@@ -284,6 +325,7 @@ pub async fn upload_attachment(
         }
         (kind, mime, None)
     };
+    let waveform = checked_waveform(kind, params.waveform.as_deref())?;
 
     // Which family the bytes are being uploaded INTO — the dedup scope.
     // Read now rather than derived later: the uploader can leave or move
@@ -296,8 +338,8 @@ pub async fn upload_attachment(
     let row = sqlx::query(&format!(
         "INSERT INTO attachments
             (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name,
-             family_id)
-         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9)
+             family_id, waveform)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10)
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(auth.user_id)
@@ -309,6 +351,7 @@ pub async fn upload_attachment(
     .bind(&storage_key)
     .bind(name.as_deref())
     .bind(family_id)
+    .bind(waveform)
     .fetch_one(&state.pool)
     .await?;
     let id: i64 = row.get("id");
@@ -472,7 +515,8 @@ pub async fn upload_preview(
         // Nothing draws a file, a piece of audio or a location as a
         // picture, so a preview on one is a client bug worth reporting
         // rather than silently storing. Audio gets a play control and a
-        // duration; a waveform is deliberately not part of the wire. A
+        // duration, and its waveform rides the upload's query string as
+        // 48 hex digits (0053) — never a picture uploaded here. A
         // location is drawn from its coordinates by each device, which is
         // what makes a stored map image the wrong artefact — it would be
         // one sender's idea of zoom, frozen (protocol.md).
@@ -531,17 +575,22 @@ async fn serve(
     preview: bool,
 ) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        // Two ways in, because there are two ways to claim: a message's
-        // attachment is readable by the members of ITS CHAT, and a board
-        // note's by every member of the family whose wall holds it — a
-        // note belongs to no chat, and without the second the family would
-        // see a wall of pictures none of them could fetch (protocol.md,
-        // "Board"). A block narrows neither: the note arrives and hides
-        // client-side, revealing on one tap, exactly as a message does.
+        // Three ways in, because there are three ways to claim: a
+        // message's attachment is readable by the members of ITS CHAT, and
+        // a board note's by every member of the family whose wall holds it
+        // — a note belongs to no chat, and without the second the family
+        // would see a wall of pictures none of them could fetch
+        // (protocol.md, "Board"). A block narrows neither: the note arrives
+        // and hides client-side, revealing on one tap, exactly as a message
+        // does. The third is the family's sticker pack (0048), readable by
+        // the family for the board's reason: a pack belongs to no chat
+        // either, and a panel of stickers only their adder could fetch is
+        // not a pack (protocol.md, "Sticker pack").
         "SELECT a.storage_key, a.mime, a.has_preview, a.kind, a.name
          FROM attachments a
          LEFT JOIN messages m ON m.id = a.message_id
          LEFT JOIN notes n ON n.id = a.note_id
+         LEFT JOIN pack_items p ON p.id = a.pack_item_id
          WHERE a.id = $1
            AND (a.uploader_id = $2
                 OR EXISTS (SELECT 1 FROM chat_members cm
@@ -549,7 +598,8 @@ async fn serve(
                 OR EXISTS (SELECT 1 FROM users u
                            WHERE u.id = $2
                              AND u.family_id IS NOT NULL
-                             AND u.family_id = n.family_id))",
+                             AND (u.family_id = n.family_id
+                                  OR u.family_id = p.family_id)))",
     )
     .bind(id)
     .bind(auth.user_id)
@@ -827,10 +877,12 @@ const EXPIRY_MARKER_DAYS: i32 = 30;
 /// a row and 100 MB with no message pointing at it. Nothing else in the
 /// system would ever remove them.
 ///
-/// TWO claims, not one: a picture pinned to the family board has no
-/// `message_id` and is not unclaimed (0042). Sweeping on the message alone
-/// would eat every photo note's picture `attachment_grace_hours` after it
-/// was pinned — a delay fuse, and the note would go on pointing at nothing.
+/// THREE claims, not one: a picture pinned to the family board has no
+/// `message_id` and is not unclaimed (0042), and neither is one in the
+/// family's sticker pack (0048). Sweeping on the message alone would eat
+/// every photo note's picture and every sticker in every pack
+/// `attachment_grace_hours` after it was added — a delay fuse, and the note
+/// or the pack item would go on pointing at nothing.
 pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
     let hours = state.cfg.limits.attachment_grace_hours;
     // The row goes and a MARKER stays (0035): a client whose outbox was
@@ -843,6 +895,7 @@ pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
              DELETE FROM attachments
               WHERE message_id IS NULL
                 AND note_id IS NULL
+                AND pack_item_id IS NULL
                 AND created_at < now() - make_interval(hours => $1)
              RETURNING id, uploader_id, storage_key
          ), marked AS (

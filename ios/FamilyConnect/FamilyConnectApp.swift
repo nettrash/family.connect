@@ -95,6 +95,10 @@ struct FamilyConnectApp: App {
             PendingMediaItemEntity.self,
             BlockEntity.self,
             GoneNoteEntity.self,
+            // The family's sticker pack and its own gone set — additive, so
+            // a lightweight migration for a store that predates them.
+            PackItemEntity.self,
+            GonePackItemEntity.self,
         ])
         var configuration = ModelConfiguration(
             schema: schema,
@@ -241,7 +245,7 @@ struct FamilyConnectApp: App {
             session.applyBlockedIDs = { [weak coordinator] ids in
                 coordinator?.replaceBlocks(with: ids)
             }
-            session.clearChatStore = {
+            session.clearChatStore = { [weak coordinator] in
                 let context = container.mainContext
                 try? context.delete(model: MessageEntity.self)
                 // The unfinished half of any queued media send goes with
@@ -252,6 +256,15 @@ struct FamilyConnectApp: App {
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
+                // The pack is the family's, like the board: the next account
+                // on this device may be in another family, or in none.
+                // Through the coordinator and not row by row here, because
+                // the pack is more than its rows: its cursor is a default,
+                // and a kick or a leave wipes the store WITHOUT wiping the
+                // defaults — so deleting only the rows left a cursor that
+                // said "caught up" over an empty pack, and the panel stayed
+                // empty after rejoining (`forgetPack`).
+                coordinator?.forgetPack()
                 // The block list goes too, and that is safe rather than
                 // lossy: it is server state, replaced wholesale from
                 // `blocked_user_ids` on the very first `GET /me` after the
@@ -301,6 +314,15 @@ struct FamilyConnectApp: App {
             }
             calls.onEnded = { coordinator.callDidEnd() }
             coordinator.bind(callManager: calls)
+            // No recording during a call, in any phase (#79, S1.7): what
+            // every recorder and the one-recording-at-a-time arbiter ask
+            // before they open — or give back — the shared audio session.
+            VoiceRecordingArbiter.shared.callIsActive = { [weak calls] in
+                calls.map { !$0.isIdle } ?? false
+            }
+            // The app's one player owner starts watching the system now —
+            // the background, interruptions, headphones going (#79, S4).
+            _ = NowPlaying.shared
             #if os(iOS)
             let callKit = CallKitController()
             callKit.manager = calls
@@ -352,6 +374,10 @@ struct FamilyConnectApp: App {
             // none of them. This must NOT touch PendingMediaStaging —
             // those bytes belong to messages somebody pressed Send on.
             MediaOutbox.sweepOrphans()
+            // Voice messages that were not sent, for whoever is signed in:
+            // files no entry names, entries whose file is gone, and another
+            // account's leftovers (ParkedRecordings, #79).
+            ParkedRecordings.shared.sweep()
             // Staging directories no row names any more: a send that was
             // delivered while the process died between deleting its rows
             // and deleting its files, or a store the app had to recreate.
@@ -375,6 +401,22 @@ struct FamilyConnectApp: App {
                 // an account this device no longer holds.
                 BackgroundUploads.shared.cancelAll()
                 #endif
+            }
+            // Everything recorded and not sent goes with the session that
+            // recorded it (#79, S4 "Sign-out") — a recording still running
+            // first, so that nothing parks itself into the store after it
+            // was emptied.
+            session.clearParkedRecordings = {
+                VoiceRecordingArbiter.shared.stopHolder(.discard)
+                ParkedRecordings.shared.removeAll()
+            }
+            // Which video messages this device has played is the
+            // account's own knowledge, and goes with it; whatever plays,
+            // stops (#79, S5.2, S4 "Sign-out").
+            session.clearRoundVideoPlays = {
+                NowPlaying.shared.pauseAll()
+                RoundVideoPlays.shared.removeAll()
+                RoundVideoPlays.voiceNotes.removeAll()
             }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
@@ -469,12 +511,13 @@ struct FamilyConnectApp: App {
             // The menu bar is not decoration on a Mac: it is where the
             // keyboard shortcuts live and where people look for what an
             // app can do.
-            CommandGroup(after: .toolbar) {
-                Button("Refresh") {
-                    NotificationCenter.default.post(name: .macRequestResync, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-            }
+            // View ▸ Refresh ⌘R — disabled while the key window's video
+            // recorder is open (#79, S8.3).
+            MacRefreshCommands()
+            // File ▸ Record Voice Message ⌥⌘R, for the key window's
+            // conversation (#79, S8.3) — every window's, though the menu
+            // bar is declared on this one scene.
+            MacVoiceCommands()
         }
         #else
         WindowGroup {
@@ -492,6 +535,9 @@ struct FamilyConnectApp: App {
                 if let chatID {
                     MacConversationView(chatID: chatID)
                         .id(chatID)
+                        // Its own window, so its own recorder over it (#79,
+                        // S8.3).
+                        .videoMessageRecorderHost()
                 } else {
                     // A restored window whose chat has since gone (left the
                     // family, or a fresh install) — say so rather than

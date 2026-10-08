@@ -1,4 +1,5 @@
 using FamilyConnect.App.Logic;
+using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using Xunit;
 
@@ -93,5 +94,52 @@ public sealed class LiveMarksTests
         version = answers.Version;
         answers.Finished(writing with { Id = 77 });
         Assert.Equal(version, answers.Version);
+    }
+
+    /// <summary>
+    /// A failed row REMEMBERS WHICH SENTENCE it says (docs/protocol.md, <c>ai_error</c>'s <c>reason</c>): a refusal by
+    /// the provider's own filter is not worth asking again in the same words, and every other failure — a frame with no
+    /// reason, or one this client could not read — says "ask again", as it always did.
+    /// </summary>
+    [Fact]
+    public void AFailedAnswerRemembersWhichSentenceItSays()
+    {
+        var say = EnglishCatalog.Instance;
+        var answers = new AssistantAnswers();
+        var refused = new MessageDto(5, 42, 99, null, "", At);
+        var broken = new MessageDto(6, 42, 99, null, "Half", At);
+        const string Refusal = "The assistant's provider refused that. Try putting it another way.";
+        const string AskAgain = "Couldn't answer that. Ask again.";
+
+        Assert.Null(answers.FailureSentence(refused, say));
+        answers.Stopped(42, 5, AiErrorReason.Refused);
+        answers.Stopped(42, 6);
+        Assert.True(answers.Failed(refused));
+        Assert.Equal(Refusal, answers.FailureSentence(refused, say));
+        Assert.Equal(AskAgain, answers.FailureSentence(broken, say));
+        // Asked again — as every redraw does — it says the same thing.
+        Assert.Equal(Refusal, answers.FailureSentence(refused, say));
+
+        // The reason is the frame's own, through the router: an unknown one arrives as none at all.
+        var parsed = (ServerFrame.AiError)ServerFrame.Parse(
+            """{"type": "ai_error", "chat_id": 42, "message_id": 7, "reason": "tired"}""")!;
+        answers.Stopped(parsed.ChatId, parsed.MessageId, parsed.Reason);
+        Assert.Equal(AskAgain, answers.FailureSentence(broken with { Id = 7 }, say));
+
+        // A finished answer says nothing, and forgets the reason with the failure.
+        Assert.Null(answers.FailureSentence(refused with { EditSeq = 2 }, say));
+        answers.Finished(refused with { EditSeq = 2 });
+        Assert.Null(answers.FailureSentence(refused, say));
+        answers.Stopped(42, 5);
+        Assert.Equal(AskAgain, answers.FailureSentence(refused, say));
+
+        answers.Clear();
+        Assert.Null(answers.FailureSentence(broken, say));
+
+        // Translated, not left in English.
+        var german = JsonCatalog.For("de");
+        Assert.Equal(german.Get(Refusal), AssistantAnswers.Sentence(AiErrorReason.Refused, german));
+        Assert.NotEqual(Refusal, AssistantAnswers.Sentence(AiErrorReason.Refused, german));
+        Assert.Equal(german.Get(AskAgain), AssistantAnswers.Sentence(null, german));
     }
 }

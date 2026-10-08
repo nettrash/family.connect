@@ -16,11 +16,17 @@
 //! - [`assistant`] — `@ai` and `/draw`, by the server's own grammar.
 //! - [`assistant_pictures`] — what a composer says before a photograph goes
 //!   to the assistant, and the four-photo, 5 MiB, JPEG-or-PNG bounds.
+//! - [`attach_menu`] — the paperclip's menu (#78): which items, in which
+//!   order and groups, and the label and icon of each — the same menu on
+//!   every client.
 //! - [`composer`] — the 4,000-character body limit and where a cut may land.
 //! - [`call_record`] — how a call record reads.
 //! - [`excerpt`] — the server's 120-character quote cut.
 //! - [`media`] — attachments: which kind a picked file goes as, its name and
 //!   type, the server's magic-number check, and how a bubble lays one out.
+//! - [`media_plan`] — what a picked video or sound file becomes before it is
+//!   uploaded: kept, or transcoded to the protocol's profile and to exactly
+//!   which numbers — the rules every port is held to by the oracle's vectors.
 //! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
 //! - [`account`] — usernames, passwords, names, invite codes, birthdays, the
 //!   family's languages and the owner's member cap, by the server's rules.
@@ -39,11 +45,36 @@
 //!   too").
 //! - [`notify`] — what a browser's own notification says, and the unread
 //!   count in the page's title.
+//! - [`pack`] — the family's sticker pack: which bytes are a sticker as they
+//!   stand, the 512 × 512 box one is made to fit, who may remove one, and
+//!   the order a panel shows them in. (Everywhere else here "sticker" is a
+//!   board note; in that module it is the picture sent in a chat.)
+//! - [`transcript`] — the text of a recording on request: whether "Show
+//!   text" is offered, what each refusal means, and what the device keeps.
+//! - [`transcript_sound`] — the sound a device sends for that text when the
+//!   server's stored copy will not do (a video, Ogg, an oversized file):
+//!   AAC copied where it fits, re-encoded to 64 kbit/s mono where not.
+//! - [`lookups`] — the assistant looking things up (#72): which providers a
+//!   client names and how, what the consent screen asks, and where the
+//!   server's sources footer starts under an answer.
+//! - [`greeting_places`] — the places the owner names for today's weather
+//!   in the daily greeting (#72): when the field is offered, and what a name
+//!   may be, by the server's own rules.
+//! - [`record`] — voice and video messages from the Send button (#79): which
+//!   control the composer's trailing slot is, when the video button shows,
+//!   what a press, a hold, a slide and a release do to a voice recording, and
+//!   a round video's length and size — the rules every port is held to by the
+//!   oracle's vectors.
+//! - [`waveform`] — a voice note's waveform (#79): 48 levels the sender
+//!   computes from its metered peaks and uploads as 48 hex digits, how they
+//!   are parsed, the placeholder for audio without one, and how a bubble
+//!   draws them as bars — held to every port by the oracle's vectors.
 
 pub mod account;
 pub mod assistant;
 pub mod assistant_consent;
 pub mod assistant_pictures;
+pub mod attach_menu;
 pub mod avatar;
 pub mod board;
 pub mod calendar;
@@ -51,11 +82,23 @@ pub mod call_record;
 pub mod composer;
 pub mod emoji;
 pub mod excerpt;
+pub mod greeting_places;
 pub mod i18n;
 pub mod links;
+pub mod lookups;
 pub mod markdown;
 pub mod media;
+pub mod media_plan;
+pub mod media_probe;
 pub mod mentions;
+pub mod mp4;
+pub mod mp4_read;
 pub mod notify;
+pub mod pack;
 pub mod reactions;
+pub mod record;
+pub mod transcode;
+pub mod transcript;
+pub mod transcript_sound;
 pub mod wav;
+pub mod waveform;

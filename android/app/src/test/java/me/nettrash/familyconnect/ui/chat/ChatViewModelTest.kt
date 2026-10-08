@@ -19,11 +19,18 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.data.repo.TranscriptRepository
+import me.nettrash.familyconnect.testutil.FakeTranscriptApi
 import android.app.NotificationManager
 import android.content.ClipData
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
+import me.nettrash.familyconnect.calls.CallEnding
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModel
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import androidx.compose.runtime.snapshots.Snapshot
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +49,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.TestResult
 import java.io.File
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -72,6 +80,15 @@ import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.Waveform
+import me.nettrash.familyconnect.data.repo.ParkedRecordings
+import me.nettrash.familyconnect.data.repo.ParkedRecording
+import me.nettrash.familyconnect.data.repo.SessionEpoch
+import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallStateSource
+import me.nettrash.familyconnect.testutil.FakeVoiceRecorder
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import me.nettrash.familyconnect.data.repo.MediaStaging
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -119,6 +136,9 @@ class ChatViewModelTest {
         const val NOON = 1_786_795_200_000L
         const val MINUTE = 60_000L
         const val DAY = 86_400_000L
+
+        /** A voice note's waveform as the wire spells it (#79). */
+        const val WAVE = "0124689abcddeeedcba987654321001245678aabbba98642"
     }
 
     private val dispatcher = StandardTestDispatcher()
@@ -134,6 +154,27 @@ class ChatViewModelTest {
     private lateinit var chatRepository: ChatRepository
     private lateinit var messageRepository: MessageRepository
 
+    // #79, Phase 0: the microphone, the call and where a recording that
+    // was not sent waits.
+    private lateinit var recorder: FakeVoiceRecorder
+    private lateinit var parked: ParkedRecordings
+    private val epoch = SessionEpoch()
+    private val callState = MutableStateFlow<CallState>(CallState.Idle)
+    /** Every ViewModel a test built, so [recordingTest] can put away what they record. */
+    private val viewModels = mutableListOf<ChatViewModel>()
+    /**
+     * Each test's parked recordings in a folder of its own: Robolectric
+     * shares one filesDir between the tests of a JVM, and a store from an
+     * earlier test, still sweeping on an IO thread, would take these files.
+     */
+    @get:org.junit.Rule
+    val parkedRoot = org.junit.rules.TemporaryFolder()
+
+    private val calls = object : CallStateSource {
+        override val state: StateFlow<CallState> = callState
+        override fun requestAnswer() = Unit
+    }
+
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
@@ -147,6 +188,8 @@ class ChatViewModelTest {
                 myUserId = ME,
             ),
         )
+        recorder = FakeVoiceRecorder(File(RuntimeEnvironment.getApplication().cacheDir, "recordings"))
+        parked = ParkedRecordings(settings, epoch, repoScope, parkedRoot.newFolder("parked-recordings"))
     }
 
     @After
@@ -240,13 +283,17 @@ class ChatViewModelTest {
                 context = RuntimeEnvironment.getApplication(),
                 contentResolver = RuntimeEnvironment.getApplication().contentResolver,
             ),
-            // Real recorder, never started: these tests do not record.
-            voiceRecorder = VoiceRecorder(RuntimeEnvironment.getApplication()),
+            // The microphone, scripted (#79): most tests never record, and
+            // the ones that do drive its clock and its endings themselves.
+            voiceRecorder = recorder,
+            parked = parked,
             attachmentApi = attachmentApi,
             gallerySaver = GallerySaver(),
             // Real provider, never asked: these tests hold no location
             // permission, so `hasPermission()` is false and nothing runs.
             locationProvider = LocationProvider(RuntimeEnvironment.getApplication()),
+            // Never asked: these tests draw no bubble, so no "Show text".
+            transcriptRepository = TranscriptRepository(FakeTranscriptApi(), db.transcriptDao(), me.nettrash.familyconnect.testutil.FakeTranscriptSound()),
             // The repo scope stands in for the app scope: a media send
             // must outlive the ViewModel, which is the whole point of it.
             appScope = repoScope,
@@ -257,7 +304,10 @@ class ChatViewModelTest {
                 connectivity = FakeConnectivityObserver(),
                 scope = repoScope,
             ),
-        )
+            calls = calls,
+            // #79, Phase 1: the voice reducer's clock is the test's virtual time.
+            uptime = me.nettrash.familyconnect.util.Uptime { testScheduler.currentTime },
+        ).also { viewModels += it }
     }
 
     /**
@@ -1209,6 +1259,11 @@ class ChatViewModelTest {
         mediaState.first { it is ChatViewModel.MediaSendState.Failed }
             as ChatViewModel.MediaSendState.Failed
 
+    /** A sentence in the notice line that is not an error (#79: a dimmed microphone says why). */
+    private suspend fun ChatViewModel.awaitNotice(): ChatViewModel.MediaSendState.Notice =
+        mediaState.first { it is ChatViewModel.MediaSendState.Notice }
+            as ChatViewModel.MediaSendState.Notice
+
     /** A real 1x1 PNG: the decoder here is the platform's, not a fake. */
     private val ONE_PIXEL_PNG: ByteArray = android.util.Base64.decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -2023,6 +2078,23 @@ class ChatViewModelTest {
         picturesConfigured(images = false)
         runCurrent()
         assertThat(viewModel.canAskForPicture.value).isFalse()
+        assertThat(viewModel.offersDrawButton.value).isFalse()
+    }
+
+    /**
+     * The paintbrush BUTTON is the assistant chat's alone (#78, the owner's
+     * choice, as on iOS and the Mac): the family chat still understands a
+     * typed `@ai /draw …` — so [ChatViewModel.canAskForPicture], which the
+     * description hint follows, stays true there — but has no button.
+     */
+    @Test
+    fun theDrawButtonIsOnlyInTheAssistantsChat() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            assertWithMessage(kind).that(viewModel.offersDrawButton.value).isEqualTo(kind == "ai")
+        }
     }
 
     /**
@@ -2344,5 +2416,1528 @@ class ChatViewModelTest {
         picturesConfigured(historyPhotos = true)
         type(own, "@ai what is this?")
         assertThat(own.mentionPictureNotice.value).isNull()
+    }
+
+    // -- Today's recorder made safe (#79, Phase 0) ----------------------------
+    //
+    // docs/audio-video-messages-2026-10-04.md, S2.8 and S4: nothing records
+    // during a call; an interruption stops and KEEPS — never sends, never
+    // discards — and what it keeps waits in its own "Voice message not sent"
+    // row, with the reply it was recorded under, until the person sends or
+    // deletes it; the five-minute cap goes to review; and the recorder that
+    // used to outlive the chat that started it is stopped when it goes.
+
+    private val app get() = RuntimeEnvironment.getApplication()
+
+    private val aQuote = ReplyToDto(messageId = 501, senderId = PEER, excerpt = "Are you coming?")
+    private val anotherQuote = ReplyToDto(messageId = 502, senderId = PEER, excerpt = "Bring the cake")
+
+    /** The chat's not-sent rows, once [count] of them have landed (the store writes off the main thread). */
+    private suspend fun ChatViewModel.awaitNotSent(count: Int = 1) =
+        notSent.first { it.size == count }
+
+    /** A recording of [ms] running in this chat's composer. */
+    private fun TestScope.recording(viewModel: ChatViewModel, ms: Long) {
+        viewModel.startRecording()
+        runCurrent()
+        recorder.elapsed = ms
+    }
+
+    /** A not-sent message parked straight into the store, as an earlier launch would have left it. */
+    private suspend fun parkedNote(ms: Long, replyTo: ReplyToDto? = null, caption: String = ""): String {
+        val source = File.createTempFile("voice-", ".m4a", app.cacheDir)
+            .apply { writeBytes(FakeVoiceRecorder.M4A_HEAD + ByteArray(4096) { 3 }) }
+        return requireNotNull(parked.park(CHAT, source, ms, replyTo, caption, epoch.current())).id
+    }
+
+    /**
+     * runTest for the tests that record. runTest drains the test clock when
+     * the body ends — pass or fail — and a recording's 200 ms counter would
+     * keep it busy for ever, so whatever a test leaves recording is put away
+     * first, however the body ended.
+     */
+    private fun recordingTest(body: suspend TestScope.() -> Unit): TestResult = runTest(dispatcher) {
+        try {
+            body()
+        } finally {
+            viewModels.forEach { it.cancelRecording() }
+        }
+    }
+
+    /**
+     * What the store holds once every park already on its way has landed:
+     * a park takes the store's lock before it touches the disk, and so does
+     * the sweep — so once the parks due now have started, this waits for
+     * them all. runCurrent, not advanceUntilIdle: a test may leave a
+     * recording's counter ticking, and that clock never goes idle.
+     */
+    private suspend fun TestScope.settledParks(): List<ParkedRecording> {
+        runCurrent()
+        parked.sweep()
+        return settings.current.parkedRecordings
+    }
+
+    /** Clear [viewModel] the way the system does when its screen is popped, which runs onCleared. */
+    private fun clear(viewModel: ChatViewModel) {
+        val store = ViewModelStore()
+        ViewModelProvider(
+            store,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T = viewModel as T
+            },
+        )[ChatViewModel::class.java]
+        store.clear()
+    }
+
+    private fun failure(viewModel: ChatViewModel): String? =
+        (viewModel.mediaState.value as? ChatViewModel.MediaSendState.Failed)?.reason
+
+    /** What the notice line says when it is not an error (Phase 1's [ChatViewModel.MediaSendState.Notice]). */
+    private fun notice(viewModel: ChatViewModel): String? =
+        (viewModel.mediaState.value as? ChatViewModel.MediaSendState.Notice)?.text
+
+    /** No recording during a call, in any phase (S1.7): nothing opens, and the strip says why. */
+    @Test
+    fun recordingIsRefusedDuringACall() = recordingTest {
+        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.startRecording()
+        runCurrent()
+
+        assertThat(recorder.starts).isEqualTo(0)
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(viewModel.callLive.value).isTrue()
+        // Phase 1: a dimmed microphone's reason is a notice, not an error (S1.3).
+        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.e_record_after_the_call))
+    }
+
+    /** "A call in any phase but idle or ended" (S1.2): one that has ended is no longer one. */
+    @Test
+    fun anEndedCallNoLongerStopsAnybodyRecording() = recordingTest {
+        callState.value = CallState.Ended(
+            callId = "c1", chatId = CHAT, peerUserId = PEER, reason = CallEnding.HANGUP,
+        )
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.startRecording()
+        runCurrent()
+
+        assertThat(recorder.starts).isEqualTo(1)
+        assertThat(viewModel.callLive.value).isFalse()
+    }
+
+    /**
+     * A call that rings stops the recording and KEEPS it (S4): a "not sent"
+     * row with its length and the reply it was recorded under, which leaves
+     * the composer with it. Nothing is sent.
+     */
+    @Test
+    fun aCallThatRingsStopsTheRecordingAndKeepsItAsNotSent() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.beginReply(aQuote)
+        recording(viewModel, 4_200)
+
+        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        runCurrent()
+
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(viewModel.recordingMs.value).isNull()
+        val entry = viewModel.awaitNotSent().single()
+        assertThat(entry.chatId).isEqualTo(CHAT)
+        assertThat(entry.durationMs).isEqualTo(4_200)
+        assertThat(entry.replyTo).isEqualTo(aQuote)
+        assertThat(entry.caption).isEmpty()
+        assertThat(parked.file(entry).exists()).isTrue()
+        assertThat(parked.file(entry).parentFile).isEqualTo(File(parkedRoot.root, "parked-recordings"))
+        assertThat(viewModel.replyDraft.value).isNull()
+        assertThat(attachmentApi.calls).doesNotContain("upload")
+    }
+
+    /** Under a second there is nothing worth keeping: deleted, and nothing parked. */
+    @Test
+    fun anInterruptionUnderASecondKeepsNothing() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 999)
+
+        callState.value = CallState.Outgoing(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        advanceUntilIdle()
+
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(recorder.files.single().exists()).isFalse()
+        assertThat(settledParks()).isEmpty()
+        assertThat(viewModel.recordingMs.value).isNull()
+    }
+
+    /**
+     * THE BUG: Back mid-recording left the one recorder in the process
+     * recording, the microphone open, and every later chat unable to record.
+     * Clearing the ViewModel stops it and keeps what it had.
+     */
+    @Test
+    fun clearingTheChatClosesTheMicrophoneAndKeepsTheRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 6_000)
+
+        clear(viewModel)
+        advanceUntilIdle()
+
+        assertThat(recorder.isRecording).isFalse()
+        val entry = settings.state.first { it.parkedRecordings.isNotEmpty() }.parkedRecordings.single()
+        assertThat(entry.durationMs).isEqualTo(6_000)
+        assertThat(parked.file(entry).exists()).isTrue()
+    }
+
+    /**
+     * Leaving the chat (S2.8): a voice message still in review becomes a "not
+     * sent" one, taking the words in the field as its caption and leaving the
+     * field empty. What is not a recording stays as it was — it can be
+     * picked again.
+     */
+    @Test
+    fun leavingTheChatTurnsAVoiceMessageInReviewIntoNotSent() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 3_000)
+        viewModel.stopRecording()
+        val note = viewModel.awaitStaged { it.voiceNote }
+        val photo = tempPrepared(tag = 9)
+        viewModel.stagePrepared(photo)
+        viewModel.beginReply(aQuote)
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("for grandma")
+        runCurrent()
+
+        viewModel.screenAttached()
+        viewModel.screenDetached(changingConfigurations = false)
+        runCurrent()
+
+        val entry = viewModel.awaitNotSent().single()
+        assertThat(entry.caption).isEqualTo("for grandma")
+        assertThat(entry.replyTo).isEqualTo(aQuote)
+        assertThat(entry.durationMs).isEqualTo(3_000)
+        assertThat(viewModel.inputState.text.toString()).isEmpty()
+        assertThat(viewModel.staged.value).containsExactly(photo)
+        assertThat(note.file.exists()).isFalse()
+        assertThat(parked.file(entry).exists()).isTrue()
+    }
+
+    /** The call screen coming over the chat is not leaving it: review is kept (S4's call column). */
+    @Test
+    fun aCallKeepsAVoiceMessageInReviewWhereItIs() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 3_000)
+        viewModel.stopRecording()
+        viewModel.awaitStaged { it.voiceNote }
+        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        runCurrent()
+
+        viewModel.screenAttached()
+        viewModel.screenStopped(changingConfigurations = false)
+        viewModel.screenDetached(changingConfigurations = false)
+        advanceUntilIdle()
+
+        assertThat(viewModel.staged.value.single().voiceNote).isTrue()
+        assertThat(settledParks()).isEmpty()
+    }
+
+    /** The app to the background, the screen locked (ON_STOP): stop and keep (S4). */
+    @Test
+    fun theScreenStoppingKeepsTheRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 2_500)
+
+        viewModel.screenStopped(changingConfigurations = false)
+        runCurrent()
+
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(2_500)
+    }
+
+    /**
+     * A rotation, a fold, a theme change rebuild the activity around the same
+     * ViewModel, and the recording carries on (S4) — so long as a screen
+     * comes back to show it.
+     */
+    @Test
+    fun aConfigurationChangeIsNotAnInterruption() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.screenAttached()
+        recording(viewModel, 2_500)
+
+        viewModel.screenStopped(changingConfigurations = true)
+        viewModel.screenDetached(changingConfigurations = true)
+        viewModel.screenAttached()
+        advanceTimeBy(ChatViewModel.ORPHAN_GRACE_MS * 2)
+        runCurrent()
+
+        assertThat(recorder.isRecording).isTrue()
+        assertThat(recorder.stops).isEqualTo(0)
+        assertThat(settledParks()).isEmpty()
+    }
+
+    /** A rebuilt activity that never shows this chat again must not leave it recording unseen. */
+    @Test
+    fun aScreenThatNeverComesBackLetsTheRecordingGo() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.screenAttached()
+        recording(viewModel, 2_500)
+
+        viewModel.screenDetached(changingConfigurations = true)
+        advanceTimeBy(ChatViewModel.ORPHAN_GRACE_MS - 1)
+        runCurrent()
+        assertThat(recorder.isRecording).isTrue()
+
+        advanceTimeBy(2)
+        runCurrent()
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(2_500)
+    }
+
+    /** Five minutes stops into review with the sentence — never a send (S2.5). */
+    @Test
+    fun theFiveMinuteCapStagesTheRecordingAndSendsNothing() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, VoiceNoteRules.VOICE_CAP_MS)
+
+        recorder.end(VoiceRecorder.Ending.CAP)
+        val note = viewModel.awaitStaged { it.voiceNote }
+        val notice = viewModel.awaitNotice()
+
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(note.kind).isEqualTo(AttachmentDto.KIND_AUDIO)
+        assertThat(note.durationMs).isEqualTo(VoiceNoteRules.VOICE_CAP_MS.toInt())
+        assertThat(note.name).isNull()
+        assertThat(notice.text).isEqualTo(app.getString(R.string.s_recording_stopped_at_five_minutes))
+        advanceUntilIdle()
+        assertThat(attachmentApi.calls).doesNotContain("upload")
+        assertThat(db.messageDao().observeMessages(CHAT, 50).first()).isEmpty()
+    }
+
+    /** The recorder failing keeps what was readable as "not sent", with the sentence (S4). */
+    @Test
+    fun aRecorderThatFailsKeepsWhatWasReadable() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 8_000)
+
+        recorder.end(VoiceRecorder.Ending.FAILED)
+        runCurrent()
+
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(8_000)
+        assertThat(failure(viewModel)).isEqualTo(app.getString(R.string.e_recording_stopped_unexpectedly))
+    }
+
+    /** …and says so when nothing could be read back at all. */
+    @Test
+    fun aRecorderThatFailsWithNothingReadableStillSaysSo() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 8_000)
+
+        recorder.end(VoiceRecorder.Ending.FAILED, keep = false)
+        advanceUntilIdle()
+
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(settledParks()).isEmpty()
+        assertThat(failure(viewModel)).isEqualTo(app.getString(R.string.e_recording_stopped_unexpectedly))
+    }
+
+    /** An alarm, a phone call, the assistant — something else has the audio: stop and keep. */
+    @Test
+    fun anotherAppTakingTheAudioKeepsTheRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 1_500)
+
+        recorder.end(VoiceRecorder.Ending.INTERRUPTED)
+        runCurrent()
+
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(1_500)
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    /** One recording at a time in the whole app (S1.7): another chat starting one parks this one. */
+    @Test
+    fun anotherChatStartingARecordingKeepsThisOne() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 2_000)
+
+        recorder.end(VoiceRecorder.Ending.SUPERSEDED)
+        runCurrent()
+
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(2_000)
+    }
+
+    /** A recording nobody has finished deciding about is sent or deleted before another starts. */
+    @Test
+    fun recordingIsRefusedWhileANotSentMessageWaits() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        parkedNote(4_000)
+        viewModel.awaitNotSent()
+
+        viewModel.startRecording()
+        runCurrent()
+
+        assertThat(recorder.starts).isEqualTo(0)
+        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.e_send_or_delete_the_unsent_first))
+    }
+
+    /** The floor people see is a second (Decision 15): a Stop under it keeps nothing. */
+    @Test
+    fun aStopUnderASecondIsTooShort() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 999)
+
+        viewModel.stopRecording()
+        advanceUntilIdle()
+
+        assertThat(viewModel.staged.value).isEmpty()
+        assertThat(recorder.files.single().exists()).isFalse()
+        assertThat(failure(viewModel)).isEqualTo(app.getString(R.string.e_recording_too_short))
+    }
+
+    /**
+     * Its Send sends it with THAT reply and caption, and nothing else (S2.8):
+     * the composer's own words, its own primed reply and its staged photo
+     * stay where they are. The waiting copy goes once the outbox has it.
+     */
+    @Test
+    fun aNotSentMessageGoesWithItsOwnReplyAndCaptionAndNothingElse() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val id = parkedNote(12_000, replyTo = aQuote, caption = "for grandma")
+        val entry = viewModel.awaitNotSent().single()
+        val photo = tempPrepared(tag = 4)
+        viewModel.stagePrepared(photo)
+        viewModel.beginReply(anotherQuote)
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("hello")
+        runCurrent()
+
+        viewModel.sendNotSent(id)
+        val row = db.messageDao().observeMessages(CHAT, 50)
+            .first { rows -> rows.any { it.attachmentKind == AttachmentDto.KIND_AUDIO } }
+            .single()
+        viewModel.notSent.first { it.isEmpty() }
+
+        assertThat(row.body).isEqualTo("for grandma")
+        assertThat(row.replyToMessageId).isEqualTo(aQuote.messageId)
+        assertThat(row.attachmentName).isNull()
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("hello")
+        assertThat(viewModel.replyDraft.value).isEqualTo(anotherQuote)
+        assertThat(viewModel.staged.value).containsExactly(photo)
+        // The list empties BEFORE the file goes: `remove` deletes it on the IO
+        // dispatcher, still holding the store's lock — so the bytes are checked
+        // once that lock is free, not the moment the list says so (a race CI's
+        // slower runner lost on 2026-10-07).
+        settledParks()
+        assertThat(parked.file(entry).exists()).isFalse()
+    }
+
+    /**
+     * While the composer is busy with another attachment its strip is that
+     * one's live progress and its busy guard: a not-sent Send waits, and goes
+     * once the strip is free.
+     */
+    @Test
+    fun aNotSentSendWaitsWhileTheComposerIsBusy() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val id = parkedNote(5_000)
+        viewModel.awaitNotSent()
+        viewModel.reportAttachmentBusy("Saving…")
+
+        viewModel.sendNotSent(id)
+        advanceUntilIdle()
+
+        assertThat(db.messageDao().observeMessages(CHAT, 50).first()).isEmpty()
+        assertThat(settledParks().map { it.id }).containsExactly(id)
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Working("Saving…"))
+
+        viewModel.clearMediaState()
+        viewModel.sendNotSent(id)
+        db.messageDao().observeMessages(CHAT, 50).first { it.isNotEmpty() }
+        viewModel.notSent.first { it.isEmpty() }
+    }
+
+    /**
+     * In the member's own `ai` chat a voice message reaches the model like
+     * anything else, so its Send asks first — and agreeing sends IT, not the
+     * draft sitting in the box.
+     */
+    @Test
+    fun aNotSentMessageInTheAssistantsChatAsksFirstThenSendsOnlyItself() = recordingTest {
+        launch {
+            settings.setAssistant(userId = 1L, displayName = "Assistant", processor = "OpenAI")
+        }
+        runCurrent()
+        val viewModel = newViewModel(kind = "ai")
+        runCurrent()
+        val id = parkedNote(3_000)
+        viewModel.awaitNotSent()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("a draft nobody sent")
+
+        viewModel.sendNotSent(id)
+        runCurrent()
+        assertThat(viewModel.assistantConsentAsk.value).isNotNull()
+        assertThat(db.messageDao().observeMessages(CHAT, 50).first()).isEmpty()
+
+        viewModel.agreeToTheAssistant()
+        val rows = db.messageDao().observeMessages(CHAT, 50).first { it.isNotEmpty() }
+        viewModel.notSent.first { it.isEmpty() }
+
+        assertThat(rows.single().attachmentKind).isEqualTo(AttachmentDto.KIND_AUDIO)
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("a draft nobody sent")
+    }
+
+    /** Its ✕ under ten seconds deletes at once (S2.8). */
+    @Test
+    fun deletingAShortNotSentMessageDeletesItAtOnce() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val id = parkedNote(9_999)
+        val entry = viewModel.awaitNotSent().single()
+
+        viewModel.deleteNotSent(id)
+        viewModel.notSent.first { it.isEmpty() }
+
+        assertThat(viewModel.deleteAsk.value).isNull()
+        // The file goes after the list, under the store's lock (see above).
+        settledParks()
+        assertThat(parked.file(entry).exists()).isFalse()
+    }
+
+    /** Ten seconds or more asks "Delete this recording?" — and Keep keeps it. */
+    @Test
+    fun deletingALongNotSentMessageAsksFirst() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val id = parkedNote(10_000)
+        viewModel.awaitNotSent()
+
+        viewModel.deleteNotSent(id)
+        assertThat(viewModel.deleteAsk.value).isEqualTo(id)
+        viewModel.answerDeleteAsk(delete = false)
+        advanceUntilIdle()
+        assertThat(viewModel.deleteAsk.value).isNull()
+        assertThat(settledParks().map { it.id }).containsExactly(id)
+
+        viewModel.deleteNotSent(id)
+        viewModel.answerDeleteAsk(delete = true)
+        viewModel.notSent.first { it.isEmpty() }
+        assertThat(settledParks()).isEmpty()
+    }
+
+    /** Deleting a recording never deletes words somebody typed: its caption comes back. */
+    @Test
+    fun deletingANotSentMessageGivesItsWordsBack() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val id = parkedNote(2_000, replyTo = aQuote, caption = "for grandma")
+        viewModel.awaitNotSent()
+
+        viewModel.deleteNotSent(id)
+        viewModel.notSent.first { it.isEmpty() }
+
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("for grandma")
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+    }
+
+    // -- Voice in the Send slot (#79, Phase 1) ----------------------------------
+    //
+    // docs/audio-video-messages-2026-10-04.md, S1-S2, S6, S7, S9: the shared
+    // reducer (RecordGesture, held to the reference's vectors elsewhere) as
+    // this ViewModel feeds it and carries it out — a tap records hands-free
+    // and the same slot sends; Stop reviews; an interruption parks and never
+    // sends; the 600 ms guard; the one-second floor. (Revised 2026-10-06:
+    // there is no hold — no press reaches this ViewModel at all, only the
+    // slot's completed activation — and with it went the Undo window, its
+    // "sending" entry, the first-release lesson, the coach mark and Review
+    // Before Sending.)
+    // Every timer runs on the test scheduler's clock (runCurrent, never
+    // advanceUntilIdle, while something records).
+
+    /** A granted microphone, no screen reader. */
+    private val finger = ChatViewModel.VoiceEnvironment()
+
+    /**
+     * The microphone tapped — however the button completed it: a finger's
+     * lift inside, a click, Enter, TalkBack. RecordSendButton says nothing
+     * to the ViewModel before that (RecordSendButtonTest).
+     */
+    private fun TestScope.tap(viewModel: ChatViewModel, env: ChatViewModel.VoiceEnvironment = finger) {
+        // What is due first — a collector the test just launched — as a real
+        // tap's own time between touch-down and lift lets it.
+        runCurrent()
+        viewModel.activateSlot(env)
+        runCurrent()
+    }
+
+    /** Past the slot's 600 ms activation guard. */
+    private fun TestScope.pastTheGuard() {
+        advanceTimeBy(ComposerSlot.ACTIVATION_GUARD_MS)
+        runCurrent()
+    }
+
+    /** Everything the ViewModel asks the screen to do, collected from now. */
+    private fun TestScope.screenEffects(viewModel: ChatViewModel): List<ChatViewModel.VoiceEffect> {
+        val seen = mutableListOf<ChatViewModel.VoiceEffect>()
+        backgroundScope.launch { viewModel.voiceEffects.collect { seen += it } }
+        runCurrent()
+        return seen
+    }
+
+    private fun haptics(effects: List<ChatViewModel.VoiceEffect>) =
+        effects.filterIsInstance<ChatViewModel.VoiceEffect.Haptic>().map { it.haptic }
+
+    private suspend fun rows() = db.messageDao().observeMessages(CHAT, 50).first()
+
+    /**
+     * The store's entries once [count] have landed — waited for on the wall
+     * clock, WITHOUT suspending: runTest moves virtual time to the next timer
+     * whenever the test body suspends on real I/O, and a pending timer would
+     * then run out under the very assertion that it has not.
+     */
+    private fun TestScope.parkedWithoutTime(count: Int): List<ParkedRecording> {
+        runCurrent()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (settings.current.parkedRecordings.size < count && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5)
+        }
+        runCurrent()
+        return settings.current.parkedRecordings
+    }
+
+    private suspend fun awaitAudioRow() = db.messageDao().observeMessages(CHAT, 50)
+        .first { rows -> rows.any { it.attachmentKind == AttachmentDto.KIND_AUDIO } }
+        .single { it.attachmentKind == AttachmentDto.KIND_AUDIO }
+
+    /** A tap records hands-free (S2.2) and the same slot, now an arrow, sends it (S2.5). */
+    @Test
+    fun aTapRecordsHandsFreeAndTheSameSlotSendsIt() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val effects = screenEffects(viewModel)
+        viewModel.beginReply(aQuote)
+
+        tap(viewModel)
+
+        assertThat(recorder.starts).isEqualTo(1)
+        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_recording))
+        assertThat(effects).contains(ChatViewModel.VoiceEffect.FocusSlot)
+        assertThat(haptics(effects)).containsExactly(RecordGesture.Haptic.LIGHT)
+
+        pastTheGuard()
+        recorder.elapsed = 4_200
+        viewModel.activateSlot(finger)
+        runCurrent()
+
+        val row = awaitAudioRow()
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(row.body).isEmpty()
+        assertThat(row.attachmentName).isNull()
+        assertThat(row.replyToMessageId).isEqualTo(aQuote.messageId)
+        assertThat(viewModel.replyDraft.value).isNull()
+        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.NONE)
+        // Said once the outbox has it (S2.5), which is a pass after the row.
+        realTimeUntil { viewModel.announcement.value?.text == app.getString(R.string.s_announce_voice_message_sent) }
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_voice_message_sent))
+        assertThat(haptics(effects)).containsExactly(RecordGesture.Haptic.LIGHT, RecordGesture.Haptic.SUCCESS).inOrder()
+        assertThat(effects).contains(ChatViewModel.VoiceEffect.Ended)
+    }
+
+    /** A double tap on the microphone cannot send what it started (S1.1's guard). */
+    @Test
+    fun aSecondTapInsideTheGuardDoesNothing() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        tap(viewModel)
+        recorder.elapsed = 1_500
+
+        viewModel.activateSlot(finger)
+        viewModel.activateSlot(finger)
+        runCurrent()
+
+        assertThat(recorder.isRecording).isTrue()
+        assertThat(rows()).isEmpty()
+    }
+
+    /**
+     * A double tap on Send cannot start a recording: the slot's own Send
+     * guards the microphone it turns into — and a word typed and sent at once
+     * is never slowed (S1.1).
+     */
+    @Test
+    fun aDoubleTapOnSendCannotStartARecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+
+        viewModel.sendFromSlot()
+        tap(viewModel)
+
+        assertThat(rows().single().body).isEqualTo("ok")
+        assertThat(recorder.starts).isEqualTo(0)
+
+        pastTheGuard()
+        tap(viewModel)
+        assertThat(recorder.starts).isEqualTo(1)
+    }
+
+    /**
+     * The guard holds back only the slot's own activation: words typed after
+     * a Send and sent at once still go, however quickly (S1.1, Decision 15) —
+     * while the same, emptied composer pressed again is still ignored.
+     */
+    @Test
+    fun aWordTypedAndSentAtOnceAfterASendIsNeverHeldBack() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+        viewModel.sendFromSlot()
+        runCurrent()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+
+        type(viewModel, "hi")
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
+        viewModel.sendFromSlot()
+        runCurrent()
+
+        assertThat(rows().map { it.body }).containsExactly("ok", "hi")
+        assertThat(recorder.starts).isEqualTo(0)
+    }
+
+    /**
+     * Something staged after a Send is the person's own change: never
+     * guarded (S1.1) — the Send right after it sends it, though the field is
+     * as empty as the Send left it.
+     */
+    @Test
+    fun somethingStagedAfterASendIsNeverHeldBack() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+        viewModel.sendFromSlot()
+        runCurrent()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
+        viewModel.sendFromSlot()
+        runCurrent()
+
+        assertThat(viewModel.staged.value).isEmpty()
+    }
+
+    /**
+     * The same through each way the app really stages — the photo picker,
+     * the file picker, a paste: each is the person's own change (S1.1).
+     */
+    @Test
+    fun aPickedPhotoAfterASendIsNeverHeldBack() = recordingTest {
+        stagedAfterASendGoes { it.stageMedia(clipboardItem("photo", ONE_PIXEL_PNG), isVideo = false) }
+    }
+
+    @Test
+    fun aPickedFileAfterASendIsNeverHeldBack() = recordingTest {
+        stagedAfterASendGoes { it.stageFile(clipboardItem("file.pdf")) }
+    }
+
+    @Test
+    fun aPastedItemAfterASendIsNeverHeldBack() = recordingTest {
+        stagedAfterASendGoes { it.pasteAttachment(clipboardItem("blob"), "application/pdf") }
+    }
+
+    /** Send "ok", stage through [how] inside the guard, and find the Send not held back. */
+    private suspend fun TestScope.stagedAfterASendGoes(how: (ChatViewModel) -> Unit) {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+        viewModel.sendFromSlot()
+        runCurrent()
+        val guardEnds = viewModel.hold.value.guardUntilMs
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+
+        how(viewModel)
+        // The preparation runs on Dispatchers.IO and comes back to the test's
+        // dispatcher; waiting in real time, each pass running what is due,
+        // keeps virtual time where the Send left it (a suspending wait would
+        // let it jump past the guard).
+        val deadline = System.currentTimeMillis() + 10_000
+        while (viewModel.staged.value.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5)
+            runCurrent()
+        }
+        runCurrent()
+        assertThat(viewModel.staged.value).hasSize(1)
+        // Still inside the 600 ms the Send set, had nothing lifted it.
+        assertThat(testScheduler.currentTime).isLessThan(guardEnds)
+        assertThat(viewModel.hold.value.guardUntilMs).isEqualTo(0)
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
+    }
+
+    /**
+     * The field the slot's own Send emptied is not the person's change: when
+     * that emptying reaches the field's watcher — a frame later, as the
+     * Recomposer applies the snapshot — the guard stays, and a double tap on
+     * Send still cannot start a recording (S1.1).
+     */
+    @Test
+    fun theFieldTheSendEmptiedLiftsNothing() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+        viewModel.sendFromSlot()
+        Snapshot.sendApplyNotifications()
+        runCurrent()
+
+        tap(viewModel)
+
+        assertThat(rows().single().body).isEqualTo("ok")
+        assertThat(recorder.starts).isEqualTo(0)
+    }
+
+    /**
+     * Words typed and deleted after a Send lift the guard (S1.1): the
+     * microphone the emptied composer shows records at once — a decision of
+     * its own, not the second half of a double tap.
+     */
+    @Test
+    fun wordsTypedAndDeletedAfterASendLetTheMicrophoneRecord() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "ok")
+        viewModel.sendFromSlot()
+        runCurrent()
+
+        type(viewModel, "x")
+        type(viewModel, "")
+        tap(viewModel)
+
+        assertThat(rows().single().body).isEqualTo("ok")
+        assertThat(recorder.starts).isEqualTo(1)
+    }
+
+    /**
+     * Something taken off the strip after a Stop staged a note is the
+     * person's change too: the guard the Stop set lifts, and Send sends (S1.1).
+     */
+    @Test
+    fun takingSomethingOffAfterAStopLiftsTheGuard() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        viewModel.recordVoiceMessage(finger)
+        runCurrent()
+        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE_BESIDE_DRAFT)
+        pastTheGuard()
+        recorder.elapsed = 3_000
+        viewModel.activateSlot(finger)
+        runCurrent()
+        assertThat(viewModel.hold.value.phase).isEqualTo(RecordGesture.Phase.Idle)
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+
+        // Inside the Stop's 600 ms (virtual time has not moved).
+        viewModel.discardStaged(viewModel.staged.value.indexOfFirst { !it.voiceNote })
+        runCurrent()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
+        viewModel.awaitStaged { it.voiceNote }
+        viewModel.sendFromSlot()
+        awaitAudioRow()
+    }
+
+    /**
+     * "Delete this recording?" answered Delete about a staged note of ten
+     * seconds or more takes it off the strip: the person's change, which
+     * lifts the guard the Stop that staged it set (S1.1).
+     */
+    @Test
+    fun deletingALongStagedNoteAfterAStopLiftsTheGuard() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        viewModel.recordVoiceMessage(finger)
+        runCurrent()
+        pastTheGuard()
+        recorder.elapsed = 12_000
+        viewModel.activateSlot(finger)
+        runCurrent()
+        val guardEnds = viewModel.hold.value.guardUntilMs
+        // Real time, not a suspending wait: virtual time stays inside the guard.
+        val deadline = System.currentTimeMillis() + 10_000
+        while (viewModel.staged.value.none { it.voiceNote } && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5)
+            runCurrent()
+        }
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+
+        viewModel.discardStaged(viewModel.staged.value.indexOfFirst { it.voiceNote })
+        runCurrent()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isTrue()
+        viewModel.answerStagedDelete(delete = true)
+        runCurrent()
+
+        assertThat(testScheduler.currentTime).isLessThan(guardEnds)
+        assertThat(viewModel.staged.value.none { it.voiceNote }).isTrue()
+        assertThat(viewModel.slotPressIgnored(ComposerSlot.Slot.Send)).isFalse()
+    }
+
+    /**
+     * [dir] made unusable for [body] — a plain file where the directory goes,
+     * so nothing can be written under it — and given back after.
+     */
+    private inline fun <T> blocking(dir: File, body: () -> T): T {
+        dir.deleteRecursively()
+        dir.writeText("blocked")
+        try {
+            return body()
+        } finally {
+            dir.delete()
+            dir.mkdirs()
+        }
+    }
+
+    /** MediaPrep's staging directory: blocked, every preparation fails. */
+    private val uploadsDir: File get() = File(RuntimeEnvironment.getApplication().cacheDir, "uploads")
+
+    /** The outbox's: blocked, the outbox refuses every hand-off. */
+    private val outboxDir: File get() = File(RuntimeEnvironment.getApplication().filesDir, "outbox")
+
+    /** Real time, each pass running what is due, until [done] — or five seconds. */
+    private fun TestScope.realTimeUntil(done: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!done() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5)
+            runCurrent()
+        }
+        runCurrent()
+    }
+
+    /** The Send arrow's note recorded hands-free, with a reply primed. */
+    private fun TestScope.sendHandsFree(viewModel: ChatViewModel) {
+        viewModel.beginReply(aQuote)
+        tap(viewModel)
+        pastTheGuard()
+        recorder.elapsed = 4_200
+        viewModel.activateSlot(finger)
+    }
+
+    /** S2.5: a note Send cannot prepare lands in review with the error — never lost. */
+    @Test
+    fun aSentNoteThatCannotBePreparedLandsInReviewWithTheError() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val effects = screenEffects(viewModel)
+        blocking(uploadsDir) {
+            sendHandsFree(viewModel)
+            realTimeUntil { viewModel.staged.value.any { it.voiceNote } }
+        }
+        realTimeUntil { viewModel.announcement.value?.text == app.getString(R.string.e_prepare_failed) }
+        // Never "Voice message sent" about a note that went back to review (S2.5, S6).
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.e_prepare_failed))
+        assertThat(haptics(effects)).doesNotContain(RecordGesture.Haptic.SUCCESS)
+        assertThat(haptics(effects).last()).isEqualTo(RecordGesture.Haptic.WARNING)
+
+        val note = viewModel.staged.value.single()
+        assertThat(note.voiceNote).isTrue()
+        assertThat(note.durationMs).isEqualTo(4_200)
+        assertThat(note.file.exists()).isTrue()
+        assertThat(viewModel.mediaState.value)
+            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_prepare_failed)))
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        assertThat(settings.current.parkedRecordings).isEmpty()
+        assertThat(rows()).isEmpty()
+    }
+
+    /** S2.5: a note the outbox will not take lands in review with the error, too. */
+    @Test
+    fun aSentNoteTheOutboxRefusesLandsInReviewWithTheError() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val effects = screenEffects(viewModel)
+        blocking(outboxDir) {
+            sendHandsFree(viewModel)
+            realTimeUntil { viewModel.staged.value.any { it.voiceNote } }
+        }
+        realTimeUntil { viewModel.announcement.value?.text == app.getString(R.string.e_send_failed) }
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.e_send_failed))
+        assertThat(haptics(effects)).doesNotContain(RecordGesture.Haptic.SUCCESS)
+
+        val note = viewModel.staged.value.single()
+        assertThat(note.voiceNote).isTrue()
+        assertThat(note.file.exists()).isTrue()
+        assertThat(viewModel.mediaState.value)
+            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_send_failed)))
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        assertThat(settings.current.parkedRecordings).isEmpty()
+        assertThat(rows()).isEmpty()
+    }
+
+    /**
+     * Left before the failure is known: the review it would land in is
+     * already "not sent" (S4), so that is where it waits — with its reply.
+     */
+    @Test
+    fun aSentNoteThatFailsAfterTheChatWasLeftIsNotSent() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        blocking(outboxDir) {
+            sendHandsFree(viewModel)
+            // Before the hand-off has even started (it runs on the next pass).
+            viewModel.screenDetached(changingConfigurations = false)
+            realTimeUntil { settings.current.parkedRecordings.isNotEmpty() }
+        }
+
+        assertThat(viewModel.staged.value).isEmpty()
+        val waiting = settings.current.parkedRecordings.single()
+        assertThat(waiting.replyTo).isEqualTo(aQuote)
+    }
+
+    /**
+     * A Send whose recording turns out to have kept nothing (the recorder's
+     * floor) is "too short" — shown, said and felt — never "Voice message
+     * sent" about a note that does not exist; and a Stop's is never "Ready to
+     * review" (S2.5, S6).
+     */
+    @Test
+    fun aRecordingThatKeptNothingIsTooShortNeverSentOrReady() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val effects = screenEffects(viewModel)
+        recorder.keepsNothing = true
+        tap(viewModel)
+        pastTheGuard()
+        recorder.elapsed = 4_200
+        viewModel.activateSlot(finger)
+        runCurrent()
+
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.e_recording_too_short))
+        assertThat(viewModel.mediaState.value)
+            .isEqualTo(ChatViewModel.MediaSendState.Failed(app.getString(R.string.e_recording_too_short)))
+        assertThat(haptics(effects)).containsExactly(RecordGesture.Haptic.LIGHT, RecordGesture.Haptic.WARNING).inOrder()
+        assertThat(viewModel.staged.value).isEmpty()
+        assertThat(rows()).isEmpty()
+
+        pastTheGuard()
+        tap(viewModel)
+        recorder.elapsed = 42_000
+        viewModel.stopRecording()
+        runCurrent()
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.e_recording_too_short))
+        assertThat(viewModel.staged.value).isEmpty()
+    }
+
+    /**
+     * Under TalkBack the microphone opens only once "Recording" has been
+     * spoken — a fixed second on Android — so the app's own voice stays out
+     * of the note (S6); and its Send arrow sends, as anyone's.
+     */
+    @Test
+    fun underTalkBackTheMicrophoneWaitsForItsOwnWord() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val talkBack = finger.copy(assistive = true)
+
+        tap(viewModel, env = talkBack)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_recording))
+        assertThat(recorder.starts).isEqualTo(0)
+        advanceTimeBy(ChatViewModel.SPEECH_LEAD_MS)
+        runCurrent()
+        assertThat(recorder.starts).isEqualTo(1)
+
+        pastTheGuard()
+        recorder.elapsed = 2_000
+        viewModel.activateSlot(talkBack)
+        runCurrent()
+        awaitAudioRow()
+    }
+
+    /** Ctrl+Shift+R records, and pressed during one STOPS it into review — never sends (S1.6). */
+    @Test
+    fun theShortcutRecordsAndPressedAgainStopsIntoReview() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.recordVoiceMessage(finger)
+        runCurrent()
+        assertThat(recorder.isRecording).isTrue()
+        recorder.elapsed = 3_000
+        viewModel.recordVoiceMessage(finger)
+        runCurrent()
+
+        viewModel.awaitStaged { it.voiceNote }
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertThat(rows()).isEmpty()
+    }
+
+    /**
+     * With words typed, a recording runs BESIDE them: the slot is Stop, the
+     * note is staged with the words, and a double tap on Stop does not send
+     * what it staged (S1.3 row 3, S1.1).
+     */
+    @Test
+    fun aRecordingBesideWordsStagesBesideThemAndTheirSendIsGuarded() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        type(viewModel, "for grandma")
+
+        viewModel.recordVoiceMessage(finger)
+        runCurrent()
+        assertThat(viewModel.hold.value.recording).isEqualTo(ComposerSlot.Recording.HANDS_FREE_BESIDE_DRAFT)
+        pastTheGuard()
+        recorder.elapsed = 3_000
+        viewModel.activateSlot(finger)
+        // The second tap of a double tap, at once: guarded, so neither the
+        // words nor the note it is staging leave.
+        viewModel.sendFromSlot()
+        runCurrent()
+        assertThat(rows()).isEmpty()
+        viewModel.awaitStaged { it.voiceNote }
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("for grandma")
+
+        pastTheGuard()
+        viewModel.sendFromSlot()
+        val row = awaitAudioRow()
+        assertThat(row.body).isEqualTo("for grandma")
+    }
+
+    /** Delete under ten seconds goes at once; from ten it stops FIRST, then asks (S2.5). */
+    @Test
+    fun deletingTenSecondsOrMoreStopsFirstThenAsks() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        tap(viewModel)
+        recorder.elapsed = 9_999
+        viewModel.deleteRecording()
+        runCurrent()
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(viewModel.hold.value.phase).isEqualTo(RecordGesture.Phase.Idle)
+        assertThat(recorder.files.none { it.exists() }).isTrue()
+
+        pastTheGuard()
+        tap(viewModel)
+        recorder.elapsed = 12_000
+        viewModel.deleteRecording()
+        runCurrent()
+        assertThat(recorder.isRecording).isFalse()
+        assertThat(viewModel.hold.value.phase).isEqualTo(RecordGesture.Phase.AskingDelete(12_000))
+
+        viewModel.answerRecordingDelete(delete = false)
+        val kept = viewModel.awaitStaged { it.voiceNote }
+        assertThat(kept.durationMs).isEqualTo(12_000)
+
+        pastTheGuard()
+        viewModel.discardStaged(0)
+        viewModel.answerStagedDelete(delete = true)
+        assertThat(viewModel.staged.value).isEmpty()
+        tap(viewModel)
+        recorder.elapsed = 12_000
+        viewModel.deleteRecording()
+        viewModel.answerRecordingDelete(delete = true)
+        runCurrent()
+        assertThat(viewModel.staged.value).isEmpty()
+        assertThat(recorder.files.none { it.exists() }).isTrue()
+    }
+
+    /** A staged voice note's ✕ asks at ten seconds or more, and Keep keeps it (S2.7). */
+    @Test
+    fun aLongStagedVoiceNoteAsksBeforeItsCrossDeletesIt() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val long = tempPrepared(tag = 3).copy(
+            kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", voiceNote = true, durationMs = 10_000,
+        )
+        val short = tempPrepared(tag = 4).copy(
+            kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", voiceNote = true, durationMs = 9_999,
+        )
+        viewModel.stagePrepared(long)
+        viewModel.stagePrepared(short)
+
+        viewModel.discardStaged(1)
+        assertThat(viewModel.staged.value).containsExactly(long)
+        assertThat(short.file.exists()).isFalse()
+
+        viewModel.discardStaged(0)
+        assertThat(viewModel.stagedDeleteAsk.value).isEqualTo(long.file)
+        viewModel.answerStagedDelete(delete = false)
+        assertThat(viewModel.staged.value).containsExactly(long)
+        assertThat(long.file.exists()).isTrue()
+
+        viewModel.discardStaged(0)
+        viewModel.answerStagedDelete(delete = true)
+        assertThat(viewModel.staged.value).isEmpty()
+        assertThat(long.file.exists()).isFalse()
+        assertThat(viewModel.stagedDeleteAsk.value).isNull()
+    }
+
+    /** Not yet asked: a tap raises the prompt, and Allow records — the tap meant "record" (S2.2). */
+    @Test
+    fun aTapWithoutPermissionAsksAndAllowRecords() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val effects = screenEffects(viewModel)
+
+        tap(viewModel, env = finger.copy(permission = RecordGesture.Permission.NOT_ASKED))
+        assertThat(effects).contains(ChatViewModel.VoiceEffect.AskPermission)
+        assertThat(recorder.starts).isEqualTo(0)
+
+        viewModel.permissionAnswered(granted = true, permanent = false)
+        runCurrent()
+        assertThat(recorder.starts).isEqualTo(1)
+    }
+
+    /** Refused: the denial sentence — with Open Settings once the refusal is for good (S2.2). */
+    @Test
+    fun aRefusalSaysSoAndForGoodOffersOpenSettings() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+
+        tap(viewModel, env = finger.copy(permission = RecordGesture.Permission.NOT_ASKED))
+        viewModel.permissionAnswered(granted = false, permanent = false)
+        runCurrent()
+        val once = viewModel.mediaState.value as ChatViewModel.MediaSendState.Failed
+        assertThat(once.reason).isEqualTo(app.getString(R.string.e_microphone_permission))
+        assertThat(once.opensSettings).isFalse()
+
+        pastTheGuard()
+        tap(viewModel, env = finger.copy(permission = RecordGesture.Permission.DENIED))
+        val forGood = viewModel.mediaState.value as ChatViewModel.MediaSendState.Failed
+        assertThat(forGood.opensSettings).isTrue()
+        assertThat(recorder.starts).isEqualTo(0)
+    }
+
+    /**
+     * A dimmed microphone says why instead of recording (S1.3 rows 7–9) — in
+     * the notice line, or, while the strip shows an attachment's progress,
+     * as a toast, so the progress is not overwritten.
+     */
+    @Test
+    fun aDimmedMicrophoneSaysWhyInsteadOfRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        val toasts = mutableListOf<String>()
+        backgroundScope.launch { viewModel.transientMessages.collect { toasts += it } }
+        viewModel.reportAttachmentBusy("Saving…")
+
+        tap(viewModel)
+
+        assertThat(recorder.starts).isEqualTo(0)
+        assertThat(toasts).containsExactly(app.getString(R.string.e_wait_for_the_attachment))
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Working("Saving…"))
+    }
+
+    /** No recording in the assistant's chat, nor during an edit (S1.3, S1.5). */
+    @Test
+    fun theAssistantsChatAndAnEditOfferNoRecording() = recordingTest {
+        val assistant = newViewModel(kind = "ai")
+        runCurrent()
+        assistant.recordVoiceMessage(finger)
+        runCurrent()
+        assertThat(recorder.starts).isEqualTo(0)
+
+        val direct = newViewModel()
+        runCurrent()
+        direct.beginEdit(messageId = 77, body = "hello")
+        direct.recordVoiceMessage(finger)
+        runCurrent()
+        assertThat(recorder.starts).isEqualTo(0)
+    }
+
+    /**
+     * The 4:30 warning, "30 seconds left", and the silence warning, "We
+     * can't hear anything…", each shown in the level meter's place and said
+     * once — and the silence line goes when sound arrives (S2.5, S2.9).
+     */
+    @Test
+    fun theThirtySecondWarningAndTheSilenceWarning() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.amplitude = 0
+        tap(viewModel)
+
+        recorder.elapsed = ComposerSlot.SILENCE_WARNING_AFTER_MS
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+        assertThat(viewModel.voiceLine.value).isEqualTo(ChatViewModel.VoiceLine.CANT_HEAR)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_cant_hear_microphone_muted))
+
+        recorder.amplitude = 5_000
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+        assertThat(viewModel.voiceLine.value).isNull()
+        assertThat(viewModel.voiceLevel.value).isGreaterThan(0)
+
+        recorder.elapsed = ComposerSlot.VOICE_WARNING_MS
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+        assertThat(viewModel.voiceLine.value).isEqualTo(ChatViewModel.VoiceLine.THIRTY_SECONDS_LEFT)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_thirty_seconds_left))
+    }
+
+    /** Stop keeps it for review — "Ready to review, 0:42" — and a playing note says why it waits (S2.5, S1.7). */
+    @Test
+    fun stopReviewsAndAPlayControlWhileRecordingSaysWhy() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        tap(viewModel)
+
+        viewModel.explainPlaybackWhileRecording()
+        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.s_play_after_recording))
+
+        recorder.elapsed = 42_000
+        viewModel.stopRecording()
+        viewModel.awaitStaged { it.voiceNote }
+        assertThat(viewModel.announcement.value?.text)
+            .isEqualTo(app.getString(R.string.s_announce_ready_to_review, "0:42"))
+    }
+
+    // -- Video messages (#79, Phase 3) ----------------------------------------------
+    //
+    // The chat's side of the video recorder: whether it may open from here
+    // (S1.3 rows 7–9, S1.4, S1.5), one recording at a time (S1.7), and the
+    // reply a sent video message spends (S1.5).
+
+    @Test
+    fun theRecorderOpensFromAFamilyOrADirectChat() = recordingTest {
+        assertThat(newViewModel(kind = "family").also { runCurrent() }.mayOpenVideoRecorder()).isTrue()
+        assertThat(newViewModel(kind = "direct").also { runCurrent() }.mayOpenVideoRecorder()).isTrue()
+    }
+
+    @Test
+    fun theRecorderNeverOpensFromTheAssistantsChat() = recordingTest {
+        val viewModel = newViewModel(kind = "ai")
+        runCurrent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isFalse()
+        assertThat(notice(viewModel)).isNull()
+    }
+
+    /** Row 7: dimmed, and it says why (S1.3, S1.4). */
+    @Test
+    fun theRecorderSaysWhyDuringACall() = recordingTest {
+        callState.value = CallState.Incoming(callId = "c1", chatId = CHAT, peerUserId = PEER)
+        val viewModel = newViewModel()
+        runCurrent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isFalse()
+        assertThat(notice(viewModel)).isEqualTo(app.getString(R.string.e_record_after_the_call))
+    }
+
+    /** Row 9 is about voice: a waiting not-sent voice message does not keep the camera shut. */
+    @Test
+    fun aNotSentVoiceMessageDoesNotStopTheRecorder() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        parkedNote(4_000)
+        viewModel.awaitNotSent()
+        assertThat(viewModel.mayOpenVideoRecorder()).isTrue()
+    }
+
+    /** One recording at a time (S1.7): a voice recording here is stopped and kept as "not sent". */
+    @Test
+    fun openingTheRecorderParksAVoiceRecording() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recording(viewModel, 3_000)
+
+        assertThat(viewModel.mayOpenVideoRecorder()).isTrue()
+        runCurrent()
+
+        assertThat(viewModel.recordingMs.value).isNull()
+        assertThat(viewModel.awaitNotSent().single().durationMs).isEqualTo(3_000)
+    }
+
+    /** The sticker's rule (S1.5): the video carried the reply, so the composer's is spent — not another one. */
+    @Test
+    fun aSentVideoMessageSpendsTheReplyItCarried() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.beginReply(aQuote)
+        viewModel.videoMessageSent(anotherQuote.messageId)
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        viewModel.videoMessageSent(null)
+        assertThat(viewModel.replyDraft.value).isEqualTo(aQuote)
+        viewModel.videoMessageSent(aQuote.messageId)
+        assertThat(viewModel.replyDraft.value).isNull()
+    }
+
+    /** The recorder's last words are said in the composer's live region once it has gone (S6). */
+    @Test
+    fun theRecordersAnnouncementIsSaidHere() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.announceFromRecorder(R.string.s_announce_video_message_sent)
+        assertThat(viewModel.announcement.value?.text).isEqualTo(app.getString(R.string.s_announce_video_message_sent))
+    }
+
+    /** A server's keys are the whole capability check (S1.2). */
+    @Test
+    fun videoMessagesAreOfferedOnlyAgainstAServerThatHasThem() = recordingTest {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        assertThat(viewModel.roundVideoOffered.value).isFalse()
+        settings.setRoundVideoLimits(60_000, 12_582_912)
+        runCurrent()
+        assertThat(viewModel.roundVideoOffered.value).isTrue()
+    }
+
+    // -- #79 polish: the voice note's waveform (protocol.md, "A voice note's waveform") --
+
+    /** The recorder's waveform goes with the note into review, and with it into "not sent". */
+    @Test
+    fun theRecordersWaveformGoesIntoReviewAndThenIntoNotSent() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.waveform = WAVE
+        recording(viewModel, 3_000)
+
+        viewModel.stopRecording()
+        val note = viewModel.awaitStaged { it.voiceNote }
+        assertThat(note.waveform).isEqualTo(WAVE)
+
+        viewModel.screenAttached()
+        viewModel.screenDetached(changingConfigurations = false)
+        runCurrent()
+        assertThat(viewModel.awaitNotSent().single().waveform).isEqualTo(WAVE)
+    }
+
+    /** The Send arrow's note uploads the waveform the recorder made of its meter. */
+    @Test
+    fun aSentVoiceMessageUploadsItsWaveform() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.waveform = WAVE
+
+        tap(viewModel)
+        pastTheGuard()
+        recorder.elapsed = 4_200
+        viewModel.activateSlot(finger)
+        runCurrent()
+
+        assertThat(awaitAudioRow().attachmentList.single().waveform).isEqualTo(WAVE)
+        realTimeUntil { attachmentApi.uploadedWaveforms.isNotEmpty() }
+        assertThat(attachmentApi.uploadedWaveforms.single()).isEqualTo(WAVE)
+    }
+
+    /** A not-sent message's Send uploads the waveform it was parked with. */
+    @Test
+    fun aNotSentMessageSendsTheWaveformItWasParkedWith() = recordingTest {
+        val source = File.createTempFile("voice-", ".m4a", app.cacheDir)
+            .apply { writeBytes(FakeVoiceRecorder.M4A_HEAD + ByteArray(4096) { 3 }) }
+        val id = requireNotNull(
+            parked.park(CHAT, source, 3_000, null, "", epoch.current(), waveform = WAVE),
+        ).id
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.sendNotSent(id)
+        realTimeUntil { attachmentApi.uploadedWaveforms.isNotEmpty() }
+
+        assertThat(attachmentApi.uploadedWaveforms.single()).isEqualTo(WAVE)
+    }
+
+    /** The hands-free row's live waveform is the meter's peaks as levels, newest last. */
+    @Test
+    fun theLiveWaveformScrollsInTheMetersPeaks() = recordingTest {
+        val viewModel = newViewModel()
+        runCurrent()
+        recorder.amplitude = 0
+        tap(viewModel)
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+        recorder.amplitude = Waveform.FULL_SCALE
+        advanceTimeBy(ChatViewModel.VOICE_TICK_MS)
+        runCurrent()
+
+        val levels = viewModel.voiceLevels.value
+        assertThat(levels.last()).isEqualTo(Waveform.MAX_LEVEL)
+        assertThat(levels).contains(0)
+        assertThat(levels.size).isAtMost(ChatViewModel.LIVE_LEVELS)
+
+        viewModel.cancelRecording()
+        assertThat(viewModel.voiceLevels.value).isEmpty()
+    }
+
+    /**
+     * A voice message's Save (#79): its bytes, downloaded if need be, copied
+     * into the document the system's save screen made — and named as a sound
+     * file, never "photo-77.jpg".
+     */
+    @Test
+    fun aVoiceMessageSavesIntoTheDocumentThePersonChose() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 77, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+        assertThat(note.fallbackFileName).isEqualTo("voice-77.m4a")
+        attachmentApi.downloadHandler = { _, _, destination ->
+            destination.parentFile?.mkdirs()
+            destination.writeBytes(byteArrayOf(1, 2, 3, 4, 5, 6))
+            ApiResult.Ok(Unit)
+        }
+        val chosen = File(app.cacheDir, "chosen-${System.nanoTime()}.m4a")
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(chosen))
+
+        assertThat(saved).isTrue()
+        assertThat(chosen.readBytes()).isEqualTo(byteArrayOf(1, 2, 3, 4, 5, 6))
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    @Test
+    fun aVoiceMessageThatCannotBeDownloadedSaysSo() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 78, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(File(app.cacheDir, "never.m4a")))
+
+        assertThat(saved).isFalse()
+        assertThat(failure(viewModel)).isEqualTo(app.getString(R.string.e_download_to_save_failed))
+    }
+
+    /**
+     * The save screen makes the document BEFORE anything is copied, so a Save
+     * that cannot go on must take it away again — not leave an empty
+     * "voice-78.m4a" where the person chose to save.
+     */
+    @Test
+    fun aVoiceMessageThatCannotBeSavedLeavesNoEmptyDocument() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val note = AttachmentDto(id = 78, kind = AttachmentDto.KIND_AUDIO, mime = "audio/mp4", size = 6, durationMs = 3_000)
+        val created = File(app.cacheDir, "created-${System.nanoTime()}.m4a").apply { createNewFile() }
+
+        val saved = viewModel.saveToDocument(note, android.net.Uri.fromFile(created))
+
+        assertThat(saved).isFalse()
+        assertThat(created.exists()).isFalse()
+    }
+
+    @Test
+    fun anOrphanedDocumentIsDiscarded() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        val created = File(app.cacheDir, "orphan-${System.nanoTime()}.m4a").apply { createNewFile() }
+
+        viewModel.discardDocument(android.net.Uri.fromFile(created))
+
+        assertThat(created.exists()).isFalse()
     }
 }
