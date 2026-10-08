@@ -329,10 +329,14 @@ public class ApiClientTests
         var handler = new Fake()
             .Then(HttpStatusCode.OK,
                 """{"note": {"id": 12, "author_id": 7, "kind": "event", "text": "Lunch", "board_seq": 12}}""");
-        var slow = TimeSpan.FromMilliseconds(400);
-        handler.Delays.Enqueue(slow);
-        handler.Delays.Enqueue(slow);
-        handler.Delays.Enqueue(slow);
+        // The two reads wait TEN SECONDS, so only the 50 ms deadline can end them: with 400 ms, a loaded CI
+        // runner (ubuntu, 2026-10-08) ran the delay's timer before the deadline's, the read took the reply
+        // and came back Ok. The deadline still ends each one in ~50 ms; nothing here waits the ten seconds.
+        var never = TimeSpan.FromSeconds(10);
+        handler.Delays.Enqueue(never);
+        handler.Delays.Enqueue(never);
+        // The backdrop is slow too — slower than the ordinary deadline — and finishes inside its own.
+        handler.Delays.Enqueue(TimeSpan.FromMilliseconds(400));
         var client = new ApiClient(
             new HttpClient(handler), ServerUrl.Normalise("chat.example.com")!, new MemoryTokenStore("t0ken"))
         {
