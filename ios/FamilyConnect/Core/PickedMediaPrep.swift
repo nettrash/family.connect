@@ -30,6 +30,15 @@ nonisolated enum PickedMediaPrep {
         case unreadableItem
     }
 
+    /// The picked image's type when it goes as a FILE rather than a photo —
+    /// an animated or lossless format `MediaPrep.sendsAsFile` keeps whole —
+    /// or nil for the photo path. Pure, so the rule is tested without a
+    /// picker.
+    static func keptAsFile(_ types: [UTType], keepsAnimated: Bool) -> UTType? {
+        guard keepsAnimated else { return nil }
+        return types.first { MediaPrep.sendsAsFile(imageType: $0) }
+    }
+
     /// Prepare one picked photo or video.
     ///
     /// Decided from what the item SAYS it is, rather than trying a movie
@@ -42,7 +51,15 @@ nonisolated enum PickedMediaPrep {
     /// made from it — a failure, a refusal, a cancel — it is deleted here.
     /// When `prepareVideo` returns the copy itself as the upload file (the
     /// clip goes as it is), the copy is kept: it is the upload now.
-    static func prepare(_ item: PhotosPickerItem, limit: Int) async throws -> MediaPrep.Prepared {
+    ///
+    /// An ANIMATED image — a GIF, a WebP, a BMP, `MediaPrep.sendsAsFile` —
+    /// goes as the file it is, exactly as the File item and a drop send it:
+    /// the photo path keeps frame zero, and a GIF that arrives as a still is
+    /// not what anybody picked (PR #87 review). Except where `keepsAnimated`
+    /// is false: the assistant's chat, whose model is shown a photo.
+    static func prepare(
+        _ item: PhotosPickerItem, limit: Int, keepsAnimated: Bool = true
+    ) async throws -> MediaPrep.Prepared {
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
         if isVideo {
             guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
@@ -61,6 +78,9 @@ nonisolated enum PickedMediaPrep {
         }
         guard let data = try await item.loadTransferable(type: Data.self) else {
             throw Failure.unreadableItem
+        }
+        if let animated = keptAsFile(item.supportedContentTypes, keepsAnimated: keepsAnimated) {
+            return try await MediaPrep.prepare(data: data, type: animated, limit: limit)
         }
         return try await MediaPrep.preparePhoto(from: data, limit: limit)
     }

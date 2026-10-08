@@ -7,6 +7,7 @@
 //
 
 import Testing
+import UniformTypeIdentifiers
 @testable import FamilyConnect
 
 struct AttachMenuTests {
@@ -116,5 +117,16 @@ struct AttachMenuTests {
         let order = I.allCases
         let positions = items.compactMap { order.firstIndex(of: $0) }
         #expect(positions == positions.sorted())
+    }
+
+    @Test("a GIF, WebP or BMP off the photo picker goes as the file it is — except to the assistant (PR #87)")
+    func animatedPicksKeepTheirBytes() {
+        #expect(PickedMediaPrep.keptAsFile([.gif], keepsAnimated: true) == .gif)
+        #expect(PickedMediaPrep.keptAsFile([.webP, .image], keepsAnimated: true) == .webP)
+        #expect(PickedMediaPrep.keptAsFile([.bmp], keepsAnimated: true) == .bmp)
+        #expect(PickedMediaPrep.keptAsFile([.heic, .jpeg], keepsAnimated: true) == nil)
+        #expect(PickedMediaPrep.keptAsFile([.png], keepsAnimated: true) == nil)
+        // The assistant is shown a photo: there, a GIF is its still.
+        #expect(PickedMediaPrep.keptAsFile([.gif], keepsAnimated: false) == nil)
     }
 }

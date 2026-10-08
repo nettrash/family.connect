@@ -3253,7 +3253,9 @@ struct ConversationView: View {
                 // "Photo or Video" runs the same code (#78).
                 let prepared: MediaPrep.Prepared
                 do {
-                    prepared = try await PickedMediaPrep.prepare(item, limit: limit)
+                    // The assistant is shown a photo: there, a GIF is its still.
+                    prepared = try await PickedMediaPrep.prepare(
+                        item, limit: limit, keepsAnimated: !isAssistantChat)
                 } catch PickedMediaPrep.Failure.unreadableVideo {
                     preparationFailed(String(localized: "Couldn't read that video."))
                     continue
