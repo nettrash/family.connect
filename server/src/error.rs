@@ -101,8 +101,8 @@ pub mod codes {
     pub const PICTURE_REFUSED: &str = "picture_refused";
     /// This server has no transcription deployment (`[ai.transcribe]`), so
     /// no recording can be turned into text. A 403 for the reason
-    /// `pictures_unavailable` is one: a fact about the SERVER, which a
-    /// client reads as `assistant.transcribe` before it offers the action
+    /// `transcripts_unavailable`: a fact about the SERVER, which a client
+    /// reads as `assistant.transcribe` before it offers the action at all    
     /// (protocol.md, "Transcripts on request").
     pub const TRANSCRIPTS_UNAVAILABLE: &str = "transcripts_unavailable";
     /// The rule says no: another member's recording outside the family
