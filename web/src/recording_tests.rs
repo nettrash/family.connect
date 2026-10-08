@@ -83,7 +83,7 @@ fn menu_item(root: &Element, label: &str) -> Element {
     (0..found.length())
         .filter_map(|index| found.item(index))
         .filter_map(|node| node.dyn_into::<Element>().ok())
-        .find(|item| item.text_content().unwrap_or_default().trim() == label)
+        .find(|item| crate::layout_tests::visible_text(item).trim() == label)
         .unwrap_or_else(|| panic!("the paperclip offers {label:?}"))
 }
 

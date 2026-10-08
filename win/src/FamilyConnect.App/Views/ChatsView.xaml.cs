@@ -392,8 +392,8 @@ public sealed partial class ChatsView : UserControl
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
         ComposerBox.PlaceholderText = say.Get("Message");
-        ToolTipService.SetToolTip(AttachButton, say.Get("Attach"));
-        AutomationProperties.SetName(AttachButton, say.Get("Attach"));
+        ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
+        AutomationProperties.SetName(AttachButton, say.Get("Attach a photo, video or file"));
         OpenPollsText.Text = say.Get("Open polls");
 
         ChatList.SelectionChanged += OnChatPicked;
@@ -7447,8 +7447,11 @@ public sealed partial class ChatsView : UserControl
     // ---- attaching -----------------------------------------------------------------------------
 
     /// <summary>
-    /// The composer's menu of what a message can carry, in the Mac's order: a photo for the assistant where all three locks
-    /// allow it, a file, the clipboard, a recording, a place — and, in the family chat alone, a poll.
+    /// The paperclip's menu, the same lines in the same three groups as every other client (docs/attachment-menu-2026-10-07.md,
+    /// issue #78), top to bottom: a photo or video — or, in the assistant's chat, a photo for the assistant where all three
+    /// locks allow it — a file and the clipboard; then a recording; then a place and, in the family chat alone, a poll. Which
+    /// lines show is AttachMenu.Groups; whether each is enabled is decided here. No Camera line: Windows has no system camera
+    /// to hand off to.
     /// </summary>
     private void ShowAttachMenu()
     {
@@ -7456,44 +7459,82 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        var say = services.Say;
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
         var state = connection.Session.State;
-        // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
-        if (AssistantPictures.OffersPictureAttach(
-                connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true))
+        var kind = Kind(chat);
+        var strip = Staging(chat.ChatId);
+        var groups = AttachMenu.Groups(
+            assistantChat: kind == "ai",
+            // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
+            offersPictureAttach: AssistantPictures.OffersPictureAttach(kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true),
+            familyChat: kind == "family",
+            roundAvailable: RoundAvailable());
+        foreach (var group in groups)
         {
-            var pictures = new MenuFlyoutItem { Text = say.Get("Show the Assistant a Photo…"), Icon = new SymbolIcon(Symbol.Pictures) };
-            pictures.Click += (_, _) => _ = PickPicturesAsync();
-            menu.Items.Add(pictures);
+            // Between groups only: a group that would be empty is not in the list, so it draws no line.
+            if (menu.Items.Count > 0)
+            {
+                menu.Items.Add(new MenuFlyoutSeparator());
+            }
+            foreach (var line in group)
+            {
+                menu.Items.Add(AttachMenuItem(line, chat, strip));
+            }
         }
-        var file = new MenuFlyoutItem { Text = say.Get("Attach a File…"), Icon = new SymbolIcon(Symbol.Attach) };
-        file.Click += (_, _) => _ = PickAsync();
-        menu.Items.Add(file);
-        var paste = new MenuFlyoutItem { Text = say.Get("Paste"), Icon = new SymbolIcon(Symbol.Paste) };
-        paste.Click += (_, _) => _ = PasteAsync(fromMenu: true);
-        menu.Items.Add(paste);
-        // "Record Voice Message" (S1.5): in a family or a direct chat — never the assistant's, where every message is a
-        // consented model call (decision 24). Off while an attachment is on its way, in an edit, during a call, and while
-        // this chat holds a voice message that was not sent — its row is right there. With words typed or items staged it
-        // records beside them, and the slot is Stop (S1.3 row 3).
-        if (Kind(chat) != "ai")
+        menu.ShowAt(AttachButton);
+    }
+
+    /// <summary>One line of the paperclip's menu, with its icon, its action and the rules that dim it.</summary>
+    private MenuFlyoutItem AttachMenuItem(AttachItem line, ConversationModel chat, ComposerStaging strip)
+    {
+        var say = services.Say;
+        switch (line)
         {
-            var strip = Staging(chat.ChatId);
-            var record = new MenuFlyoutItem
+            case AttachItem.PhotoOrVideo:
             {
-                Text = say.Get("Record Voice Message"),
-                Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
-                KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
-                IsEnabled = !Busy(strip) && editing is null && !callBusy && !HasNotSent(chat.ChatId),
-            };
-            record.Click += (_, _) => _ = StartRecordingAsync(fromSlot: false);
-            menu.Items.Add(record);
-            // "Record Video Message" (S1.5), right below, where one can be recorded: off while an attachment is on its way,
-            // in an edit and during a call. It works beside words or staged items — a video message travels alone, and they
-            // stay in the composer.
-            if (RoundAvailable())
+                var media = new MenuFlyoutItem { Text = say.Get("Photo or Video"), Icon = new SymbolIcon(Symbol.Pictures) };
+                media.Click += (_, _) => _ = PickAsync(AttachMenu.PhotoOrVideoTypes);
+                return media;
+            }
+            case AttachItem.AssistantPhoto:
             {
+                var pictures = new MenuFlyoutItem { Text = say.Get("Show the Assistant a Photo…"), Icon = new SymbolIcon(Symbol.Pictures) };
+                pictures.Click += (_, _) => _ = PickPicturesAsync();
+                return pictures;
+            }
+            case AttachItem.File:
+            {
+                var file = new MenuFlyoutItem { Text = say.Get("File"), Icon = new SymbolIcon(Symbol.Document) };
+                file.Click += (_, _) => _ = PickAsync(null);
+                return file;
+            }
+            case AttachItem.Paste:
+            {
+                var paste = new MenuFlyoutItem { Text = say.Get("Paste"), Icon = new SymbolIcon(Symbol.Paste) };
+                paste.Click += (_, _) => _ = PasteAsync(fromMenu: true);
+                return paste;
+            }
+            case AttachItem.RecordVoice:
+            {
+                // "Record Voice Message" (S1.5): in a family or a direct chat — never the assistant's, where every message is a
+                // consented model call (decision 24). Off while an attachment is on its way, in an edit, during a call, and while
+                // this chat holds a voice message that was not sent — its row is right there. With words typed or items staged it
+                // records beside them, and the slot is Stop (S1.3 row 3).
+                var record = new MenuFlyoutItem
+                {
+                    Text = say.Get("Record Voice Message"),
+                    Icon = new FontIcon { Glyph = ((char)ComposerButton.MicrophoneGlyph).ToString() },
+                    KeyboardAcceleratorTextOverride = ComposerButton.RecordShortcut,
+                    IsEnabled = !Busy(strip) && editing is null && !callBusy && !HasNotSent(chat.ChatId),
+                };
+                record.Click += (_, _) => _ = StartRecordingAsync(fromSlot: false);
+                return record;
+            }
+            case AttachItem.RecordVideo:
+            {
+                // "Record Video Message" (S1.5), right below, where one can be recorded: off while an attachment is on its way,
+                // in an edit and during a call. It works beside words or staged items — a video message travels alone, and they
+                // stay in the composer.
                 var video = new MenuFlyoutItem
                 {
                     Text = say.Get("Record Video Message"),
@@ -7501,21 +7542,23 @@ public sealed partial class ChatsView : UserControl
                     IsEnabled = !Busy(strip) && editing is null && !callBusy && recorder is null,
                 };
                 video.Click += (_, _) => _ = OpenRoundRecorderAsync(AttachButton);
-                menu.Items.Add(video);
+                return video;
+            }
+            case AttachItem.Location:
+            {
+                // A map pin, in Segoe Fluent Icons.
+                var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
+                place.Click += (_, _) => _ = ShareLocationAsync();
+                return place;
+            }
+            default:
+            {
+                // A bulleted list, in Segoe Fluent Icons.
+                var poll = new MenuFlyoutItem { Text = say.Get("Poll"), Icon = new FontIcon { Glyph = ((char)0xE8FD).ToString() } };
+                poll.Click += (_, _) => _ = AskPollAsync();
+                return poll;
             }
         }
-        // A map pin, in Segoe Fluent Icons.
-        var place = new MenuFlyoutItem { Text = say.Get("Location"), Icon = new FontIcon { Glyph = ((char)0xE707).ToString() }, IsEnabled = !locating };
-        place.Click += (_, _) => _ = ShareLocationAsync();
-        menu.Items.Add(place);
-        if (IsFamily(chat))
-        {
-            // A bulleted list, in Segoe Fluent Icons.
-            var poll = new MenuFlyoutItem { Text = say.Get("Poll"), Icon = new FontIcon { Glyph = ((char)0xE8FD).ToString() } };
-            poll.Click += (_, _) => _ = AskPollAsync();
-            menu.Items.Add(poll);
-        }
-        menu.ShowAt(AttachButton);
     }
 
     // ---- video messages, recorded -----------------------------------------------------------------
@@ -9601,7 +9644,14 @@ public sealed partial class ChatsView : UserControl
         return strip;
     }
 
-    private async Task PickAsync()
+    /// <summary>What "File" offers: everything.</summary>
+    private static readonly string[] AllFiles = ["*"];
+
+    /// <summary>
+    /// The pickers behind "Photo or Video" (<paramref name="types"/>: AttachMenu.PhotoOrVideoTypes) and "File" (null: every
+    /// file). Both open on the Pictures library and stage what is picked the same way.
+    /// </summary>
+    private async Task PickAsync(IReadOnlyList<string>? types)
     {
         if (open is not { } chat)
         {
@@ -9626,7 +9676,10 @@ public sealed partial class ChatsView : UserControl
                 SuggestedStartLocation = PickerLocationId.PicturesLibrary,
                 ViewMode = PickerViewMode.Thumbnail,
             };
-            picker.FileTypeFilter.Add("*");
+            foreach (var type in types ?? AllFiles)
+            {
+                picker.FileTypeFilter.Add(type);
+            }
             // A desktop app must name the window that owns the picker, or it throws.
             WinRT.Interop.InitializeWithWindow.Initialize(picker, services.WindowHandle);
             files = await picker.PickMultipleFilesAsync();

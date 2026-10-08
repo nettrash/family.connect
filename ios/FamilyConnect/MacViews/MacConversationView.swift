@@ -47,6 +47,7 @@
 #if os(macOS)
 
 import AppKit
+import PhotosUI
 import SwiftData
 import SwiftUI
 
@@ -104,6 +105,10 @@ struct MacConversationView: View {
     /// attachment door APPENDS here first, which is also what lets a
     /// caption be written while looking at the things.
     @State private var staged: [StagedAttachment] = []
+    /// "Photo or Video" (#78): the system photo picker, the phone's own
+    /// modifier, and what it handed over until `stagePickedMedia` has it.
+    @State private var showPhotoPicker = false
+    @State private var pickedMedia: [PhotosPickerItem] = []
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
     /// What the message being replied to carries, looked up once per reply
@@ -1769,90 +1774,130 @@ struct MacConversationView: View {
         }
     }
 
+    /// What the paperclip offers: `AttachMenu`'s groups, in its order, with
+    /// a separator between groups (#78, docs/attachment-menu-2026-10-07.md)
+    /// — the phone's list without the camera, which the Mac does not hand
+    /// off to. Which items appear is the shared rule's; whether one is
+    /// ENABLED stays here, with the facts it reads.
+    @ViewBuilder
+    private var attachMenuContent: some View {
+        let groups = AttachMenu.groups(
+            isAssistantChat: isAssistantChat,
+            showsPictureAttach: showsPictureAttach,
+            hasCamera: false,
+            offersVoice: offersVoiceMessages,
+            roundAvailable: roundAvailable,
+            isFamilyChat: isFamilyChat)
+        ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+            if index > 0 { Divider() }
+            ForEach(group, id: \.self) { item in
+                attachMenuButton(item)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func attachMenuButton(_ item: AttachMenu.Item) -> some View {
+        switch item {
+        case .photoOrVideo:
+            // The Photos library through the system picker, the phone's
+            // door (#78). Everything else a Mac attaches lives in the file
+            // system, and "File" below covers it.
+            Button {
+                voice.otherAction()
+                showPhotoPicker = true
+            } label: {
+                Label("Photo or Video", systemImage: "photo.on.rectangle")
+            }
+        case .assistantPhoto:
+            // The Mac's answer to the phone's assistant photo picker: its
+            // own open panel, filtered to images and capped at the four the
+            // model is shown (MacFilePicker.pickPictures). Present only
+            // when BOTH locks are open — the operator configured a
+            // deployment that can see, and this family's owner turned
+            // `ai_vision` on — and absent rather than disabled when they
+            // are not, because a server without the deployment must show
+            // no surface at all rather than one that lies (protocol.md,
+            // "Pictures").
+            Button {
+                pickPictures()
+            } label: {
+                Label("Show the Assistant a Photo…", systemImage: "photo")
+            }
+        case .camera:
+            // Never offered here (`hasCamera: false`): the Mac has no
+            // system camera to hand off to (S1.5 of
+            // docs/audio-video-messages-2026-10-04.md).
+            EmptyView()
+        case .file:
+            Button {
+                pickAttachment()
+            } label: {
+                Label("File", systemImage: "doc")
+            }
+        case .paste:
+            // Inside the menu on purpose: the guard on the menu disables
+            // attaching while an edit is in progress, and an item here
+            // inherits it for free.
+            //
+            // Through `pasteFromClipboard` like every other door. This item
+            // used to call `pasteAttachment` directly, so it answered
+            // "There's nothing to paste." to a clipboard full of words —
+            // and it is the ONLY door on this window that a text paste can
+            // reach, because `.onPasteCommand` is filtered to non-text
+            // types.
+            Button {
+                pasteFromClipboard()
+            } label: {
+                Label("Paste", systemImage: "doc.on.clipboard")
+            }
+        case .voiceMessage:
+            // Family and direct chats only — the assistant's chat has no
+            // microphone and no recording at all (#79, S1.5, Decision 24).
+            // With words typed or items staged it records beside them, and
+            // the slot is Stop (row 3).
+            Button {
+                recordVoiceMessage()
+            } label: {
+                Label("Record Voice Message", systemImage: "mic")
+            }
+            // Not during a call, and not while this chat holds a voice
+            // message that was not sent (S1.5, S2.8) — the menu's own guard
+            // already covers an edit and a send in flight.
+            .disabled(slotInputs.blocked != nil)
+        case .videoMessage:
+            // Right below voice, where round video is available (S1.5).
+            Button {
+                openVideoRecorder()
+            } label: {
+                Label("Record Video Message", systemImage: "video.circle")
+            }
+            .disabled(slotInputs.call)
+        case .location:
+            Button {
+                shareLocation()
+            } label: {
+                Label("Location", systemImage: "mappin.and.ellipse")
+            }
+        case .poll:
+            // The family chat only, and the server agrees: a poll anywhere
+            // else is `invalid_poll` (docs/protocol.md, "Polls").
+            Button {
+                voice.otherAction()
+                showPollComposer = true
+            } label: {
+                Label("Poll", systemImage: "chart.bar")
+            }
+        }
+    }
+
     /// The paperclip, the sticker, `@ai` and `/draw` buttons and the field —
     /// one view, so that the recording row can take its place whole (#79,
     /// S2.4).
     private var composerControls: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Menu {
-                // The Mac's answer to the phone's photo picker: its own
-                // open panel, filtered to images and capped at the four
-                // the model is shown (MacFilePicker.pickPictures).
-                // Present only when BOTH locks are open — the operator
-                // configured a deployment that can see, and this
-                // family's owner turned `ai_vision` on — and absent
-                // rather than disabled when they are not, because a
-                // server without the deployment must show no surface at
-                // all rather than one that lies (protocol.md,
-                // "Pictures").
-                if showsPictureAttach {
-                    Button {
-                        pickPictures()
-                    } label: {
-                        Label("Show the Assistant a Photo…", systemImage: "photo")
-                    }
-                }
-                Button {
-                    pickAttachment()
-                } label: {
-                    Label("Attach a File…", systemImage: "doc")
-                }
-                // Inside the menu on purpose: the guard below disables
-                // attaching while an edit is in progress, and an item
-                // here inherits it for free.
-                //
-                // Through `pasteFromClipboard` like every other door.
-                // This item used to call `pasteAttachment` directly, so
-                // it answered "There's nothing to paste." to a clipboard
-                // full of words — and it is the ONLY door on this
-                // window that a text paste can reach, because
-                // `.onPasteCommand` is filtered to non-text types.
-                Button {
-                    pasteFromClipboard()
-                } label: {
-                    Label("Paste", systemImage: "doc.on.clipboard")
-                }
-                // Family and direct chats only — the assistant's chat has
-                // no microphone and no recording at all (#79, S1.5,
-                // Decision 24). With words typed or items staged it records
-                // beside them, and the slot is Stop (row 3).
-                if offersVoiceMessages {
-                    Button {
-                        recordVoiceMessage()
-                    } label: {
-                        Label("Record Voice Message", systemImage: "mic")
-                    }
-                    // Not during a call, and not while this chat holds a
-                    // voice message that was not sent (S1.5, S2.8) — the
-                    // menu's own guard already covers an edit and a send
-                    // in flight.
-                    .disabled(slotInputs.blocked != nil)
-                    // Right below it, where round video is available (S1.5).
-                    if roundAvailable {
-                        Button {
-                            openVideoRecorder()
-                        } label: {
-                            Label("Record Video Message", systemImage: "video.circle")
-                        }
-                        .disabled(slotInputs.call)
-                    }
-                }
-                Button {
-                    shareLocation()
-                } label: {
-                    Label("Location", systemImage: "mappin.and.ellipse")
-                }
-                // The family chat only, and the server agrees: a poll
-                // anywhere else is `invalid_poll` (docs/protocol.md,
-                // "Polls").
-                if chat?.kind == "family" {
-                    Button {
-                        voice.otherAction()
-                        showPollComposer = true
-                    } label: {
-                        Label("Poll", systemImage: "chart.bar")
-                    }
-                }
+                attachMenuContent
             } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: 16))
@@ -1867,6 +1912,18 @@ struct MacConversationView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Attach a photo, video or file")
+            // The Photos library, as on the phone (#78). Only outside the
+            // assistant's chat — there "Show the Assistant a Photo…" is the
+            // door, an images-only open panel — so photos AND videos here.
+            .photosPicker(
+                isPresented: $showPhotoPicker,
+                selection: $pickedMedia,
+                maxSelectionCount: StagedAttachment.maxPerMessage,
+                matching: .any(of: [.images, .videos]))
+            .onChange(of: pickedMedia) { _, items in
+                guard !items.isEmpty else { return }
+                stagePickedMedia(items)
+            }
             // Editing borrows the composer to rewrite an existing
             // message; there is no second attachment to add, and
             // attaching would post it as a new message while leaving the
@@ -2485,14 +2542,49 @@ struct MacConversationView: View {
         }
     }
 
-    /// An open panel rather than PhotosPicker: on the Mac what people
-    /// attach lives in the file system, and the same panel covers photos,
-    /// videos and documents alike. Multi-select since a message carries up
-    /// to ten. What happens to the chosen files is `ingest`'s, which is
-    /// also what a drop lands in.
+    /// "File": the open panel. On the Mac most of what people attach lives
+    /// in the file system, and the same panel covers photos, videos and
+    /// documents alike; the Photos library has its own door, "Photo or
+    /// Video" (#78). Multi-select since a message carries up to ten. What
+    /// happens to the chosen files is `ingest`'s, which is also what a drop
+    /// lands in.
     private func pickAttachment() {
         voice.otherAction()
         ingest(MacFilePicker.pickMany())
+    }
+
+    /// "Photo or Video": prepare and stage what the photo picker handed
+    /// over, in picked order — the phone's path (`PickedMediaPrep`, the
+    /// same code), into this window's `stageIfWanted`, so the downscale,
+    /// the ceiling and the ten-per-message cap all apply exactly as they
+    /// do for `ingest`. Like `ingest` it stops at the cap rather than
+    /// preparing items it is about to throw away.
+    private func stagePickedMedia(_ items: [PhotosPickerItem]) {
+        prepare {
+            defer { pickedMedia = [] }
+            let limit = MediaPrep.sizeLimit
+            for (index, item) in items.enumerated() {
+                guard !Task.isCancelled else { break }
+                let prepared: MediaPrep.Prepared
+                do {
+                    prepared = try await PickedMediaPrep.prepare(item, limit: limit)
+                } catch PickedMediaPrep.Failure.unreadableVideo {
+                    preparationFailed(String(localized: "Couldn't read that video."))
+                    continue
+                } catch PickedMediaPrep.Failure.unreadableItem {
+                    preparationFailed(String(localized: "Couldn't read that item."))
+                    continue
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    preparationFailed(String(localized: "Still too large after compressing — try a shorter clip."))
+                    continue
+                } catch {
+                    guard !Task.isCancelled else { break }
+                    preparationFailed(String(localized: "Couldn't prepare that item."))
+                    continue
+                }
+                guard stageIfWanted(prepared, moreToCome: index < items.count - 1) else { break }
+            }
+        }
     }
 
     /// THE file-ingestion path on this window: prepare each file and stage

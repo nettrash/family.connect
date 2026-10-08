@@ -435,7 +435,7 @@ fun ChatScreen(
     // no surface at all where the server cannot do the thing, rather than
     // a disabled one that lies about what would happen.
     val canShowAssistantPicture by viewModel.canShowAssistantPicture.collectAsStateWithLifecycle()
-    val canAskForPicture by viewModel.canAskForPicture.collectAsStateWithLifecycle()
+    val offersDrawButton by viewModel.offersDrawButton.collectAsStateWithLifecycle()
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
@@ -1763,6 +1763,8 @@ fun ChatScreen(
                 // Removed from the assistant's chat on every client (S1.5,
                 // Decision 24): every message there is a consented model call.
                 showsRecordVoice = chat?.kind != "ai",
+                assistantChat = chat?.kind == "ai",
+                hasCamera = hasCamera,
                 recordingMs = recordingMs,
                 onStopRecording = viewModel::stopRecording,
                 // The Send slot (#79, S1.3): what it is, and the voice
@@ -1820,7 +1822,7 @@ fun ChatScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
-                showsDraw = canAskForPicture,
+                showsDraw = offersDrawButton,
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
                 mentionPictureNotice = mentionPictureNotice,
@@ -6085,6 +6087,16 @@ internal fun InputBar(
     /** "Record voice message" is offered at all — never in the assistant's chat (S1.5). */
     showsRecordVoice: Boolean = true,
     /**
+     * This is the member's own `ai` chat: the attach menu takes images only
+     * there, and has no recording group (#78).
+     */
+    assistantChat: Boolean = false,
+    /**
+     * The device has a camera to hand off to (FEATURE_CAMERA_ANY): without
+     * one the attach menu has no "Camera" (#78).
+     */
+    hasCamera: Boolean = false,
+    /**
      * Everything the video entries are decided from (#79, S1.2, S1.4) but the
      * draft, which is read here per keystroke; null offers none — a thread,
      * a test, a build that does not record video.
@@ -6183,7 +6195,8 @@ internal fun InputBar(
     showsAssistantPicture: Boolean,
     onShowAssistantPicture: () -> Unit,
     /**
-     * Offer `/draw`. Only where this server can MAKE a picture: on one
+     * Offer the "Ask for a picture" button (`/draw`). The assistant chat
+     * only (#78), and only where this server can MAKE a picture: on one
      * that cannot, `/draw` is just text answered in words, so the
      * affordance would promise something that will not happen.
      */
@@ -6347,11 +6360,20 @@ internal fun InputBar(
                 val recordingRow = handsFree != null
                 if (!recordingRow) {
                     var attachMenuOpen by remember { mutableStateOf(false) }
+                    // "Camera" swaps the menu's content for its two choices
+                    // in place (#78); closing the menu, however it closes,
+                    // brings the next opening back to the top level.
+                    var cameraPage by remember { mutableStateOf(false) }
+                    val closeAttachMenu = {
+                        attachMenuOpen = false
+                        cameraPage = false
+                    }
                     Box {
                         IconButton(
                             onClick = {
                                 // The person's own action: it lifts the guard (S1.1).
                                 onOtherAction()
+                                cameraPage = false
                                 attachMenuOpen = true
                             },
                             // isBusy, not "is Idle": a FAILED notice is a
@@ -6372,167 +6394,184 @@ internal fun InputBar(
                         }
                         DropdownMenu(
                             expanded = attachMenuOpen,
-                            onDismissRequest = { attachMenuOpen = false },
+                            onDismissRequest = closeAttachMenu,
                         ) {
-                            if (showsAssistantPicture) {
-                                // Above "Photo or video", and worded as what it
-                                // DOES rather than what it attaches: this is the
-                                // one item in this menu that sends pixels off
-                                // this server, and the protocol asks a client to
-                                // say so where the choice is made rather than
-                                // only on a settings screen somebody read once.
+                            // One menu on every client, in the same order and
+                            // the same three groups (#78,
+                            // docs/attachment-menu-2026-10-07.md); AttachMenu
+                            // decides which items exist, this decides how each
+                            // looks and whether it is enabled right now.
+                            val takePhotoItem: @Composable () -> Unit = {
                                 DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(stringResource(R.string.s_show_the_assistant_a_picture))
-                                            Text(
-                                                text = stringResource(
-                                                    R.string.s_show_the_assistant_a_picture_note,
-                                                ),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = { Text(stringResource(R.string.s_take_photo)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        closeAttachMenu()
+                                        onTakePhoto()
+                                    },
+                                )
+                            }
+                            if (cameraPage) {
+                                // The way back, headed with where it is: the
+                                // arrow says "Back", the words say "Camera".
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_camera)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = stringResource(R.string.s_back),
+                                        )
+                                    },
+                                    onClick = { cameraPage = false },
+                                )
+                                HorizontalDivider()
+                                takePhotoItem()
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.s_take_video)) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Videocam, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        closeAttachMenu()
+                                        onTakeVideo()
+                                    },
+                                )
+                            } else {
+                                val groups = AttachMenu.groups(
+                                    assistantChat = assistantChat,
+                                    assistantPictures = showsAssistantPicture,
+                                    hasCamera = hasCamera,
+                                    recordVoice = showsRecordVoice,
+                                    recordVideo = videoRoundAvailable,
+                                    poll = showsPoll,
+                                )
+                                groups.forEachIndexed { index, group ->
+                                    if (index > 0) HorizontalDivider()
+                                    group.forEach { item ->
+                                        when (item) {
+                                            AttachMenu.Item.PHOTO_OR_VIDEO -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_photo_or_video)) },
+                                                leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPickMedia()
+                                                },
+                                            )
+                                            // In place of "Photo or video", and worded
+                                            // as what it DOES rather than what it
+                                            // attaches: this is the one item in this
+                                            // menu that sends pixels off this server,
+                                            // and the protocol asks a client to say so
+                                            // where the choice is made rather than only
+                                            // on a settings screen somebody read once.
+                                            AttachMenu.Item.SHOW_ASSISTANT_PICTURE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_show_the_assistant_a_picture)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onShowAssistantPicture()
+                                                },
+                                            )
+                                            AttachMenu.Item.CAMERA -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_camera)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                                                },
+                                                trailingIcon = {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                        contentDescription = null,
+                                                    )
+                                                },
+                                                onClick = { cameraPage = true },
+                                            )
+                                            // The assistant chat's camera: images only
+                                            // there, so a photo straight away rather
+                                            // than a page of one choice.
+                                            AttachMenu.Item.TAKE_PHOTO -> takePhotoItem()
+                                            AttachMenu.Item.TAKE_VIDEO -> Unit
+                                            AttachMenu.Item.FILE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_file)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPickFile()
+                                                },
+                                            )
+                                            // Inside the menu on purpose: it inherits the
+                                            // button's guard (no attaching mid-edit or mid-
+                                            // upload) for free, and it is the door that works
+                                            // when the text field has no focus at all.
+                                            AttachMenu.Item.PASTE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_paste)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.ContentPaste, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onPasteFromClipboard()
+                                                },
+                                            )
+                                            // "Record voice message" (S1.5): with words typed or
+                                            // items staged it records BESIDE them — the slot is
+                                            // then Stop, and the note is staged with them.
+                                            AttachMenu.Item.RECORD_VOICE -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_record_voice_message)) },
+                                                leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                                                enabled = recordAudioEnabled,
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onRecordAudio()
+                                                },
+                                            )
+                                            // "Record video message", right below (S1.5): it
+                                            // works with words typed or items staged — a
+                                            // video message always travels alone, and they
+                                            // stay in the composer. Disabled while busy,
+                                            // mid-edit and during a call.
+                                            AttachMenu.Item.RECORD_VIDEO -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_record_video_message)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Outlined.VideoCameraFront, contentDescription = null)
+                                                },
+                                                enabled = recordVideoEnabled,
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onRecordVideo()
+                                                },
+                                            )
+                                            AttachMenu.Item.LOCATION -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_share_your_location)) },
+                                                leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onShareLocation()
+                                                },
+                                            )
+                                            // A poll is one more thing a message can
+                                            // carry, and it inherits the paperclip's
+                                            // guard (nothing attaches mid-edit or
+                                            // mid-upload) for free.
+                                            AttachMenu.Item.POLL -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_poll)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.Poll, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    onStartPoll()
+                                                },
                                             )
                                         }
-                                    },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.AutoAwesome, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        attachMenuOpen = false
-                                        onShowAssistantPicture()
-                                    },
-                                )
+                                    }
+                                }
                             }
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_photo_or_video)) },
-                                leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onPickMedia()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_file)) },
-                                leadingIcon = {
-                                    Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onPickFile()
-                                },
-                            )
-                            // Inside the menu on purpose: it inherits the
-                            // button's guard (no attaching mid-edit or mid-
-                            // upload) for free, and it is the door that works
-                            // when the text field has no focus at all.
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_paste)) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.ContentPaste, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onPasteFromClipboard()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_take_photo)) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.PhotoCamera, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onTakePhoto()
-                                },
-                            )
-                            if (showsRecordVoice) {
-                                // "Record voice message" (S1.5): with words typed or
-                                // items staged it records BESIDE them — the slot is
-                                // then Stop, and the note is staged with them.
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.s_record_voice_message)) },
-                                    leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
-                                    enabled = recordAudioEnabled,
-                                    onClick = {
-                                        attachMenuOpen = false
-                                        onRecordAudio()
-                                    },
-                                )
-                            }
-                            if (videoRoundAvailable) {
-                                // "Record video message", right below (S1.5): it
-                                // works with words typed or items staged — a
-                                // video message always travels alone, and they
-                                // stay in the composer. Disabled while busy,
-                                // mid-edit and during a call.
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.s_record_video_message)) },
-                                    leadingIcon = {
-                                        Icon(Icons.Outlined.VideoCameraFront, contentDescription = null)
-                                    },
-                                    enabled = recordVideoEnabled,
-                                    onClick = {
-                                        attachMenuOpen = false
-                                        onRecordVideo()
-                                    },
-                                )
-                            }
-                            if (showsPoll) {
-                                // Inside the attach menu rather than beside
-                                // the field: a poll is one more thing a
-                                // message can carry, and it inherits that
-                                // button's guard (nothing attaches mid-edit
-                                // or mid-upload) for free.
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.s_poll)) },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Poll, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        attachMenuOpen = false
-                                        onStartPoll()
-                                    },
-                                )
-                            }
-                            if (showsDraw) {
-                                // Inside the attach menu for the same reason the
-                                // poll is: asking for a picture is one more thing
-                                // a message can be, and it inherits that button's
-                                // guard (nothing is composed mid-edit) for free.
-                                // It does not attach anything — it rewrites the
-                                // draft into a request, because the token has to
-                                // be FIRST and, in the family chat, has to sit
-                                // after one leading `@ai`.
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.s_ask_for_a_picture)) },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Brush, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        attachMenuOpen = false
-                                        onAskForPicture()
-                                        focusRequester.requestFocus()
-                                    },
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_share_your_location)) },
-                                leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onShareLocation()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.s_take_video)) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Videocam, contentDescription = null)
-                                },
-                                onClick = {
-                                    attachMenuOpen = false
-                                    onTakeVideo()
-                                },
-                            )
                         }
                     }
                     if (showsStickers) {
@@ -6583,6 +6622,28 @@ internal fun InputBar(
                             Icon(
                                 imageVector = Icons.Filled.AutoAwesome,
                                 contentDescription = stringResource(R.string.s_ask_the_assistant),
+                            )
+                        }
+                    }
+                    if (showsDraw) {
+                        // Its own button, out of the attach menu (#78, the
+                        // owner's choice), and the assistant chat's only. It
+                        // attaches nothing — it rewrites the draft into a
+                        // request, because the token has to be FIRST.
+                        IconButton(
+                            onClick = {
+                                onOtherAction()
+                                onAskForPicture()
+                                focusRequester.requestFocus()
+                            },
+                            // An edit borrows the composer to rewrite one
+                            // message, which calls no model.
+                            enabled = !isEditing,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Brush,
+                                contentDescription = stringResource(R.string.s_ask_for_a_picture),
                             )
                         }
                     }

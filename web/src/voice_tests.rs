@@ -816,7 +816,8 @@ async fn the_assistants_chat_has_no_microphone() {
         .query_selector_all(".attach-menu [role=menuitem]")
         .unwrap();
     let labels: Vec<String> = (0..items.length())
-        .filter_map(|index| items.item(index)?.text_content())
+        .filter_map(|index| items.item(index)?.dyn_into::<Element>().ok())
+        .map(|item| crate::layout_tests::visible_text(&item))
         .collect();
     assert!(!labels.is_empty());
     assert!(
