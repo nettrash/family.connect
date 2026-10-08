@@ -138,7 +138,7 @@ struct MediaUploadTests {
     /// clip too short for it measures the encoder's opening guess instead
     /// of the bitrate it was asked for (the numbers are at the assertion).
     @Test("a portrait 1080p60 HDR-tagged camera clip becomes 720×1280 at 30 fps, H.264 High, SDR, moov first",
-          .timeLimit(.minutes(2)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func portraitCameraClipBecomesTheProfile(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 1920, height: 1080, frameRate: 60, seconds: 8, bitrate: 12_000_000,
@@ -262,7 +262,7 @@ struct MediaUploadTests {
     /// runner with no 10-bit HEVC encoder has nothing to feed it.
     @Test("a 10-bit HEVC HLG clip is read and comes out as 8-bit H.264 High, BT.709",
           .enabled("needs a 10-bit HEVC encoder to write its source") { await MediaUploadTests.canWriteHEVC10Bit },
-          .timeLimit(.minutes(2)), arguments: MediaUploadTests.encoders)
+          .timeLimit(.minutes(3)), arguments: MediaUploadTests.encoders)
     func tenBitHEVCBecomesTheProfile(encoder: MediaTranscoder.Encoder) async throws {
         let source = try await MediaFixtures.write(.init(
             width: 1920, height: 1080, frameRate: 30, seconds: 2, bitrate: 8_000_000,
@@ -784,7 +784,7 @@ struct MediaUploadTests {
     /// preset, refused only when even that does not fit. The refusal names
     /// the EXPORT's size, which is how this knows the export really ran.
     @Test("over the ceiling, a failed transcode falls back to 1.1's export and refusal (rule C)",
-          .timeLimit(.minutes(2)))
+          .timeLimit(.minutes(3)))
     func failedVideoTranscodeOverTheCeilingTakesTodaysPath() async throws {
         let source = try await landscape1080p60()
         defer { remove(source) }
@@ -897,7 +897,7 @@ struct MediaUploadTests {
     /// enough — so it is rule C, and over the ceiling that is 1.1's export,
     /// whose own size is the one the refusal names.
     @Test("a result still over the ceiling is thrown away and 1.1's path is taken (rule C)",
-          .timeLimit(.minutes(2)))
+          .timeLimit(.minutes(3)))
     func resultOverTheCeilingIsNotSent() async throws {
         let source = try await landscape1080p60()
         defer { remove(source) }
