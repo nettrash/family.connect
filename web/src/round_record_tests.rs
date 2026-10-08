@@ -774,7 +774,7 @@ mod recorder_tests {
     use crate::actions::Action;
     use crate::layout_tests::{
         click_labelled, fixed_root, install_stylesheet, message, props_with, query, recorder,
-        IntoHtml,
+        visible_text, IntoHtml,
     };
     use crate::recorder::testing::ClockAhead;
     use crate::round_video::{self, testing::Probed, Probe, RoundLimits};
@@ -1597,7 +1597,7 @@ mod recorder_tests {
                 .click();
             TimeoutFuture::new(20).await;
             let item = query(&root, ".attach-menu .is-dimmed[role=menuitem]");
-            assert_eq!(item.text_content().as_deref(), Some("Record Video Message"));
+            assert_eq!(visible_text(&item), "Record Video Message");
             item.dyn_into_html().click();
             TimeoutFuture::new(50).await;
             assert!(dialog().is_none());
@@ -1719,7 +1719,7 @@ mod recorder_tests {
             let item = (0..found.length())
                 .filter_map(|index| found.item(index))
                 .map(|node| node.unchecked_into::<HtmlElement>())
-                .find(|item| item.text_content().as_deref() == Some("Record Video Message"))
+                .find(|item| visible_text(item) == "Record Video Message")
                 .expect("dimmed during a call");
             item.click();
             TimeoutFuture::new(50).await;
@@ -1744,7 +1744,7 @@ mod recorder_tests {
         let item = (0..found.length())
             .filter_map(|index| found.item(index))
             .map(|node| node.unchecked_into::<HtmlElement>())
-            .find(|item| item.text_content().as_deref() == Some("Record Video Message"));
+            .find(|item| visible_text(item) == "Record Video Message");
         let Some(item) = item else {
             query(root, "[aria-label='Attach']").dyn_into_html().click();
             TimeoutFuture::new(20).await;
@@ -2972,7 +2972,8 @@ mod recorder_tests {
                 .unwrap();
             (0..found.length())
                 .filter_map(|index| found.item(index))
-                .map(|item| item.text_content().unwrap_or_default())
+                .filter_map(|item| item.dyn_into::<Element>().ok())
+                .map(|item| visible_text(&item))
                 .collect()
         };
         let voice = items

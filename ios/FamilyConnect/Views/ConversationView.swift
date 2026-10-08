@@ -1716,128 +1716,140 @@ struct ConversationView: View {
         .modifier(voiceSurfaces)
     }
 
+    /// What the paperclip offers: `AttachMenu`'s groups, in its order, with
+    /// a divider between groups (#78, docs/attachment-menu-2026-10-07.md).
+    /// Which items appear is the shared rule's; whether one is ENABLED stays
+    /// here, with the facts it reads.
+    @ViewBuilder
+    private var attachMenuContent: some View {
+        let groups = AttachMenu.groups(
+            isAssistantChat: isAssistantChat,
+            showsPictureAttach: showsPictureAttach,
+            // Hidden rather than disabled where there is no camera
+            // (Simulator, camera-less device): presenting the picker
+            // there shows an empty black sheet.
+            hasCamera: CameraPicker.isAvailable,
+            offersVoice: offersVoiceMessages,
+            roundAvailable: roundAvailable,
+            isFamilyChat: isFamilyChat)
+        ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+            if index > 0 { Divider() }
+            ForEach(group, id: \.self) { item in
+                attachMenuButton(item)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func attachMenuButton(_ item: AttachMenu.Item) -> some View {
+        switch item {
+        case .photoOrVideo:
+            Button {
+                voice.otherAction()
+                showPhotoPicker = true
+            } label: {
+                Label("Photo or Video", systemImage: "photo.on.rectangle")
+            }
+        case .assistantPhoto:
+            // In the assistant's chat this door NAMES what it does. The
+            // switch lives on a settings screen somebody read once; this is
+            // where the photograph is actually chosen, and it is the last
+            // place the consequence can be said before it happens. A video
+            // never reaches the model either — the server sends photographs
+            // and nothing else — so the wording is honest about that too.
+            // Same sentence the Mac's panel uses. The picker below is
+            // filtered to images in this chat.
+            Button {
+                voice.otherAction()
+                showPhotoPicker = true
+            } label: {
+                Label("Show the Assistant a Photo…", systemImage: "photo")
+            }
+        case .camera:
+            Button {
+                voice.otherAction()
+                showCamera = true
+            } label: {
+                Label("Camera", systemImage: "camera")
+            }
+        case .file:
+            Button {
+                voice.otherAction()
+                showFilePicker = true
+            } label: {
+                Label("File", systemImage: "doc")
+            }
+        case .paste:
+            // Inside the menu on purpose: the guard on the menu disables
+            // attaching while an edit or an upload is in flight, and an
+            // item here inherits it for free. It is also the door that
+            // works when the field is NOT focused, which is where a
+            // keyboard ⌘V cannot reach.
+            //
+            // Through `pasteFromClipboard` like every other door, and that
+            // is the fix: this item used to call `pasteAttachment`
+            // directly, so it answered "There's nothing to paste." to a
+            // clipboard full of words and attached the picture out of a
+            // clipboard the rule says is text.
+            Button {
+                pasteFromClipboard()
+            } label: {
+                Label("Paste", systemImage: "doc.on.clipboard")
+            }
+        case .voiceMessage:
+            // Family and direct chats only — the assistant's chat has no
+            // microphone and no recording at all (#79, S1.5, Decision 24).
+            // With words typed or items staged it records beside them, and
+            // the slot is Stop (row 3).
+            Button {
+                recordVoiceMessage()
+            } label: {
+                Label("Record Voice Message", systemImage: "mic")
+            }
+            // Not during a call, and not while this chat holds a voice
+            // message that was not sent (S1.5, S2.8).
+            .disabled(slotInputs.blocked != nil)
+        case .videoMessage:
+            // Right below voice, where round video is available (S1.5).
+            // Works with words typed or items staged: a video message
+            // travels alone, and they stay here.
+            Button {
+                openVideoRecorder()
+            } label: {
+                Label("Record Video Message", systemImage: "video.circle")
+            }
+            // Busy, editing (the menu's own guard) and a call; NOT a
+            // waiting voice message — that rule is about voice.
+            .disabled(slotInputs.call)
+        case .location:
+            Button {
+                shareLocation()
+            } label: {
+                Label("Location", systemImage: "mappin.and.ellipse")
+            }
+        case .poll:
+            // The family chat only, and the server agrees: a poll anywhere
+            // else is `invalid_poll` (docs/protocol.md, "Polls"). A poll is
+            // a family deciding something together; between two people it
+            // is a question, and the answer is the next message.
+            Button {
+                voice.otherAction()
+                showPollComposer = true
+            } label: {
+                Label("Poll", systemImage: "chart.bar")
+            }
+        }
+    }
+
     /// The paperclip, the sticker, `@ai` and `/draw` buttons and the field —
     /// one view, so that a voice row can cover it whole while the field
     /// underneath keeps its place and its focus (S2.3).
     private var composerControls: some View {
         HStack(alignment: .bottom, spacing: 8) {
             // A Menu rather than two buttons: the composer is narrow,
-            // and "attach" is one intent with two sources.
+            // and "attach" is one intent with several sources.
             Menu {
-                // In the assistant's own chat the picture doors are the
-                // vision gate, and they are ABSENT rather than disabled
-                // when it is shut: a server with no vision deployment,
-                // or a family whose owner has not turned `ai_vision`
-                // on, must show no surface at all rather than one that
-                // lies about what would happen (protocol.md,
-                // "Pictures"). Everywhere else they are unconditional,
-                // exactly as they have always been.
-                if !isAssistantChat || showsPictureAttach {
-                    Button {
-                        voice.otherAction()
-                        showPhotoPicker = true
-                    } label: {
-                        // In the assistant's chat this door NAMES what
-                        // it does. The switch lives on a settings
-                        // screen somebody read once; this is where the
-                        // photograph is actually chosen, and it is the
-                        // last place the consequence can be said before
-                        // it happens. A video never reaches the model
-                        // either — the server sends photographs and
-                        // nothing else — so the wording is honest about
-                        // that too. Same sentence the Mac's panel uses.
-                        //
-                        // Two literals rather than one ternary so
-                        // `check-strings.py` can see both keys: it
-                        // reads source text, and a key inside a
-                        // conditional expression is invisible to it.
-                        if isAssistantChat {
-                            Label("Show the Assistant a Photo…", systemImage: "photo")
-                        } else {
-                            Label("Photo or Video", systemImage: "photo.on.rectangle")
-                        }
-                    }
-                }
-                Button {
-                    voice.otherAction()
-                    showFilePicker = true
-                } label: {
-                    Label("File", systemImage: "doc")
-                }
-                // Inside the menu on purpose: the guard below disables
-                // attaching while an edit or an upload is in flight, and
-                // an item here inherits it for free. It is also the door
-                // that works when the field is NOT focused, which is
-                // where a keyboard ⌘V cannot reach.
-                //
-                // Through `pasteFromClipboard` like every other door,
-                // and that is the fix: this item used to call
-                // `pasteAttachment` directly, so it answered "There's
-                // nothing to paste." to a clipboard full of words and
-                // attached the picture out of a clipboard the rule says
-                // is text.
-                Button {
-                    pasteFromClipboard()
-                } label: {
-                    Label("Paste", systemImage: "doc.on.clipboard")
-                }
-                // Hidden rather than disabled where there is no camera
-                // (Simulator, camera-less device): presenting the picker
-                // there shows an empty black sheet.
-                if CameraPicker.isAvailable, !isAssistantChat || showsPictureAttach {
-                    Button {
-                        voice.otherAction()
-                        showCamera = true
-                    } label: {
-                        Label("Camera", systemImage: "camera")
-                    }
-                }
-                // Family and direct chats only — the assistant's chat has no
-                // microphone and no recording at all (#79, S1.5, Decision 24).
-                // With words typed or items staged it records beside them,
-                // and the slot is Stop (row 3).
-                if offersVoiceMessages {
-                    Button {
-                        recordVoiceMessage()
-                    } label: {
-                        Label("Record Voice Message", systemImage: "mic")
-                    }
-                    // Not during a call, and not while this chat holds a
-                    // voice message that was not sent (S1.5, S2.8).
-                    .disabled(slotInputs.blocked != nil)
-                    // Right below it, where round video is available
-                    // (S1.5). Works with words typed or items staged: a
-                    // video message travels alone, and they stay here.
-                    if roundAvailable {
-                        Button {
-                            openVideoRecorder()
-                        } label: {
-                            Label("Record Video Message", systemImage: "video.circle")
-                        }
-                        // Busy, editing (the menu's own guard) and a call;
-                        // NOT a waiting voice message — that rule is about
-                        // voice.
-                        .disabled(slotInputs.call)
-                    }
-                }
-                Button {
-                    shareLocation()
-                } label: {
-                    Label("Location", systemImage: "mappin.and.ellipse")
-                }
-                // The family chat only, and the server agrees: a poll
-                // anywhere else is `invalid_poll` (docs/protocol.md,
-                // "Polls"). A poll is a family deciding something
-                // together; between two people it is a question, and
-                // the answer is the next message.
-                if isFamilyChat {
-                    Button {
-                        voice.otherAction()
-                        showPollComposer = true
-                    } label: {
-                        Label("Poll", systemImage: "chart.bar")
-                    }
-                }
+                attachMenuContent
             } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: attachGlyph))
@@ -1852,6 +1864,10 @@ struct ConversationView: View {
             // this; iOS did not.
             .disabled(composerIsBusy)
             .accessibilityLabel("Attach a photo, video or file")
+            // Top to bottom, as on every other client (#78): `.automatic`
+            // turned the list round on the iPhone, so the first item sat
+            // at the bottom, next to the paperclip.
+            .menuOrder(.fixed)
             .photosPicker(
                 isPresented: $showPhotoPicker,
                 selection: $pickedMedia,
@@ -3232,46 +3248,27 @@ struct ConversationView: View {
             let limit = MediaPrep.sizeLimit
             for (index, item) in items.enumerated() {
                 guard !Task.isCancelled else { break }
-                // Decide from what the item SAYS it is, rather than trying a
-                // movie transfer and reading the failure as "must be a photo" —
-                // a transfer can fail for reasons that have nothing to do with
-                // the kind (iCloud, cancellation), and that path would then
-                // hand a video's bytes to the photo decoder.
-                let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+                // What the item is, which transfer to ask for and who
+                // deletes the movie copy are `PickedMediaPrep`'s — the Mac's
+                // "Photo or Video" runs the same code (#78).
                 let prepared: MediaPrep.Prepared
-                // The picker's movie is a COPY this made (`PickedMovie`),
-                // so when nothing is staged from it — a failure, a refusal,
-                // a cancel — it is this function's to delete.
-                var movieCopy: URL?
                 do {
-                    if isVideo {
-                        guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
-                            preparationFailed(String(localized: "Couldn't read that video."))
-                            continue
-                        }
-                        movieCopy = movie.url
-                        prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
-                        // prepareVideo returns the source itself when the clip
-                        // goes as it is (rules A, C and D); only delete the
-                        // copy when it made a new file.
-                        if prepared.fileURL != movie.url {
-                            try? FileManager.default.removeItem(at: movie.url)
-                        }
-                    } else if let data = try await item.loadTransferable(type: Data.self) {
-                        prepared = try await MediaPrep.preparePhoto(from: data, limit: limit)
-                    } else {
-                        preparationFailed(String(localized: "Couldn't read that item."))
-                        continue
-                    }
+                    // The assistant is shown a photo: there, a GIF is its still.
+                    prepared = try await PickedMediaPrep.prepare(
+                        item, limit: limit, keepsAnimated: !isAssistantChat)
+                } catch PickedMediaPrep.Failure.unreadableVideo {
+                    preparationFailed(String(localized: "Couldn't read that video."))
+                    continue
+                } catch PickedMediaPrep.Failure.unreadableItem {
+                    preparationFailed(String(localized: "Couldn't read that item."))
+                    continue
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
                     // The one case the user has to act on: compression was not
                     // enough, so say what would help rather than just refusing.
                     preparationFailed(String(localized: "Still too large after compressing — try a shorter clip."))
-                    if let movieCopy { try? FileManager.default.removeItem(at: movieCopy) }
                     continue
                 } catch {
                     preparationFailed(String(localized: "Couldn't prepare that item."))
-                    if let movieCopy { try? FileManager.default.removeItem(at: movieCopy) }
                     continue
                 }
 

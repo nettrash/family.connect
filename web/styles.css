@@ -1110,7 +1110,17 @@ button.pack-cell:disabled { cursor: default; }
 .media-notice .link { margin-left: auto; }
 
 .attach { position: relative; flex: none; }
-.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; }
+.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px;
+    max-width: min(320px, calc(100vw - 32px)); }
+/* The paperclip's menu (#78): every line an icon in a fixed-width column,
+ * so the labels align, and its three groups parted by a hairline. A label
+ * WRAPS beside its icon rather than pushing the menu past a narrow pane —
+ * enlarged text and "Show the Assistant a Photo…" would otherwise be cut off
+ * by the conversation's overflow: hidden (PR #87 review). */
+.attach-menu > button.menu-icon-row { display: flex; align-items: flex-start; gap: 8px; }
+.attach-menu .menu-label { min-width: 0; overflow-wrap: anywhere; }
+.attach-menu .menu-icon { flex: none; width: 1.5em; text-align: center; line-height: inherit; }
+.attach-menu > hr.menu-separator { width: auto; height: 0; margin: 3px 4px; border: 0; border-top: 1px solid var(--line); }
 .menu-backdrop { position: fixed; inset: 0; z-index: 4; }
 .hidden-picker { display: none; }
 

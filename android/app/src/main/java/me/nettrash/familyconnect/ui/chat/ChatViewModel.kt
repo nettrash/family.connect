@@ -615,7 +615,8 @@ class ChatViewModel @Inject constructor(
      * message carries (docs/protocol.md, "Pictures").
      *
      * Both surfaces take it: the member's own `ai` chat, and the family
-     * chat, where the whole family sees the answer arrive. Never a direct
+     * chat, where the whole family sees the answer arrive (typed there —
+     * the button is the assistant chat's alone, [offersDrawButton]). Never a direct
      * chat, which the assistant is not in. And never on a server with no
      * images deployment: `/draw` is just text there, answered in words,
      * so the affordance would be one that silently does nothing.
@@ -628,6 +629,22 @@ class ChatViewModel @Inject constructor(
                     "family" -> settingsState.assistantUserId != null
                     else -> false
                 }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether the composer shows the "Ask for a picture" BUTTON — the
+     * member's own `ai` chat only (#78, docs/attachment-menu-2026-10-07.md:
+     * the owner moved it out of the attach menu into its own paintbrush,
+     * in the assistant chat, as on iOS and the Mac).
+     *
+     * Narrower than [canAskForPicture] on purpose: a family member can
+     * still TYPE `@ai /draw …` and the server still draws it, so the
+     * description hint keeps following [canAskForPicture]; only the
+     * button is the assistant chat's.
+     */
+    val offersDrawButton: StateFlow<Boolean> =
+        combine(chat, canAskForPicture) { chatEntity, canAsk ->
+            canAsk && chatEntity?.kind == "ai"
         }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /**
