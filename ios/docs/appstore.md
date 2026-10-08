@@ -51,16 +51,23 @@ at 75 characters, and the 25 freed are better spent on terms the listing carries
 
 A private messenger for one family. Messages, photos, voice notes and calls. Start on our server, move to your own whenever you like. No ads, no analytics, no tracking.
 
-## What's New in 1.2 (949/4000 chars)
+## What's New in 1.2 (1883/4000 chars)
+
+VOICE AND VIDEO MESSAGES. With nothing typed, the Send button is a microphone: tap it to record a voice message hands-free, stop to listen back, then send or delete it. Voice messages show their waveform, play at 1×, 1.5× or 2×, and mark the ones you have not heard yet. Video messages are short round videos recorded in the app — tap the video button in an empty message box — and play right in the chat. Nothing recorded is lost to a call or an interruption: it waits for you as "not sent".
 
 FAMILY STICKERS. Your family now has a sticker pack of its own. Anyone in the family can add a picture to it from Photos or Files, and the sticker button in every chat sends one with a single tap. Stickers are drawn without a bubble, and animated ones move. Find the pack in Settings, under Manage Family (Family Members if you are not the owner); whoever added a sticker, or the family owner, can remove it.
+
+A TIDIER PAPERCLIP. The attachment menu now lists the same things in the same order as on every other Family Connect app, top to bottom in three groups: Photo or Video, Camera, File and Paste; recording a voice or video message; Location and Poll. An animated GIF from your library now arrives animated.
+
+NOTIFICATIONS IN YOUR LANGUAGE. Notifications that arrive while the app is closed are now written in the language you use the app in.
 
 SMALLER VIDEOS. A video you send is brought down to 720p at 30 frames a second before it goes up, so it uploads sooner and is quicker for everyone to download. HDR video is converted to standard range. A video is never made larger than it was, and if one cannot be prepared, the original goes instead. Preparing can now be cancelled from the message box.
 
 SOUND FILES THAT PLAY. AIFF and FLAC files now arrive as audio that plays in the chat rather than as a file, and WAV files and high-bitrate MP3s are made smaller before they are sent.
 
-*Per-platform in App Store Connect, so the Mac has its own further down. Written on 2026-10-02
-against what the `ios/` tree gained since the v1.1 tag (`git log v1.1..HEAD`, issues #58 and #74)
+*Per-platform in App Store Connect, so the Mac has its own further down. Rewritten on 2026-10-08
+for everything the `ios/` tree gained since the v1.1 tag — issues #58, #74, #79, #82 and #78 (written first on
+2026-10-02 for #58 and #74 alone)
 — the sticker panel, pack screen and viewer (`StickerPanel`, `StickerPackView`, `StickerViewer`,
 reached from `FamilyManageView`), media preparation (`MediaPrep`, `MediaTranscoder`, the Cancel in
 `ConversationView`) — and the CHANGELOG v1.2.0 entry comes from the same reading. Stickers depend
@@ -140,30 +147,30 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out on purpose — the app name is meant to carry them. Confirm the App Store Connect name first: the icon and the app itself are called "Family", and if the store listing is named that too, "connect" is indexed nowhere and should take "group"'s place here; the five free characters are held for exactly that. "kids" is dropped deliberately — a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## Notes for App Review (paste verbatim — 3977 as written, 3993 with the placeholders filled / 4000)
+## Notes for App Review (paste verbatim — 3981 as written, 3997 with the placeholders filled / 4000)
 
-DEMO SERVER: https://fc.nettrash.me — compiled in, so there is nothing to configure.
+DEMO SERVER: https://fc.nettrash.me — compiled in, nothing to configure.
 
 DEMO ACCOUNTS.
 - Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family; history seeded: photos, video, voice note, open poll, location, board notes, a thread, a 1:1 chat.
 - Second: [DEMO_USER_2] / [DEMO_PASS_2], same family — sign in on a second device for typing indicators, read receipts and a call.
 - Invite code [INVITE_CODE]. Support [SUPPORT_EMAIL].
 
-NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message opens the chain. Mentions: type @ in the composer. Open polls: the chart icon in the family chat's toolbar. The board holds an event (date, place, who is going, add to calendar) and a task list anyone may tick.
+NEW IN 1.2. Voice message: the microphone in an empty message box. Video message: the video button there. Stickers: beside the paperclip. Show text: under a voice or video message.
 
-WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. No vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the store record is Family Connect. Two modes: (1) the default server above, online for the whole review — launch and sign in; (2) "Change server…" points the app at a self-hosted one. Review needs mode 1. These notes cover iOS.
+WHAT IT IS. A client for a small open-source (MIT, Rust) chat server. No vendor cloud: each installation talks to one server, and a family's messages live in its database and on the family's devices. On the device the app is named Family; the store record is Family Connect. Two modes: (1) the default server above, online throughout the review; (2) "Change server…" for a self-hosted one. Review needs mode 1.
 
 CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search — nothing is posted publicly. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or presenting an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining or remove anyone.
 
 REPORT AND BLOCK. Long-press a message → "Safety" → "Report…" or "Block"; a person can also be reported or blocked from their Manage Family row the same way. Four fixed reasons. The moderator is the family owner: reports arrive in Settings → Family → Manage Family → Reports, and push them. A report naming the owner is never listed to them; that sheet shows the server's support contact instead — [SUPPORT_EMAIL], monitored by us.
 
-DELETE ACCOUNT (5.1.1(v)). Settings → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly. It erases the username (freeing it), display name, password, avatar, birthday, sessions and push tokens. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account". Ownership passes to the longest-standing member. It works on the demo accounts.
+DELETE ACCOUNT (5.1.1(v)). Settings → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly. It erases the username (freeing it), display name, password, avatar, birthday, sessions and push tokens. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account". Ownership passes to the longest-standing member.
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable in the chosen server's database and filesystem; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay that forwards the encrypted stream without reading it.
 
-AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so the screen appears on its first message; [DEMO_USER_2] has. Policy: nettrash.me/appstore/familyconnect/privacy.html
+AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to third parties: [AI_PROCESSOR], and the lookup services its screen names (web search, Open-Meteo, Wikipedia). Before a member's first message reaches it, that screen names each recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; a recording's sound only when its text is asked for (another member's only with the owner's switch and their consent); to lookups only the short query the assistant writes, after a second agreement. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so the screen appears on its first message; [DEMO_USER_2] has. Policy: nettrash.me/appstore/familyconnect/privacy.html
 
-LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices: the Simulator has no APNs or camera.
+LOCAL NETWORK PROMPT. With both devices on one Wi-Fi, iOS asks for Local Network permission as a call connects — please allow it, or a same-network call cannot connect. Please test calls on two real devices.
 
 *Before 1.1 is filed, rebuild the DEMO ACCOUNTS block above from master's copy. The 2.1(a)
 rejection of 1.0 build 121 (2026-09-21) was caused by demo DATA, not by a build: the member
@@ -173,7 +180,13 @@ instead of the content these notes promised. master's block now says what each a
 which one meets the consent screen, and that the one-to-one chat is where calls are placed.
 `server/scripts/seed-review-family.py` is what puts a live family into that state.*
 
-*Before a build with assistant lookups (#72, 1.2) is filed, the AI ASSISTANT paragraph above stops
+*DONE 2026-10-08 for 1.2 — the review server HAS `[ai.lookups]` configured, so the AI ASSISTANT
+paragraph above (and the macOS one) now names the lookup services and what they receive, and the
+recording a Show text request sends to the processor (#62); NEW IN 1.1 became NEW IN 1.2, paid for
+by trimming wording elsewhere in both fields. Still open: re-check the App Privacy answers for the
+added recipient.*
+
+*The original note: before a build with assistant lookups (#72, 1.2) is filed, the AI ASSISTANT paragraph above stops
 being true as written wherever the review server has `[ai.lookups]` configured: "the only feature
 sending anything to a third party: [AI_PROCESSOR]" must then also name the lookup providers
 (`assistant.lookups` on `GET /families/mine` — Brave Search or SearXNG, Open-Meteo, Wikipedia),
@@ -804,11 +817,9 @@ either spelling, so those binaries have no push entitlement and macOS never issu
 token. **The cause is fixed as of 2026-08-31** (issue #7): the entitlement is renamed to the macOS
 spelling `com.apple.developer.aps-environment` and now survives signing, confirmed in the product.
 
-The copy below still says a quit Mac is not notified, and stays that way deliberately. A correct
-entitlement makes push *possible*, not *proven* — the server must also hold APNs credentials that
-work for this bundle id against the macOS platform row, and nobody has yet watched a push arrive at
-a quit Mac. The alternative paragraph is written out as Variant B in the checklist; switch to it
-after seeing one, not before.
+On 2026-10-08 a push WAS watched arriving at a quit Mac, and the copy below now says so — Variant B
+of the checklist, rewritten for 1.2: a quit Mac is notified (who wrote, never what, since #84) but is
+never rung, and closing the window leaves the app running in the menu bar (#80).
 
 Separately, and by protocol design, a Mac is never woken for a CALL. No entitlement changes that,
 so every sentence about ringing stays true whichever variant ships.
@@ -828,15 +839,21 @@ keyword-overlap consequence: dropping "private", "chat" and "server" leaves
 
 A private messenger for one family, native on the Mac: a sidebar, chats in their own windows, photos, voice notes and calls. Start on our server, move to your own.
 
-### macOS What's New in 1.2 (884/4000 chars)
+### macOS What's New in 1.2 (1957/4000 chars)
+
+IN THE MENU BAR. Closing the window no longer closes the conversation: Family keeps running as an icon in the menu bar, so messages and calls still reach you, and the Dock icon appears only while a window is open. Click the icon to bring the window back, right-click it for Settings and Quit, or press Control-Option-Command-F from any app. Open at Login starts it in the menu bar. Settings, Menu Bar, switches each of these.
+
+NOTIFICATIONS. A notification says who wrote, never what, and a new board note now gets one too. Settings, Notifications, has "Tell me when a message arrives", and tells you when macOS is hiding Family's notifications, with a button to fix it. Notifications that arrive while the app is quit are written in the language you use the app in.
+
+VOICE AND VIDEO MESSAGES. With nothing typed, the Send button is a microphone: click it to record a voice message hands-free, stop to listen back, then send or delete it. Voice messages show their waveform, play at 1×, 1.5× or 2×, and mark the ones you have not heard yet. Video messages are short round videos recorded with your camera and played right in the chat.
 
 FAMILY STICKERS. Your family now has a sticker pack of its own. Anyone in the family can add a picture to it, and the sticker button in every chat sends one with a single click. Stickers are drawn without a bubble, and animated ones move. Manage the pack from Family in the toolbar; whoever added a sticker, or the family owner, can remove it.
 
-SMALLER VIDEOS. A video you send is brought down to 720p at 30 frames a second before it goes up, so it uploads sooner and is quicker for everyone to download. HDR video is converted to standard range. A video is never made larger than it was, and if one cannot be prepared, the original goes instead. Preparing can now be cancelled from the message box.
+A TIDIER PAPERCLIP. The attachment menu lists the same things in the same order as every other Family Connect app, and gains Photo or Video, straight from your Photos library.
 
-SOUND FILES THAT PLAY. AIFF and FLAC files now arrive as audio that plays in the chat rather than as a file, and WAV files and high-bitrate MP3s are made smaller before they are sent.
+SMALLER VIDEOS AND SOUND FILES. A video you send is brought down to 720p at 30 frames a second before it goes up, and HDR is converted to standard range; preparing can be cancelled. AIFF and FLAC files now arrive as audio that plays in the chat, and WAV files and high-bitrate MP3s are made smaller.
 
-*The Mac's own, from the same reading of `v1.1..HEAD` as the iOS field. The pack is managed from a
+*The Mac's own, rewritten on 2026-10-08 with the iOS field (issues #58, #74, #79, #80, #82, #84, #78). The pack is managed from a
 sheet of its own, opened from the Family sheet the toolbar's Family button shows (`MacFamilyView`,
 "Family Stickers" → Manage…), and the Cancel is in `MacConversationView`. The assistant is left out
 for the iOS reason, which takes the Mac's one assistant fix with it: Draw a backdrop now reads
@@ -870,11 +887,11 @@ drew outside its window (#67). Both are fixed, and both are what a Mac customer 
 noticed. Nothing here may claim a quit Mac is notified or rung — see the variants in the Mac
 checklist below.*
 
-### macOS Description (3986/4000 chars)
+### macOS Description (3937/4000 chars)
 
 Family Connect is a private messenger for one family and nobody else — no feed, no discovery, no directory of users. The only people who can reach you are the ones your family's owner let in.
 
-On the Mac it is a Mac app, not a phone screen made wide: conversations in a sidebar beside the one you are reading, any opened in a window of its own, and a window each for the board and a call.
+On the Mac it is a Mac app, not a phone screen made wide: conversations in a sidebar beside the one you are reading, any opened in a window of its own, a window each for the board and a call, and an icon in the menu bar that keeps listening with every window closed.
 
 It works out of the box: install, pick a username — no email address, no phone number — then create your family and become its owner, or join one with an invite code. The owner decides whether that code admits people instantly, needs approval, or admits nobody, and can rotate it, cap the membership, or remove someone.
 
@@ -883,7 +900,7 @@ What makes Family Connect different is where your messages live. There is no ven
 Day to day it works like any modern messenger:
 
 - One shared chat for the whole family, and a private one-to-one chat with any member of it
-- Photos, videos, voice notes and files — up to ten on a message, from a file panel or another app; a message's photos become one album in its own window, and uploads carry on in the background
+- Photos, videos, files, stickers, and voice and round video messages — up to ten attachments on a message; a message's photos become one album in its own window
 - One-to-one voice and video calls, in their own window
 - Your location sent once, drawn on a map, only when you choose — never continuously, never in the background
 - Polls in the family chat, with every open one a click away; a board anyone can move of notes, photos, events with who is going, and task lists
@@ -896,7 +913,7 @@ Day to day it works like any modern messenger:
 
 What it does not have: ads, analytics, tracking, crash reporting, or the attribution SDKs a free messenger usually arrives with. The one piece of third-party code in it is Google's open-source WebRTC library, (BSD), which carries calls and nothing else.
 
-And the honest limits. A Mac notifies you, and rings, only while the app is running: being woken for a call is deliberately not a thing a Mac does, and a quit Mac is not notified either, so leave it open if you want to be reachable on it. There is no camera capture inside a chat. This is not end-to-end encryption, and we will not imply it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there readable, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards it encrypted and cannot read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings, and a public STUN server asked for your address on a call. There is no message search yet, and how long old messages are kept is the server operator's setting.
+And the honest limits. A Mac rings for a call only while the app is running — closing the window leaves it listening in the menu bar — and a quit Mac's notifications say who wrote, never what. This is not end-to-end encryption, and we will not imply it is: messages and attachments travel encrypted to the server your family chose — plain http only for a server on your own network — and are stored there readable, so whoever runs it can read them. Calls are different: picture and sound go straight between the two devices wherever the network allows; where it does not, the call connects only if your server's operator runs a relay, which forwards it encrypted and cannot read it. Some things necessarily reach past your server: the map under a shared location and link previews, both switchable in Settings, and a public STUN server asked for your address on a call. There is no message search yet, and how long old messages are kept is the server operator's setting.
 
 If you want your family's conversations off big-tech servers — and, when you are ready, on hardware you own — this is what Family Connect is for.
 
@@ -906,32 +923,32 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out for the same reason as on iOS — the app name carries them, and if the record is named "Family" rather than "Family Connect", "connect" belongs here in place of "desktop". The iOS list's "group" is dropped: on a Mac the search that matters is for a desktop messenger, and there are no group calls to index. "mac" is deliberately absent — every app in this store is a Mac app, so the word buys nothing. "kids" stays out on both platforms: a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## macOS — Notes for App Review (paste verbatim — 3959 as written, 3987 with the placeholders filled / 4000)
+## macOS — Notes for App Review (paste verbatim — 3962 as written, 3990 with the placeholders filled / 4000)
 
 DEMO SERVER: [DEMO_SERVER_URL] — compiled in; nothing to configure.
 
 DEMO ACCOUNTS.
-- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the reviewer family, seeded: photos, video, voice note, polls, location, board notes, a 1:1 chat.
+- Owner: [DEMO_USER] / [DEMO_PASS]. Owns the seeded reviewer family: photos, video, voice note, polls, location, board notes, a 1:1 chat.
 - Second: [DEMO_USER_2] / [DEMO_PASS_2], same family — on a second Mac for typing, read receipts and a call.
 - Invite code [INVITE_CODE]. Support [SUPPORT_EMAIL].
 
-NEW IN 1.1, WHERE TO FIND IT. Threads: "N replies" under an answered message. Mentions: @ in the composer. Open polls: the chart button in a chat's toolbar. Events and task lists: the Board.
+NEW IN 1.2. Voice and video messages: the microphone and video buttons in an empty message box. Stickers: beside the paperclip. Menu bar: close the main window.
 
-WHAT IT IS. The macOS build (named Family on the Mac): native, macOS 14+, not Catalyst, same app and bundle id as iOS. A client for a small open-source chat server; each installation talks to one server, no vendor cloud. We keep it online throughout the review; "Change server…" is for self-hosting families. Navigation: the window toolbar — Board, Family, Settings (a window, also on the App menu and Command-comma).
+WHAT IT IS. The macOS build (named Family on the Mac): native, macOS 14+, not Catalyst, same app and bundle id as iOS. A client for a small open-source chat server; each installation talks to one server, no vendor cloud. We keep it online throughout the review. Toolbar: Board, Family, Settings (also Command-comma).
 
 CONTACT IS CONTAINED (guideline 1.2). No public feed, no discovery, no directory, no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: one-to-one chats, reports, blocks and calls are refused server-side unless both share a family. The only ways in are creating a family or an 8-character invite code; a new family defaults to "Need approval", so the owner admits each member, may rotate the code, cap it, close joining or remove anyone.
 
 REPORT AND BLOCK. Right-click a message → "Safety", or "Safety" on a member's row in the Family sheet. Four fixed reasons. The moderator is the family owner: reports arrive in that sheet, under Reports, and push them. A report naming the owner is never listed to them: the sheet shows [SUPPORT_EMAIL], which we monitor.
 
-DELETE ACCOUNT (5.1.1(v)). Settings in the toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly, erasing the username (freeing it), display name, password, avatar, birthday and every token. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account".
+DELETE ACCOUNT (5.1.1(v)). Settings in the toolbar → last section, beside Log Out. It asks for the account password (a live session is not proof) and a confirmation, then runs at once, irreversibly, erasing the username, display name, password, avatar, birthday and every token. One-to-one chats go for both people; family-chat messages, notes and reactions stay as "Deleted account".
 
-NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is the operator. Call media (WebRTC, DTLS-SRTP) is peer to peer, or goes via a relay on our server that forwards the encrypted stream without reading it.
+NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is the operator. Call media (DTLS-SRTP) is peer to peer, or relayed by our server still encrypted.
 
 com.apple.security.network.server. Calls are peer to peer: the WebRTC connection binds UDP sockets and the far side's ICE checks and media arrive on them — inbound traffic the sandbox counts as serving, so network.client alone leaves calls unconnected. Nothing else uses it: no listening port, no embedded server, no Bonjour.
 
-AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to a third party: [AI_PROCESSOR]. Before a member's first message reaches it, a screen names that recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; the reply appears in that chat. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so it appears on its first message. Policy: nettrash.me/appstore/familyconnect/privacy.html
+AI ASSISTANT — CONSENT (5.1.1(i), 5.1.2(i)). The optional assistant is the only feature sending anything to third parties: [AI_PROCESSOR], and the lookup services its screen names (web search, Open-Meteo, Wikipedia). Before a member's first message reaches it, that screen names each recipient and all that travels — the message; in the family chat only an @ai message, with the last 30 days / 200 messages (others' words, names, times) while history is on; a photo only when attached and allowed; a recording's sound only when its text is asked for (another member's only with the owner's switch and their consent); to lookups only the short query the assistant writes, after a second agreement. Nothing is sent until "I Agree", the server refuses (403) until then, and Settings → Assistant withdraws it. [DEMO_USER] has NOT agreed, so it appears on its first message. Policy: nettrash.me/appstore/familyconnect/privacy.html
 
-PLEASE LEAVE THE APP OPEN. The Mac notifies and rings only while running: banners come from its own live connection, and a call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken — deliberate, not a defect, so test calls with both open. On one Wi-Fi network macOS asks for Local Network permission as the call connects: please allow it.
+CALLS NEED THE APP RUNNING. Closing the main window leaves Family running in the menu bar. A call arrives as an alert with Answer and Decline while it runs; a quit Mac gets message notifications (who wrote, never what) but is never rung — deliberate. On one Wi-Fi network, allow Local Network access when macOS asks during a call.
 
 ## macOS — Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
@@ -1161,23 +1178,23 @@ It needs macOS 14 or later; in the Applications folder it is FamilyConnect, in t
 
 Every family has one shared chat with everybody in it, at the top of the sidebar, plus one-to-one chats between any two members.
 
-Read this first, because it otherwise looks like a bug worth chasing: a Mac is notified only while the app is running. Quit it and nothing arrives — no banners, no ringing — so leave Family open behind your other windows for anything you expect to be notified about. A call never wakes a quit Mac either; that is deliberate. While the app is up, a call arrives as a Notification Center alert with Answer and Decline. Please don't spend time reproducing it.
+Read this first: a Mac is rung only while the app is running, and that is deliberate. Closing the window keeps Family running in the menu bar, so calls still reach it there; a quit Mac still gets message notifications — who wrote, never what — but never rings. While the app is up, a call arrives as a Notification Center alert with Answer and Decline.
 
 In this build:
 
-- Photos, videos, voice notes and files — up to ten attachments on one message, each up to 100 MB on our server. The Mac attaches through a file panel; ⌘-click to take several at once. The viewer opens in its own window, pages with the arrow keys, and shares onward through the Mac share menu.
+- Photos, videos and files — up to ten attachments on one message, each up to 100 MB on our server — from the Photos library or a file panel. The viewer opens in its own window, pages with the arrow keys, and shares onward through the Mac share menu.
 - One-to-one voice and video calls, in their own window. Audio and video go straight between the two machines wherever the network allows; the server passes the signalling. Where a direct path is blocked, the call connects only through a relay on our server, which carries the stream encrypted and cannot read it. A call needs two machines and two people.
 - Sharing where you are, once, as a map pin.
 - Polls in the family chat, a board of sticker notes anyone can drag, reactions, replies, and editing your own messages.
 - Sharing in from other apps: send photos or files to Family from any Mac share menu, pick the chat, and they wait there until you press Send.
 - Read receipts in one-to-one chats, unread counts, typing indicators, and history kept on the Mac, so it opens to your chats with no network.
 - Report and Block, under "Safety" in a message's menu and on a member's row in the Family sheet. The owner is the moderator and has a Reports inbox.
-- New in 1.1: a reply chain opens in its own sheet from "N replies"; @ in the composer mentions a member; the chart button in a chat's toolbar lists every open poll; and the board takes photos, events with answers and Add to Calendar, and task lists anyone can tick — all three were iPhone-only. Settings is its own window now: the toolbar, the App menu or Command-comma.
+- New in 1.2: voice messages from the microphone in an empty message box, round video messages from the video button, a family sticker pack, the menu bar icon (close the window; Control-Option-Command-F brings it back), and Settings, Notifications.
 - Nine languages: English, German, Spanish, French, Japanese, Russian, Serbian in both scripts, and Simplified Chinese.
 
 Much of that needs a second person in your family: delivery, typing, read receipts, notifications, calls and blocking.
 
-Deliberate on the Mac, so please don't file it: no camera capture inside a chat and no photo-library picker — the file panel is the whole story; no way to set a profile picture, though avatars set elsewhere do show; no Leave Family; and no message search on any platform. A call window offers Mute, camera on and off, and Hang Up: one camera and one system output, so no flip and no speaker button.
+Deliberate on the Mac, so please don't file it: no camera for photos inside a chat (video messages use it); no way to set a profile picture, though avatars set elsewhere do show; and no message search on any platform. A call window offers Mute, camera on and off, and Hang Up: one camera and one system output, so no flip and no speaker button.
 
 And this is not end-to-end encryption. Messages and files are stored on the server your family chose, which during the beta is ours.
 
@@ -1196,7 +1213,7 @@ No ads, no analytics, no tracking — so the only way we learn about a problem i
   Privacy answers need revisiting — an `@ai` mention in the family chat sends other members'
   recent transcript, because `families.ai_history` defaults to true. If it is OFF, say so in the
   review notes: the server is open source and a reviewer can read `ai.rs`.
-- [ ] **[nettrash]** The `com.apple.developer.aps-environment` fix HAS landed and is verified in a signed binary. What is left before the Mac honest-limits sentence changes to Variant B: send one real alert push to a QUIT Mac and watch it arrive. Until that is seen, the shipped wording stays as it is — the entitlement makes push possible, not proven.
+- [x] **[nettrash]** The `com.apple.developer.aps-environment` fix HAS landed and is verified in a signed binary, and on 2026-10-08 a real alert push was seen arriving at a QUIT Mac ("New message" — the Mac is pushed who, never what, since #84). The Mac copy now uses Variant B, rewritten for 1.2: the Description's honest limits, the Notes for App Review, the Beta App Description and What to Test all say a quit Mac is notified but never rung.
 - [x] **[code]** DONE 2026-09-17, by re-shooting rather than retouching: the whole Mac set was
   taken again for 1.1 and neither complaint survives. The grey material bars are gone — a sheet is
   now photographed over the window's own dimmed content, and Settings is a window of its own, so
@@ -1213,7 +1230,7 @@ No ads, no analytics, no tracking — so the only way we learn about a problem i
 
 ### macOS What to Test
 
-Attachments, windows and calls have the most moving parts. Groups are ALONE, TWO TESTERS (a second person in your family) or TWO MACHINES (two Macs, a chat between them). Leave the app running for anything with a notification in it: a quit Mac gets nothing, and that is known.
+Attachments, windows and calls have the most moving parts. Groups are ALONE, TWO TESTERS (a second person in your family) or TWO MACHINES (two Macs, a chat between them). Leave the app running for anything involving a call: a Mac is never rung when it is quit, and that is by design.
 
 WINDOWS — ALONE. Right-click a conversation, "Open in New Window", then type in both: they must stay in step, and closing one must not disturb the other. Open the Board and the attachment viewer; page it with the arrow keys.
 
@@ -1225,13 +1242,13 @@ LOSING THE NETWORK — ALONE. Wi-Fi off mid-send: a text bubble goes to Failed w
 
 SAFETY — TWO TESTERS. Report and Block: under "Safety" in a message's menu, and on a member's row in the Family sheet. Blocking hides their family-chat messages behind "Hidden — blocked member" (one click reveals), drops your direct chat, and stops calls both ways — but differently: yours to them is refused, theirs to you never reaches you at all. Anything that reaches you is the leak. Report a message, then edit it: Reports must still show the original. Report the owner — they must never see it.
 
-NOTIFICATIONS — TWO TESTERS, APP RUNNING THROUGHOUT. The prompt can come at launch, before you join a family; expected here. With the app behind other windows, have your partner message you: a banner should arrive, click through to that chat, and the menu bar count. Same for a call, with Answer and Decline on the alert. Owners: a join request and a report each raise one.
+NOTIFICATIONS — TWO TESTERS. The prompt can come at launch, before you join a family; expected here. With the app behind other windows, and again with it quit, have your partner message you: a banner should say who wrote, never what, click through to that chat, and the menu bar count rises. Same for a call, with Answer and Decline on the alert. Owners: a join request and a report each raise one.
 
 MENU BAR — TWO TESTERS. Close the main window: the app stays as a menu bar icon, no Dock icon. Click it for the window; right-click for Open, Settings, Quit. Control-Option-Command-F brings the window forward from any app, and again hides it. With the window closed your partner's message must still bring a banner and a call must still ring. Settings, Menu Bar: Keep Running off makes closing the window close it; Open at Login starts in the menu bar.
 
-SHOULD NOT HAPPEN. No banner for the chat whose window is frontmost; reading a chat clears its badge, its banners and the menu bar count. The family chat never shows a double checkmark — read receipts are one-to-one only. Bringing the app forward must not by itself clear an unread count. A birthday must never notify anybody. Nothing should ask for camera, microphone or location outside a call, a recording or a location share, and never for Contacts. A banner or a ring reaching a fully quit Mac is worth reporting — it would mean something changed since.
+SHOULD NOT HAPPEN. No banner for the chat whose window is frontmost; reading a chat clears its badge, its banners and the menu bar count. The family chat never shows a double checkmark — read receipts are one-to-one only. Bringing the app forward must not by itself clear an unread count. A birthday must never notify anybody. Nothing should ask for camera, microphone or location outside a call, a recording or a location share, and never for Contacts. A ring reaching a fully quit Mac is worth reporting.
 
-DELIBERATE, DON'T REPORT. A quit Mac gets nothing. No in-chat camera and no photo-library picker — the file panel is the only way in. No profile picture to set, no Leave Family, no message search, no group call, no Speaker button, no camera flip. Prompts stay English in every language.
+DELIBERATE, DON'T REPORT. A quit Mac never rings. No camera for photos in a chat (video messages use it). No profile picture to set, no message search, no group call, no Speaker button, no camera flip. Prompts stay English in every language.
 
 DELETE ACCOUNT — LAST, ON AN ACCOUNT YOU CAN LOSE. Settings (⌘,), beside Log Out: password, then immediate and irreversible. Afterwards: your one-to-one chat is gone for your partner too; your family-chat messages, board notes and reactions stay as "Deleted account".
 
@@ -1241,7 +1258,7 @@ DELETE ACCOUNT — LAST, ON AN ACCOUNT YOU CAN LOSE. Settings (⌘,), beside Log
 
 ### Mac pre-submission checklist
 
-**Read this before pasting either text.** The Beta App Description's whole notification paragraph — and four lines of What to Test — describe the app as it is signed *today*, with a push entitlement that does not survive signing. If the first item below lands before the Mac build is cut, that copy stops being true and starts telling testers to ignore a feature that works. Both variants are written out here so that whoever ships knows which one they are pasting; nobody should be reconstructing the sentence from memory at the console.
+**Settled 2026-10-08: Variant B is in the copy** (a push was seen arriving at a quit Mac), rewritten for 1.2's menu bar and its who-never-what notifications. The two variants below are kept as the record of how that was decided. **Read this before pasting either text.** The Beta App Description's whole notification paragraph — and four lines of What to Test — describe the app as it is signed *today*, with a push entitlement that does not survive signing. If the first item below lands before the Mac build is cut, that copy stops being true and starts telling testers to ignore a feature that works. Both variants are written out here so that whoever ships knows which one they are pasting; nobody should be reconstructing the sentence from memory at the console.
 
 **Variant A — ships as-is, `FamilyConnect-macOS.entitlements` still says `aps-environment`.** This is the paragraph already in the Description above, and the matching What to Test lines stand unchanged.
 
@@ -1253,7 +1270,7 @@ That takes the Description to 3,842 characters. In What to Test, the four depend
 
 Each item below is tagged **[code]** (a change in this repository) or **[nettrash]** (his App Store Connect account, his server, or his call), as in the iOS checklist.
 
-- [x] **[code]** The entitlement rename is DONE and verified in a signed binary (2026-08-31). The copy still uses **Variant A**: the second half of Variant B's condition — one real alert push arriving at a quit Mac — has not been observed, and the entitlement is necessary but not sufficient (the server also has to hold APNs credentials that work for this bundle id on the macOS platform row). Send one, then switch.
+- [x] **[code]** The entitlement rename is DONE and verified in a signed binary (2026-08-31), and since 2026-10-08 the copy uses **Variant B** (see the item above). Kept for the record — it said, before the push was seen: the second half of Variant B's condition — one real alert push arriving at a quit Mac — has not been observed, and the entitlement is necessary but not sufficient (the server also has to hold APNs credentials that work for this bundle id on the macOS platform row). Send one, then switch.
 - [x] **[code]** "Save a copy" is fixed (issue #8): the read-write grant is in the signed binary and failures now surface as an alert instead of vanishing. The tester note asking whether Save really writes the file should become a plain "check Save a copy writes where you point it" once one manual save has been seen to work.
 - [ ] **[code]** Set `ENABLE_HARDENED_RUNTIME`. It is absent from every configuration in `project.pbxproj` — optional for a Mac App Store submission, mandatory the moment anything is distributed with Developer ID and notarised. Setting it now costs nothing and removes a surprise from a later direct-download build.
 - [ ] **[nettrash]** Upload the six Mac screenshots from `ios/docs/screenshots/mac/` — `01-family-chat.png`, `02-thread.png`, `03-open-polls.png`, `04-board.png`, `05-family.png`, `06-settings.png`, all 2560x1600. THE OLD ITEM'S WORRIES ARE GONE: the grey material bars are not in this set, and the invite code on screen is the disposable fixture's. What follows is the superseded text, kept only so nobody re-files it — `01-family-chat.png`, `02-board.png`, `03-family.png`, `04-settings.png`, all 2560×1600, which is one of the sizes App Store Connect accepts for Mac. Two carry a known cosmetic flaw and should be looked at before they go up: in `03-family.png` and `04-settings.png` the sheet's material bars render as flat grey, because the capture takes the window alone and a vibrancy material with no backdrop behind it has nothing to blur. That is a capture artefact, not a bug in the app, but it is what a customer sees on the product page — either re-shoot those two over a desktop backdrop, or accept them knowingly.

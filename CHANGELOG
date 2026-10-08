@@ -1,10 +1,12 @@
 2026-10-02          v1.2.0
 
-                    A family sticker pack, videos and sound files
-                    brought down to one profile before they leave the
-                    device, and an assistant that says when its
-                    provider refused something instead of failing as
-                    though the network had.
+                    A family sticker pack, voice and video messages,
+                    videos and sound files brought down to one profile
+                    before they leave the device, the Mac in the menu
+                    bar, one attachment menu and every string in every
+                    language on every client, and an assistant that says
+                    when its provider refused something instead of
+                    failing as though the network had.
 
                     STICKERS. Each family now has one sticker pack,
                     any member can add to it, and a sticker button in
@@ -215,6 +217,60 @@
                     request that fails fast — Open-Meteo answers 503
                     when it is overloaded — is asked once more first.
 
+                    THE MAC IN THE MENU BAR. Closing the main window no
+                    longer closes the conversation: the Mac keeps
+                    running as an icon in the menu bar, still connected,
+                    so messages and calls reach it, and the Dock icon
+                    shows only while a window is open. A click on the
+                    icon brings the window back; its menu has Open,
+                    Settings… and Quit, and the unread count stands
+                    beside it. Open at Login starts it in the menu bar
+                    with no window. Settings ▸ Menu Bar switches each of
+                    these.
+
+                    A SHORTCUT TO THE WINDOW. Control-Option-Command-F
+                    on the Mac and Ctrl+Alt+Shift+F on Windows bring the
+                    window forward from any app, and put it back when
+                    pressed again. Never Ctrl+Alt alone on Windows: that
+                    is AltGr, which types "[" on Hungarian and Czech
+                    keyboards. Settings says when another app already
+                    holds the combination.
+
+                    NOTIFICATIONS ON THE MAC. The Mac's notifications
+                    follow the Windows client's rules: who wrote, never
+                    what — "New message", "New note" — a notification
+                    for a new board note too, and nothing for a blocked
+                    member or the assistant's answer to one. Settings ▸
+                    Notifications has "Tell me when a message arrives",
+                    and says when macOS has the app's notifications
+                    turned off or set to None, which made a Mac silent
+                    with nothing to say why. Switched off, the Mac also
+                    takes itself off the server's push list.
+
+                    EVERY STRING IN EVERY LANGUAGE. The Windows and web
+                    clients said 172 things in English whatever the
+                    language; all of them are translated now, and a
+                    check in CI keeps every client complete. Push
+                    notifications are written in the language each
+                    phone, tablet or Mac shows the app in, instead of
+                    always in English — the server's own words only,
+                    never what somebody wrote. The Mac's "mentioned you"
+                    was English in every language; it is translated.
+
+                    ONE ATTACHMENT MENU. The paperclip offers the same
+                    things in the same order on every client, in three
+                    groups: Photo or Video, Camera, File and Paste;
+                    Record Voice Message and Record Video Message;
+                    Location and Poll. The Mac gains Photo or Video from
+                    the Photos library, Windows and the web a
+                    picture-and-video picker, Windows a paperclip for
+                    its "+" and the web icons; on Android Camera opens
+                    Take photo and Take video, and Ask for a picture
+                    moves to a paintbrush button in the assistant's
+                    chat, as on the other clients. An animated GIF
+                    picked from the photo library now goes as the GIF it
+                    is.
+
                     FIXED. On Android, a redraw that failed, was
                     refused or was declined no longer blanks the
                     backdrop already showing in the event; only a
@@ -284,6 +340,20 @@
                     and refused when malformed. Push notifications say
                     "Video message" for one.
 
+                    PUSHES IN THE DEVICE'S LANGUAGE. One more migration,
+                    0054 (device_language). POST /devices takes an
+                    optional language — absent keeps the stored one,
+                    null clears it, a malformed one is stored as none
+                    and never refuses the registration — and a push's
+                    own words ("Photo", "3 Photos", "New message",
+                    "asked to join" and the rest) go out in it, from a
+                    table generated from the apps' own catalogue. A
+                    device with no language, or one the server has no
+                    words for, gets English as before. A Mac is pushed
+                    who wrote but never what, whatever
+                    include_message_body says, because a desktop banner
+                    sits on a shared screen.
+
                     OLD CLIENTS KEEP WORKING. A 1.1 client against
                     this server draws a sticker as an ordinary photo
                     in a bubble, lists it as "Photo", cannot add or
@@ -309,6 +379,11 @@
                     it offers Edit on one. An app with video messages
                     against an older server offers none and records
                     voice as before.
+
+                    An app from before these — any 1.1, or a 1.2 build
+                    without them — registers no language and gets its
+                    pushes in English, and a Mac on it keeps getting
+                    message text in its pushes until it is updated.
 
                     The server and web crates are 1.2.0, the Windows
                     package 1.2.0.0, and the Apple and Android apps
