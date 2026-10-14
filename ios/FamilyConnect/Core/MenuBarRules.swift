@@ -103,4 +103,36 @@ nonisolated enum MenuBarRules {
     static func loginSwitchEnabled(_ state: LoginItem) -> Bool {
         state != .unavailable
     }
+
+    /// What bringing the main window forward does (#93: a notification click
+    /// must never open a second window when one is there already).
+    enum MainWindowStep: Equatable, Sendable {
+        /// Bring forward the main window that exists — shown, minimised or
+        /// ordered out into the menu bar.
+        case bringForward
+        /// Open a new main window: there is none.
+        case open
+        /// Wait for the one on its way: a new window was asked for a moment
+        /// ago, or the app is still launching and the window it restores has
+        /// not appeared yet. Asked again shortly; the launch backstop
+        /// (LaunchWindowBackstop) still guarantees a window either way.
+        case wait
+    }
+
+    /// How long a new window may take to appear before it counts as never
+    /// coming, and how long a launch may take to restore its own.
+    static let windowArrivalGrace: TimeInterval = 2.0
+
+    /// The decision. `hasMainWindow` is any main window that is not closed —
+    /// visible, minimised, or hidden into the menu bar; `openRequestedAgo` is
+    /// how long since this app last asked for a new one (nil: never);
+    /// `sinceLaunch` is how long the app has been running.
+    static func mainWindowStep(
+        hasMainWindow: Bool, openRequestedAgo: TimeInterval?, sinceLaunch: TimeInterval
+    ) -> MainWindowStep {
+        if hasMainWindow { return .bringForward }
+        if let ago = openRequestedAgo, ago < windowArrivalGrace { return .wait }
+        if sinceLaunch < windowArrivalGrace { return .wait }
+        return .open
+    }
 }

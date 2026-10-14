@@ -33,6 +33,17 @@ final class MacMenuBar: NSObject {
     /// window that was really closed stays in NSApp.windows (measured, see
     /// LaunchWindowBackstop) and must never be ordered front again.
     private weak var hiddenMain: NSWindow?
+    /// Windows that really CLOSED: a closed NSWindow stays in NSApp.windows
+    /// (measured, see LaunchWindowBackstop), and must never be ordered front
+    /// again — every other main window, hidden ones included, is reused (#93).
+    private var closedWindows = Set<ObjectIdentifier>()
+    /// When this app last asked for a new main window, so a second click —
+    /// or a notification and a reopen landing together — never asks twice.
+    private var openRequestedAt: Date?
+    /// When the app started, for the launch's own window still on its way.
+    private let launchedAt = Date()
+    /// A bring-forward waiting for a window that is on its way.
+    private var showRetryQueued = false
     private var quitting = false
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -213,13 +224,27 @@ final class MacMenuBar: NSObject {
     /// in front — the one hidden, or a new one when it was really closed.
     func showMainWindow() {
         become(.regular)
-        if let window = visibleMain() ?? hiddenMain {
-            if window.isMiniaturized { window.deminiaturize(nil) }
-            hiddenMain = nil
-            comeForward(window)
-        } else {
+        let existing = visibleMain() ?? hiddenMain ?? reusableMain()
+        let step = MenuBarRules.mainWindowStep(
+            hasMainWindow: existing != nil,
+            openRequestedAgo: openRequestedAt.map { Date().timeIntervalSince($0) },
+            sinceLaunch: Date().timeIntervalSince(launchedAt))
+        switch step {
+        case .bringForward:
+            if let window = existing {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                hiddenMain = nil
+                comeForward(window)
+            }
+        case .open:
+            openRequestedAt = Date()
             openNewMain()
             comeForward(nil)
+        case .wait:
+            // The window is on its way: bring IT forward when it lands,
+            // rather than asking for another (#93).
+            comeForward(nil)
+            retryShowSoon()
         }
         // An app that was an accessory a moment ago is not yet allowed in front:
         // measured on the owner's Mac, the window came up BEHIND the app in
@@ -271,6 +296,25 @@ final class MacMenuBar: NSObject {
     /// Another main window on the screen (or in the Dock) besides this one.
     private func anotherMain(than window: NSWindow) -> Bool {
         NSApp.windows.contains { $0 !== window && Self.isMain($0) && ($0.isVisible || $0.isMiniaturized) }
+    }
+
+    /// Any main window that is not closed — the one a launch restored hidden,
+    /// or one ordered out by something other than `hide` — so nothing is ever
+    /// opened while one of these exists (#93).
+    private func reusableMain() -> NSWindow? {
+        NSApp.windows.first { Self.isMain($0) && !closedWindows.contains(ObjectIdentifier($0)) }
+    }
+
+    /// Ask once more shortly, for a window that is still on its way.
+    private func retryShowSoon() {
+        guard !showRetryQueued else { return }
+        showRetryQueued = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            MainActor.assumeIsolated {
+                MacMenuBar.shared.showRetryQueued = false
+                MacMenuBar.shared.showMainWindow()
+            }
+        }
     }
 
     private func visibleMain() -> NSWindow? {
@@ -359,6 +403,15 @@ final class MacMenuBar: NSObject {
                         let bar = MacMenuBar.shared
                         if let window {
                             if closing, window === bar.hiddenMain { bar.hiddenMain = nil }
+                            if closing {
+                                bar.closedWindows.insert(ObjectIdentifier(window))
+                            } else {
+                                // On screen again (or a new window at a closed one's address):
+                                // not closed.
+                                bar.closedWindows.remove(ObjectIdentifier(window))
+                            }
+                            // A new main window has arrived: the request is answered.
+                            if !closing, Self.isMain(window) { bar.openRequestedAt = nil }
                             if !closing { bar.takeCloseButton(of: window) }
                         }
                         // After the close has happened: a closing window is
