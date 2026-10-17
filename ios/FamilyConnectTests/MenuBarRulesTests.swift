@@ -94,4 +94,20 @@ struct MenuBarRulesTests {
         #expect(MenuBarRules.loginSwitchEnabled(.needsApproval))
         #expect(!MenuBarRules.loginSwitchEnabled(.unavailable))
     }
+
+    @Test("a notification brings forward the main window that exists — never a second one (#93)")
+    func mainWindowStep() {
+        // Any main window that is not closed, hidden into the menu bar included.
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: true, openRequestedAgo: nil, sinceLaunch: 600) == .bringForward)
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: true, openRequestedAgo: 0.1, sinceLaunch: 0.2) == .bringForward)
+        // None at all, long after launch: open one.
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: false, openRequestedAgo: nil, sinceLaunch: 600) == .open)
+        // One asked for a moment ago and not here yet — a second click waits for it.
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: false, openRequestedAgo: 0.3, sinceLaunch: 600) == .wait)
+        // Asked for and never came: ask again.
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: false, openRequestedAgo: 5, sinceLaunch: 600) == .open)
+        // Launched by the click itself: the window macOS restores is on its way.
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: false, openRequestedAgo: nil, sinceLaunch: 0.5) == .wait)
+        #expect(MenuBarRules.mainWindowStep(hasMainWindow: false, openRequestedAgo: nil, sinceLaunch: 2.5) == .open)
+    }
 }

@@ -104,6 +104,20 @@ launch if it could not be reached) and switching them on registers it again; and
 device the body `include_message_body = false` would send, whatever the setting (protocol.md, "A Mac is
 pushed who, never what"). A Mac now says the same thing whether its app was running or quit.
 
+## One window, however many notifications (#93, 2026-10-14)
+
+A notification click, a Dock-icon click and the menu bar's "Show" all go through `MacMenuBar.showMainWindow`, which
+used to open a NEW main window whenever it found none visible and none hidden by its own close button. Three
+ordinary situations found none while one was there or on its way: a launch BY the click (the window macOS restores
+had not appeared yet), two clicks — or a click plus the reopen it causes — before the first new window appeared,
+and a main window ordered out by anything but `hide`. Each opened another window.
+
+The decision is now `MenuBarRules.mainWindowStep`: bring forward ANY main window that was not really closed
+(shown, minimised or ordered out — a closed `NSWindow` stays in `NSApp.windows`, so closes are tracked by
+`willClose`); with none, WAIT while a new window was asked for less than `windowArrivalGrace` (2 s) ago or the
+app launched less than 2 s ago, asking again every 0.4 s; only then open one. The launch backstop
+(`LaunchWindowBackstop`) still guarantees a window either way.
+
 ## What must be checked on a real Mac (none of it can run unsigned)
 
 - Closing the window leaves the menu bar icon and no Dock icon; a click brings the window back where it was,
@@ -111,6 +125,8 @@ pushed who, never what"). A Mac now says the same thing whether its app was runn
 - A call from a phone while the window is closed rings: banner, then the call window; Answer on the
   banner opens the call window.
 - A message while the window is closed shows a banner; clicking it opens the window on that chat.
+- Clicking several banners quickly — with the window open, hidden in the menu bar, and with the app quit — leaves
+  exactly ONE main window, showing the chat that was clicked (#93).
 - ⌃⌥⌘F from another app opens the window; again, hides it.
 - Open at Login: log out and in — the icon is there, no window, and a message still arrives.
 - The unread count beside the icon matches the chat list.
