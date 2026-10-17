@@ -209,10 +209,26 @@ android {
             all {
                 it.maxHeapSize = "3g"
                 it.forkEvery = 150
+                // Robolectric's native runtime calls System.load, which
+                // JDK 24+ warns about unless native access is granted.
+                it.jvmArgs("--enable-native-access=ALL-UNNAMED")
+                // DataStore's bundled protobuf reads memory through
+                // sun.misc.Unsafe, which JDK 24+ warns about. The flag exists
+                // from JDK 23; an older JVM would refuse to start with it.
+                if (JavaVersion.current() >= JavaVersion.VERSION_23) {
+                    it.jvmArgs("--sun-misc-unsafe-memory-access=allow")
+                }
             }
         }
     }
     packaging {
+        // The .so files come prebuilt and already stripped inside the AARs
+        // (WebRTC, CameraX, DataStore, graphics-path). Stripping them again
+        // needs an NDK, and without one AGP warns "Unable to strip" and
+        // packages them as they are, which is what this asks for outright.
+        jniLibs {
+            keepDebugSymbols += "**/*.so"
+        }
         resources {
             excludes += setOf(
                 "/META-INF/{AL2.0,LGPL2.1}",

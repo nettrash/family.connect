@@ -13,7 +13,7 @@
 import AppKit
 import UserNotifications
 
-enum MacNotificationAccess: Equatable {
+nonisolated enum MacNotificationAccess: Equatable {
     /// Not read yet.
     case unknown
     /// Allowed, with banners or alerts.

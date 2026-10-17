@@ -225,7 +225,8 @@ public sealed class ConversationModel
 
     /// <summary>
     /// Send. The row is written down BEFORE anything is tried and the outbox owns it from there,
-    /// so an interrupted send is a bubble that can be finished rather than nothing at all.
+    /// so an interrupted send is a bubble that can be finished rather than nothing at all. Its lines
+    /// go out as line feeds, whatever the TextBox kept them as (#95).
     /// </summary>
     public OutboxRow Send(
         string body,
@@ -237,7 +238,7 @@ public sealed class ConversationModel
         bool sticker = false,
         bool round = false) =>
         sending.Enqueue(
-            ChatId, body, replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker, round);
+            ChatId, NewLineKeys.ForWire(body), replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker, round);
 
     /// <summary>
     /// Send a sticker: ONE staged file, no words, and the flag — a message like any other from
@@ -407,7 +408,7 @@ public sealed class ConversationModel
     /// </summary>
     public async Task<ApiError?> EditAsync(long messageId, string body, CancellationToken ct = default)
     {
-        var trimmed = body.Trim();
+        var trimmed = NewLineKeys.ForWire(body).Trim();
         if (trimmed.Length == 0)
         {
             return new ApiError(ErrorCodes.MessageEmpty, "a message cannot be empty", 400);

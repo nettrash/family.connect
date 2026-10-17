@@ -246,8 +246,11 @@ struct Rig {
     on_send: RefCell<Callback<(Prepared, bool)>>,
     limits: Cell<RoundLimits>,
     /// The tracks' listeners: a camera or a microphone that went away.
-    watching: RefCell<Vec<(web_sys::MediaStreamTrack, Closure<dyn FnMut()>)>>,
+    watching: RefCell<Vec<TrackWatch>>,
 }
+
+/// A track and the `ended` listener on it.
+type TrackWatch = (web_sys::MediaStreamTrack, Closure<dyn FnMut()>);
 
 impl Rig {
     fn update(&self, change: impl FnOnce(&mut View)) {

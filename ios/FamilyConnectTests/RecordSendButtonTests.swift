@@ -61,7 +61,7 @@ struct RecordSendButtonTests {
 
     // MARK: - One tap, and no long press
 
-    private static let everySlot: [ComposerSlot] = [
+    nonisolated private static let everySlot: [ComposerSlot] = [
         .microphone, .dimmed(.call), .dimmed(.busy), .dimmed(.notSent), .send, .sendVoice,
         .stopRecording, .save(enabled: true), .save(enabled: false), .sendDisabled, .recorder,
     ]

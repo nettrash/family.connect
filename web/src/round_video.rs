@@ -60,7 +60,7 @@ impl RoundLimits {
     /// positive number is not a limit anybody can record to.
     pub fn of(max_ms: Option<i64>, max_bytes: Option<i64>) -> Option<RoundLimits> {
         let (max_ms, max_bytes) = (max_ms?, max_bytes?);
-        (max_ms > 0 && max_bytes > 0).then(|| RoundLimits {
+        (max_ms > 0 && max_bytes > 0).then_some(RoundLimits {
             max_ms: max_ms as u64,
             max_bytes: max_bytes as u64,
         })
@@ -569,7 +569,9 @@ pub fn near_black(pixels: &[u8]) -> bool {
         return false;
     }
     let total: u64 = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|pixel| {
             (u64::from(pixel[0]) * 299 + u64::from(pixel[1]) * 587 + u64::from(pixel[2]) * 114)
                 / 1000
@@ -744,10 +746,13 @@ fn frame_time(now: f64, metadata: &JsValue, clock: &Cell<u8>) -> f64 {
     .unwrap_or(now)
 }
 
+/// `requestVideoFrameCallback`'s callback: the frame's time and its metadata.
+type FrameCallback = Closure<dyn FnMut(f64, JsValue)>;
+
 struct Inner {
     video: HtmlVideoElement,
     picture: RefCell<Option<LivePicture>>,
-    callback: RefCell<Option<Closure<dyn FnMut(f64, JsValue)>>>,
+    callback: RefCell<Option<FrameCallback>>,
     handle: Cell<Option<u32>>,
     clock: Cell<u8>,
     /// When the first frame was captured, on [`now_ms`]'s clock.

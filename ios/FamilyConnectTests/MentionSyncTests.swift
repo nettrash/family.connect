@@ -242,13 +242,24 @@ struct MentionSyncTests {
 
     @Test("a pending row keeps its list, and the REST leg sends it")
     func pendingRowCarriesTheList() async throws {
-        var captured: [String: Any]?
+        // What the POST carried, written on the URL loading thread and read
+        // here once the send is done.
+        final class Captured: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: [String: Any]?
+            var body: [String: Any]? {
+                get { lock.withLock { stored } }
+                set { lock.withLock { stored = newValue } }
+            }
+        }
+        let captured = Captured()
         let harness = try makeHarness(host: "mention-sync-send.test") { request in
             if request.method == "POST", request.url.path.hasSuffix("/messages") {
-                captured = request.bodyJSON()
+                let body = request.bodyJSON()
+                captured.body = body
                 return .json(201, """
                     {"message": {"id": 200, "chat_id": 42, "sender_id": 7,
-                                 "client_msg_id": "\(captured?["client_msg_id"] as? String ?? "")",
+                                 "client_msg_id": "\(body?["client_msg_id"] as? String ?? "")",
                                  "body": "@Anna?", "created_at": "2026-08-19T17:03:12Z",
                                  "mentions": [{"user_id": 8, "name": "Anna"}]}}
                     """)
@@ -260,7 +271,7 @@ struct MentionSyncTests {
             body: "@Anna?", in: 42, mentions: [MentionDTO(userID: 8, name: "Anna")]))
         #expect(harness.message(localID: localID)?.mentionList == [MentionDTO(userID: 8, name: "Anna")])
         await harness.settle()
-        let list = try #require(captured?["mentions"] as? [[String: Any]])
+        let list = try #require(captured.body?["mentions"] as? [[String: Any]])
         #expect(list.first?["user_id"] as? Int == 8)
         #expect(harness.message(localID: localID)?.serverID == 200)
     }

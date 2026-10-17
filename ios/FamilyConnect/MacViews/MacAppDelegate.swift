@@ -51,6 +51,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         // LaunchWindowBackstop for why an app can get here with none. A
         // launch that starts in the menu bar has its window, hidden on purpose.
         LaunchWindowBackstop.start(startedInMenuBar: hidden)
+        // Return with ⌥ ⌘ ⌃ or ⇧ is a new line in every multi-line field (#95).
+        MacNewLineKeys.install()
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self

@@ -174,7 +174,8 @@ fn main() {
     }
     out.push_str("  ],\n");
 
-    let geometry_cases: Vec<((f64, f64), (f64, f64), (f64, f64), (f64, f64))> = vec![
+    type Pair = (f64, f64);
+    let geometry_cases: Vec<(Pair, Pair, Pair, Pair)> = vec![
         ((0.5, 0.25), (150.0, 110.0), (900.0, 600.0), (20.0, -20.0)),
         ((0.98, 0.98), (150.0, 110.0), (900.0, 600.0), (0.0, 0.0)),
         ((-1.0, -1.0), (150.0, 110.0), (900.0, 600.0), (5.0, 5.0)),
@@ -379,7 +380,8 @@ fn chat() {
     let long_a = "a".repeat(200);
     let long_ya = "\u{44f}".repeat(120);
     let long_b = "\u{431}".repeat(90);
-    let events: Vec<(&str, &str, &str, Option<&str>, Option<&str>)> = vec![
+    type Event<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
+    let events: Vec<Event> = vec![
         ("fc-note-12@nettrash", "Christmas dinner", "20261224T160000Z",
          Some("20261224T200000Z"), Some("Gran's house")),
         ("fc-note-13@nettrash", "Lunch, then a walk; bring boots", "20261225T120000Z",
@@ -613,7 +615,7 @@ fn chat() {
         let names: Vec<String> = vec![
             "report.pdf".into(), "  spaced  ".into(), "a/b:c.txt".into(),
             format!("invoice{}fdp.exe", ch(0x202E)), format!("tab{}here.txt", ch(9)), String::new(), "   ".into(),
-            format!("caf{}.txt", ch(0x301).replace("", "")).replacen("caf", "cafe", 1),
+            format!("caf{}.txt", ch(0x301)).replacen("caf", "cafe", 1),
             format!("{}.pdf", "a".repeat(300)), "x".repeat(260), format!("{}.docx", ch(0x431).repeat(250)),
             ".hiddenfile".into(), format!("{}.png", family.repeat(60)), format!("a.{}", "b".repeat(260)),
             format!("zero{}width.txt", ch(0x200B)), format!("soft{}hyphen.txt", ch(0xAD)),
@@ -747,7 +749,7 @@ fn chat() {
             .map(|c| char::from_u32(*c).unwrap())
             .collect();
         let cyrillic = char::from_u32(0x44F).unwrap().to_string();
-        let bodies = vec![
+        let bodies = [
             String::new(),
             "short".to_string(),
             "a".repeat(120),

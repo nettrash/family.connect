@@ -154,6 +154,26 @@ public class ChatActionsTests : IDisposable
         Assert.Single(server.Asked);
     }
 
+    /// <summary>#95: a TextBox keeps a line break as a lone CR; a send and an edit put a LF on the wire, as every client does.</summary>
+    [Fact]
+    public async Task LinesGoOutAsLineFeeds()
+    {
+        chats.Apply(new MessageDto(1, Chat, Me, "c-1", "Dinner\nat 7?", Sent));
+        var server = new Server().On(
+            "/chats/42/messages/1",
+            """{"message": {"id": 1, "chat_id": 42, "sender_id": 7, "client_msg_id": "c-1", "body": "Dinner\nat 8?", "created_at": "2026-09-13T10:00:00Z", "edited_at": "2026-09-13T10:05:00Z", "edit_seq": 9}}""");
+        var chat = Open(server);
+
+        Assert.Equal("Milk\neggs\n\nbread", chat.Send("Milk\reggs\r\rbread").Body);
+
+        // The words it already has, typed again in a TextBox, send nothing.
+        Assert.Null(await chat.EditAsync(1, "Dinner\rat 7?"));
+        Assert.Empty(server.Asked);
+        Assert.Null(await chat.EditAsync(1, "Dinner\rat 8?"));
+        Assert.Equal("Dinner\nat 8?", System.Text.Json.JsonDocument.Parse(Assert.Single(server.Bodies))
+            .RootElement.GetProperty("body").GetString());
+    }
+
     /// <summary>
     /// The answer to an edit is one message with nothing known under it: held and drawn, and not where the next catch-up
     /// starts (docs/protocol.md, "Best-effort delivery", step 3).

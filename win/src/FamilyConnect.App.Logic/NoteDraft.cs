@@ -26,7 +26,14 @@ public sealed record DraftLine(long? Id, string Text);
 /// </remarks>
 public sealed class NoteDraft
 {
-    public string Text { get; set; } = string.Empty;
+    private string text = string.Empty;
+
+    /// <summary>The words, with the TextBox's carriage returns held as line feeds (<see cref="NewLineKeys.ForWire"/>).</summary>
+    public string Text
+    {
+        get => text;
+        set => text = NewLineKeys.ForWire(value);
+    }
 
     public string Color { get; set; } = "yellow";
 

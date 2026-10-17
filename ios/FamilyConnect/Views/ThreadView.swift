@@ -462,7 +462,12 @@ struct ThreadView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
+            #if !os(macOS)
+            // A hardware keyboard's Send on iPhone and iPad. On the Mac ⌘↩ is
+            // a new line, as every modified Return is (#95), and Return alone
+            // already sends through `onSubmit`.
             .keyboardShortcut(.return, modifiers: .command)
+            #endif
             .accessibilityLabel(Text("Send"))
         }
         .padding(.horizontal, 12)

@@ -24,6 +24,10 @@ struct AudioRecorderLifecycleTests {
 
     /// A recorder that records nothing real: the file it would be writing is
     /// written by the fake, so the "something was captured" test is real.
+    /// On the main actor, as the app's engine is (its protocol is the app
+    /// module's, isolated by default) — said outright, because an Xcode that
+    /// does not infer it reads `stopsByItself` as nonisolated.
+    @MainActor
     final class FakeEngine: VoiceRecordingEngine {
         let url: URL
         var currentTime: TimeInterval = 0

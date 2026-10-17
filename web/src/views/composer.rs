@@ -716,9 +716,9 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     };
 
-    // Enter sends, Shift+Enter makes a line, Esc gives up a reply or an
-    // edit — and while the roster is offered, the arrows walk it and Enter
-    // or Tab takes the highlighted name.
+    // Enter sends, Enter with Shift, Ctrl, Alt or Cmd makes a line (#95),
+    // Esc gives up a reply or an edit — and while the roster is offered, the
+    // arrows walk it and Enter or Tab takes the highlighted name.
     let on_key = {
         let send = send.clone();
         let accept = accept.clone();
@@ -742,7 +742,12 @@ pub fn composer(props: &ComposerProps) -> Html {
                         active.set((*active + offered.len() - 1) % offered.len());
                         return;
                     }
-                    "Enter" | "Tab" if !event.shift_key() => {
+                    "Enter" if !makes_line(&event) => {
+                        event.prevent_default();
+                        accept.emit(offered[(*active).min(offered.len() - 1)].clone());
+                        return;
+                    }
+                    "Tab" if !event.shift_key() => {
                         event.prevent_default();
                         accept.emit(offered[(*active).min(offered.len() - 1)].clone());
                         return;
@@ -750,9 +755,13 @@ pub fn composer(props: &ComposerProps) -> Html {
                     _ => {}
                 }
             }
-            if key == "Enter" && !event.shift_key() && !event.is_composing() {
+            if key == "Enter" && !event.is_composing() {
                 event.prevent_default();
-                send.emit(());
+                if makes_line(&event) {
+                    new_line(&event);
+                } else {
+                    send.emit(());
+                }
             } else if key == "Escape" {
                 on_cancel.emit(());
             }
@@ -1384,6 +1393,50 @@ pub fn composer(props: &ComposerProps) -> Html {
                 { slot_html }
             </div>
         </div>
+    }
+}
+
+/// Enter with Shift, Ctrl, Alt or Cmd held (#95, `composer::return_makes_line`).
+fn makes_line(event: &KeyboardEvent) -> bool {
+    composer::return_makes_line(
+        event.shift_key(),
+        event.ctrl_key(),
+        event.alt_key(),
+        event.meta_key(),
+    )
+}
+
+/// A new line at the caret, over the selection — done here because a
+/// browser makes one of Shift+Enter but not of Ctrl, Alt or Cmd with Enter.
+/// `insertText` first, which the field's Undo knows and which fires the
+/// `input` the composer listens to; where a browser refuses it, the range is
+/// replaced and that `input` sent by hand.
+fn new_line(event: &KeyboardEvent) {
+    let area: HtmlTextAreaElement = event.target_unchecked_into();
+    let inserted = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
+        .is_some_and(|document| {
+            document
+                .exec_command_with_show_ui_and_value("insertText", false, "\n")
+                .unwrap_or(false)
+        });
+    if inserted {
+        return;
+    }
+    let (Ok(Some(start)), Ok(Some(end))) = (area.selection_start(), area.selection_end()) else {
+        return;
+    };
+    if area
+        .set_range_text_with_start_and_end_and_mode("\n", start, end, "end")
+        .is_err()
+    {
+        return;
+    }
+    let init = web_sys::EventInit::new();
+    init.set_bubbles(true);
+    if let Ok(input) = web_sys::Event::new_with_event_init_dict("input", &init) {
+        let _ = area.dispatch_event(&input);
     }
 }
 
@@ -2516,6 +2569,93 @@ mod tests {
             web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         at.dispatch_event(&event).unwrap();
         event
+    }
+
+    /// #95: Enter alone sends; Enter with Shift, Ctrl, Alt or Cmd puts a
+    /// line at the caret, over the selection, sends nothing — and what
+    /// finally goes carries the lines.
+    #[wasm_bindgen_test]
+    async fn a_modified_enter_makes_a_line_and_enter_alone_sends() {
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, None)).await;
+        mounted.type_in("milk eggs").await;
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        area.focus().unwrap();
+        // The first replaces the space between the words; each after it
+        // adds a line at the same caret.
+        for (presses, held) in ["shift", "ctrl", "alt", "meta"].into_iter().enumerate() {
+            area.set_selection_range(4, if presses == 0 { 5 } else { 4 })
+                .unwrap();
+            let init = web_sys::KeyboardEventInit::new();
+            init.set_key("Enter");
+            init.set_shift_key(held == "shift");
+            init.set_ctrl_key(held == "ctrl");
+            init.set_alt_key(held == "alt");
+            init.set_meta_key(held == "meta");
+            init.set_bubbles(true);
+            init.set_cancelable(true);
+            let event = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+                .unwrap();
+            area.dispatch_event(&event).unwrap();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            assert!(event.default_prevented(), "{held}+Enter is the composer's");
+            assert!(heard.sent.borrow().is_empty(), "{held}+Enter sends nothing");
+            assert_eq!(
+                area.value(),
+                format!("milk{}eggs", "\n".repeat(presses + 1)),
+                "{held}+Enter"
+            );
+            assert_eq!(area.selection_start().unwrap(), Some(5));
+        }
+        key(area.unchecked_ref(), "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1, "Enter alone sends");
+        assert_eq!(heard.sent.borrow()[0].body, "milk\n\n\n\neggs");
+        mounted.gone();
+    }
+
+    /// The same line where `insertText` has nothing to insert into — the
+    /// field not focused, so the browser refuses it: the range is replaced
+    /// by hand, and the composer still hears the `input`.
+    #[wasm_bindgen_test]
+    async fn a_modified_enter_makes_a_line_without_insert_text() {
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, None)).await;
+        mounted.type_in("milk eggs").await;
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        area.blur().unwrap();
+        area.set_selection_range(4, 5).unwrap();
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Enter");
+        init.set_ctrl_key(true);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let event =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        area.dispatch_event(&event).unwrap();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(area.value(), "milk\neggs");
+        key(area.unchecked_ref(), "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1);
+        assert_eq!(
+            heard.sent.borrow()[0].body,
+            "milk\neggs",
+            "the composer heard the line"
+        );
+        mounted.gone();
     }
 
     /// A TOUCH ACTS ON ITS `pointerup` inside the button — user activation,

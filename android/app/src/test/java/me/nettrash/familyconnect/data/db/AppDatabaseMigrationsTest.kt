@@ -77,7 +77,7 @@ class AppDatabaseMigrationsTest {
                     db.execSQL("CREATE TABLE notes (id INTEGER PRIMARY KEY NOT NULL, text TEXT)")
                 }
 
-                override fun onUpgrade(db: SupportSQLiteDatabase, from: Int, to: Int) = Unit
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
             })
             .build()
         val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
