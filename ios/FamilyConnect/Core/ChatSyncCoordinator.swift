@@ -3626,7 +3626,7 @@ final class ChatSyncCoordinator {
     /// Codes that mean the server READ the send and refused it. Every
     /// other answer leaves the outcome unknown, and an unknown outcome is
     /// never a red bubble (docs/protocol.md, "Error shape").
-    static let terminalSendCodes: Set<String> = [
+    nonisolated static let terminalSendCodes: Set<String> = [
         "validation", "message_empty", "message_too_long", "not_chat_member",
         "chat_not_found", "blocked", "invalid_poll", "invalid_attachment",
         "attachment_not_found", "attachment_already_used",

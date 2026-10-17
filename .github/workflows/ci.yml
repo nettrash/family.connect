@@ -81,7 +81,7 @@ jobs:
       ios: ${{ steps.filter.outputs.ios }}
       win: ${{ steps.filter.outputs.win }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - id: filter
@@ -177,7 +177,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Pinned rather than `stable`. The clippy step below is -D warnings, so
       # an unpinned toolchain turns "rustc shipped a new lint" into a red build
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload test log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: server-test-log
           path: ${{ runner.temp }}/server-tests.log
@@ -286,14 +286,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # JDK 25, NOT the 17 every other Android repo here uses:
       # android/gradle/gradle-daemon-jvm.properties pins toolchainVersion=25
       # and is committed. With JAVA_HOME on 17, Gradle satisfies that by
       # downloading ~137 MB of Temurin 25 from api.foojay.io on every run --
       # slow, and a hard third-party dependency for a self-hosted project.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -301,7 +301,7 @@ jobs:
       # The default branch (master) is 39 commits behind and effectively never
       # builds, and setup-gradle only WRITES its cache on the default branch
       # unless told otherwise -- so without this every Android run is cold.
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
         with:
           cache-read-only: false
 
@@ -312,7 +312,7 @@ jobs:
       # on any version-catalogue edit, and without a prefix fallback every
       # dependency bump would re-download the whole jar.
       - name: Cache the Robolectric android-all jar
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.m2/repository/org/robolectric
           key: robolectric-${{ runner.os }}-${{ hashFiles('android/gradle/libs.versions.toml') }}
@@ -386,7 +386,7 @@ jobs:
 
       - name: Upload reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-reports
           path: |
@@ -403,7 +403,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Every literal the Apple apps show is in the catalogue, in all nine localisations.
       - name: iOS and macOS
         run: python3 ios/scripts/check-strings.py
@@ -427,7 +427,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The deployment target is only iOS 17, which makes an older image look
       # safe -- but the source calls MKMapItem(location:address:), which exists
@@ -562,7 +562,7 @@ jobs:
 
       - name: Upload result bundle
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-xcresult
           path: ${{ runner.temp }}/FamilyConnect.xcresult
@@ -576,7 +576,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: |
@@ -650,7 +650,7 @@ jobs:
 
       - name: Upload result bundle
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: macos-xcresult
           path: ${{ runner.temp }}/FamilyConnect-macOS.xcresult
@@ -674,9 +674,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           # The band win/global.json pins, so the runner cannot quietly build with another one.
           global-json-file: win/global.json
@@ -838,7 +838,7 @@ jobs:
 
       - name: Upload test log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: win-test-log-${{ matrix.os }}
           path: ${{ runner.temp }}/win-test.log
@@ -860,13 +860,13 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           global-json-file: win/global.json
 
-      - uses: microsoft/setup-msbuild@v2
+      - uses: microsoft/setup-msbuild@v3
 
       # The build number, and the only place one is ever stamped. Major and minor are read out of
       # Directory.Build.props rather than written here, so a 1.2 needs no CI edit; the third part
@@ -968,7 +968,7 @@ jobs:
           Write-Host "MSIX version OK: $expected."
 
       - name: Upload the MSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: familyconnect-${{ matrix.platform }}-msix
           path: AppPackages/**/*.msix

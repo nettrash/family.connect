@@ -178,6 +178,15 @@ pub fn is_foundation_whitespace(c: char) -> bool {
     c.is_whitespace() || c == '\u{200B}'
 }
 
+/// Return pressed with these modifiers held makes a new line in the field
+/// (issue #95); without any it is the field's own Enter — Send. Shift, Ctrl,
+/// Alt/Option or Cmd/Meta: whichever habit somebody brings, no setting. The
+/// Mac's `NewLineKeys.returnMakesLine` and Windows' `NewLineKeys.EnterMakesLine`
+/// answer the same.
+pub fn return_makes_line(shift: bool, ctrl: bool, alt: bool, meta: bool) -> bool {
+    shift || ctrl || alt || meta
+}
+
 /// `n` with thousands grouped by commas — `4,000`.
 fn grouped(n: usize) -> String {
     let digits = n.to_string();
@@ -194,6 +203,18 @@ fn grouped(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MARK: - New lines (#95)
+
+    #[test]
+    fn return_alone_sends_and_any_modifier_makes_a_line() {
+        assert!(!return_makes_line(false, false, false, false));
+        assert!(return_makes_line(true, false, false, false));
+        assert!(return_makes_line(false, true, false, false));
+        assert!(return_makes_line(false, false, true, false));
+        assert!(return_makes_line(false, false, false, true));
+        assert!(return_makes_line(true, true, true, true));
+    }
 
     // MARK: - The unit
 

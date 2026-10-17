@@ -1199,7 +1199,6 @@ async fn a_mention_is_bold_and_the_colour_of_the_words_around_it() {
 #[wasm_bindgen_test]
 async fn a_tall_picture_in_the_viewer_fits_the_window() {
     install_stylesheet();
-    let document = document();
     // A viewer over a window-sized root, as the real one is (`position:
     // fixed; inset: 0`), with a bar above the stage.
     let root = fixed_root(

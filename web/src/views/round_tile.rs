@@ -46,7 +46,8 @@ pub fn diameters() -> String {
 /// How far round the ring is, 0 to 1, at `elapsed` of `total` seconds —
 /// stepped once a second where motion is reduced (S6), swept otherwise.
 pub fn ring_progress(elapsed: f64, total: f64, reduced_motion: bool) -> f64 {
-    if !(total > 0.0) || !elapsed.is_finite() {
+    // NaN is not a length either.
+    if total.is_nan() || total <= 0.0 || !elapsed.is_finite() {
         return 0.0;
     }
     let at = if reduced_motion {

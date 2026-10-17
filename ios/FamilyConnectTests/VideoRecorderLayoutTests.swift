@@ -232,7 +232,7 @@ struct VideoRecorderLayoutTests {
     #if os(iOS)
     /// iPhone SE, iPhone, iPhone Pro Max — upright and on their side — and an
     /// iPad both ways; the smallest and the tallest also at large text.
-    static let windows: [Window] = [
+    nonisolated static let windows: [Window] = [
         Window(width: 320, height: 568, large: false), Window(width: 375, height: 667, large: false),
         Window(width: 430, height: 932, large: false), Window(width: 568, height: 320, large: false),
         Window(width: 667, height: 375, large: false), Window(width: 932, height: 430, large: false),
@@ -251,7 +251,7 @@ struct VideoRecorderLayoutTests {
     ]
     #else
     /// A Mac window at the conversation's minimum, a usual one, and a wide one.
-    static let windows: [Window] = [
+    nonisolated static let windows: [Window] = [
         Window(width: 420, height: 520, large: false), Window(width: 800, height: 700, large: false),
         Window(width: 1280, height: 800, large: false), Window(width: 420, height: 520, large: true),
     ]

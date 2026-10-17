@@ -3433,14 +3433,40 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        // Enter sends and Shift+Enter is a new line, as in the conversation's own composer.
-        var shift = InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
-            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-        if (!shift)
+        // Enter sends and Enter with Shift, Ctrl or Alt is a new line, as in the conversation's own composer (#95).
+        e.Handled = true;
+        if (NewLineHeld(e))
         {
-            e.Handled = true;
+            PutNewLine(ThreadComposer);
+        }
+        else
+        {
             SendInThread();
         }
+    }
+
+    /// <summary>
+    /// Enter with Shift, Ctrl or Alt held (#95, <see cref="NewLineKeys"/>). Alt is read from the event too: an Alt combination
+    /// is a menu-key press, which the key-state query alone has been known to miss.
+    /// </summary>
+    private static bool NewLineHeld(KeyRoutedEventArgs e) =>
+        NewLineKeys.EnterMakesLine(
+            shift: IsHeld(Windows.System.VirtualKey.Shift),
+            control: IsHeld(Windows.System.VirtualKey.Control),
+            alt: e.KeyStatus.IsMenuKeyDown || IsHeld(Windows.System.VirtualKey.Menu));
+
+    private static bool IsHeld(Windows.System.VirtualKey key) =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+    /// <summary>
+    /// A new line at the caret, over the selection — done here rather than left to the TextBox, which makes one of Shift+Enter
+    /// but not of Ctrl+Enter or Alt+Enter. A CR, as the TextBox itself writes a line; it goes out as a LF.
+    /// </summary>
+    private static void PutNewLine(TextBox box)
+    {
+        var at = box.SelectionStart;
+        box.SelectedText = "\r";
+        box.Select(at + 1, 0);
     }
 
     /// <summary>
@@ -7274,7 +7300,9 @@ public sealed partial class ChatsView : UserControl
                     activeName = (activeName + offered.Count - 1) % offered.Count;
                     DrawSuggestions();
                     return;
-                case Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Tab when !shifted:
+                // Enter with a new-line modifier is a new line even here (#95); Tab with Shift walks focus back.
+                case Windows.System.VirtualKey.Enter when !NewLineHeld(e):
+                case Windows.System.VirtualKey.Tab when !shifted:
                     e.Handled = true;
                     AcceptName(offered[Math.Min(activeName, offered.Count - 1)].DisplayName);
                     return;
@@ -7296,19 +7324,19 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
-        // Enter sends and Shift+Enter is a new line — the convention of every desktop chat.
-        var shift = InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
-            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
-        if (!shift)
+        // Enter sends, and Enter with Shift, Ctrl or Alt is a new line — whichever habit somebody brings (#95).
+        e.Handled = true;
+        if (NewLineHeld(e))
         {
-            e.Handled = true;
-            // Enter is the slot's activation in rows 2 to 5 (S1.3), so it waits out the slot's guard as a click does: a second
-            // Enter after the slot's Stop in row 3 must not send the words the note is being staged beside (S1.1). Words typed
-            // since are never guarded, so "ok" sent at once still goes.
-            if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: true, ComposerBox.Text))
-            {
-                Send();
-            }
+            PutNewLine(ComposerBox);
+            return;
+        }
+        // Enter is the slot's activation in rows 2 to 5 (S1.3), so it waits out the slot's guard as a click does: a second
+        // Enter after the slot's Stop in row 3 must not send the words the note is being staged beside (S1.1). Words typed
+        // since are never guarded, so "ok" sent at once still goes.
+        if (!slotGuard.IgnoresFieldKey(Environment.TickCount64, e.KeyStatus.WasKeyDown, sends: true, ComposerBox.Text))
+        {
+            Send();
         }
     }
 

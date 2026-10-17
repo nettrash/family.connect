@@ -514,7 +514,8 @@ pub fn seek_by_key(key: &str, at: f64, total: f64) -> Option<f64> {
 /// Where a pointer `x` across a waveform from `left` that is `width` wide
 /// puts the position of a message `total` seconds long.
 pub fn seek_by_pointer(x: f64, left: f64, width: f64, total: f64) -> f64 {
-    if !(width > 0.0) || !x.is_finite() {
+    // NaN is not a width either.
+    if width.is_nan() || width <= 0.0 || !x.is_finite() {
         return 0.0;
     }
     (((x - left) / width).clamp(0.0, 1.0) * total).clamp(0.0, total)

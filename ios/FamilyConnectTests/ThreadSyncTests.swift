@@ -232,13 +232,23 @@ struct ThreadSyncTests {
     /// fold must not count it again — it is not a live arrival.
     @Test("a thread page reconciling a pending own reply does not double count")
     func threadPageReconcilingOwnReplyDoesNotDoubleCount() async throws {
-        var pendingClientMsgID = ""
+        // The id the stub answers with, known only after the reply is queued:
+        // set here, read on the URL loading thread.
+        final class PendingID: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored = ""
+            var value: String {
+                get { lock.withLock { stored } }
+                set { lock.withLock { stored = newValue } }
+            }
+        }
+        let pendingClientMsgID = PendingID()
         let harness = try makeHarness(host: "thread-sync-fold.test") { _ in
             .json(200, """
                 {"messages": [
                   {"id": 100, "chat_id": 42, "sender_id": 9, "client_msg_id": "c-100",
                    "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:00Z", "reply_count": 1},
-                  {"id": 102, "chat_id": 42, "sender_id": 7, "client_msg_id": "\(pendingClientMsgID)",
+                  {"id": 102, "chat_id": 42, "sender_id": 7, "client_msg_id": "\(pendingClientMsgID.value)",
                    "body": "Pizza then?", "created_at": "2026-08-19T17:06:00Z",
                    "reply_to": {"message_id": 100, "sender_id": 9, "excerpt": "Dinner at 7?"},
                    "thread_root_id": 100}
@@ -250,7 +260,7 @@ struct ThreadSyncTests {
         let localID = try #require(harness.coordinator.enqueue(
             body: "Pizza then?", in: 42,
             replyTo: ReplyToDTO(messageID: 100, senderID: 9, excerpt: "Dinner at 7?")))
-        pendingClientMsgID = try #require(harness.message(localID: localID)?.clientMsgID)
+        pendingClientMsgID.value = try #require(harness.message(localID: localID)?.clientMsgID)
 
         #expect(await harness.coordinator.loadThread(chatID: 42, rootID: 100))
 

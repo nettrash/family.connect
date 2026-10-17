@@ -32,7 +32,7 @@ object PushLanguage {
 }
 
 class ResourcePushLanguageProvider @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) : PushLanguageProvider {
     override fun shownLanguage(): String = PushLanguage.of(context.getString(R.string.push_language))
 }

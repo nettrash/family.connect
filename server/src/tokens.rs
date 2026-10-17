@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn the_invite_alphabet_has_no_easily_confused_glyphs() {
-        for banned in [b'0', b'1', b'I', b'L', b'O', b'U'] {
+        for banned in *b"01ILOU" {
             assert!(!INVITE_ALPHABET.contains(&banned));
         }
     }
