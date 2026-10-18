@@ -23,6 +23,12 @@ internal static class AppFolders
     /// </summary>
     public static string ParkedPath => Path.Combine(Root, "parked");
 
+    /// <summary>
+    /// Formulas, diagrams and graphs this device has drawn (issue #97, <see cref="RichRenderer"/>): a PNG and its metrics each,
+    /// so a message is drawn once rather than every time it scrolls into view. Only a cache — anything in it can be drawn again.
+    /// </summary>
+    public static string RichPath => Path.Combine(Root, "rich");
+
     /// <summary>The SQLite cache: history, the board, and the outbox this device still owes.</summary>
     public static string CachePath
     {

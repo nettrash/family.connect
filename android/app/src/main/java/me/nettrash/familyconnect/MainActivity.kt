@@ -63,6 +63,8 @@ import me.nettrash.familyconnect.navigation.startDestinationFor
 import me.nettrash.familyconnect.ui.components.LocalAttachments
 import me.nettrash.familyconnect.ui.components.LocalAvatars
 import me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator
+import me.nettrash.familyconnect.ui.chat.LocalRichRenderer
+import me.nettrash.familyconnect.rich.RichRenderer
 import me.nettrash.familyconnect.ui.chat.NowPlaying
 import me.nettrash.familyconnect.ui.chat.AppVideoMessageRecorder
 import me.nettrash.familyconnect.ui.chat.LocalVideoMessageRecorder
@@ -106,6 +108,14 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var videoRecorder: AppVideoMessageRecorder
 
+    /**
+     * Draws formulas, diagrams and graphs in chat bubbles (#97): one hidden
+     * web view and the drawings it made, app-scoped so neither is rebuilt
+     * with the activity.
+     */
+    @Inject
+    lateinit var richRenderer: RichRenderer
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -124,6 +134,7 @@ class MainActivity : ComponentActivity() {
                 LocalAttachments provides attachments,
                 LocalPlaybackCoordinator provides nowPlaying,
                 LocalVideoMessageRecorder provides videoRecorder,
+                LocalRichRenderer provides richRenderer,
             ) {
                 val boot by viewModel.bootState.collectAsStateWithLifecycle()
                 val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()

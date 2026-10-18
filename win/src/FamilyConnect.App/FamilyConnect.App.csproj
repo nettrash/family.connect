@@ -81,6 +81,11 @@
     <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- The page a call's media runs in, served to the app's own browser engine from beside the executable. -->
     <Content Include="Assets\Call\*.html" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      What draws formulas, diagrams and graphs (issue #97): the whole folder, fonts and all, a byte-for-byte copy of web/rich
+      that CI compares with it. Served to the hidden drawing page from beside the executable (Services/RichRenderer.cs).
+    -->
+    <Content Include="Assets\Rich\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />

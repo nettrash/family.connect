@@ -116,6 +116,8 @@ public sealed partial class MainWindow : Window
         WindowIcon.Apply(AppWindow);
         BuildRail();
         callMedia = new Services.WebViewCallMedia(CallMediaView);
+        // Formulas, diagrams and graphs (issue #97): the drawing page is the window's, started only when a bubble first needs it.
+        services.Rich = new Services.RichRenderer(RichStage);
         callCard = new Views.CallCardView(services, CallCard, CallFace, CallName, CallStatus, CallPicture, CallActions, DispatcherQueue);
         Startup.Step("call card ready");
 

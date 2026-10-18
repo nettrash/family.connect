@@ -648,9 +648,10 @@ struct MacMessageRow: View {
                 MessageBodyBlocks(
                     blocks: bodyBlocks,
                     isStreaming: isStreaming,
-                    isMine: isMine
+                    isMine: isMine,
+                    onDoubleTap: { quickHeart() }
                 ) { text, carriesCursor in
-                    Text(text)
+                    text
                         .font(emojiFont)
                         .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .bottomTrailing) {
@@ -1093,7 +1094,8 @@ struct MacMessageRow: View {
     /// against the grid instead of floating narrow beside it — the Mac's
     /// half of what the phone calls `fillsBalloonWidth`.
     private var hasTable: Bool {
-        bodyBlocks.contains { $0.isTable }
+        // A drawing (#97) sets the balloon's width the same way.
+        bodyBlocks.contains { $0.isTable || $0.isRich }
     }
 
     /// A table or a POLL has already decided how wide the balloon is, so

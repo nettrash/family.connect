@@ -790,6 +790,13 @@ struct ConversationView: View {
                 guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
+            .onChange(of: RichRenderer.shared.generation) {
+                // A formula, a diagram or a graph was drawn (#97): the
+                // bubble swapped its source for the picture and changed
+                // height — the link card's problem, the link card's repair.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
             .onChange(of: chats.first?.maxReactionSeq) {
                 // Reaction catch-up landed: chip rows above the viewport
                 // grew, and the preserved pixel offset would slide the
@@ -1923,6 +1930,7 @@ struct ConversationView: View {
     /// The message field.
     private var messageField: some View {
         TextField("Message", text: typedDraft, axis: .vertical)
+            .proseTextEntry()
             .focused($inputFocused)
             // The backstop for the door this side does not own:
             // the field's OWN paste — the edit menu's Paste item,

@@ -27,6 +27,7 @@ use yew::prelude::*;
 use crate::model::{Assistant, Member, Mention};
 use crate::recorder::now_ms;
 use crate::store::Draft;
+use crate::views::capitals;
 use crate::views::consent::AssistantConsentBar;
 use crate::views::quiet::LiveRegion;
 
@@ -387,6 +388,9 @@ pub fn composer(props: &ComposerProps) -> Html {
     let notice = use_state(|| Option::<String>::None);
     let active = use_state(|| 0usize);
     let area = use_node_ref();
+    // Capitals at a sentence's start, on a computer (#97) — the composer is
+    // the chat's, the thread's and an edit's field alike.
+    capitals::use_capitals(area.clone());
     // The draft in progress when an edit began — set aside, and back when
     // the edit is done, the way the apps do it.
     let aside = use_mut_ref(|| Option::<String>::None);
@@ -1381,6 +1385,9 @@ pub fn composer(props: &ComposerProps) -> Html {
                     ref={area}
                     class={classes!(door_shown.then_some("has-door"))}
                     aria-label={t("Message")}
+                    // A phone's keyboard capitalises sentences once asked;
+                    // a computer gets the built-in rule (`use_capitals`).
+                    autocapitalize="sentences"
                     rows="1"
                     hidden={recording_now}
                     value={(*text).clone()}
@@ -1413,31 +1420,8 @@ fn makes_line(event: &KeyboardEvent) -> bool {
 /// replaced and that `input` sent by hand.
 fn new_line(event: &KeyboardEvent) {
     let area: HtmlTextAreaElement = event.target_unchecked_into();
-    let inserted = web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
-        .is_some_and(|document| {
-            document
-                .exec_command_with_show_ui_and_value("insertText", false, "\n")
-                .unwrap_or(false)
-        });
-    if inserted {
-        return;
-    }
-    let (Ok(Some(start)), Ok(Some(end))) = (area.selection_start(), area.selection_end()) else {
-        return;
-    };
-    if area
-        .set_range_text_with_start_and_end_and_mode("\n", start, end, "end")
-        .is_err()
-    {
-        return;
-    }
-    let init = web_sys::EventInit::new();
-    init.set_bubbles(true);
-    if let Ok(input) = web_sys::Event::new_with_event_init_dict("input", &init) {
-        let _ = area.dispatch_event(&input);
-    }
+    // (The same insertion the built-in capitals use, #97.)
+    capitals::insert_at_caret(&area, "\n");
 }
 
 /// "Record Video Message" in the microphone's menu (S1.6): it opens the
@@ -2655,6 +2639,105 @@ mod tests {
             "milk\neggs",
             "the composer heard the line"
         );
+        mounted.gone();
+    }
+
+    /// One character from the keyboard, as `beforeinput` brings it. A
+    /// synthetic one puts nothing in by itself: whatever the field holds
+    /// after it is what the composer's own handler put there.
+    fn typing(area: &HtmlTextAreaElement, data: &str) -> web_sys::InputEvent {
+        let init = web_sys::InputEventInit::new();
+        init.set_input_type("insertText");
+        init.set_data(Some(data));
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let event = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        area.dispatch_event(&event).unwrap();
+        event
+    }
+
+    /// #97: on a computer, the first letter of a sentence goes in as its
+    /// capital — through `insertText`, so the field's Undo and the
+    /// composer's own value both have it — and a Backspace pressed straight
+    /// after puts the lower-case letter back instead of deleting it. A
+    /// second Backspace is an ordinary one; so is one after any other key.
+    #[wasm_bindgen_test]
+    async fn a_sentences_first_letter_is_its_capital_and_backspace_takes_it_back() {
+        capitals::tests::as_computer(Some(true));
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, None)).await;
+        mounted.type_in("Hi. ").await;
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(
+            area.get_attribute("autocapitalize").as_deref(),
+            Some("sentences")
+        );
+        area.focus().unwrap();
+        area.set_selection_range(4, 4).unwrap();
+
+        let typed = typing(&area, "h");
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(typed.default_prevented(), "the composer put the letter in");
+        assert_eq!(area.value(), "Hi. H");
+        assert_eq!(area.selection_start().unwrap(), Some(5));
+
+        let back = key(area.unchecked_ref(), "Backspace", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(
+            back.default_prevented(),
+            "the Backspace took the capital back"
+        );
+        assert_eq!(area.value(), "Hi. h");
+        assert_eq!(area.selection_start().unwrap(), Some(5));
+        let again = key(area.unchecked_ref(), "Backspace", false);
+        assert!(!again.default_prevented(), "the second is the browser's");
+
+        // What goes is what the box shows: Yew's value kept up.
+        key(area.unchecked_ref(), "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1);
+        assert_eq!(heard.sent.borrow()[0].body, "Hi. h");
+
+        // Another key in between, and the Backspace is an ordinary one.
+        mounted.type_in("Ok. ").await;
+        area.set_selection_range(4, 4).unwrap();
+        assert!(typing(&area, "s").default_prevented());
+        assert_eq!(area.value(), "Ok. S");
+        assert!(!key(area.unchecked_ref(), "ArrowLeft", false).default_prevented());
+        area.set_selection_range(5, 5).unwrap();
+        assert!(!key(area.unchecked_ref(), "Backspace", false).default_prevented());
+        assert_eq!(area.value(), "Ok. S");
+
+        // Not a sentence's start, a capital already, a selection's start
+        // that is not one: the letter is the browser's to put in.
+        for (words, at, letter) in [("hi ", 3, "t"), ("Hi. ", 4, "T"), ("Use `x. ", 8, "y")] {
+            mounted.type_in(words).await;
+            area.set_selection_range(at, at).unwrap();
+            assert!(
+                !typing(&area, letter).default_prevented(),
+                "{words:?} + {letter}"
+            );
+            assert_eq!(area.value(), words);
+        }
+        // Typed over a selection, the rule reads what is before it — the
+        // Mac's reading — and the capital replaces the selection.
+        mounted.type_in("Done. xyz").await;
+        area.set_selection_range(6, 9).unwrap();
+        assert!(typing(&area, "n").default_prevented());
+        assert_eq!(area.value(), "Done. N");
+
+        // A phone or a tablet: its keyboard's job, not the composer's.
+        capitals::tests::as_computer(Some(false));
+        mounted.type_in("").await;
+        area.set_selection_range(0, 0).unwrap();
+        assert!(!typing(&area, "h").default_prevented());
+        capitals::tests::as_computer(None);
         mounted.gone();
     }
 

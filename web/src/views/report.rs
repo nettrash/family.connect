@@ -6,6 +6,7 @@
 use fc_text::i18n::{t, t1};
 use yew::prelude::*;
 
+use crate::views::capitals;
 use crate::views::dialog::Modal;
 
 /// Who is being reported, and for which message if any.
@@ -127,6 +128,10 @@ pub fn assistant_report_dialog(props: &AssistantReportProps) -> Html {
     // about a model's answer is not what they reach for about a person.
     let reason = use_state(|| "inappropriate".to_string());
     let note = use_state(String::new);
+    // The note is prose: capitalised at a sentence's start on a computer
+    // (#97).
+    let note_field = use_node_ref();
+    capitals::use_capitals(note_field.clone());
     let choose = |code: &'static str| {
         let reason = reason.clone();
         Callback::from(move |_: Event| reason.set(code.to_string()))
@@ -179,8 +184,10 @@ pub fn assistant_report_dialog(props: &AssistantReportProps) -> Html {
                     }) }
                 </fieldset>
                 <textarea
+                    ref={note_field}
                     class="note"
                     rows="3"
+                    autocapitalize="sentences"
                     maxlength={NOTE_LIMIT.to_string()}
                     placeholder={t("Say something about it (optional)")}
                     value={(*note).clone()}

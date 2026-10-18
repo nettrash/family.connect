@@ -71,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -224,7 +225,28 @@ private fun ZoomablePhoto(
     val full = rememberAttachmentImage(attachment, preview = false)
     val preview = rememberAttachmentImage(attachment, preview = true)
     val image = full ?: preview
+    if (image == null) {
+        CircularProgressIndicator(color = Color.White)
+        return
+    }
+    ZoomableImage(
+        image = image,
+        contentDescription = stringResource(R.string.s_photo),
+        onZoomedChange = onZoomedChange,
+    )
+}
 
+/**
+ * One picture, full size: pinch and double-tap to zoom, drag to pan while
+ * zoomed — the photo viewer's own behaviour, shared by a photo page and a
+ * rich block's drawing (#97) so the two zoom the same way.
+ */
+@Composable
+private fun ZoomableImage(
+    image: ImageBitmap,
+    contentDescription: String?,
+    onZoomedChange: (Boolean) -> Unit,
+) {
     // Float state, not boxed: these change on every frame of a pinch.
     var zoom by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
@@ -241,13 +263,9 @@ private fun ZoomablePhoto(
         offsetY = 0f
     }
 
-    if (image == null) {
-        CircularProgressIndicator(color = Color.White)
-        return
-    }
     Image(
         bitmap = image,
-        contentDescription = stringResource(R.string.s_photo),
+        contentDescription = contentDescription,
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()
@@ -281,6 +299,54 @@ private fun ZoomablePhoto(
                 translationY = offsetY,
             ),
     )
+}
+
+/**
+ * A rich block's drawing — a diagram or a graph — full size and zoomable
+ * (#97, the design doc's "In the bubble": "using the client's own photo
+ * viewer where it has one"). The photo viewer's dialog and its zoom, minus
+ * the pager and minus Save and Share: those act on an attachment, and a
+ * drawing is not one — what the message holds is its source, which copy
+ * already hands on.
+ *
+ * The drawing keeps its own card, so it reads on the viewer's black the
+ * way it reads in the bubble.
+ */
+@Composable
+internal fun RichDrawingViewer(
+    image: ImageBitmap,
+    contentDescription: String,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            ZoomableImage(
+                image = image,
+                contentDescription = contentDescription,
+                onZoomedChange = {},
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.45f),
+                    contentColor = Color.White,
+                ),
+            ) {
+                Icon(imageVector = Icons.Filled.Close, contentDescription = stringResource(R.string.s_close))
+            }
+        }
+    }
 }
 
 /**

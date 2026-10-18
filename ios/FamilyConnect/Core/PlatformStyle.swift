@@ -68,6 +68,24 @@ extension View {
         #endif
     }
 
+    /// Text entry somebody writes SENTENCES in — the composer, a thread
+    /// reply, a note, a list's line, a poll, a report's note (#97,
+    /// docs/capitals-and-rich-markdown-2026-10-17.md, "Who already has
+    /// them"). iOS's keyboard capitalises sentences by default already;
+    /// this says so explicitly, so the list of prose fields is written
+    /// down in the code rather than inherited from a default that could
+    /// change, and matches Android's `KeyboardCapitalization.Sentences`
+    /// field for field. The Mac has no keyboard capitalisation to ask for —
+    /// MacCapitalKeys does it there, on the multi-line fields.
+    @ViewBuilder
+    func proseTextEntry() -> some View {
+        #if os(iOS)
+        textInputAutocapitalization(.sentences)
+        #else
+        self
+        #endif
+    }
+
     /// `navigationBarTitleDisplayMode(.inline)`, which does not exist on
     /// macOS — a Mac window title has no large/inline distinction.
     @ViewBuilder

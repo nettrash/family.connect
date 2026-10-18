@@ -246,6 +246,7 @@ internal fun AssistantReportSheet(
                 label = { Text(stringResource(R.string.s_say_something_about_it_optional)) },
                 minLines = 3,
                 maxLines = 6,
+                keyboardOptions = ProseKeyboard.Sentences,
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(

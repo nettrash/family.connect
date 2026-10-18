@@ -42,6 +42,7 @@ public class MarkdownOracleTests
                 MarkdownFace.Monospaced => "mono",
                 _ => "body",
             },
+            ["math"] = run.Style.Math,
         }),
     ];
 
@@ -64,6 +65,14 @@ public class MarkdownOracleTests
                 },
             },
             MarkdownTextBlock { Text: var text } => new JsonObject { ["text"] = Text(text) },
+            // Issue #97: a formula, a diagram or a graph standing on its own.
+            MarkdownRichBlock rich => new JsonObject
+            {
+                ["rich"] = new JsonObject
+                {
+                    ["kind"] = rich.Kind.Word(), ["engine"] = rich.Engine, ["source"] = rich.Source, ["shown"] = rich.Shown,
+                },
+            },
             _ => throw new InvalidOperationException(),
         })),
     ];
@@ -109,18 +118,20 @@ public class MarkdownOracleTests
         Assert.True(failures.Count == 0, $"{aspect}: {failures.Count} of {Cases.Count} differ\n{string.Join("\n", failures.Take(12))}");
     }
 
-    /// <summary>The corpus reaches what it claims to: tables, links, the assistant's tokens.</summary>
+    /// <summary>The corpus reaches what it claims to: tables, rich blocks, formulas, links, the assistant's tokens.</summary>
     [Fact]
     public void TheCorpusCoversEveryPart()
     {
         Assert.True(Cases.Count(item => item!["blocks"]!.AsArray().Any(block => block!["table"] is not null)) >= 20, "tables");
+        Assert.True(Cases.Count(item => item!["blocks"]!.AsArray().Any(block => block!["rich"] is not null)) >= 40, "rich blocks");
+        Assert.True(Cases.Count(item => item!["render"]!.AsArray().Any(run => run!["math"] is not null)) >= 150, "formulas");
         Assert.True(Cases.Count(item => item!["merged"]!.AsArray().Count > 0) >= 500, "links");
         Assert.True(Cases.Count(item => item!["render"]!.AsArray().Any(run => run!["link"] is not null)) >= 100, "markdown links");
         Assert.True(Cases.Count(item => item!["assistant_ranges"]!.AsArray().Count > 0) >= 100, "@ai");
         Assert.True(Cases.Count(item => item!["draw_range"] is not null) >= 10, "/draw");
     }
 
-    /// <summary>The blocks a bubble draws: runs and their styles, headings, bullets, fences and tables.</summary>
+    /// <summary>The blocks a bubble draws: runs and their styles, headings, bullets, fences, tables, rich blocks and formulas.</summary>
     [Fact]
     public void BlocksAreTheOriginals() => Check("blocks", (item, body) => (item["blocks"], Blocks(body)));
 

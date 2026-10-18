@@ -297,6 +297,19 @@ def corpus():
         if body not in seen:
             seen.add(body)
             bodies.append(body)
+    # Then bodies built from what issue #97 added: rich fences, display and inline formulas, and the money, code spans,
+    # escapes and links they must leave alone.
+    rich = ['$', '$$', '$x$', '$5', ' and ', '\\(', '\\)', '\\[', '\\]', '\\$', '\\', '`', '``', '```math\n', '```Mermaid x\n',
+            '```neato\n', '```gv\n', '```plot\n', '```js\n', '```\n', '\n```\n', '\n', ' ', '  ', '\t', 'x', 'a_1', '5', '_', '€',
+            'é', 'п', '\U0001F600', '\u0301', '*', '**', '~', '[a](', ')', '](', 'https://e.com/', 'me@e.com', '<b>', '&amp;', '| a |',
+            '|---|', '| $c$ |', '@ai', '# ', '- ', '1. ', 'x^2', '\\frac{a}{b}']
+    generator = random.Random(66)
+    wanted = len(bodies) + 600
+    while len(bodies) < wanted:
+        body = ''.join(generator.choice(rich) for _ in range(generator.randint(1, 20)))
+        if body not in seen:
+            seen.add(body)
+            bodies.append(body)
     path = ORACLE / 'corpus' / 'markdown.json'
     path.parent.mkdir(exist_ok=True)
     write_if_changed(path, json.dumps(bodies, ensure_ascii=False, indent=0) + '\n')

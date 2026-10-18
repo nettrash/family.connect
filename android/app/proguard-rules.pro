@@ -33,3 +33,13 @@ me.nettrash.familyconnect.**
     public static ** INSTANCE;
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# The rich blocks' page (#97) calls back into RichHost by NAME —
+# `window.FcRichBridge.done(json)` from fc-rich.js — so the bridge's
+# JavaScript-facing methods must keep their names through R8. AGP's default
+# file carries the same rule for every class; said here as well, because a
+# renamed `done` fails silently: every drawing times out and every rich
+# block shows its source forever.
+-keepclassmembers class me.nettrash.familyconnect.rich.RichHost$Bridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

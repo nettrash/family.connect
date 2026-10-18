@@ -120,6 +120,7 @@ struct NoteTaskRow: View {
             .accessibilityAddTraits(done ? [.isButton, .isSelected] : .isButton)
             if canEdit {
                 TextField("Thing to do", text: $text)
+                    .proseTextEntry()
                     .textFieldStyle(.plain)
                 if let onRemove {
                     Button(role: .destructive, action: onRemove) {

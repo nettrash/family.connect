@@ -54,6 +54,26 @@ public sealed class BubbleBodyTests
         Assert.All(Runs(blocks[2]), run => Assert.False(run.Marked));
     }
 
+    /// <summary>A formula, diagram or graph is a block of its own (issue #97), and an inline formula a run of its own with nothing over it.</summary>
+    [Fact]
+    public void RichBlocksAndFormulasReachTheWindow()
+    {
+        MentionDto[] named = [new(7, "Anna")];
+        var blocks = Lay("Area $\\pi r^2$ for @Anna\n```neato\ngraph {a--b}\n```\n$$\n\\sum_i x_i\n$$\nDone $https://e.com$", named);
+        Assert.Equal(4, blocks.Count);
+        var area = Runs(blocks[0]);
+        var formula = Assert.Single(area, run => run.Math is not null);
+        Assert.Equal(("$\\pi r^2$", "\\pi r^2"), (formula.Text, formula.Math));
+        Assert.True(Find(area, "@Anna").Marked);
+        Assert.Equal(new BodyRichBlock(RichKind.Graphviz, "neato", "graph {a--b}"), blocks[1]);
+        // Drawn from the source; shown, until then, as typed — delimiters and all.
+        Assert.Equal(new BodyRichBlock(RichKind.Math, "", "\\sum_i x_i") { Shown = "$$\n\\sum_i x_i\n$$" }, blocks[2]);
+        Assert.Equal("graph {a--b}", ((BodyRichBlock)blocks[1]).Shown);
+        var link = Assert.Single(Runs(blocks[3]), run => run.Math is not null);
+        Assert.Null(link.Link);
+        Assert.False(link.Marked);
+    }
+
     /// <summary>Only an absolute http(s), mailto or tel target is handed to the system.</summary>
     [Fact]
     public void OnlyWebMailAndPhoneTargetsOpen()

@@ -5,17 +5,46 @@
 //! so every rule here is the Swift rule, including the ones that look odd.
 //!
 //! `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[label](url)`,
-//! `\escapes` and ```` ```fenced``` ```` blocks inline; `# ` through `### `
-//! headings, `- `/`* `/`+ ` bullets and GFM pipe tables at the start of a
-//! line.
+//! `\escapes`, inline formulas (`$…$`, `$$…$$`, `\(…\)`) and
+//! ```` ```fenced``` ```` blocks inline; `# ` through `### ` headings,
+//! `- `/`* `/`+ ` bullets and GFM pipe tables at the start of a line; and the
+//! RICH blocks of issue #97 — a fence tagged `math`, `mermaid`, `dot` (and
+//! the rest of docs/protocol.md's table) or `plot`, and display math (`$$…$$`
+//! or `\[…\]` on lines of their own), which a bubble DRAWS rather than sets
+//! in type.
 //!
 //! HEADINGS AND BULLETS ARE RUNS, NOT BLOCKS, exactly as on Apple: a heading
 //! changes a font and a bullet replaces two characters, so both live inside
 //! the one [`Text`] a bubble draws. Only a body that actually contains a table
-//! becomes more than one [`Block`]. That is what keeps every offset-based pass
-//! downstream — link detection, the `@ai` highlight, member mentions — working
-//! over ONE string per text block, which is the order the Apple client runs
-//! them in (see "Composition" below).
+//! or a rich block becomes more than one [`Block`]. That is what keeps every
+//! offset-based pass downstream — link detection, the `@ai` highlight, member
+//! mentions — working over ONE string per text block, which is the order the
+//! Apple client runs them in (see "Composition" below).
+//!
+//! # Formulas, diagrams and graphs (issue #97)
+//!
+//! docs/protocol.md, "Rich blocks: formulas, diagrams and graphs", is the
+//! contract — written as rules rather than examples, because four parsers
+//! (Swift, Kotlin, C#, this one) must agree on every body. In short:
+//!
+//! - a fence whose info string's first word, lower-cased in ASCII, is a tag
+//!   in the protocol's table is a [`Block::Rich`] instead of code; any other
+//!   tag, or none, is a code block as before, and its tag is still dropped;
+//! - display math is looked for after fences and BEFORE tables: a line whose
+//!   first non-blank characters are `$$` or `\[`, closed by the first `$$`
+//!   or `\]` after it with nothing but spaces and tabs after the closer;
+//! - a rich block splits the text around it exactly as a table does;
+//! - inline math is an INLINE RULE of the cmark port below, tried at `$` and
+//!   at `\(` — after code spans (a code span that would open inside a
+//!   formula's candidate stops it), never in a link destination (cmark scans
+//!   a destination raw, so the rule never sees one), and atomic: whatever is
+//!   inside is not markdown. It comes out as a run whose text is exactly what
+//!   was typed, delimiters and all, carrying the formula in [`Style::math`].
+//!
+//! Only [`blocks`] recognises the rich BLOCKS: [`render`], which the preview
+//! card indexes, sees a rich fence as the code block an older client draws
+//! and display math as the text it was typed as. Inline math is a run in
+//! both.
 //!
 //! This is a RENDERING convention, not a wire format (docs/protocol.md, "A body
 //! is plain text on the wire"): the server never parses any of it, and a
@@ -88,9 +117,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// One piece of a laid-out message body.
 ///
-/// A body with no table is exactly ONE [`Block::Text`] — the invariant the
-/// whole bubble rests on (one laid-out string, one offset space). Only a
-/// table splits a body.
+/// A body with no table and no rich block is exactly ONE [`Block::Text`] —
+/// the invariant the whole bubble rests on (one laid-out string, one offset
+/// space). Only a table or a rich block splits a body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     /// A run of text laid out as one string: headings, bullets and fenced
@@ -98,12 +127,69 @@ pub enum Block {
     Text(Text),
     /// A GFM pipe table.
     Table(Table),
+    /// A formula, a diagram or a graph standing on its own (issue #97).
+    Rich(Rich),
 }
 
 impl Block {
     /// Swift's `Block.isTable`.
     pub fn is_table(&self) -> bool {
         matches!(self, Block::Table(_))
+    }
+}
+
+/// A block a bubble DRAWS rather than sets in type: what to draw it with and
+/// what to draw (docs/protocol.md, "Rich blocks: formulas, diagrams and
+/// graphs").
+///
+/// Until it has been drawn — and for good when it cannot be — a client shows
+/// [`Rich::source`] in the monospaced face, as it shows a code block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rich {
+    pub kind: RichKind,
+    /// Graphviz's layout engine: `dot` unless the fence was tagged with
+    /// another layout's name (`neato`, `circo`, …). EMPTY for every other
+    /// kind.
+    pub engine: String,
+    /// The fence's content exactly as a code block's would be, or a display
+    /// formula's content trimmed of spaces, tabs and newlines. Never empty
+    /// for display math; a fence may be.
+    pub source: String,
+    /// What a bubble SHOWS until the block is drawn, and for good when it
+    /// cannot be: a fence's content, exactly as a code block shows it (the
+    /// fences and the tag are not shown — this equals `source`), or a display
+    /// formula AS TYPED, delimiters and all — from the opener's first
+    /// character through the closer, the lines between kept whole. It is the
+    /// fallback and nothing else: what is drawn, and any cache key, come from
+    /// `source` alone. (Swift's `RichBlock.fallback`, Kotlin's `Rich.shown`.)
+    pub shown: String,
+}
+
+/// Which engine draws a [`Rich`] block. [`RichKind::word`] is the `kind` of
+/// the job a client hands `fc-rich.js` (an inline formula's job says
+/// `math-inline`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RichKind {
+    /// KaTeX: a `math`, `latex` or `tex` fence, or display math.
+    Math,
+    /// Mermaid: a `mermaid` fence.
+    Mermaid,
+    /// Graphviz: a `dot`, `graphviz` or `gv` fence, or one named after a
+    /// layout engine.
+    Graphviz,
+    /// md's plotter: a `plot` fence.
+    Plot,
+}
+
+impl RichKind {
+    /// The protocol's word for it: `math`, `mermaid`, `graphviz` or `plot`.
+    pub fn word(self) -> &'static str {
+        match self {
+            RichKind::Math => "math",
+            RichKind::Mermaid => "mermaid",
+            RichKind::Graphviz => "graphviz",
+            RichKind::Plot => "plot",
+        }
     }
 }
 
@@ -130,12 +216,15 @@ impl Text {
 
     /// Append `text` drawn with `style`, merging into the last span when the
     /// style is the same, the way `AttributedString` coalesces runs.
+    ///
+    /// Except a formula: two formulas side by side with the same source
+    /// (`\(a\)\(a\)`) are two drawings, and merged they would be one.
     fn push(&mut self, text: &str, style: Style) {
         if text.is_empty() {
             return;
         }
         if let Some(last) = self.spans.last_mut() {
-            if last.style == style {
+            if last.style == style && style.math.is_none() {
                 last.text.push_str(text);
                 return;
             }
@@ -203,6 +292,12 @@ pub struct Style {
     pub link: Option<Link>,
     /// `![alt](src)`: Apple carries the source but draws only the alt text.
     pub image: Option<Link>,
+    /// An inline formula (issue #97): the source KaTeX draws, without its
+    /// delimiters. The run's TEXT is what was typed — `$x^2$`, delimiters
+    /// and all — which is what a client shows until the drawing lands, or
+    /// when it cannot be drawn. A formula is always a run of its own, and no
+    /// link, `@ai` or mention may be laid over it.
+    pub math: Option<String>,
     /// The face the whole run is set in.
     pub font: Font,
 }
@@ -277,14 +372,16 @@ pub enum ColumnAlignment {
 
 /// A message body as the blocks it lays out in — what a bubble draws.
 ///
-/// The ONLY thing that splits a body is a table; everything else is a run
-/// inside a text block. Never empty: an empty body is one empty text block.
+/// The ONLY things that split a body are a table and a rich block;
+/// everything else is a run inside a text block. Never empty: an empty body
+/// is one empty text block.
 pub fn blocks(body: &str) -> Vec<Block> {
     parse(body, true)
 }
 
-/// A message body as ONE string, tables NOT recognised — a pipe table comes
-/// back as the rows that were typed.
+/// A message body as ONE string, tables and rich blocks NOT recognised — a
+/// pipe table comes back as the rows that were typed, a rich fence as the
+/// code block an older client draws, display math as its typed lines.
 ///
 /// This is what the link preview card and the Swift tests index; [`blocks`]
 /// is what the balloon draws.
@@ -298,18 +395,22 @@ pub fn render(body: &str) -> Text {
     out
 }
 
-/// A run of lines that renders as text, or a table that does not.
+/// A run of lines that renders as text, or a table or rich block that does
+/// not.
 enum Piece {
     Lines(Text),
     Table(Table),
+    Rich(Rich),
 }
 
-/// Fences first, then line structure inside each plain segment: the whole
-/// point of a fence is that what is inside it is not markup.
+/// Fences first, then display math, then line structure inside each plain
+/// segment: the whole point of a fence is that what is inside it is not
+/// markup. `tables` is "lay out as blocks": off, neither tables nor rich
+/// blocks are recognised.
 fn parse(body: &str, tables: bool) -> Vec<Block> {
     let mut out = Vec::new();
     let mut current = Text::default();
-    for segment in segments(body) {
+    for segment in segments(body, tables) {
         match segment {
             Segment::Code(code) => {
                 let style = Style {
@@ -317,6 +418,13 @@ fn parse(body: &str, tables: bool) -> Vec<Block> {
                     ..Style::default()
                 };
                 current.push(&code, style);
+            }
+            // A rich fence stands alone, as a table does.
+            Segment::Rich(rich) => {
+                if !current.is_empty() {
+                    out.push(Block::Text(std::mem::take(&mut current)));
+                }
+                out.push(Block::Rich(rich));
             }
             Segment::Text(text) => {
                 // Newlines BETWEEN pieces, never around a table: the lines a
@@ -338,6 +446,15 @@ fn parse(body: &str, tables: bool) -> Vec<Block> {
                             out.push(Block::Table(table));
                             needs_separator = false;
                         }
+                        // Exactly as a table: the lines it swallowed take
+                        // their separators with them.
+                        Piece::Rich(rich) => {
+                            if !current.is_empty() {
+                                out.push(Block::Text(std::mem::take(&mut current)));
+                            }
+                            out.push(Block::Rich(rich));
+                            needs_separator = false;
+                        }
                     }
                 }
             }
@@ -355,9 +472,10 @@ fn parse(body: &str, tables: bool) -> Vec<Block> {
 
 /// Split one fence-free segment into the pieces it lays out in.
 ///
-/// Consecutive ORDINARY lines are inline-parsed together, so emphasis can
-/// span a line break and a message with no markers comes back as typed. Only
-/// a heading or a bullet line is parsed on its own.
+/// Display math first, over the whole segment (docs/protocol.md: "looked
+/// for only outside fences, and before tables"), so a table never reaches
+/// into the lines of a formula; then the line structure of what lies
+/// between, exactly as before #97.
 ///
 /// The split is on U+000A only — Foundation's `components(separatedBy:)`
 /// splits a `\r\n` in two, leaving the `\r` on the line, where the inline
@@ -365,6 +483,48 @@ fn parse(body: &str, tables: bool) -> Vec<Block> {
 /// is this one's.
 fn pieces(segment: &str, tables: bool) -> Vec<Piece> {
     let lines: Vec<&str> = segment.split('\n').collect();
+    if !tables {
+        return line_pieces(&lines, false);
+    }
+    let mut pieces = Vec::new();
+    // `start` is the first line not yet laid out.
+    let mut start = 0;
+    let mut index = 0;
+    while index < lines.len() {
+        let Some((source, end)) = display_math(index, &lines) else {
+            index += 1;
+            continue;
+        };
+        if start < index {
+            pieces.extend(line_pieces(&lines[start..index], true));
+        }
+        // As typed: the lines it spans, less the blanks before the opener
+        // and after the closer — which is all that may stand outside them.
+        let shown = lines[index..end]
+            .join("\n")
+            .trim_matches([' ', '\t'])
+            .to_string();
+        pieces.push(Piece::Rich(Rich {
+            kind: RichKind::Math,
+            engine: String::new(),
+            source,
+            shown,
+        }));
+        index = end;
+        start = end;
+    }
+    if start < lines.len() {
+        pieces.extend(line_pieces(&lines[start..], true));
+    }
+    pieces
+}
+
+/// Lines of one segment as the pieces they lay out in.
+///
+/// Consecutive ORDINARY lines are inline-parsed together, so emphasis can
+/// span a line break and a message with no markers comes back as typed. Only
+/// a heading or a bullet line is parsed on its own.
+fn line_pieces(lines: &[&str], tables: bool) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut plain: Vec<&str> = Vec::new();
     let mut index = 0;
@@ -399,7 +559,7 @@ fn pieces(segment: &str, tables: bool) -> Vec<Piece> {
             continue;
         }
         if tables {
-            if let Some((table, end)) = table(index, &lines) {
+            if let Some((table, end)) = table(index, lines) {
                 flush_plain(&mut plain, &mut pieces);
                 pieces.push(Piece::Table(table));
                 index = end;
@@ -411,6 +571,65 @@ fn pieces(segment: &str, tables: bool) -> Vec<Piece> {
     }
     flush_plain(&mut plain, &mut pieces);
     pieces
+}
+
+// MARK: Display math (issue #97)
+
+/// Display math opening at line `index`, as its source and the index of the
+/// first line after it — docs/protocol.md's rule 2, to the letter.
+///
+/// A line whose first characters other than spaces and tabs are `$$` or
+/// `\[` opens it. It closes at the FIRST `$$` or `\]` after the opener, on
+/// the same line or a later one; when anything but spaces and tabs follows
+/// that closer on its line, the lines are not display math at all (the
+/// closer is not skipped in search of a better one). The source is what
+/// lies between, trimmed of spaces, tabs and newlines, and must not then be
+/// empty.
+///
+/// Every delimiter is ASCII, so every slice below is on a character
+/// boundary whatever the lines hold.
+fn display_math(index: usize, lines: &[&str]) -> Option<(String, usize)> {
+    let line = lines[index];
+    let rest = line.trim_start_matches([' ', '\t']);
+    let closer = if rest.starts_with("$$") {
+        "$$"
+    } else if rest.starts_with("\\[") {
+        "\\]"
+    } else {
+        return None;
+    };
+    let mut row = index;
+    let mut from = line.len() - rest.len() + 2;
+    let mut source = String::new();
+    loop {
+        let current = lines[row];
+        if let Some(found) = current[from..].find(closer) {
+            let close = from + found;
+            if !is_blank_space(&current[close + closer.len()..]) {
+                return None;
+            }
+            source.push_str(&current[from..close]);
+            break;
+        }
+        source.push_str(&current[from..]);
+        source.push('\n');
+        row += 1;
+        if row >= lines.len() {
+            return None;
+        }
+        from = 0;
+    }
+    let source = source.trim_matches([' ', '\t', '\n']);
+    if source.is_empty() {
+        return None;
+    }
+    Some((source.to_string(), row + 1))
+}
+
+/// Nothing but spaces and tabs (or nothing at all) — the protocol's own,
+/// deliberately ASCII, idea of a blank.
+fn is_blank_space(text: &str) -> bool {
+    text.bytes().all(|byte| byte == b' ' || byte == b'\t')
 }
 
 // MARK: Swift's string semantics
@@ -717,6 +936,7 @@ fn ends_with_unescaped_pipe(text: &str) -> bool {
 enum Segment {
     Text(String),
     Code(String),
+    Rich(Rich),
 }
 
 /// A line that opens or closes a fence: its first three clusters are
@@ -731,12 +951,51 @@ fn has_fence_prefix(line: &str) -> bool {
     })
 }
 
-/// Split a body into alternating plain and fenced-code segments.
+/// The info string of a fence's opening line: what follows its backticks,
+/// trimmed of spaces and tabs. All of its backticks — a fence opened with
+/// four still has a tag after the fourth.
+fn fence_info(line: &str) -> &str {
+    let mut at = 0;
+    for (offset, cluster) in line.grapheme_indices(true) {
+        if !cluster_is(cluster, '`') {
+            break;
+        }
+        at = offset + cluster.len();
+    }
+    line[at..].trim_matches([' ', '\t'])
+}
+
+/// What a fence's tag draws, if anything: the info string's first word —
+/// up to a space or a tab — lower-cased in ASCII, against docs/protocol.md's
+/// table. The engine is Graphviz's layout, empty for the other kinds.
+fn rich_tag(info: &str) -> Option<(RichKind, &'static str)> {
+    let word = info.split([' ', '\t']).next().unwrap_or("");
+    Some(match word.to_ascii_lowercase().as_str() {
+        "math" | "latex" | "tex" => (RichKind::Math, ""),
+        "mermaid" => (RichKind::Mermaid, ""),
+        "dot" | "graphviz" | "gv" => (RichKind::Graphviz, "dot"),
+        "neato" => (RichKind::Graphviz, "neato"),
+        "circo" => (RichKind::Graphviz, "circo"),
+        "fdp" => (RichKind::Graphviz, "fdp"),
+        "sfdp" => (RichKind::Graphviz, "sfdp"),
+        "twopi" => (RichKind::Graphviz, "twopi"),
+        "osage" => (RichKind::Graphviz, "osage"),
+        "patchwork" => (RichKind::Graphviz, "patchwork"),
+        "plot" => (RichKind::Plot, ""),
+        _ => return None,
+    })
+}
+
+/// Split a body into alternating plain, fenced-code and (when `rich`) rich
+/// segments.
 ///
 /// A fence must OPEN and CLOSE at the start of a line, and an unclosed fence
 /// is not a fence at all — the text stays as typed. The language tag on an
-/// opening fence is dropped.
-fn segments(body: &str) -> Vec<Segment> {
+/// opening fence is dropped, unless it names a rich block (issue #97). A
+/// rich fence stands alone, as a table does: the newlines around it go with
+/// it, where a code block's are kept so its code does not weld onto the
+/// words around it.
+fn segments(body: &str, rich: bool) -> Vec<Segment> {
     // Swift's `body.contains("```")` shortcut. Any fence line needs a
     // backtick (or its twin), so this is only ever a faster way to the same
     // answer.
@@ -747,23 +1006,43 @@ fn segments(body: &str) -> Vec<Segment> {
     let mut plain: Vec<&str> = Vec::new();
     let mut code: Vec<&str> = Vec::new();
     let mut in_fence = false;
+    // What the open fence draws, when its tag names a rich block.
+    let mut drawn: Option<(RichKind, &'static str)> = None;
     for line in body.split('\n') {
         let opens_or_closes = has_fence_prefix(line);
         if !in_fence && opens_or_closes {
             in_fence = true;
+            drawn = if rich {
+                rich_tag(fence_info(line))
+            } else {
+                None
+            };
             // Keep the newline that ENDED the line before the fence, or the
             // code welds onto the last word above it.
-            plain.push("");
+            if drawn.is_none() {
+                plain.push("");
+            }
             continue;
         }
         if in_fence && opens_or_closes {
             in_fence = false;
             result.push(Segment::Text(plain.join("\n")));
             plain.clear();
-            result.push(Segment::Code(code.join("\n")));
+            let content = code.join("\n");
             code.clear();
-            // Keep the newline that ended the fence.
-            plain.push("");
+            match drawn.take() {
+                Some((kind, engine)) => result.push(Segment::Rich(Rich {
+                    kind,
+                    engine: engine.to_string(),
+                    shown: content.clone(),
+                    source: content,
+                })),
+                None => {
+                    result.push(Segment::Code(content));
+                    // Keep the newline that ended the fence.
+                    plain.push("");
+                }
+            }
             continue;
         }
         if in_fence {
@@ -840,6 +1119,13 @@ enum NodeKind {
     /// Apple's `^[text](attributes)`: the text, with attributes Foundation
     /// keeps and SwiftUI does not draw.
     Attributes,
+    /// An inline formula (issue #97): `raw` is what was typed, delimiters
+    /// and all; `source` is what lies between them. A leaf, like a code span:
+    /// nothing inside a formula is markdown.
+    Math {
+        raw: String,
+        source: String,
+    },
 }
 
 struct Node {
@@ -921,6 +1207,11 @@ struct Subject<'a> {
     /// cmark's memo of the last position of a backtick run of each length.
     backticks: Vec<usize>,
     scanned_for_backticks: bool,
+    /// Where the LAST maximal backtick run of each length starts — so the
+    /// formula rules can ask, in constant time, whether a run they meet
+    /// would open a code span (it would when a run of its length comes
+    /// later). See [`Subject::opens_code_span`].
+    last_backtick_run: HashMap<usize, usize>,
 }
 
 /// cmark's `MAXBACKTICKS`: longer runs never open a code span.
@@ -936,9 +1227,21 @@ impl<'a> Subject<'a> {
             first_child: None,
             last_child: None,
         };
+        let bytes = text.as_bytes();
+        let mut last_backtick_run = HashMap::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            if bytes[at] != b'`' {
+                at += 1;
+                continue;
+            }
+            let length = bytes[at..].iter().take_while(|&&b| b == b'`').count();
+            last_backtick_run.insert(length, at);
+            at += length;
+        }
         Subject {
             text,
-            bytes: text.as_bytes(),
+            bytes,
             pos: 0,
             references,
             nodes: vec![root],
@@ -948,6 +1251,7 @@ impl<'a> Subject<'a> {
             no_link_openers: true,
             backticks: vec![0; MAX_BACKTICKS + 1],
             scanned_for_backticks: false,
+            last_backtick_run,
         }
     }
 
@@ -1115,6 +1419,7 @@ impl<'a> Subject<'a> {
             b'<' => Some(self.handle_pointy_brace()),
             b'*' | b'_' => Some(self.handle_delimiter(c)),
             b'~' => Some(self.handle_tilde()),
+            b'$' => Some(self.handle_dollar()),
             b'[' => {
                 self.pos += 1;
                 let node = self.text_node("[");
@@ -1236,9 +1541,20 @@ impl<'a> Subject<'a> {
     }
 
     /// `\` escapes ASCII punctuation, makes a hard break before a newline,
-    /// and is itself anywhere else.
+    /// and is itself anywhere else — and `\(` may open a formula.
+    ///
+    /// Reaching here at all means this backslash is not itself escaped: an
+    /// escaped one was consumed as the second half of `\\`. So `\(` here is
+    /// the protocol's "a `\(` that is not itself escaped".
     fn handle_backslash(&mut self) -> usize {
         self.pos += 1;
+        if self.peek() == Some(b'(') {
+            let start = self.pos - 1;
+            if let Some(close) = self.scan_math_closer(start + 2, b"\\)") {
+                self.pos = close + 2;
+                return self.math_node(start, start + 2, close, close + 2);
+            }
+        }
         match self.peek() {
             Some(c) if c.is_ascii_punctuation() => {
                 self.pos += 1;
@@ -1251,6 +1567,142 @@ impl<'a> Subject<'a> {
             }
             _ => self.text_node("\\"),
         }
+    }
+
+    // MARK: Inline formulas (issue #97, docs/protocol.md rule 4)
+
+    /// `$`: a `$$…$$` formula, else a `$…$` one, else the character.
+    ///
+    /// An escaped `$` never gets here — `\$` is consumed whole by
+    /// [`Subject::handle_backslash`] — which is the protocol's "not escaped"
+    /// for both openers. When `$$` finds no closer the `$…$` rule is tried
+    /// at the same `$`, and fails (a `$` followed by a `$` does not open);
+    /// one `$` is then text and the next is looked at afresh.
+    fn handle_dollar(&mut self) -> usize {
+        let start = self.pos;
+        if self.bytes.get(start + 1) == Some(&b'$') {
+            if let Some(close) = self.scan_math_closer(start + 2, b"$$") {
+                self.pos = close + 2;
+                return self.math_node(start, start + 2, close, close + 2);
+            }
+        }
+        if let Some(close) = self.single_dollar_closer(start) {
+            self.pos = close + 1;
+            return self.math_node(start, start + 1, close, close + 1);
+        }
+        self.pos += 1;
+        self.text_node("$")
+    }
+
+    /// The closer of a `$…$` formula opening at `start`, or `None`.
+    ///
+    /// The opener must not follow a word character or a `$`, and must be
+    /// followed by something other than a space, a tab or a `$`. A closer is
+    /// a later `$` on the same line with neither a space, a tab nor a
+    /// backslash before it and neither a word character nor a `$` after it;
+    /// a candidate that fails is skipped and the search goes on. This guard
+    /// is what keeps money as money: in `$5 and $10` the only candidate has
+    /// a space before it.
+    fn single_dollar_closer(&self, start: usize) -> Option<usize> {
+        let bytes = self.bytes;
+        if start > 0 && (is_word_byte(bytes[start - 1]) || bytes[start - 1] == b'$') {
+            return None;
+        }
+        match bytes.get(start + 1) {
+            None | Some(b' ' | b'\t' | b'$') => return None,
+            Some(_) => {}
+        }
+        let mut at = start + 1;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'\n' => return None,
+                b'`' => {
+                    if self.opens_code_span(at) {
+                        return None;
+                    }
+                    at += backtick_run(bytes, at);
+                    continue;
+                }
+                b'$' => {
+                    let before = bytes[at - 1];
+                    let after = bytes.get(at + 1).copied();
+                    if !matches!(before, b' ' | b'\t' | b'\\')
+                        && !after.is_some_and(|b| is_word_byte(b) || b == b'$')
+                    {
+                        return Some(at);
+                    }
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        None
+    }
+
+    /// Where the first `closer` (`$$` or `\)`) at or after `from` starts, on
+    /// the same line, with something other than spaces and tabs before it —
+    /// or `None`. The first one decides: an empty `$$ $$` is not a formula,
+    /// and is not searched past.
+    fn scan_math_closer(&self, from: usize, closer: &[u8]) -> Option<usize> {
+        let bytes = self.bytes;
+        let mut at = from;
+        while at < bytes.len() {
+            if bytes[at..].starts_with(closer) {
+                let content = &bytes[from..at];
+                return content
+                    .iter()
+                    .any(|&b| b != b' ' && b != b'\t')
+                    .then_some(at);
+            }
+            match bytes[at] {
+                b'\n' => return None,
+                b'`' => {
+                    if self.opens_code_span(at) {
+                        return None;
+                    }
+                    at += backtick_run(bytes, at);
+                }
+                _ => at += 1,
+            }
+        }
+        None
+    }
+
+    /// Whether the backtick run at `at` would open a code span — which a
+    /// formula's search must not cross, because code spans come FIRST
+    /// (docs/protocol.md: "after code spans and never inside one").
+    ///
+    /// cmark opens a span at a run when a later run has exactly its length.
+    /// A run after an odd number of backslashes loses its first backtick to
+    /// the escape, and what is left is the run that might open. The search
+    /// starts just past an opener that is not a backtick, so the run met is
+    /// always maximal on its left.
+    fn opens_code_span(&self, at: usize) -> bool {
+        let run = backtick_run(self.bytes, at);
+        let backslashes = self.bytes[..at]
+            .iter()
+            .rev()
+            .take_while(|&&b| b == b'\\')
+            .count();
+        let (start, length) = if backslashes % 2 == 1 {
+            (at + 1, run - 1)
+        } else {
+            (at, run)
+        };
+        length > 0
+            && length <= MAX_BACKTICKS
+            && self
+                .last_backtick_run
+                .get(&length)
+                .is_some_and(|&last| last > start)
+    }
+
+    /// A formula node over `start..end`, its source `inner..close`. Every
+    /// one of those is next to an ASCII delimiter, so on a char boundary.
+    fn math_node(&mut self, start: usize, inner: usize, close: usize, end: usize) -> usize {
+        let raw = self.text[start..end].to_string();
+        let source = self.text[inner..close].to_string();
+        self.add(NodeKind::Math { raw, source })
     }
 
     fn handle_entity(&mut self) -> usize {
@@ -2014,6 +2466,13 @@ impl<'a> Subject<'a> {
                     ..style.clone()
                 },
             ),
+            NodeKind::Math { raw, source } => out.push(
+                raw,
+                Style {
+                    math: Some(source.clone()),
+                    ..style.clone()
+                },
+            ),
             NodeKind::Emphasis => {
                 style.emphasis = true;
                 self.render_children(node, style, out);
@@ -2061,15 +2520,18 @@ impl<'a> Subject<'a> {
 
     /// The plain text of a link label or an image's alt text, as Foundation
     /// takes it: soft breaks stay `\n`, a hard break vanishes, and an image
-    /// inside contributes only its own text.
+    /// inside contributes only its own text. A formula in a label is
+    /// flattened like everything else — to what was typed, delimiters and
+    /// all — so a link never carries a drawing.
     fn flatten(&self, node: usize) -> String {
         let mut out = String::new();
         let mut current = self.nodes[node].first_child;
         while let Some(child) = current {
             match &self.nodes[child].kind {
-                NodeKind::Text(text) | NodeKind::Code(text) | NodeKind::Html(text) => {
-                    out.push_str(text)
-                }
+                NodeKind::Text(text)
+                | NodeKind::Code(text)
+                | NodeKind::Html(text)
+                | NodeKind::Math { raw: text, .. } => out.push_str(text),
                 NodeKind::SoftBreak => out.push('\n'),
                 NodeKind::LineBreak => {}
                 _ => out.push_str(&self.flatten(child)),
@@ -2092,11 +2554,13 @@ fn make_link(url: &str, title: &str) -> Link {
 }
 
 /// The bytes that end a run of plain text: cmark's `SPECIAL_CHARS`, the
-/// extensions' `~` `:` `w`, and Apple's `^`. `\r` never reaches the parser.
+/// extensions' `~` `:` `w`, Apple's `^`, and the `$` of an inline formula
+/// (issue #97). `\r` never reaches the parser.
 fn is_special(byte: u8) -> bool {
     matches!(
         byte,
         b'\n'
+            | b'$'
             | b'\\'
             | b'`'
             | b'&'
@@ -2111,6 +2575,18 @@ fn is_special(byte: u8) -> bool {
             | b'w'
             | b'^'
     )
+}
+
+/// The protocol's word character: an ASCII letter, an ASCII digit or `_` —
+/// ASCII on purpose, so four languages with four ideas of a letter give one
+/// answer. Any byte of a non-ASCII character is not one.
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// How many backticks run from `at`.
+fn backtick_run(bytes: &[u8], at: usize) -> usize {
+    bytes[at..].iter().take_while(|&&b| b == b'`').count()
 }
 
 /// CommonMark's left- and right-flanking tests over cmark's own predicates.
@@ -3994,7 +4470,7 @@ mod tests {
             .iter()
             .filter_map(|block| match block {
                 Block::Text(text) => Some(text.plain()),
-                Block::Table(_) => None,
+                Block::Table(_) | Block::Rich(_) => None,
             })
             .collect()
     }
@@ -4003,7 +4479,7 @@ mod tests {
     fn table_in(body: &str) -> Option<Table> {
         blocks(body).into_iter().find_map(|block| match block {
             Block::Table(table) => Some(table),
-            Block::Text(_) => None,
+            Block::Text(_) | Block::Rich(_) => None,
         })
     }
 
@@ -5123,6 +5599,520 @@ mod tests {
         // A body that is only a table is one table block, no text around it.
         assert_eq!(blocks("| a |\n| - |").len(), 1);
         assert!(!blocks("").is_empty());
+    }
+
+    // MARK: Formulas, diagrams and graphs (issue #97)
+
+    /// A body's blocks as words: `text <plain>`, `table`, or
+    /// `rich <kind> <engine> <source>` — the shape the design doc's tables
+    /// are written in.
+    fn shape(body: &str) -> Vec<String> {
+        blocks(body)
+            .iter()
+            .map(|block| match block {
+                Block::Text(text) => format!("text {}", text.plain()),
+                Block::Table(_) => "table".to_string(),
+                Block::Rich(rich) => {
+                    format!("rich {} {} {}", rich.kind.word(), rich.engine, rich.source)
+                }
+            })
+            .collect()
+    }
+
+    /// Every formula a body's text and table cells carry, in order.
+    fn formulas(body: &str) -> Vec<String> {
+        fn of(text: &Text, out: &mut Vec<String>) {
+            out.extend(text.spans.iter().filter_map(|span| span.style.math.clone()));
+        }
+        let mut out = Vec::new();
+        for block in blocks(body) {
+            match &block {
+                Block::Text(text) => of(text, &mut out),
+                Block::Table(table) => {
+                    for cell in table.header.iter().chain(table.rows.iter().flatten()) {
+                        of(cell, &mut out);
+                    }
+                }
+                Block::Rich(_) => {}
+            }
+        }
+        out
+    }
+
+    /// docs/capitals-and-rich-markdown-2026-10-17.md, "The cases every
+    /// parser's tests hold": blocks, row for row.
+    #[test]
+    fn rich_blocks_the_design_table() {
+        let cases: &[(&str, &[&str])] = &[
+            ("```math\nx^2\n```", &["rich math  x^2"]),
+            // The tag is case-blind.
+            (
+                "```Mermaid\ngraph TD\nA-->B\n```",
+                &["rich mermaid  graph TD\nA-->B"],
+            ),
+            // The first word decides.
+            ("```mermaid extra words\nA\n```", &["rich mermaid  A"]),
+            (
+                "```neato\ngraph {a--b}\n```",
+                &["rich graphviz neato graph {a--b}"],
+            ),
+            (
+                "```gv\ndigraph{a->b}\n```",
+                &["rich graphviz dot digraph{a->b}"],
+            ),
+            ("```plot\nsin(x)\n```", &["rich plot  sin(x)"]),
+            // Any other tag is a code block, as before.
+            ("```js\nx\n```", &["text x"]),
+            // Never closed: text, exactly as typed.
+            ("```mermaid\nA", &["text ```mermaid\nA"]),
+            (
+                "Look:\n```math\nx\n```\nDone",
+                &["text Look:", "rich math  x", "text Done"],
+            ),
+            ("$$\nx^2\n$$", &["rich math  x^2"]),
+            ("$$x^2$$", &["rich math  x^2"]),
+            ("\\[\na\n\\]", &["rich math  a"]),
+            ("  $$ y $$  ", &["rich math  y"]),
+            ("$$x$$ is it", &["text $$x$$ is it"]),
+            ("Area $$x$$", &["text Area $$x$$"]),
+            ("$$\nx", &["text $$\nx"]),
+            ("$$ $$", &["text $$ $$"]),
+            // Nothing inside a fence is math.
+            ("```\n$$x$$\n```", &["text $$x$$"]),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(&shape(body), expected, "{body:?}");
+        }
+        // The two that stay text carry their formula inline.
+        assert_eq!(formulas("$$x$$ is it"), ["x"]);
+        assert_eq!(formulas("Area $$x$$"), ["x"]);
+        assert!(formulas("```\n$$x$$\n```").is_empty());
+        assert!(formulas("$$ $$").is_empty());
+        // And a code fence's text is the code face, nothing drawn.
+        let code = only_text("```js\nx\n```");
+        assert_eq!(code.spans[0].style.font, Font::Monospaced);
+    }
+
+    /// Every tag in the protocol's table, and the engine each one names.
+    #[test]
+    fn every_rich_tag() {
+        let tags = [
+            ("math", "math", ""),
+            ("latex", "math", ""),
+            ("tex", "math", ""),
+            ("mermaid", "mermaid", ""),
+            ("dot", "graphviz", "dot"),
+            ("graphviz", "graphviz", "dot"),
+            ("gv", "graphviz", "dot"),
+            ("neato", "graphviz", "neato"),
+            ("circo", "graphviz", "circo"),
+            ("fdp", "graphviz", "fdp"),
+            ("sfdp", "graphviz", "sfdp"),
+            ("twopi", "graphviz", "twopi"),
+            ("osage", "graphviz", "osage"),
+            ("patchwork", "graphviz", "patchwork"),
+            ("plot", "plot", ""),
+        ];
+        for (tag, kind, engine) in tags {
+            for written in [tag.to_string(), tag.to_ascii_uppercase()] {
+                let body = format!("```{written}\nsrc\n```");
+                assert_eq!(
+                    shape(&body),
+                    [format!("rich {kind} {engine} src")],
+                    "{body:?}"
+                );
+            }
+        }
+        // Near misses are code: a tag is a whole word, ASCII-lowercased only.
+        for body in [
+            "```mathx\nsrc\n```",
+            "```ma th\nsrc\n```",
+            "```\u{1D426}ath\nsrc\n```",
+            "```{math}\nsrc\n```",
+            "```math,\nsrc\n```",
+            "```plots\nsrc\n```",
+        ] {
+            assert_eq!(shape(body), ["text src"], "{body:?}");
+        }
+        // Spaces and tabs around the tag are not part of it.
+        assert_eq!(shape("```  math\t\nsrc\n```"), ["rich math  src"]);
+        assert_eq!(shape("```\tdot neato\nsrc\n```"), ["rich graphviz dot src"]);
+        // The fourth backtick of a longer fence is not part of the tag.
+        assert_eq!(shape("````math\nsrc\n```"), ["rich math  src"]);
+        // The closing line closes whatever it says.
+        assert_eq!(shape("```math\nsrc\n```js"), ["rich math  src"]);
+    }
+
+    /// A rich fence's source is its content exactly as a code block's would
+    /// be: inner blank lines, indentation and markup untouched.
+    #[test]
+    fn rich_fence_source_is_the_code() {
+        assert_eq!(
+            shape("```mermaid\n  graph LR\n\n  A[**x**] --> B\n```"),
+            ["rich mermaid    graph LR\n\n  A[**x**] --> B"]
+        );
+        // An empty fence is still a fence — what it draws is the engine's
+        // business, and an empty one fails like any other.
+        assert_eq!(shape("```math\n```"), ["rich math  "]);
+        // Three formulas, three blocks, nothing between them.
+        assert_eq!(
+            shape("```math\na\n```\n```tex\nb\n```\n$$c$$"),
+            ["rich math  a", "rich math  b", "rich math  c"]
+        );
+    }
+
+    /// A rich block splits the text exactly as a table does: the lines it
+    /// swallowed take their separators, an empty text block is dropped, and
+    /// a code block keeps its own newlines.
+    #[test]
+    fn rich_blocks_split_like_tables() {
+        assert_eq!(
+            shape("a\n```js\nx\n```\n```math\ny\n```\nb"),
+            ["text a\nx", "rich math  y", "text b"]
+        );
+        assert_eq!(
+            shape("```math\ny\n```\n```\nx\n```"),
+            ["rich math  y", "text x"]
+        );
+        assert_eq!(
+            shape("one\n\n$$x$$\n\ntwo"),
+            ["text one\n", "rich math  x", "text \ntwo"]
+        );
+        // The same body with a table where the formula is: the same splits.
+        assert_eq!(
+            shape("one\n\n| a |\n| - |\n\ntwo"),
+            ["text one\n", "table", "text \ntwo"]
+        );
+        // A heading or a bullet on either side is still a run of its text.
+        assert_eq!(
+            shape("# Sum\n$$\\sum_i x_i$$\n- done"),
+            ["text Sum", "rich math  \\sum_i x_i", "text • done"]
+        );
+    }
+
+    /// Display math, rule 2 to the letter.
+    #[test]
+    fn display_math_rules() {
+        // The closer may be on a later line; the source is trimmed of
+        // spaces, tabs and newlines but keeps the lines inside.
+        assert_eq!(shape("$$ a +\n\tb \n$$"), ["rich math  a +\n\tb"]);
+        assert_eq!(shape("\t\\[ x \\]\t"), ["rich math  x"]);
+        // The FIRST closer decides: words after it and it is not display
+        // math, even with a better closer further on.
+        assert_eq!(shape("$$a$$b$$"), ["text $$a$$b$$"]);
+        // (And the line that failed as a closer may open its own.)
+        assert_eq!(
+            shape("$$\na\n$$ b\nc\n$$"),
+            ["text $$\na", "rich math  b\nc"]
+        );
+        // An opener is at the START of a line (spaces and tabs aside).
+        assert_eq!(shape("x $$a$$"), ["text x $$a$$"]);
+        // `\[` closes with `\]`, `$$` with `$$`: they do not mix.
+        assert_eq!(shape("\\[a$$"), ["text [a$$"]);
+        assert_eq!(shape("$$a\\]"), ["text $$a]"]);
+        // Empty is not a formula, on one line or three.
+        assert_eq!(shape("$$$$"), ["text $$$$"]);
+        assert_eq!(shape("$$\n \n$$"), ["text $$\n \n$$"]);
+        assert_eq!(shape("\\[\\]"), ["text []"]);
+        // Before tables: the formula's lines are never a table's rows.
+        assert_eq!(
+            shape("| a | b |\n|---|---|\n$$ x | y $$"),
+            ["table", "rich math  x | y"]
+        );
+        // A heading line inside a formula is the formula's.
+        assert_eq!(shape("$$\n# a\n$$"), ["rich math  # a"]);
+        // An opener with no closer leaves its line to the rest of the rules,
+        // and the next line may open its own.
+        assert_eq!(shape("$$a\n$$b$$"), ["text $$a", "rich math  b"]);
+        // Only outside fences: a closer in a fence does not count.
+        assert_eq!(shape("$$a\n```\n$$\n```"), ["text $$a\n$$"]);
+        // A carriage return after the closer is not a space or a tab.
+        assert_eq!(formulas("$$x$$\r"), ["x"]);
+        assert!(shape("$$x$$\r")[0].starts_with("text"));
+    }
+
+    /// What a bubble shows until a rich block is drawn: a display formula as
+    /// it was typed, delimiters and all, the blanks outside them dropped; a
+    /// fence its content, as a code block shows it.
+    #[test]
+    fn a_rich_blocks_fallback_is_what_was_typed() {
+        let shown = |body: &str| -> Vec<String> {
+            blocks(body)
+                .into_iter()
+                .filter_map(|block| match block {
+                    Block::Rich(rich) => Some(rich.shown),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(shown("  $$ y $$  "), ["$$ y $$"]);
+        assert_eq!(shown("\t\\[ x \\]\t"), ["\\[ x \\]"]);
+        assert_eq!(shown("$$ a +\n\tb \n$$ "), ["$$ a +\n\tb \n$$"]);
+        assert_eq!(shown("Look:\n$$\nx^2\n$$\nDone"), ["$$\nx^2\n$$"]);
+        assert_eq!(shown("```math\nx^2\n```"), ["x^2"]);
+        assert_eq!(shown("```neato\ngraph {a--b}\n```"), ["graph {a--b}"]);
+        for block in blocks("```mermaid\nA-->B\n```\n$$x$$") {
+            if let Block::Rich(rich) = block {
+                assert!(!rich.shown.is_empty() && rich.shown.contains(&rich.source));
+            }
+        }
+    }
+
+    /// The flat render (the preview card's) recognises no rich block: a rich
+    /// fence is the code block an older client draws, display math the text
+    /// it was typed as — and an inline formula is still a run.
+    #[test]
+    fn the_flat_render_draws_no_rich_block() {
+        let fence = render("Look:\n```math\nx\n```\nDone");
+        assert_eq!(fence.plain(), "Look:\nx\nDone");
+        assert!(fence
+            .spans
+            .iter()
+            .any(|span| span.text == "x" && span.style.font == Font::Monospaced));
+        assert_eq!(render("$$\nx\n$$").plain(), "$$\nx\n$$");
+        let inline = render("$$x$$");
+        assert_eq!(inline.spans.len(), 1);
+        assert_eq!(inline.spans[0].style.math.as_deref(), Some("x"));
+    }
+
+    /// docs/capitals-and-rich-markdown-2026-10-17.md, "The cases every
+    /// parser's tests hold": inline formulas, row for row.
+    #[test]
+    fn inline_math_the_design_table() {
+        let cases: &[(&str, &[&str])] = &[
+            ("$x$", &["x"]),
+            ("$5 and $10", &[]),
+            ("costs $5, or $6.", &[]),
+            // A word character before the opener.
+            ("a$b$c", &[]),
+            // A word character after the closer.
+            ("$x$s", &[]),
+            ("$ x$", &[]),
+            ("$x $", &[]),
+            // The opener is escaped (the text reads `$x$`).
+            ("\\$x$", &[]),
+            // The escaped `$` cannot close.
+            ("$a\\$b$", &["a\\$b"]),
+            ("see $$x$$ now", &["x"]),
+            ("\\(x^2\\)", &["x^2"]),
+            // Code.
+            ("`$x$`", &[]),
+            // Inside the emphasis.
+            ("*see $a*b$*", &["a*b"]),
+            // A formula does not cross a line.
+            ("$x\ny$", &[]),
+            // A link's destination.
+            ("[a](http://x.y/$b$)", &[]),
+            ("| $a$ | b |\n|---|---|\n| $c$ | d |", &["a", "c"]),
+            // `€` is not an ASCII word character.
+            ("€$x$", &["x"]),
+            // `2` is.
+            ("2$x$", &[]),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(&formulas(body), expected, "{body:?}");
+        }
+        assert_eq!(plain("\\$x$"), "$x$");
+        // The formula sits inside the emphasis, and its `*` is not markup.
+        let text = only_text("*see $a*b$*");
+        assert_eq!(text.plain(), "see $a*b$");
+        assert!(text.spans.iter().all(|span| span.style.emphasis));
+        let math = text
+            .spans
+            .iter()
+            .find(|span| span.style.math.is_some())
+            .unwrap();
+        assert_eq!(math.text, "$a*b$");
+        // The table's formulas are in the header and the first row.
+        let table = table_in("| $a$ | b |\n|---|---|\n| $c$ | d |").expect("a table");
+        assert_eq!(table.header[0].spans[0].style.math.as_deref(), Some("a"));
+        assert_eq!(table.rows[0][0].spans[0].style.math.as_deref(), Some("c"));
+        // The link keeps its destination, dollars and all.
+        assert_eq!(
+            links(&only_text("[a](http://x.y/$b$)")),
+            [("a".to_string(), "http://x.y/$b$".to_string())]
+        );
+    }
+
+    /// A formula's run: what was typed, delimiters and all, as its text; the
+    /// source between them as its formula; and never merged with a
+    /// neighbour, even an identical one.
+    #[test]
+    fn a_formula_is_a_run_of_its_own() {
+        let text = only_text("Area $\\pi r^2$, or \\(a\\)\\(a\\) and $$b$$.");
+        let runs: Vec<(&str, Option<&str>)> = text
+            .spans
+            .iter()
+            .map(|span| (span.text.as_str(), span.style.math.as_deref()))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("Area ", None),
+                ("$\\pi r^2$", Some("\\pi r^2")),
+                (", or ", None),
+                ("\\(a\\)", Some("a")),
+                ("\\(a\\)", Some("a")),
+                (" and ", None),
+                ("$$b$$", Some("b")),
+                (".", None),
+            ]
+        );
+        assert_eq!(
+            text.plain(),
+            "Area $\\pi r^2$, or \\(a\\)\\(a\\) and $$b$$."
+        );
+        // Inline `$$…$$` keeps its spaces; only display math is trimmed.
+        assert_eq!(formulas("so $$ x $$ ok"), [" x "]);
+        // In a heading, the formula takes the heading's face.
+        let heading = only_text("# Area $x$");
+        assert!(heading
+            .spans
+            .iter()
+            .all(|span| span.style.font == Font::Heading(1)));
+        assert_eq!(formulas("# Area $x$"), ["x"]);
+    }
+
+    /// Markdown inside a formula is not markdown, and the formula is not
+    /// link-detected: no emphasis, code, escape, entity, HTML, autolink or
+    /// email autolink forms inside one.
+    #[test]
+    fn nothing_inside_a_formula_is_markdown() {
+        for (body, source) in [
+            ("$a_1 + b_1$", "a_1 + b_1"),
+            ("$**x**$", "**x**"),
+            ("$a~b~c$", "a~b~c"),
+            ("$&amp;$", "&amp;"),
+            ("$<b>x</b>$", "<b>x</b>"),
+            ("$a\\{b\\}$", "a\\{b\\}"),
+            ("$[a](b)$", "[a](b)"),
+            ("$x<y$", "x<y"),
+            ("$https://example.com$", "https://example.com"),
+            ("$www.example.com$", "www.example.com"),
+            ("$me@example.com$", "me@example.com"),
+            ("\\(a`b\\)", "a`b"),
+        ] {
+            let text = only_text(body);
+            assert_eq!(text.spans.len(), 1, "{body:?}: {text:?}");
+            assert_eq!(text.spans[0].text, body);
+            assert_eq!(
+                text.spans[0].style.math.as_deref(),
+                Some(source),
+                "{body:?}"
+            );
+            assert_eq!(text.spans[0].style.link, None, "{body:?}");
+        }
+    }
+
+    /// The precedence of the three openers, and how escapes and the guard
+    /// play with them.
+    #[test]
+    fn inline_math_precedence_and_escapes() {
+        // `$$…$$` before `$…$`.
+        assert_eq!(formulas("x $$a$ b$$"), ["a$ b"]);
+        // An unclosed `$$` leaves both dollars as text, and a single one
+        // after a `$` never opens.
+        assert_eq!(formulas("x $$a$"), Vec::<String>::new());
+        assert_eq!(formulas("x $$$x$"), Vec::<String>::new());
+        // A failed closer candidate is skipped and the search goes on.
+        assert_eq!(formulas("$a$b c$"), ["a$b c"]);
+        assert_eq!(formulas("$a $b$"), ["a $b"]);
+        // An escaped backslash does not escape the opener.
+        assert_eq!(formulas("\\\\$x$"), ["x"]);
+        assert_eq!(plain("\\\\$x$"), "\\$x$");
+        // An escaped `\(` is an escaped backslash and a parenthesis.
+        assert_eq!(formulas("\\\\(x\\)"), Vec::<String>::new());
+        assert_eq!(formulas("\\(x\\\\)"), ["x\\"]);
+        // `\(` with nothing in it, or not closed, is the escape it was.
+        assert_eq!(plain("\\( \\)"), "( )");
+        assert_eq!(plain("\\(x"), "(x");
+        // A closer may be followed by punctuation, not a word character.
+        assert_eq!(formulas("($x$)"), ["x"]);
+        assert_eq!(formulas("$x$, $y$."), ["x", "y"]);
+        assert_eq!(formulas("$x$_"), Vec::<String>::new());
+        // A tab is a space to the guard.
+        assert_eq!(formulas("$\tx$"), Vec::<String>::new());
+        assert_eq!(formulas("$x\t$"), Vec::<String>::new());
+        // ... and the guard is ASCII on both sides.
+        assert_eq!(formulas("é$x$é"), ["x"]);
+        assert_eq!(formulas("$x$日本"), ["x"]);
+        // `\[` inside a line is only escapes.
+        assert_eq!(plain("so \\[x\\] ok"), "so [x] ok");
+    }
+
+    /// Code spans come first: a formula never starts inside one, and never
+    /// reaches across one either.
+    #[test]
+    fn code_spans_come_before_formulas() {
+        assert_eq!(formulas("`a $x` b$"), Vec::<String>::new());
+        assert_eq!(formulas("$a `b$` c$"), Vec::<String>::new());
+        assert_eq!(formulas("\\(a `\\)` b\\)"), Vec::<String>::new());
+        assert_eq!(formulas("$$a `$$` b$$"), Vec::<String>::new());
+        // A backtick that opens nothing is just a character in the formula.
+        assert_eq!(formulas("$a`b$"), ["a`b"]);
+        // One that is escaped opens nothing — but its run's remainder may.
+        assert_eq!(formulas("$a\\`b$"), ["a\\`b"]);
+        assert_eq!(formulas("$a\\``b$ `c`"), Vec::<String>::new());
+        // A run of a length that only comes EARLIER does not open.
+        assert_eq!(formulas("`x` $a`b$"), ["a`b"]);
+    }
+
+    /// In a link's label a formula is flattened like any markup — to what
+    /// was typed — and a formula that swallows a `]` wins over the link the
+    /// way a code span would.
+    #[test]
+    fn formulas_and_links() {
+        assert_eq!(
+            links(&only_text("[see $x$](https://e.com)")),
+            [("see $x$".to_string(), "https://e.com".to_string())]
+        );
+        assert!(formulas("[see $x$](https://e.com)").is_empty());
+        assert_eq!(formulas("[$a](b$)"), ["a](b"]);
+        assert!(links(&only_text("[$a](b$)")).is_empty());
+        // A bare URL is taken whole, its dollars with it.
+        let text = only_text("see https://x.y/$b$ ok");
+        assert_eq!(
+            links(&text),
+            [("https://x.y/$b$".to_string(), "https://x.y/$b$".to_string())]
+        );
+        assert!(formulas("see https://x.y/$b$ ok").is_empty());
+    }
+
+    /// Non-ASCII around and inside formulas and rich blocks: never a byte
+    /// offset off a character boundary.
+    #[test]
+    fn rich_and_math_over_non_ascii() {
+        assert_eq!(formulas("Привет $α+β$ мир"), ["α+β"]);
+        assert_eq!(formulas("日$x$本"), ["x"]);
+        assert_eq!(formulas("\\(привет\\)"), ["привет"]);
+        assert_eq!(formulas("😀$$😀$$😀"), ["😀"]);
+        assert_eq!(shape("$$ Привет $$"), ["rich math  Привет"]);
+        assert_eq!(shape("```Mermaid\nграф\n```"), ["rich mermaid  граф"]);
+        assert_eq!(shape("```Ма\nx\n```"), ["text x"]);
+        assert_eq!(
+            shape("\u{1FEF}\u{1FEF}\u{1FEF}math\nx\n```"),
+            ["rich math  x"]
+        );
+        // A mark riding a dollar is part of its character, so not a dollar
+        // to the guard — but the scan is over bytes, and never cuts it.
+        for body in [
+            "$\u{301}x$",
+            "$x\u{301}$",
+            "\u{301}$x$",
+            "$$\u{301}$$",
+            "\\(\u{301}\\)",
+            "$$\n\u{301}\n$$",
+            "\u{1F600}$\u{1F600}$\u{1F600}",
+            "$€",
+            "€$",
+            "$$€",
+            "\\(€",
+            "```€\n€\n```",
+        ] {
+            let _ = blocks(body);
+            let _ = render(body);
+        }
+        assert_eq!(formulas("$x\u{301}$"), ["x\u{301}"]);
     }
 
     // MARK: Apple's behaviour where it is a bug (pinned, not fixed)

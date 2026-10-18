@@ -1044,6 +1044,7 @@ private struct NoteEditor: View {
                 Section {
                     if canEdit {
                         TextField("Note", text: $text, axis: .vertical)
+                            .proseTextEntry()
                             .lineLimit(3...8)
                             // The cap lives where the typing is: a note the
                             // server would refuse never becomes a failed

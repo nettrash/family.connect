@@ -149,6 +149,23 @@ object MessageLinks {
             LinkSpan(range.first, range.last + 1, MemberMention.url(mention.userId))
         }
 
+    /**
+     * [spans] without any that touch a formula's run — [math] being the
+     * ranges `MessageMarkdown.Rendered.math` reports over the same string.
+     *
+     * Applied to what the DETECTOR found (and to member names), never to
+     * the markdown's own links: a formula is drawn as a picture over its
+     * source characters, so `$555-1234$` detected as a phone number would
+     * be a tap target nobody can see, and a formula's source is KaTeX's
+     * input rather than words the author wrote to be read. A formula
+     * inside a `[label](url)` label is different — the author put it in
+     * the link, and it stays there.
+     */
+    fun outside(spans: List<LinkSpan>, math: List<IntRange>): List<LinkSpan> {
+        if (math.isEmpty() || spans.isEmpty()) return spans
+        return spans.filterNot { span -> math.any { span.start <= it.last && it.first < span.end } }
+    }
+
     fun mergeSpans(markdown: List<LinkSpan>, detected: List<LinkSpan>): List<LinkSpan> {
         if (markdown.isEmpty()) return detected
         val kept = detected.filterNot { span ->
@@ -181,15 +198,24 @@ object MessageLinks {
         for (block in blocks) {
             when (block) {
                 is MessageMarkdown.Block.Text -> {
-                    val links = mergeSpans(block.rendered.links, linkSpans(block.rendered.text))
+                    val links = mergeSpans(
+                        block.rendered.links,
+                        outside(linkSpans(block.rendered.text), block.rendered.math),
+                    )
                     links.firstWebLinkUrl()?.let { return it }
                 }
                 is MessageMarkdown.Block.Table -> {
                     val cells = block.header.asSequence() + block.rows.asSequence().flatten()
                     for (cell in cells) {
-                        linkSpans(cell.text).firstWebLinkUrl()?.let { return it }
+                        outside(linkSpans(cell.text), MessageMarkdown.mathRanges(cell))
+                            .firstWebLinkUrl()?.let { return it }
                     }
                 }
+                // A diagram's source is the engine's input, not prose: a
+                // URL in a Mermaid `click` line is not a link the message
+                // offers (Mermaid runs strict, so it is not one in the
+                // drawing either), and nothing here may fetch it.
+                is MessageMarkdown.Block.Rich -> Unit
             }
         }
         return null
@@ -270,11 +296,20 @@ object MessageLinks {
          * such treatment: it is a mention wherever it appears.
          */
         rawBody: String? = null,
+        /**
+         * The block's inline formula ranges (`MessageMarkdown.Rendered.math`).
+         * A token that touches one is not marked: its characters are drawn
+         * over by the formula, and `$@ai$` is KaTeX's input, not a mention
+         * — the same rule [outside] applies to links.
+         */
+        math: List<IntRange> = emptyList(),
     ): AnnotatedString {
-        val ranges = AssistantMention.ranges(text.text)
+        fun clear(range: IntRange) = math.none { range.first <= it.last && it.first <= range.last }
+        val ranges = AssistantMention.ranges(text.text).filter(::clear)
         val draw = rawBody
             ?.takeIf { AssistantMention.drawRange(it) != null }
             ?.let { AssistantMention.drawRange(text.text) }
+            ?.takeIf(::clear)
         if (ranges.isEmpty() && draw == null) return text
         return buildAnnotatedString {
             append(text)

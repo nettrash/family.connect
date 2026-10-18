@@ -45,6 +45,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.ui.components.ProseKeyboard
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.onClick as onSemanticsClick
 import me.nettrash.familyconnect.ui.components.VoiceBubbleRules
@@ -3136,21 +3137,34 @@ internal fun MessageBubble(
                         // The members named ride the same list and the
                         // same hit test as links, under the same overlap
                         // rule — a link over a name is still the link.
+                        //
+                        // Neither may land on an inline formula: its
+                        // characters are covered by a drawing, and its
+                        // source is KaTeX's input, not words to tap
+                        // (MessageLinks.outside).
                         links = MessageLinks.mergeSpans(
                             MessageLinks.mergeSpans(
                                 block.rendered.links,
-                                MessageLinks.linkSpans(block.rendered.text),
+                                MessageLinks.outside(
+                                    MessageLinks.linkSpans(block.rendered.text),
+                                    block.rendered.math,
+                                ),
                             ),
-                            MessageLinks.memberMentionSpans(
-                                block.rendered.text,
-                                MentionsCodec.decode(entity.mentionsJson),
+                            MessageLinks.outside(
+                                MessageLinks.memberMentionSpans(
+                                    block.rendered.text,
+                                    MentionsCodec.decode(entity.mentionsJson),
+                                ),
+                                block.rendered.math,
                             ),
                         ),
                     )
                     // A table's cells carry no links by construction
                     // (MessageMarkdown.cell says why), so there is nothing
-                    // inside one to hit-test.
+                    // inside one to hit-test — and a rich block is a
+                    // drawing, with none either.
                     is MessageMarkdown.Block.Table -> BodyBlock(block)
+                    is MessageMarkdown.Block.Rich -> BodyBlock(block)
                 }
             }
         }
@@ -3280,47 +3294,51 @@ internal fun MessageBubble(
                 },
                 modifier = bubbleModifier,
             ) {
-                BubbleContent(
-                    fromAssistant = fromAssistant,
-                    entity = entity,
-                    item = item,
-                    isHidden = isHidden,
-                    blockedUserIds = blockedUserIds,
-                    chat = chat,
-                    isMine = isMine,
-                    isStreaming = isStreaming,
-                    answerFailure = answerFailure,
-                    mediaOnly = bareMedia,
-                    sticker = sticker,
-                    round = round,
-                    emojiFontSize = emojiFontSize,
-                    blocks = bodyBlocks,
-                    memberNames = memberNames,
-                    memberAvatars = memberAvatars,
-                    myUserId = myUserId,
-                    linkPreviews = linkPreviews,
-                    previewsEnabled = previewsEnabled,
-                    mapPreviewsEnabled = mapPreviewsEnabled,
-                    onRequestPreview = onRequestPreview,
-                    streamUrl = streamUrl,
-                    onOpenLink = { runCatching { uriHandler.openUri(it) } },
-                    onFailedTap = onFailedTap,
-                    onToggleReaction = { emoji ->
-                        entity.serverId?.let { onToggleReaction(it, emoji) }
-                    },
-                    onVote = { optionId ->
-                        entity.serverId?.let { onVote(it, optionId) }
-                    },
-                    onCallBack = onCallBack,
-                    onDoubleTap = {
-                        entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
-                    },
-                    onTextLongPress = { onLongPress(item, bubbleBounds) },
-                    onTapQuote = onTapQuote,
-                    onOpenAttachment = onOpenAttachment,
-                    onOpenThread = onOpenThread,
-                    onTapMention = onTapMention,
-                )
+                // The widest an inline formula may be drawn: the balloon's
+                // cap less its 12dp inset on either side.
+                CompositionLocalProvider(LocalRichMaxWidth provides bubbleMaxWidth - 24.dp) {
+                    BubbleContent(
+                        fromAssistant = fromAssistant,
+                        entity = entity,
+                        item = item,
+                        isHidden = isHidden,
+                        blockedUserIds = blockedUserIds,
+                        chat = chat,
+                        isMine = isMine,
+                        isStreaming = isStreaming,
+                        answerFailure = answerFailure,
+                        mediaOnly = bareMedia,
+                        sticker = sticker,
+                        round = round,
+                        emojiFontSize = emojiFontSize,
+                        blocks = bodyBlocks,
+                        memberNames = memberNames,
+                        memberAvatars = memberAvatars,
+                        myUserId = myUserId,
+                        linkPreviews = linkPreviews,
+                        previewsEnabled = previewsEnabled,
+                        mapPreviewsEnabled = mapPreviewsEnabled,
+                        onRequestPreview = onRequestPreview,
+                        streamUrl = streamUrl,
+                        onOpenLink = { runCatching { uriHandler.openUri(it) } },
+                        onFailedTap = onFailedTap,
+                        onToggleReaction = { emoji ->
+                            entity.serverId?.let { onToggleReaction(it, emoji) }
+                        },
+                        onVote = { optionId ->
+                            entity.serverId?.let { onVote(it, optionId) }
+                        },
+                        onCallBack = onCallBack,
+                        onDoubleTap = {
+                            entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                        },
+                        onTextLongPress = { onLongPress(item, bubbleBounds) },
+                        onTapQuote = onTapQuote,
+                        onOpenAttachment = onOpenAttachment,
+                        onOpenThread = onOpenThread,
+                        onTapMention = onTapMention,
+                    )
+                }
             }
         }
     }
@@ -4149,6 +4167,7 @@ private fun PollComposerSheet(
                 onValueChange = onQuestionChange,
                 label = { Text(stringResource(R.string.s_question)) },
                 singleLine = false,
+                keyboardOptions = ProseKeyboard.Sentences,
                 modifier = Modifier.fillMaxWidth(),
             )
             draft.options.forEachIndexed { index, option ->
@@ -4161,6 +4180,7 @@ private fun PollComposerSheet(
                         onValueChange = { onOptionChange(index, it) },
                         placeholder = { Text(stringResource(R.string.s_option)) },
                         singleLine = true,
+                        keyboardOptions = ProseKeyboard.Sentences,
                         modifier = Modifier.weight(1f),
                     )
                     // Never below two: one option is not a question.
@@ -4604,12 +4624,22 @@ private fun BubbleContent(
                         table = block,
                         modifier = measureBlock.fillMaxWidth(),
                     )
+                    // A formula, a diagram or a graph (#97): its natural
+                    // width at most, the balloon's at least as a cap — and
+                    // measured, so the text blocks wrap against a wide
+                    // diagram rather than floating narrow beside it.
+                    is MessageMarkdown.Block.Rich -> RichBlockView(
+                        block = block,
+                        onDoubleTap = if (acked) ({ currentDoubleTap() }) else null,
+                        onLongPress = { currentLongPress() },
+                        modifier = measureBlock,
+                    )
                 }
             }
             // The assistant is still writing and the last thing rendered is
-            // a grid: the cursor becomes a block of its own rather than
-            // landing inside a cell.
-            if (isStreaming && blocks.lastOrNull()?.block is MessageMarkdown.Block.Table) {
+            // a grid or a drawing: the cursor becomes a block of its own
+            // rather than landing inside a cell or on a picture.
+            if (isStreaming && blocks.isNotEmpty() && blocks.last().block !is MessageMarkdown.Block.Text) {
                 Spacer(Modifier.height(6.dp))
                 StreamingCursor()
             }
@@ -4898,6 +4928,7 @@ private fun ColumnScope.TextBlock(
             linked,
             SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
             rawBody = drawSource,
+            math = rendered.math,
         )
         // While the assistant is writing, the text ends in a cursor
         // rather than just stopping mid-word — the same signal iOS and
@@ -4954,8 +4985,13 @@ private fun ColumnScope.TextBlock(
     // long one lays out once more, which is the cheaper of the two
     // visible corrections.
     val alignsEnd = ReplyBodyAlignment.alignsEnd(endAligned, textLayout?.lineCount ?: 1)
+    // Inline formulas (#97): each drawn one becomes a picture laid over its
+    // own source characters, so no offset moves and the link hit test
+    // above keeps resolving against the same string.
+    val inlineMath = rememberInlineMath(rendered.annotated)
     Text(
         text = body,
+        inlineContent = inlineMath,
         onTextLayout = { textLayout = it },
         // linkSpanAt queries the laid-out result (getLineLeft/Right,
         // getBoundingBox), which already reflects the alignment — no
@@ -5017,6 +5053,8 @@ private fun MarkdownTableRow(
         cells.forEachIndexed { index, cell ->
             Text(
                 text = cell,
+                // A cell may hold an inline formula too (rule 4).
+                inlineContent = rememberInlineMath(cell),
                 style = MaterialTheme.typography.bodyMedium,
                 // Only the base weight: a cell's own `**bold**` spans still
                 // win over it, in the header as well.
@@ -6711,6 +6749,9 @@ internal fun InputBar(
                     TextField(
                         state = state,
                         inputTransformation = bodyLimit,
+                        // Sentence capitals (#97): the keyboard capitalises
+                        // only a field that asks. Edit reuses this field.
+                        keyboardOptions = ProseKeyboard.Sentences,
                         // heightIn beats the field's 56.dp defaultMinSize, which
                         // only applies when the incoming min constraint is zero.
                         modifier = Modifier

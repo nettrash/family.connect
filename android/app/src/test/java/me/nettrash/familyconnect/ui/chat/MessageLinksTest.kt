@@ -333,4 +333,48 @@ class MessageLinksTest {
             ),
         ).isNull()
     }
+
+    /**
+     * An inline formula's characters are covered by its drawing (#97), and
+     * its source is KaTeX's input: what the detector finds inside one is
+     * not a tap target.
+     */
+    @Test
+    fun aFormulaIsNotLinkified() {
+        val block = MessageMarkdown.blocks("see \$https://a.example\$ or https://b.example").single()
+        val rendered = (block as MessageMarkdown.Block.Text).rendered
+        val detected = MessageLinks.linkSpans(rendered.text)
+        val kept = MessageLinks.outside(detected, rendered.math)
+        assertThat(kept.map { rendered.text.substring(it.start, it.end) }).containsExactly("https://b.example")
+        // A body with no formula is untouched, span for span.
+        assertThat(MessageLinks.outside(detected, emptyList())).isEqualTo(detected)
+    }
+
+    /** Neither a formula nor a diagram's source offers a page to preview. */
+    @Test
+    fun richSourcesHaveNothingToPreview() {
+        assertThat(
+            MessageLinks.firstDrawnWebLinkUrl(MessageMarkdown.blocks("see \$https://a.example\$")),
+        ).isNull()
+        assertThat(
+            MessageLinks.firstDrawnWebLinkUrl(
+                MessageMarkdown.blocks("```mermaid\ngraph TD\nA-->B\nclick A \"https://a.example\"\n```"),
+            ),
+        ).isNull()
+        // The text around a diagram still previews its own link.
+        assertThat(
+            MessageLinks.firstDrawnWebLinkUrl(
+                MessageMarkdown.blocks("```plot\nsin(x)\n```\nmore at https://b.example"),
+            ),
+        ).isEqualTo("https://b.example")
+    }
+
+    /** An `@ai` written inside a formula is KaTeX's input, not a mention. */
+    @Test
+    fun anAssistantTokenInsideAFormulaIsNotMarked() {
+        val rendered = (MessageMarkdown.blocks("@ai what is \$@ai\$?").single() as MessageMarkdown.Block.Text).rendered
+        val styled = MessageLinks.withMentions(rendered.annotated, mentionStyle, math = rendered.math)
+        val marked = styled.spanStyles.filter { it.item == mentionStyle }.map { it.start }
+        assertThat(marked).containsExactly(0)
+    }
 }

@@ -43,6 +43,15 @@
 # to 1.6 is a separate change. Five artifacts, nothing else: core, camera2
 # (the implementation), lifecycle, view (PreviewView) and video (Recorder,
 # VideoCapture). No camera-extensions, no ML Kit.
+#
+# androidx.webkit is the fifth (#97, docs/capitals-and-rich-markdown-
+# 2026-10-17.md): formulas, diagrams and graphs in a bubble are drawn by the
+# same bundled engines on every client, in a hidden WebView. The platform
+# WebView alone could serve the bundled files, but WebViewAssetLoader is the
+# supported way to give them a real https origin (the page's content policy
+# needs one) without opening file:// access, and WebSettingsCompat is how a
+# dark app theme is kept from inverting the drawings. Nothing in it touches
+# the network.
 
 [versions]
 agp = "9.4.1"
@@ -73,6 +82,8 @@ exifinterface = "1.4.1"
 media3 = "1.11.0"
 # CameraX — the video message recorder; see the header note. Scan.Android's.
 cameraX = "1.5.1"
+# Rich blocks' hidden WebView (#97) — see the header note.
+webkit = "1.17.1"
 firebaseBom = "34.18.0"
 streamWebrtc = "1.3.8"
 playServicesMaps = "19.2.0"
@@ -142,6 +153,9 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 androidx-camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "cameraX" }
+
+# WebViewAssetLoader + WebSettingsCompat — the rich blocks' hidden WebView (#97).
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
 
 # Firebase — messaging ONLY. Push is the sole Google service this app
 # uses; no analytics, no crashlytics, no firebase-core: the privacy

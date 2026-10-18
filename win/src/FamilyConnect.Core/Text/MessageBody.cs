@@ -22,6 +22,11 @@ public sealed record BodyPiece(string Text, MarkdownStyle Style, string? Link, B
 /// wherever none already is; <c>@ai</c> and a leading <c>/draw</c> drawn bold, REPLACING the run's style; member mentions last,
 /// skipped under any link. Table cells get none of it. All drawing — a body is plain text on the wire.
 /// </summary>
+/// <remarks>
+/// An inline formula (<see cref="MarkdownStyle.Math"/>, issue #97) is DRAWN, not set in type, so nothing is laid over it: a
+/// link, an <c>@ai</c> or a mention that would touch one is not made, and the formula's run reaches the bubble whole. (The
+/// author's own links never touch one — a formula in a link's label is flattened to text by the parser.)
+/// </remarks>
 public static class MessageBody
 {
     /// <summary>
@@ -33,8 +38,32 @@ public static class MessageBody
     public static string? FirstWebLink(string body)
     {
         var rendered = Markdown.Render(body);
-        return Links.FirstWebLink(Links.Merge(Declared(rendered, openableOnly: false), Links.Detect(rendered.Plain)))?.Target;
+        var formulas = Formulas(rendered);
+        var linked = Links.Merge(Declared(rendered, openableOnly: false), Links.Detect(rendered.Plain));
+        // A URL inside a formula is drawn as part of the formula, never as a link — so it is not what the card describes.
+        return Links.FirstWebLink([.. linked.Where(link => !Touches(formulas, link.Start, link.End))])?.Target;
     }
+
+    /// <summary>Where a text block's formulas are, as UTF-8 byte ranges of its plain text (<see cref="LinkSpan"/>'s units).</summary>
+    private static List<(int Start, int End)> Formulas(MarkdownText text)
+    {
+        var formulas = new List<(int Start, int End)>();
+        var at = 0;
+        foreach (var run in text.Runs)
+        {
+            var end = at + Encoding.UTF8.GetByteCount(run.Text);
+            if (run.Style.Math is not null)
+            {
+                formulas.Add((at, end));
+            }
+            at = end;
+        }
+        return formulas;
+    }
+
+    /// <summary>Whether <c>start..end</c> overlaps any of <paramref name="formulas"/>.</summary>
+    private static bool Touches(List<(int Start, int End)> formulas, int start, int end) =>
+        formulas.Any(formula => formula.Start < end && start < formula.End);
 
     /// <summary>A text block's own markdown links that can be opened, as spans — a label split into runs still one link.</summary>
     public static IReadOnlyList<LinkSpan> Declared(MarkdownText text) => Declared(text, openableOnly: true);
@@ -87,19 +116,21 @@ public static class MessageBody
             at = end;
         }
 
-        var linked = Links.Merge(Declared(text), Links.Detect(plain));
+        var formulas = Formulas(text);
+        var linked = Links.Merge(Declared(text), Links.Detect(plain)).Where(link => !Touches(formulas, link.Start, link.End)).ToList();
 
         var marks = AssistantText.Ranges(plainText).Select(range => (range.Start, range.End, Mark: BodyMark.Assistant)).ToList();
         if (drawSource is not null && AssistantText.DrawTokenRange(drawSource) is not null && AssistantText.DrawTokenRange(plainText) is { } draw)
         {
             marks.Add((draw.Start, draw.End, BodyMark.Assistant));
         }
+        marks.RemoveAll(mark => Touches(formulas, mark.Start, mark.End));
 
         foreach (var token in Mentions.Tokens(plainText, named))
         {
             var underLink = linked.Any(link => link.Start < token.End && token.Start < link.End);
             var underMark = marks.Any(mark => mark.Start < token.End && token.Start < mark.End);
-            if (!underLink && !underMark)
+            if (!underLink && !underMark && !Touches(formulas, token.Start, token.End))
             {
                 marks.Add((token.Start, token.End, BodyMark.Member(token.Member.UserId)));
             }

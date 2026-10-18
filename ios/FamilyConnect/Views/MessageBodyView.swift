@@ -19,6 +19,12 @@
 //  one view being the whole body — see MessageMarkdown for the long
 //  version.
 //
+//  A text block with INLINE FORMULAS (#97) is still that one `Text`: the
+//  formulas' drawings go inside it (RichInlineText), so the caller gets a
+//  `Text` either way and decorates it exactly as before. A RICH block —
+//  a display formula, a diagram, a graph — is its own block, like a table
+//  (RichBlockView).
+//
 
 import SwiftUI
 
@@ -29,12 +35,30 @@ struct MessageBodyBlocks<TextBlock: View>: View {
     /// cursor.
     var isStreaming: Bool = false
     /// Own balloons are filled with the tint, which the table's hairline
-    /// has to survive.
+    /// has to survive — and a formula is drawn in the balloon's own text
+    /// colour, which differs between mine and theirs.
     var isMine: Bool = false
-    /// Draws one text block. The flag is true for the block the streaming
-    /// cursor rides, so a caller that draws one puts it in exactly one
-    /// place.
-    @ViewBuilder let textBlock: (AttributedString, Bool) -> TextBlock
+    /// The balloon's double-tap (the quick heart) and long press, for a
+    /// diagram's own tap to leave reachable (RichBlockView).
+    var onDoubleTap: () -> Void = {}
+    var onLongPress: (() -> Void)?
+    /// Draws one text block, handed over as the `Text` to decorate. The
+    /// flag is true for the block the streaming cursor rides, so a caller
+    /// that draws one puts it in exactly one place.
+    @ViewBuilder let textBlock: (Text, Bool) -> TextBlock
+
+    @Environment(\.colorScheme) private var colorScheme
+    /// The body text size a formula is set at: Dynamic Type's on iOS, a
+    /// Mac's fixed 13 points.
+    #if os(iOS)
+    @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = 17
+    #else
+    private let bodySize: CGFloat = 13
+    #endif
+
+    private var look: RichLook {
+        RichLook(isMine: isMine, dark: colorScheme == .dark, fontSize: Double(bodySize))
+    }
 
     var body: some View {
         if blocks.count == 1, case .text(let only) = blocks[0] {
@@ -42,24 +66,45 @@ struct MessageBodyBlocks<TextBlock: View>: View {
             // around. Not a stack of one: a container here would change
             // how the caller's `.frame` and `.fixedSize` resolve, which is
             // the reply-truncation bug all over again.
-            textBlock(only, true)
+            text(only, carriesCursor: true)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                     switch block {
                     case .text(let rendered):
-                        textBlock(rendered, index == cursorBlock)
+                        text(rendered, carriesCursor: index == cursorBlock)
                     case .table(let table):
                         MarkdownTableView(table: table, isMine: isMine)
+                    case .rich(let rich):
+                        RichBlockView(
+                            block: rich, look: look, onDoubleTap: onDoubleTap, onLongPress: onLongPress)
                     }
                 }
                 if isStreaming, cursorBlock == nil {
-                    // The body ends in a table, and a cursor blinking
-                    // inside a cell would read as part of the data. It
-                    // gets a line of its own instead.
-                    textBlock(AttributedString(), true)
+                    // The body ends in a table or a drawing, and a cursor
+                    // blinking inside a cell would read as part of the
+                    // data. It gets a line of its own instead.
+                    textBlock(Text(verbatim: ""), true)
                 }
             }
+        }
+    }
+
+    /// One text block, its formulas drawn in once they are — and asked for
+    /// while they are not. A block with no formula is `Text(attributed)`
+    /// and no more, the shape every bubble had before #97.
+    @ViewBuilder
+    private func text(_ attributed: AttributedString, carriesCursor: Bool) -> some View {
+        let jobs = RichInlineText.jobs(in: attributed, look: look)
+        if jobs.isEmpty {
+            textBlock(Text(attributed), carriesCursor)
+        } else {
+            // `.task` lays nothing out, so the caller's Text is still the
+            // whole of the view as far as layout is concerned.
+            textBlock(RichInlineText.text(attributed, look: look), carriesCursor)
+                .task(id: jobs) {
+                    for job in jobs { await RichRenderer.shared.draw(job) }
+                }
         }
     }
 

@@ -53,6 +53,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         LaunchWindowBackstop.start(startedInMenuBar: hidden)
         // Return with ⌥ ⌘ ⌃ or ⇧ is a new line in every multi-line field (#95).
         MacNewLineKeys.install()
+        // …and a sentence starts with a capital there, while the system's
+        // "Capitalise words automatically" is on (#97).
+        MacCapitalKeys.install()
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self

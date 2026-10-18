@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  The page a NATIVE client loads in its hidden web view to draw rich blocks (fc-rich.js says
+  how). It must be served from a real origin — a custom scheme or a virtual host mapped to
+  this folder — and the host must refuse every request that is not for a file in it. The
+  policy below says the same thing to the engine: nothing leaves the folder.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { margin: 0; padding: 0; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; }
+  </style>
+  <script src="fc-rich.js"></script>
+</head>
+<body>
+  <div id="stage"></div>
+</body>
+</html>

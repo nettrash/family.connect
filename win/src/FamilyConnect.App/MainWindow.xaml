@@ -37,6 +37,13 @@
         <Grid x:Name="RecorderHost" Grid.Row="1" />
 
         <!--
+            Where the web view that draws formulas, diagrams and graphs is parked (issue #97, Services/RichRenderer.cs): far off to
+            the left and never hit, but VISIBLE — a collapsed web view is a hidden page, whose timers the engine throttles. A
+            WebView2 only starts inside a window's visual tree, so it lives here, with the window, for the whole session.
+        -->
+        <Canvas x:Name="RichStage" Grid.Row="1" IsHitTestVisible="False" />
+
+        <!--
             A call, over the corner of whatever is open (web views/call.rs): who, where it has got to, and what can be done
             about it. Hidden, never collapsed: the page carrying the media lives in it, and a browser engine taken out of the
             tree is one that stops.

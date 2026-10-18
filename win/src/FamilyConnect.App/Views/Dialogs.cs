@@ -258,6 +258,8 @@ internal static class Dialogs
             MaxLength = 1000,
             Height = 92,
         };
+        // Sentences, so capital letters at their starts (issue #97).
+        CapitalLetters.Attach(note);
         var content = Column(reasons, note, Footnote(FamilyText.AssistantReportDisclosure(say)));
         if (!string.IsNullOrEmpty(supportContact))
         {

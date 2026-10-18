@@ -25,6 +25,7 @@
 
 package me.nettrash.familyconnect.ui.board
 
+import me.nettrash.familyconnect.ui.components.ProseKeyboard
 import androidx.annotation.StringRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
@@ -347,6 +348,7 @@ internal fun EventDialog(
                     onValueChange = { title = NoteText.capped(it) },
                     label = { Text(stringResource(R.string.s_event)) },
                     singleLine = true,
+                    keyboardOptions = ProseKeyboard.Sentences,
                 )
                 Spacer(Modifier.size(16.dp))
                 Text(
@@ -379,6 +381,8 @@ internal fun EventDialog(
                     onValueChange = { if (it.length <= 200) place = it },
                     label = { Text(stringResource(R.string.s_event_place)) },
                     singleLine = true,
+                    // A place is a name, not a sentence: every word.
+                    keyboardOptions = ProseKeyboard.Words,
                 )
             }
         },
@@ -2332,6 +2336,7 @@ internal fun NoteDialog(
                                     },
                                     label = { Text(stringResource(R.string.s_thing_to_do)) },
                                     singleLine = true,
+                                    keyboardOptions = ProseKeyboard.Sentences,
                                     modifier = Modifier.weight(1f),
                                 )
                                 IconButton(onClick = {
@@ -2411,6 +2416,7 @@ internal fun NoteDialog(
                         label = { Text(stringResource(R.string.s_note)) },
                         minLines = 3,
                         maxLines = 8,
+                        keyboardOptions = ProseKeyboard.Sentences,
                         supportingText = if (NoteText.shouldShowCounter(text.text)) {
                             {
                                 Text(

@@ -34,6 +34,12 @@ internal sealed class AppServices : IAsyncDisposable
     /// <summary>The server the reader chose — or, before they have chosen one, the one a Store build was published for.</summary>
     public Uri? SavedServer => ServerSetting.Read() ?? DefaultServer.Address;
 
+    /// <summary>
+    /// What draws formulas, diagrams and graphs for the chat bubbles (issue #97) — the window's, made with it, because its hidden
+    /// web view has to live in the window's visual tree. Null until the window exists, and the bubbles then show the source.
+    /// </summary>
+    public RichRenderer? Rich { get; set; }
+
     /// <summary>The window's handle, which a desktop app's pickers must be given.</summary>
     public nint WindowHandle { get; set; }
 

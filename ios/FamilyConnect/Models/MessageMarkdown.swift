@@ -21,11 +21,24 @@
 //      all of which index the RENDERED string,
 //    - the bounded non-lazy 60/300-row scroll window on both clients.
 //
-//  ONLY A BODY THAT ACTUALLY CONTAINS A TABLE becomes a stack of blocks —
+//  ONLY A BODY THAT ACTUALLY CONTAINS A TABLE (or a rich block, below)
+//  becomes a stack of blocks —
 //  see `blocks(_:)`, and `MessageBodyBlocks` for how they are drawn. A
 //  fenced block stays a monospaced RUN rather than a scrolling box for the
 //  same reason: it reads as code, it wraps like text, and it costs the
 //  bubble nothing structurally.
+//
+//  FORMULAS, DIAGRAMS AND GRAPHS (issue #97) are the one other thing that
+//  splits a body. A fence tagged `math`, `mermaid`, `dot` (and the rest of
+//  docs/protocol.md's table) or `plot`, and display math (`$$…$$` or
+//  `\[…\]` on lines of their own), become a `.rich` block the bubble DRAWS
+//  — through RichRenderer's hidden web view — rather than sets in type; it
+//  splits the text around it exactly as a table does. An INLINE formula
+//  (`$…$`, `$$…$$`, `\(…\)` inside a line) stays a run: its characters are
+//  exactly what was typed, delimiters and all, and it carries the formula in
+//  `InlineMathAttribute`, which is what the bubble swaps for a drawing. The
+//  parsing rules are docs/protocol.md's ("What counts, exactly"), and four
+//  parsers — this, Kotlin, C# and Rust — are held to them by one table.
 //
 //  This is a RENDERING convention, not a wire format (docs/protocol.md
 //  states it explicitly): `body` is plain text on the wire, the server
@@ -55,11 +68,74 @@ nonisolated enum MessageMarkdown {
     enum Block: Equatable {
         case text(AttributedString)
         case table(Table)
+        /// A formula, a diagram or a graph standing on its own (#97).
+        case rich(RichBlock)
 
         var isTable: Bool {
             if case .table = self { return true }
             return false
         }
+
+        var isRich: Bool {
+            if case .rich = self { return true }
+            return false
+        }
+    }
+
+    /// A block a bubble DRAWS rather than sets in type: what to draw it
+    /// with, and what to draw (docs/protocol.md, "Rich blocks").
+    ///
+    /// Until it has been drawn — and for good when it cannot be — the
+    /// bubble shows `fallback` in the monospaced face, as it shows a code
+    /// block.
+    struct RichBlock: Hashable, Sendable {
+        /// The job's `kind` word, too (`math` here; an inline formula's job
+        /// is `math-inline`).
+        enum Kind: String, Hashable, Sendable {
+            case math
+            case mermaid
+            case graphviz
+            case plot
+        }
+
+        let kind: Kind
+        /// Graphviz's layout: `dot` unless the fence named another. Nil for
+        /// every other kind.
+        let engine: String?
+        /// The fence's content exactly as a code block's would be, or a
+        /// display formula's content trimmed of spaces, tabs and newlines.
+        let source: String
+        /// What the bubble shows until the block is drawn: a fence's
+        /// content (its fences and tag are not shown, as a code block's are
+        /// not), or a display formula AS TYPED, delimiters and all.
+        let fallback: String
+
+        init(kind: Kind, engine: String? = nil, source: String, fallback: String? = nil) {
+            self.kind = kind
+            self.engine = engine
+            self.source = source
+            self.fallback = fallback ?? source
+        }
+    }
+
+    /// An inline formula's run: the formula, and which one it is.
+    ///
+    /// The ordinal is not decoration. `AttributedString` merges adjacent
+    /// runs whose attributes are equal, so `\(a\)\(a\)` would come back as
+    /// ONE run holding both formulas' characters — and be drawn once. Each
+    /// formula's ordinal (its place in the string it was parsed from) keeps
+    /// every run its own.
+    struct InlineMath: Hashable, Sendable {
+        let source: String
+        let ordinal: Int
+    }
+
+    /// The attribute an inline formula's run carries (see `InlineMath`).
+    /// Custom, so SwiftUI's `Text` ignores it and draws the characters —
+    /// the source, delimiters and all — until a drawing replaces them.
+    enum InlineMathAttribute: AttributedStringKey {
+        typealias Value = InlineMath
+        static let name = "FamilyConnect.inlineMath"
     }
 
     /// A GFM pipe table, already inline-rendered cell by cell.
@@ -91,21 +167,26 @@ nonisolated enum MessageMarkdown {
 
     /// Render a message body as the blocks it lays out in.
     ///
-    /// The ONLY thing that splits a body is a table; everything else is a
-    /// run inside a text block.
+    /// The ONLY things that split a body are a table and a rich block;
+    /// everything else is a run inside a text block.
     static func blocks(_ body: String) -> [Block] {
-        parse(body, tables: true)
+        parse(body, structured: true)
     }
 
     /// Render a message body as one attributed string.
     ///
     /// Tables are deliberately NOT recognised here — a caller holding one
     /// string has nowhere to put a grid, so a pipe table renders as the
-    /// rows that were typed. This is what the link detector, the preview
-    /// card and the tests index; `blocks(_:)` is what the balloon draws.
+    /// rows that were typed. Nor are rich blocks: a rich fence is the code
+    /// block an older client draws, and display math is the text it was
+    /// typed as (the same answer as the Rust port's `render`). Inline
+    /// formulas ARE runs here, carrying `InlineMathAttribute`, so the link
+    /// detector can keep out of them. This is what the link detector, the
+    /// preview card and the tests index; `blocks(_:)` is what the balloon
+    /// draws.
     static func render(_ body: String) -> AttributedString {
         var out = AttributedString()
-        for block in parse(body, tables: false) {
+        for block in parse(body, structured: false) {
             if case .text(let text) = block { out.append(text) }
         }
         return out
@@ -119,10 +200,15 @@ nonisolated enum MessageMarkdown {
         case table(Table)
     }
 
-    /// Fences first, then line structure inside each plain segment: the
-    /// whole point of a code fence is that what is inside it is not markup,
-    /// so nothing below ever sees a fenced line.
-    private static func parse(_ body: String, tables: Bool) -> [Block] {
+    /// Fences first, then display math, then line structure inside each
+    /// plain segment: the whole point of a code fence is that what is
+    /// inside it is not markup, so nothing below ever sees a fenced line —
+    /// and display math is taken BEFORE tables (docs/protocol.md, rule 2),
+    /// so a formula's lines are never a table's.
+    ///
+    /// `structured` is false for the flat `render`, which recognises
+    /// neither tables nor rich blocks.
+    private static func parse(_ body: String, structured: Bool) -> [Block] {
         var out: [Block] = []
         var current = AttributedString()
 
@@ -132,27 +218,47 @@ nonisolated enum MessageMarkdown {
             current = AttributedString()
         }
 
-        for segment in segments(of: body) {
+        func appendText(_ text: String) {
+            // Newlines BETWEEN pieces, never around a table: the lines
+            // a table swallowed take their separators with them, or a
+            // grid would leave a blank line above and below itself.
+            var needsSeparator = false
+            for piece in pieces(of: text, tables: structured) {
+                switch piece {
+                case .lines(let rendered):
+                    if needsSeparator { current.append(AttributedString("\n")) }
+                    current.append(rendered)
+                    needsSeparator = true
+                case .table(let table):
+                    flush()
+                    out.append(.table(table))
+                    needsSeparator = false
+                }
+            }
+        }
+
+        for segment in segments(of: body, rich: structured) {
             switch segment {
             case .code(let code):
                 var run = AttributedString(code)
                 run.font = .system(.body, design: .monospaced)
                 current.append(run)
+            case .rich(let rich):
+                // Stands alone, exactly as a table does (rule 3).
+                flush()
+                out.append(.rich(rich))
             case .text(let text):
-                // Newlines BETWEEN pieces, never around a table: the lines
-                // a table swallowed take their separators with them, or a
-                // grid would leave a blank line above and below itself.
-                var needsSeparator = false
-                for piece in pieces(of: text, tables: tables) {
-                    switch piece {
-                    case .lines(let rendered):
-                        if needsSeparator { current.append(AttributedString("\n")) }
-                        current.append(rendered)
-                        needsSeparator = true
-                    case .table(let table):
+                guard structured else {
+                    appendText(text)
+                    continue
+                }
+                for part in displayMath(in: text) {
+                    switch part {
+                    case .text(let plain):
+                        appendText(plain)
+                    case .rich(let rich):
                         flush()
-                        out.append(.table(table))
-                        needsSeparator = false
+                        out.append(.rich(rich))
                     }
                 }
             }
@@ -216,6 +322,109 @@ nonisolated enum MessageMarkdown {
         }
         flushPlain()
         return pieces
+    }
+
+    // MARK: - Display math
+
+    private enum DisplayPart {
+        case text(String)
+        case rich(RichBlock)
+    }
+
+    /// Split one fence-free segment around its display formulas
+    /// (docs/protocol.md, rule 2).
+    ///
+    /// A line whose first characters after spaces and tabs are `$$` or
+    /// `\[` opens one; it closes at the FIRST matching `$$` or `\]` after
+    /// the opener, on that line or a later one — and only if nothing but
+    /// spaces and tabs follows it. The first closer decides: one with words
+    /// after it is not searched past (`$$x$$ is it` is a line of text with
+    /// an inline formula in it, and so is anything that reads like one).
+    /// Without such a closer the lines are text, as typed.
+    private static func displayMath(in segment: String) -> [DisplayPart] {
+        guard segment.contains("$$") || segment.contains("\\[") else { return [.text(segment)] }
+        let lines = segment.components(separatedBy: "\n")
+        var parts: [DisplayPart] = []
+        var plain: [String] = []
+        var index = 0
+        while index < lines.count {
+            if let found = displayFormula(at: index, in: lines) {
+                if !plain.isEmpty {
+                    let text = plain.joined(separator: "\n")
+                    if !text.isEmpty { parts.append(.text(text)) }
+                    plain = []
+                }
+                parts.append(.rich(found.block))
+                index = found.end
+                continue
+            }
+            plain.append(lines[index])
+            index += 1
+        }
+        if !plain.isEmpty {
+            let text = plain.joined(separator: "\n")
+            if !text.isEmpty { parts.append(.text(text)) }
+        }
+        return parts
+    }
+
+    /// The display formula opening on `lines[start]`, and the index of the
+    /// first line after it — or nil when that line opens none.
+    ///
+    /// Everything is measured in unicode SCALARS, never characters: a
+    /// combining mark typed straight after a `$` would otherwise weld onto
+    /// it as one Character and hide it, where every other port (bytes,
+    /// UTF-16) still sees the dollar.
+    private static func displayFormula(at start: Int, in lines: [String]) -> (block: RichBlock, end: Int)? {
+        let first = Array(lines[start].unicodeScalars)
+        var lead = 0
+        while lead < first.count, first[lead] == " " || first[lead] == "\t" { lead += 1 }
+        let closer: [Unicode.Scalar]
+        if hasPrefix(first, ["$", "$"], at: lead) {
+            closer = ["$", "$"]
+        } else if hasPrefix(first, ["\\", "["], at: lead) {
+            closer = ["\\", "]"]
+        } else {
+            return nil
+        }
+        var row = start
+        var from = lead + 2
+        var source = String.UnicodeScalarView()
+        var shown: [String] = []
+        while true {
+            let line = row == start ? first : Array(lines[row].unicodeScalars)
+            if let close = find(closer, in: line, from: from) {
+                let after = line[(close + closer.count)...]
+                guard after.allSatisfy({ $0 == " " || $0 == "\t" }) else { return nil }
+                source.append(contentsOf: line[from..<close])
+                shown.append(String(String.UnicodeScalarView(line[(row == start ? lead : 0)..<(close + closer.count)])))
+                break
+            }
+            source.append(contentsOf: line[from...])
+            source.append("\n")
+            shown.append(String(String.UnicodeScalarView(line[(row == start ? lead : 0)...])))
+            row += 1
+            guard row < lines.count else { return nil }
+            from = 0
+        }
+        let trimmed = String(source).trimmingCharacters(in: CharacterSet(charactersIn: " \t\n"))
+        guard !trimmed.isEmpty else { return nil }
+        return (RichBlock(kind: .math, source: trimmed, fallback: shown.joined(separator: "\n")), row + 1)
+    }
+
+    private static func hasPrefix(_ scalars: [Unicode.Scalar], _ prefix: [Unicode.Scalar], at index: Int) -> Bool {
+        guard index + prefix.count <= scalars.count else { return false }
+        for offset in 0..<prefix.count where scalars[index + offset] != prefix[offset] { return false }
+        return true
+    }
+
+    private static func find(_ needle: [Unicode.Scalar], in scalars: [Unicode.Scalar], from: Int) -> Int? {
+        var index = from
+        while index + needle.count <= scalars.count {
+            if hasPrefix(scalars, needle, at: index) { return index }
+            index += 1
+        }
+        return nil
     }
 
     // MARK: - Headings
@@ -465,12 +674,14 @@ nonisolated enum MessageMarkdown {
     private enum Segment {
         case text(String)
         case code(String)
+        case rich(RichBlock)
     }
 
     /// The fence marker. Three backticks, at the start of a line.
     private static let fence = "```"
 
-    /// Split a body into alternating plain and fenced-code segments.
+    /// Split a body into alternating plain, fenced-code and (when `rich`)
+    /// rich segments.
     ///
     /// A fence must OPEN at the start of a line and CLOSE at the start of a
     /// line, which is what stops a stray triple-backtick in the middle of a
@@ -478,35 +689,54 @@ nonisolated enum MessageMarkdown {
     /// not a fence at all: the text stays as it was typed, because somebody
     /// mid-way through writing one should not watch their message turn into
     /// a code block as they type the third backtick.
-    private static func segments(of body: String) -> [Segment] {
+    ///
+    /// A RICH fence (docs/protocol.md, rule 1) is the same fence with a tag
+    /// from the protocol's table. It stands alone, as a table does: the
+    /// newlines around it go with it, where a code block's are kept so its
+    /// code does not weld onto the words around it.
+    private static func segments(of body: String, rich: Bool) -> [Segment] {
         guard body.contains(fence) else { return [.text(body)] }
         let lines = body.components(separatedBy: "\n")
         var result: [Segment] = []
         var plain: [String] = []
         var code: [String] = []
         var inFence = false
+        /// What the open fence draws, when it is a rich one.
+        var richTag: (kind: RichBlock.Kind, engine: String?)?
         for line in lines {
             let opensOrCloses = line.hasPrefix(fence)
             if !inFence, opensOrCloses {
-                // The language tag on an opening fence is dropped: nothing
-                // here highlights syntax, so it would only be noise.
                 inFence = true
-                // Keep the newline that ENDED the line before the fence,
-                // the mirror of the empty push below. Without it the code
-                // welds onto the last word above it — "try this:" followed
-                // by a block came out as "try this:let x = 1".
-                plain.append("")
+                richTag = rich ? Self.richTag(info: fenceInfo(line)) : nil
+                if richTag == nil {
+                    // The language tag on an ordinary fence is dropped:
+                    // nothing here highlights syntax, so it would only be
+                    // noise.
+                    //
+                    // Keep the newline that ENDED the line before the
+                    // fence, the mirror of the empty push below. Without it
+                    // the code welds onto the last word above it — "try
+                    // this:" followed by a block came out as "try this:let
+                    // x = 1".
+                    plain.append("")
+                }
                 continue
             }
             if inFence, opensOrCloses {
                 inFence = false
                 result.append(.text(plain.joined(separator: "\n")))
                 plain = []
-                result.append(.code(code.joined(separator: "\n")))
+                let content = code.joined(separator: "\n")
                 code = []
-                // Keep the newline that ended the fence, so text after a
-                // block does not run onto its last line.
-                plain.append("")
+                if let tag = richTag {
+                    result.append(.rich(RichBlock(kind: tag.kind, engine: tag.engine, source: content)))
+                    richTag = nil
+                } else {
+                    result.append(.code(content))
+                    // Keep the newline that ended the fence, so text after
+                    // a block does not run onto its last line.
+                    plain.append("")
+                }
                 continue
             }
             if inFence {
@@ -526,16 +756,110 @@ nonisolated enum MessageMarkdown {
         }
     }
 
+    /// The info string of a fence's opening line: what follows ALL its
+    /// backticks (a fence opened with four still has a tag after the
+    /// fourth), trimmed of spaces and tabs.
+    private static func fenceInfo(_ line: String) -> String {
+        String(line.drop { $0 == "`" }).trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+    }
+
+    /// What a fence's tag draws, if anything: the info string's first word
+    /// — up to a space or a tab — lower-cased in ASCII, against
+    /// docs/protocol.md's table.
+    ///
+    /// ASCII lower-casing on purpose: Swift's `lowercased()` is Unicode's,
+    /// which would also fold a Kelvin sign (U+212A) to `k` — four ports,
+    /// four ideas of case, unless the one rule is the ASCII one.
+    static func richTag(info: String) -> (kind: RichBlock.Kind, engine: String?)? {
+        let word = info.prefix { $0 != " " && $0 != "\t" }
+        let lowered = String(String.UnicodeScalarView(word.unicodeScalars.map { scalar in
+            ("A"..."Z").contains(scalar) ? Unicode.Scalar(scalar.value + 32)! : scalar
+        }))
+        switch lowered {
+        case "math", "latex", "tex": return (.math, nil)
+        case "mermaid": return (.mermaid, nil)
+        case "dot", "graphviz", "gv": return (.graphviz, "dot")
+        case "neato", "circo", "fdp", "sfdp", "twopi", "osage", "patchwork": return (.graphviz, lowered)
+        case "plot": return (.plot, nil)
+        default: return nil
+        }
+    }
+
     // MARK: - Inline
 
-    /// Foundation's parser, held to inline syntax only.
+    /// Foundation's parser, held to inline syntax only — with inline
+    /// formulas taken out first and put back after.
     ///
     /// `.inlineOnlyPreservingWhitespace` is what keeps line breaks and stops
     /// it re-discovering block structure — without it a blank line becomes a
     /// paragraph break, a multi-line message comes back collapsed, and the
     /// heading and bullet rules above would be applied twice by two parsers
     /// that disagree.
+    ///
+    /// FORMULAS. Foundation's parser cannot be taught a new rule, and a
+    /// formula's insides are not markdown (`*see $a*b$*`: the formula is
+    /// `a*b`, inside the emphasis). So each formula `inlineMath(in:)` finds
+    /// is swapped for a PLACEHOLDER the parser passes through untouched,
+    /// and swapped back afterwards — keeping whatever emphasis, link or
+    /// strikethrough the placeholder picked up, adding the formula
+    /// attribute and the code face. The placeholder is bracketed by
+    /// Unicode punctuation (`⸨…⸩`) because a formula's delimiters, `$` and
+    /// `\`, are punctuation to CommonMark's flanking rules, and a delimiter
+    /// run next to a formula must flank exactly as it would next to a `$`.
     private static func inline(_ text: String) -> AttributedString {
+        let formulas = inlineMath(in: text)
+        guard !formulas.isEmpty else { return foundationInline(text) }
+
+        var substituted = ""
+        var cursor = text.startIndex
+        for (ordinal, formula) in formulas.enumerated() {
+            substituted.unicodeScalars.append(contentsOf: text.unicodeScalars[cursor..<formula.whole.lowerBound])
+            substituted += placeholder(ordinal)
+            cursor = formula.whole.upperBound
+        }
+        substituted.unicodeScalars.append(contentsOf: text.unicodeScalars[cursor...])
+
+        var parsed = foundationInline(substituted)
+        for (ordinal, formula) in formulas.enumerated() {
+            guard let found = parsed.range(of: placeholder(ordinal)) else { continue }
+            let picked = parsed[found].runs.first?.attributes ?? AttributeContainer()
+            let raw = String(String.UnicodeScalarView(text.unicodeScalars[formula.whole]))
+            var run = AttributedString(raw, attributes: picked)
+            // In a link's LABEL a formula is flattened to the text it was
+            // typed as: a drawing inside a tappable run is a second thing
+            // to tap that goes somewhere the reader cannot see, and every
+            // port answers it the same way (the coordinator's reading of
+            // docs/protocol.md, rule 4).
+            guard picked.link == nil else {
+                parsed.replaceSubrange(found, with: run)
+                continue
+            }
+            run[InlineMathAttribute.self] = InlineMath(source: formula.source, ordinal: ordinal)
+            // The code face, until it is drawn — and for good if it cannot
+            // be (docs/protocol.md, "How it is drawn").
+            run.inlinePresentationIntent = (picked.inlinePresentationIntent ?? []).union(.code)
+            parsed.replaceSubrange(found, with: run)
+        }
+        return parsed
+    }
+
+    /// Placeholder `ordinal`: `⸨`, the ordinal in Private Use digits, `⸩`.
+    /// Private Use code points never come from a keyboard; a body that
+    /// somehow holds the digits used here is parsed without formulas
+    /// rather than risk one placeholder matching another's text
+    /// (`inlineMath(in:)` checks).
+    private static func placeholder(_ ordinal: Int) -> String {
+        var out = "\u{2E28}"
+        for digit in String(ordinal).unicodeScalars {
+            out.unicodeScalars.append(Unicode.Scalar(placeholderDigitBase + digit.value - 48)!)
+        }
+        out += "\u{2E29}"
+        return out
+    }
+
+    private static let placeholderDigitBase: UInt32 = 0xE000
+
+    private static func foundationInline(_ text: String) -> AttributedString {
         var options = AttributedString.MarkdownParsingOptions()
         options.interpretedSyntax = .inlineOnlyPreservingWhitespace
         options.allowsExtendedAttributes = true
@@ -546,5 +870,314 @@ nonisolated enum MessageMarkdown {
             return AttributedString(text)
         }
         return parsed
+    }
+
+    // MARK: - Inline math
+
+    /// One inline formula: where it is in the text (delimiters included)
+    /// and what it says.
+    struct InlineFormula: Equatable {
+        let whole: Range<String.Index>
+        let source: String
+    }
+
+    /// Every inline formula in `text`, in order (docs/protocol.md, rule 4).
+    ///
+    /// One pass, left to right, over unicode SCALARS (see
+    /// `displayFormula`), shaped like the CommonMark inline parser it runs
+    /// ahead of, so it agrees with it about what is code and what is a
+    /// link:
+    ///
+    /// - a backslash escapes the next character, so an escaped `$` or `\(`
+    ///   is never an opener ("preceded by an odd number of backslashes");
+    /// - a code span is skipped whole — formulas come AFTER code spans —
+    ///   and a formula whose search would cross the start of one is not a
+    ///   formula;
+    /// - a link's destination (after `](`) and an autolink are skipped
+    ///   raw, as CommonMark scans them, so a `$` in a URL is never math;
+    /// - at each position the three forms are tried in the protocol's
+    ///   order of precedence: `$$…$$`, `\(…\)`, `$…$`.
+    static func inlineMath(in text: String) -> [InlineFormula] {
+        guard text.contains("$") || text.contains("\\(") else { return [] }
+        let scalars = Array(text.unicodeScalars)
+        // See `placeholder`.
+        if scalars.contains(where: { (placeholderDigitBase..<placeholderDigitBase + 10).contains($0.value) }) {
+            return []
+        }
+        var indices = Array(text.unicodeScalars.indices)
+        indices.append(text.endIndex)
+        let scanner = MathScanner(scalars: scalars)
+        return scanner.formulas().map { found in
+            InlineFormula(
+                whole: indices[found.start]..<indices[found.end],
+                source: String(String.UnicodeScalarView(scalars[found.inner..<found.close])))
+        }
+    }
+
+    /// The scanner behind `inlineMath(in:)`, over scalar offsets.
+    private struct MathScanner {
+        let scalars: [Unicode.Scalar]
+
+        struct Found {
+            let start: Int
+            let inner: Int
+            let close: Int
+            let end: Int
+        }
+
+        func formulas() -> [Found] {
+            var found: [Found] = []
+            var brackets = 0
+            var index = 0
+            let count = scalars.count
+            while index < count {
+                switch scalars[index] {
+                case "\\":
+                    if index + 1 < count, scalars[index + 1] == "(",
+                       let close = closer(["\\", ")"], from: index + 2) {
+                        found.append(Found(start: index, inner: index + 2, close: close, end: close + 2))
+                        index = close + 2
+                    } else {
+                        // An escape: this and the next character are text.
+                        index += 2
+                    }
+                case "`":
+                    let run = backtickRun(at: index)
+                    if let end = codeSpanEnd(at: index, run: run) {
+                        index = end
+                    } else {
+                        index += run
+                    }
+                case "[":
+                    brackets += 1
+                    index += 1
+                case "]":
+                    index += 1
+                    if brackets > 0 {
+                        brackets -= 1
+                        if index < count, scalars[index] == "(", let end = linkTail(from: index + 1) {
+                            index = end
+                        }
+                    }
+                case "<":
+                    index = autolinkEnd(at: index) ?? index + 1
+                case "$":
+                    if index + 1 < count, scalars[index + 1] == "$",
+                       let close = closer(["$", "$"], from: index + 2) {
+                        found.append(Found(start: index, inner: index + 2, close: close, end: close + 2))
+                        index = close + 2
+                    } else if let close = singleDollarCloser(opener: index) {
+                        found.append(Found(start: index, inner: index + 1, close: close, end: close + 1))
+                        index = close + 1
+                    } else {
+                        index += 1
+                    }
+                default:
+                    index += 1
+                }
+            }
+            return found
+        }
+
+        /// An ASCII letter, an ASCII digit or `_` — ASCII on purpose, so four
+        /// languages with four ideas of a letter give one answer.
+        private func isWord(_ scalar: Unicode.Scalar) -> Bool {
+            scalar == "_" || ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
+                || ("0"..."9").contains(scalar)
+        }
+
+        /// Where the first `closer` (`$$` or `\)`) at or after `from` starts,
+        /// on the same line, with something other than spaces and tabs
+        /// before it — or nil. The FIRST one decides: `$$ $$` is not a
+        /// formula, and is not searched past.
+        private func closer(_ closer: [Unicode.Scalar], from: Int) -> Int? {
+            var index = from
+            while index < scalars.count {
+                if hasPrefix(scalars, closer, at: index) {
+                    let content = scalars[from..<index]
+                    return content.contains { $0 != " " && $0 != "\t" } ? index : nil
+                }
+                switch scalars[index] {
+                case "\n":
+                    return nil
+                case "`":
+                    if opensCodeSpan(at: index) { return nil }
+                    index += backtickRun(at: index)
+                default:
+                    index += 1
+                }
+            }
+            return nil
+        }
+
+        /// The closer of a `$…$` formula opening at `opener`, or nil.
+        ///
+        /// The opener must not follow a word character or a `$`, and must
+        /// be followed by something other than a space, a tab or a `$`. A
+        /// closer is a later `$` on the same line with neither a space, a
+        /// tab nor a backslash before it, and neither a word character nor
+        /// a `$` after it; a candidate that fails is skipped and the search
+        /// goes on. That guard is what keeps money as money: in
+        /// `$5 and $10` the only candidate has a space before it.
+        private func singleDollarCloser(opener: Int) -> Int? {
+            if opener > 0, isWord(scalars[opener - 1]) || scalars[opener - 1] == "$" { return nil }
+            guard opener + 1 < scalars.count else { return nil }
+            let next = scalars[opener + 1]
+            if next == " " || next == "\t" || next == "$" { return nil }
+            var index = opener + 1
+            while index < scalars.count {
+                switch scalars[index] {
+                case "\n":
+                    return nil
+                case "`":
+                    if opensCodeSpan(at: index) { return nil }
+                    index += backtickRun(at: index)
+                    continue
+                case "$":
+                    let before = scalars[index - 1]
+                    let after: Unicode.Scalar? = index + 1 < scalars.count ? scalars[index + 1] : nil
+                    if before != " ", before != "\t", before != "\\",
+                       !(after.map { isWord($0) || $0 == "$" } ?? false) {
+                        return index
+                    }
+                default:
+                    break
+                }
+                index += 1
+            }
+            return nil
+        }
+
+        private func backtickRun(at index: Int) -> Int {
+            var end = index
+            while end < scalars.count, scalars[end] == "`" { end += 1 }
+            return end - index
+        }
+
+        /// The end of the code span opened by the `run` backticks at
+        /// `index`: CommonMark closes it at the next run of EXACTLY that
+        /// length, and a run that has none is just backticks.
+        private func codeSpanEnd(at index: Int, run: Int) -> Int? {
+            var at = index + run
+            while at < scalars.count {
+                if scalars[at] == "`" {
+                    let length = backtickRun(at: at)
+                    if length == run { return at + length }
+                    at += length
+                } else {
+                    at += 1
+                }
+            }
+            return nil
+        }
+
+        /// Whether the backtick run at `index`, met while a formula looks
+        /// for its closer, would open a code span — which the formula must
+        /// not cross, because code spans come first. After an odd number of
+        /// backslashes the run's first backtick is escaped, and the rest is
+        /// what might open.
+        private func opensCodeSpan(at index: Int) -> Bool {
+            var backslashes = 0
+            var back = index - 1
+            while back >= 0, scalars[back] == "\\" {
+                backslashes += 1
+                back -= 1
+            }
+            var start = index
+            var run = backtickRun(at: index)
+            if backslashes % 2 == 1 {
+                start += 1
+                run -= 1
+            }
+            return run > 0 && codeSpanEnd(at: start, run: run) != nil
+        }
+
+        /// The end of an inline link's tail — `destination "title")` — that
+        /// starts at `from` (just past `](`), or nil when it is not one.
+        /// Scanned raw, as CommonMark scans it: whatever is in a
+        /// destination is never math.
+        private func linkTail(from: Int) -> Int? {
+            var index = skipSpace(from)
+            if index < scalars.count, scalars[index] == "<" {
+                index += 1
+                while index < scalars.count, scalars[index] != ">" {
+                    let scalar = scalars[index]
+                    if scalar == "\n" || scalar == "\r" || scalar == "<" { return nil }
+                    index += scalar == "\\" ? 2 : 1
+                }
+                guard index < scalars.count else { return nil }
+                index += 1
+            } else {
+                var depth = 0
+                while index < scalars.count {
+                    let scalar = scalars[index]
+                    if scalar == "\\" {
+                        index += 2
+                        continue
+                    }
+                    if scalar.value <= 0x20 || scalar.value == 0x7F { break }
+                    if scalar == "(" { depth += 1 }
+                    if scalar == ")" {
+                        if depth == 0 { break }
+                        depth -= 1
+                    }
+                    index += 1
+                }
+                guard depth == 0 else { return nil }
+            }
+            index = skipSpace(index)
+            guard index < scalars.count else { return nil }
+            if scalars[index] == "\"" || scalars[index] == "'" || scalars[index] == "(" {
+                let close: Unicode.Scalar = scalars[index] == "(" ? ")" : scalars[index]
+                index += 1
+                while index < scalars.count, scalars[index] != close {
+                    index += scalars[index] == "\\" ? 2 : 1
+                }
+                guard index < scalars.count else { return nil }
+                index = skipSpace(index + 1)
+            }
+            guard index < scalars.count, scalars[index] == ")" else { return nil }
+            return index + 1
+        }
+
+        /// Spaces and tabs, and at most one line break, as between a link's
+        /// parts.
+        private func skipSpace(_ from: Int) -> Int {
+            var index = from
+            var breaks = 0
+            while index < scalars.count {
+                let scalar = scalars[index]
+                if scalar == " " || scalar == "\t" {
+                    index += 1
+                } else if scalar == "\n", breaks == 0 {
+                    breaks += 1
+                    index += 1
+                } else {
+                    break
+                }
+            }
+            return index
+        }
+
+        /// The end of an autolink `<scheme:…>` at `index`, or nil.
+        private func autolinkEnd(at index: Int) -> Int? {
+            var at = index + 1
+            guard at < scalars.count, ("a"..."z").contains(scalars[at]) || ("A"..."Z").contains(scalars[at])
+            else { return nil }
+            let schemeStart = at
+            while at < scalars.count, isWord(scalars[at]) && scalars[at] != "_"
+                || scalars[at] == "+" || scalars[at] == "." || scalars[at] == "-" {
+                at += 1
+            }
+            let schemeLength = at - schemeStart
+            guard (2...32).contains(schemeLength), at < scalars.count, scalars[at] == ":" else { return nil }
+            at += 1
+            while at < scalars.count, scalars[at] != ">" {
+                let scalar = scalars[at]
+                if scalar.value <= 0x20 || scalar == "<" { return nil }
+                at += 1
+            }
+            return at < scalars.count ? at + 1 : nil
+        }
     }
 }
