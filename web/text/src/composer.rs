@@ -187,6 +187,191 @@ pub fn return_makes_line(shift: bool, ctrl: bool, alt: bool, meta: bool) -> bool
     shift || ctrl || alt || meta
 }
 
+// MARK: - Capital letters (issue #97)
+//
+// docs/capitals-and-rich-markdown-2026-10-17.md, "The rule": on a computer
+// no keyboard capitalises a sentence, so the desktop clients do it
+// themselves — the web on devices with a fine pointer and hover, in the
+// multi-line fields. A phone's keyboard does its own and the field only asks
+// (`autocapitalize="sentences"`). The Mac (`Capitals.swift`) and Windows
+// (`Capitals.cs`) hold the same table.
+
+/// The marks that may open a word before its first letter: `"(Hi`.
+const OPENING_MARKS: [char; 7] = ['"', '\'', '(', '[', '«', '“', '‘'];
+
+/// The marks that may close a sentence after its stop: `(Done.)`.
+const CLOSING_MARKS: [char; 7] = ['"', '\'', ')', ']', '»', '”', '’'];
+
+/// A line break as any field may hold one: a line feed, or the lone
+/// carriage return a WinUI `TextBox` keeps.
+fn is_line_break(c: char) -> bool {
+    c == '\n' || c == '\r'
+}
+
+/// The capital the rule would put in place of `typed`: `typed` must be a
+/// lower-case letter whose upper case — the invariant one, never a locale's
+/// — is exactly one character, and a different one. `ß` (upper case `SS`)
+/// has none.
+pub fn capital_of(typed: char) -> Option<char> {
+    if !typed.is_lowercase() {
+        return None;
+    }
+    let mut upper = typed.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(capital), None) if capital != typed => Some(capital),
+        _ => None,
+    }
+}
+
+/// Whether `typed`, the one character the keyboard just produced, is put in
+/// as its capital. `before` is the field's text before the caret (the
+/// selection's start).
+///
+/// YES only when all four hold:
+///
+/// 1. `typed` has a capital ([`capital_of`]);
+/// 2. a word is starting: with any opening marks typed just before it set
+///    aside, `before` is empty or ends in a space, a tab or a line break;
+/// 3. a sentence is starting: `before`, without those marks and without
+///    trailing spaces and tabs, is empty, ends in a line break, is nothing
+///    on its line but a list, heading or quote marker, or ends in `.`, `!`
+///    or `?` (closing marks after it allowed) — where a `.` after a `.` (an
+///    ellipsis) or ending an abbreviation (`e.g.`, `U.S.`) does not count;
+/// 4. the caret is not in code: an even number of fence lines before it,
+///    and an even number of backticks on its own line.
+pub fn capitalizes(before: &str, typed: char) -> bool {
+    if capital_of(typed).is_none() {
+        return false;
+    }
+    let core = before.trim_end_matches(OPENING_MARKS);
+    // 2. The word is just starting.
+    if !core.is_empty() && !core.ends_with([' ', '\t', '\n', '\r']) {
+        return false;
+    }
+    // 3. So is a sentence.
+    if !starts_sentence(core.trim_end_matches([' ', '\t'])) {
+        return false;
+    }
+    // 4. And the caret is not in code.
+    !in_code(before)
+}
+
+/// Rule 3 over `before` with the opening marks and trailing blanks gone.
+fn starts_sentence(text: &str) -> bool {
+    if text.is_empty() || text.ends_with(is_line_break) {
+        return true;
+    }
+    let line = text.rsplit(is_line_break).next().unwrap_or(text);
+    if is_marker(line.trim_start_matches([' ', '\t'])) {
+        return true;
+    }
+    let stopped = text.trim_end_matches(CLOSING_MARKS);
+    let Some(stop) = stopped.chars().next_back() else {
+        return false;
+    };
+    match stop {
+        '!' | '?' => true,
+        '.' => {
+            let head = &stopped[..stopped.len() - 1];
+            // An ellipsis trails off rather than ending anything.
+            if head.ends_with('.') {
+                return false;
+            }
+            !is_abbreviation(stopped)
+        }
+        _ => false,
+    }
+}
+
+/// A list, heading or quote marker and nothing else: `-`, `*`, `+`, `>`, one
+/// to six `#`, or digits followed by `.` or `)`.
+fn is_marker(line: &str) -> bool {
+    match line {
+        "-" | "*" | "+" | ">" => return true,
+        _ => {}
+    }
+    if !line.is_empty() && line.len() <= 6 && line.bytes().all(|b| b == b'#') {
+        return true;
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0 && matches!(&line[digits..], "." | ")")
+}
+
+/// Whether the `.` that ends `text` ends an abbreviation: the word back to
+/// the previous space holds another `.`, and every piece between the dots
+/// is one or two ASCII letters (`e.g.`, `i.e.`, `a.m.`, `U.S.`) — which
+/// `example.com.` is not.
+fn is_abbreviation(text: &str) -> bool {
+    let word = text.rsplit([' ', '\t', '\n', '\r']).next().unwrap_or(text);
+    let pieces = &word[..word.len() - 1];
+    pieces.contains('.')
+        && pieces.split('.').all(|piece| {
+            (1..=2).contains(&piece.len()) && piece.bytes().all(|b| b.is_ascii_alphabetic())
+        })
+}
+
+/// Rule 4: the caret is inside a fence (an odd number of lines before it
+/// start with three backticks) or a code span (an odd number of backticks
+/// on its own line, outside a fence).
+fn in_code(before: &str) -> bool {
+    let fences = before
+        .split(is_line_break)
+        .filter(|line| line.starts_with("```"))
+        .count();
+    if fences % 2 == 1 {
+        return true;
+    }
+    let line = before.rsplit(is_line_break).next().unwrap_or(before);
+    line.matches('`').count() % 2 == 1
+}
+
+/// A capital the rule just put in, remembered so the Backspace pressed
+/// straight after it can take it back (docs/capitals-and-rich-markdown,
+/// "Taking it back").
+///
+/// The UI keeps one of these from the moment it capitalises until anything
+/// else happens — another key, a click, a paste, a selection — and then
+/// drops it. Offsets are BYTE offsets into the field's text; a browser's
+/// `selectionStart` counts UTF-16 units, so the web converts at the edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TakeBack {
+    /// Where the capital starts.
+    pub at: usize,
+    /// The capital that was put in.
+    pub capital: char,
+    /// What was typed: the lower-case letter a Backspace puts back.
+    pub typed: char,
+}
+
+impl TakeBack {
+    /// Remember that `typed` went in at `at` as its capital, or `None` when
+    /// it has none.
+    pub fn new(at: usize, typed: char) -> Option<TakeBack> {
+        Some(TakeBack {
+            at,
+            capital: capital_of(typed)?,
+            typed,
+        })
+    }
+
+    /// A Backspace with the caret at `caret` and nothing selected: the text
+    /// with the lower-case letter back, and where the caret goes (right
+    /// behind it) — or `None` when the caret is not right behind the capital
+    /// or the capital is no longer there, and the Backspace is an ordinary
+    /// one.
+    pub fn backspace(&self, text: &str, caret: usize) -> Option<(String, usize)> {
+        let end = self.at + self.capital.len_utf8();
+        if caret != end || text.get(self.at..end)? != self.capital.encode_utf8(&mut [0; 4]) {
+            return None;
+        }
+        let mut undone = String::with_capacity(text.len() + 4);
+        undone.push_str(&text[..self.at]);
+        undone.push(self.typed);
+        undone.push_str(&text[end..]);
+        Some((undone, self.at + self.typed.len_utf8()))
+    }
+}
+
 /// `n` with thousands grouped by commas — `4,000`.
 fn grouped(n: usize) -> String {
     let digits = n.to_string();
@@ -203,6 +388,147 @@ fn grouped(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MARK: - Capital letters (#97)
+
+    /// docs/capitals-and-rich-markdown-2026-10-17.md, "The table every
+    /// port's tests hold", verbatim (`⏎` is a line feed, `⇥` a tab).
+    #[test]
+    fn capitals_the_design_table() {
+        let table: &[(&str, char, bool)] = &[
+            ("", 'h', true),
+            ("Hi. ", 'h', true),
+            // The word is not starting.
+            ("Hi.", 'h', false),
+            ("hi ", 'h', false),
+            ("Really? ", 'y', true),
+            ("Wow! ", 's', true),
+            // An ellipsis.
+            ("Wait... ", 'w', false),
+            // An abbreviation.
+            ("See e.g. ", 't', false),
+            ("It's at example.com. ", 't', true),
+            ("Line\n", 'n', true),
+            ("He said \"stop.\" ", 't', true),
+            ("(Done.) ", 'n', true),
+            ("\"", 'h', true),
+            ("Hi. (", 's', true),
+            ("- ", 'm', true),
+            ("List:\n1. ", 'b', true),
+            ("12) ", 'x', true),
+            ("# ", 't', true),
+            ("> ", 'q', true),
+            // Inside a fence.
+            ("```\n", 'l', false),
+            // The fence closed.
+            ("```\ncode\n```\n", 'n', true),
+            // Inside a code span.
+            ("Use `x. ", 'y', false),
+            // Already upper case.
+            ("Hi. ", 'H', false),
+            // Not a letter.
+            ("Hi. ", '1', false),
+            // Its upper case is two letters.
+            ("", 'ß', false),
+            // Two spaces.
+            ("Hi.  ", 'h', true),
+            // A tab.
+            ("Hi.\t", 'h', true),
+            ("", 'é', true),
+            ("Привет. ", 'к', true),
+            ("Ok.\n\n", 'n', true),
+            ("@ann ", 'h', false),
+        ];
+        for &(before, typed, expected) in table {
+            assert_eq!(
+                capitalizes(before, typed),
+                expected,
+                "{before:?} + {typed:?}"
+            );
+        }
+    }
+
+    /// The edges of each condition, beyond the table.
+    #[test]
+    fn capitals_edges() {
+        // Every opening and closing mark.
+        for mark in OPENING_MARKS {
+            assert!(capitalizes(&format!("Hi. {mark}"), 'a'), "{mark}");
+            assert!(capitalizes(&format!("{mark}{mark}"), 'a'), "{mark}");
+        }
+        for mark in CLOSING_MARKS {
+            assert!(capitalizes(&format!("Done.{mark} "), 'a'), "{mark}");
+            assert!(capitalizes(&format!("Done!{mark}{mark} "), 'a'), "{mark}");
+        }
+        // A WinUI field's lone carriage return is a line break.
+        assert!(capitalizes("Line\r", 'n'));
+        assert!(!capitalizes("```\r", 'n'));
+        assert!(capitalizes("```\rcode\r```\r", 'n'));
+        // Markers: indented, every heading depth, and their near misses.
+        assert!(capitalizes("  - ", 'a'));
+        assert!(capitalizes("###### ", 'a'));
+        assert!(!capitalizes("####### ", 'a'));
+        assert!(!capitalizes("-- ", 'a'));
+        assert!(!capitalizes("1.2 ", 'a'));
+        // A marker is the whole line: a dash after a sentence is not one.
+        assert!(!capitalizes("Hi. - ", 'a'));
+        // Abbreviations: the pieces must be one or two ASCII letters.
+        assert!(!capitalizes("a.m. ", 'a'));
+        assert!(!capitalizes("in the U.S. ", 'a'));
+        assert!(capitalizes("v1.2. ", 'a'));
+        assert!(capitalizes("abc.d. ", 'a'));
+        assert!(capitalizes("é.g. ", 'a'));
+        // A single-letter word with one dot is a sentence's end.
+        assert!(capitalizes("Plan B. ", 'a'));
+        // `?` and `!` are never an ellipsis.
+        assert!(capitalizes("What?! ", 'a'));
+        // Other ends are not sentence ends.
+        assert!(!capitalizes("Hi, ", 'a'));
+        assert!(!capitalizes("Note: ", 'a'));
+        // A fence line counts only at the start of a line; a closed code
+        // span is not code.
+        assert!(capitalizes("x ```\n", 'a'));
+        assert!(capitalizes("Use `x`. ", 'a'));
+        // Letters with no single capital, or none at all.
+        for typed in ['ŉ', 'ǰ', 'ﬀ', 'ª', '日', ' ', '.'] {
+            assert!(!capitalizes("", typed), "{typed:?}");
+        }
+        assert_eq!(capital_of('a'), Some('A'));
+        assert_eq!(capital_of('ж'), Some('Ж'));
+        assert_eq!(capital_of('ß'), None);
+        assert_eq!(capital_of('A'), None);
+        // Outside the Basic Multilingual Plane: Deseret.
+        assert_eq!(capital_of('\u{10428}'), Some('\u{10400}'));
+        assert!(capitalizes("Hi. ", '\u{10428}'));
+    }
+
+    /// A Backspace straight after the capital puts the lower-case letter
+    /// back; anywhere else it is an ordinary Backspace.
+    #[test]
+    fn capitals_take_back() {
+        let take = TakeBack::new(4, 'h').expect("h has a capital");
+        assert_eq!(take.backspace("Hi. H", 5), Some(("Hi. h".to_string(), 5)));
+        // Not right behind it, or the capital has gone.
+        assert_eq!(take.backspace("Hi. H", 4), None);
+        assert_eq!(take.backspace("Hi. Ho", 6), None);
+        assert_eq!(take.backspace("Hi. x", 5), None);
+        assert_eq!(take.backspace("Hi.", 5), None);
+        // Text after the caret is kept.
+        assert_eq!(
+            take.backspace("Hi. Hello", 5),
+            Some(("Hi. hello".to_string(), 5))
+        );
+        // Multi-byte letters, by byte offset.
+        let cyrillic = TakeBack::new("Привет. ".len(), 'к').unwrap();
+        let text = "Привет. К";
+        assert_eq!(
+            cyrillic.backspace(text, text.len()),
+            Some(("Привет. к".to_string(), "Привет. к".len()))
+        );
+        // A caret inside a character is never a byte offset off a boundary.
+        assert_eq!(cyrillic.backspace(text, text.len() - 1), None);
+        assert_eq!(TakeBack::new(0, 'ß'), None);
+    }
 
     // MARK: - New lines (#95)
 

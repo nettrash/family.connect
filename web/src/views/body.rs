@@ -3,13 +3,23 @@
 //! composes them (fc_text::markdown's "Composition"), so a message reads the
 //! same on every device.
 //!
-//! 1. markdown makes styled runs — only a table splits a body into blocks;
+//! 1. markdown makes styled runs — only a table or a rich block (a formula,
+//!    a diagram or a graph on its own, issue #97) splits a body into blocks;
 //! 2. per text block, over its RENDERED characters: the author's markdown
 //!    links (only those that can be opened), then detected links, emails and
 //!    phone numbers wherever no link already is;
 //! 3. `@ai`, and a leading `/draw` in the first block only, drawn bold —
 //!    replacing the run's own style, inside links and code too;
 //! 4. member mentions last, skipped wherever a link covers them.
+//!
+//! An inline formula is DRAWN, not set in type, so 2–4 lay nothing over one:
+//! a link, an `@ai` or a mention that would touch a formula's run is not
+//! made (docs/protocol.md, rich blocks rule 4: "a link, mention or `@ai`
+//! mark that overlaps a formula is not one"). The author's own links never
+//! touch one — the parser flattens a formula in a link's label to text — so
+//! the filter is applied AFTER the merge, and step 2's declared links are
+//! exactly what they were (win/tools/board-oracle's `declared_links` prints
+//! them). Windows does the same (MessageBody.cs `Pieces`).
 //!
 //! Table cells get none of 2–4. A body is plain text on the wire; all of
 //! this is drawing (docs/protocol.md, "A body is plain text on the wire").
@@ -24,6 +34,7 @@ use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
 use crate::model::Mention;
+use crate::views::rich::{MathInline, RichBlock};
 
 /// How long a link waits before it opens, so a double-click on it can be
 /// the heart reaction instead — the Mac's 350 ms.
@@ -100,7 +111,20 @@ pub fn pieces(text: &Text, draw_source: Option<&str>, named: &[Mention]) -> Vec<
             }),
         }
     }
-    let linked = links::merge(declared, links::detect(&plain));
+    // Where the formulas are. Nothing below may lay anything over one.
+    let formulas: Vec<Range<usize>> = runs
+        .iter()
+        .filter(|(_, style)| style.math.is_some())
+        .map(|(range, _)| range.clone())
+        .collect();
+    let touches_formula = |range: &Range<usize>| {
+        formulas
+            .iter()
+            .any(|formula| formula.start < range.end && range.start < formula.end)
+    };
+    let mut linked = links::merge(declared, links::detect(&plain));
+    // A URL inside `$…$` is part of what is drawn, never a link.
+    linked.retain(|link| !touches_formula(&link.range));
 
     // 3. The assistant's tokens.
     let mut marks: Vec<(Range<usize>, Mark)> = assistant::ranges(&plain)
@@ -112,6 +136,7 @@ pub fn pieces(text: &Text, draw_source: Option<&str>, named: &[Mention]) -> Vec<
             marks.push((range, Mark::Assistant));
         }
     }
+    marks.retain(|(range, _)| !touches_formula(range));
 
     // 4. Mentions, never under a link.
     let wire: Vec<mentions::Member> = named
@@ -128,7 +153,7 @@ pub fn pieces(text: &Text, draw_source: Option<&str>, named: &[Mention]) -> Vec<
         let under_mark = marks
             .iter()
             .any(|(range, _)| range.start < token.range.end && token.range.start < range.end);
-        if !under_link && !under_mark {
+        if !under_link && !under_mark && !touches_formula(&token.range) {
             marks.push((token.range, Mark::Mention(token.member.user_id)));
         }
     }
@@ -242,6 +267,13 @@ pub fn body(props: &BodyProps) -> Html {
     };
 
     let draw_piece = |piece: &Piece| -> Html {
+        // An inline formula: nothing is laid over it (`pieces`), so it is
+        // its run, whole, in that run's own style — `*see $a*b$*` draws it
+        // inside the emphasis.
+        if let Some(formula) = &piece.style.math {
+            let math = html! { <MathInline source={formula.clone()} typed={piece.text.clone()} /> };
+            return styled(math, &piece.style);
+        }
         let text = html! { { piece.text.clone() } };
         let inner = match &piece.mark {
             Some(Mark::Mention(user_id))
@@ -282,18 +314,30 @@ pub fn body(props: &BodyProps) -> Html {
                     }
                 }
                 Block::Table(table) => table_html(table),
+                // Issue #97: drawn by fc-rich.js (views/rich.rs); what was
+                // typed, in the code face, until then.
+                Block::Rich(rich) => html! { <RichBlock rich={rich.clone()} /> },
             }) }
         </div>
     }
 }
 
 /// A cell: its runs' styles and nothing else — no links, no marks.
+///
+/// A formula in a cell is drawn as one in a line is: it is markdown's, like
+/// the cell's bold, not a decoration laid over it.
 fn cell_html(text: &Text) -> Html {
     html! {
-        for text.spans.iter().map(|span| styled(html! { { span.text.clone() } }, &Style {
-            link: None,
-            ..span.style.clone()
-        }))
+        for text.spans.iter().map(|span| {
+            let inner = match &span.style.math {
+                Some(formula) => html! { <MathInline source={formula.clone()} typed={span.text.clone()} /> },
+                None => html! { { span.text.clone() } },
+            };
+            styled(inner, &Style {
+                link: None,
+                ..span.style.clone()
+            })
+        })
     }
 }
 
@@ -348,7 +392,7 @@ mod tests {
         let blocks = markdown::blocks(body);
         match &blocks[0] {
             Block::Text(text) => pieces(text, Some(body), mentions),
-            Block::Table(_) => Vec::new(),
+            Block::Table(_) | Block::Rich(_) => Vec::new(),
         }
     }
 
@@ -481,6 +525,263 @@ mod tests {
             .map(|piece| piece.text)
             .collect();
         assert_eq!(joined, markdown::render(body).plain());
+    }
+
+    /// An inline formula is drawn, so nothing is laid over it: a URL, an
+    /// `@ai` or a mention inside `$…$` is part of the formula and not a
+    /// link or a mark (docs/protocol.md, rich blocks rule 4) — while the
+    /// same things beside a formula are what they always were.
+    #[wasm_bindgen_test]
+    fn nothing_is_laid_over_a_formula() {
+        let anna = [named(9, "Anna")];
+        for body in [
+            "see $https://example.com/x$ now",
+            "ask $@ai$ now",
+            "hi $@Anna$ now",
+            "$a@b.co$",
+            "$x + https://a.com$",
+        ] {
+            let pieces = laid_out(body, &anna);
+            let formula: Vec<&Piece> = pieces
+                .iter()
+                .filter(|piece| piece.style.math.is_some())
+                .collect();
+            assert_eq!(formula.len(), 1, "{body}: {pieces:?}");
+            assert!(
+                pieces
+                    .iter()
+                    .all(|piece| piece.link.is_none() && piece.mark.is_none()),
+                "{body}: {pieces:?}"
+            );
+            // The run reaches the bubble whole, as typed.
+            assert!(body.contains(&formula[0].text), "{body}");
+        }
+        let beside = laid_out("@ai see https://example.com $x$ @Anna", &anna);
+        assert_eq!(find(&beside, "@ai").mark, Some(Mark::Assistant));
+        assert_eq!(
+            find(&beside, "https://example.com").link.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(find(&beside, "@Anna").mark, Some(Mark::Mention(9)));
+        assert_eq!(find(&beside, "$x$").style.math.as_deref(), Some("x"));
+        // A link the detector would stretch INTO a formula is dropped
+        // whole, not cut: half a URL is not a place to go.
+        // (The detector reads `example.com/$x$` as one address.)
+        let touching = laid_out("see example.com/$x$ now", &anna);
+        assert!(
+            touching.iter().all(|piece| piece.link.is_none()),
+            "{touching:?}"
+        );
+    }
+
+    /// `body` in a bubble at the end of a chat's scrolling list — with the
+    /// shipped stylesheet, which is what hides a fallback once drawn.
+    /// Returns (list, bubble).
+    fn mount(body: &str) -> (web_sys::Element, web_sys::Element) {
+        crate::layout_tests::install_stylesheet();
+        let document = web_sys::window().unwrap().document().unwrap();
+        let list = document.create_element("div").unwrap();
+        list.set_class_name("messages");
+        list.set_attribute(
+            "style",
+            "position:fixed;top:0;left:0;width:320px;height:200px;display:block;padding:0",
+        )
+        .unwrap();
+        let earlier = document.create_element("div").unwrap();
+        earlier.set_attribute("style", "height:600px").unwrap();
+        list.append_child(&earlier).unwrap();
+        let bubble = document.create_element("article").unwrap();
+        bubble.set_class_name("bubble");
+        list.append_child(&bubble).unwrap();
+        document.body().unwrap().append_child(&list).unwrap();
+        let props = BodyProps {
+            text: body.into(),
+            mentions: Vec::new(),
+            my_user_id: 7,
+            member_ids: HashSet::new(),
+            on_open_direct: Callback::noop(),
+        };
+        yew::Renderer::<Body>::with_root_and_props(bubble.clone(), props).render();
+        (list, bubble)
+    }
+
+    fn visible_fallbacks(root: &web_sys::Element) -> Vec<String> {
+        use wasm_bindgen::JsCast;
+        let found = root.query_selector_all(".rich-fallback").unwrap();
+        (0..found.length())
+            .filter_map(|index| found.item(index))
+            .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+            .filter(|element| element.offset_width() > 0)
+            .map(|element| element.text_content().unwrap_or_default())
+            .collect()
+    }
+
+    /// THE REAL RENDERER, end to end: wasm-bindgen's test server serves the
+    /// crate's own folder beside the test page, so `rich/fc-rich.js?v=…`
+    /// and the engines it loads are the shipped files.
+    ///
+    /// Until a block is drawn it shows what was typed, in the code face — a
+    /// display formula with its delimiters, an inline one its own text —
+    /// and the moment it is drawn, the drawing replaces it in one step: a
+    /// formula by KaTeX (with MathML, for a screen reader) in the words'
+    /// colour on nothing, a diagram or a graph on the theme's card, scaled
+    /// down to the bubble. A block the engine refuses keeps its source. And
+    /// a reader at the newest message is still there when the bubble has
+    /// grown by its drawings.
+    #[wasm_bindgen_test]
+    async fn rich_blocks_show_what_was_typed_until_the_renderer_draws_them() {
+        use wasm_bindgen::JsCast;
+        let wide = (0..14)
+            .map(|node| format!("n{node}"))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let body = format!(
+            "Look:\n$$\n\\frac{{a}}{{b}}\n$$\n```mermaid\ngraph TD\nA-->B\n```\n\
+             ```dot\ndigraph {{ rankdir=LR; {wide} }}\n```\n```plot\nsin(x)\n```\n\
+             ```neato\ngraph {{\n```\nArea $\\pi r^2$ here"
+        );
+        let (list, root) = mount(&body);
+        // Drawn by Yew on its next turn — before fc-rich.js, injected by
+        // that same render, can have loaded, let alone an engine after it:
+        // every block as typed.
+        gloo_timers::future::TimeoutFuture::new(0).await;
+        // And the reader at the newest message.
+        list.set_scroll_top(list.scroll_height());
+        let typed = [
+            "$$\n\\frac{a}{b}\n$$".to_string(),
+            "graph TD\nA-->B".to_string(),
+            format!("digraph {{ rankdir=LR; {wide} }}"),
+            "sin(x)".to_string(),
+            "graph {".to_string(),
+            "$\\pi r^2$".to_string(),
+        ];
+        assert_eq!(visible_fallbacks(&root), typed);
+        assert!(root.query_selector("[data-drawn]").unwrap().is_none());
+        let asked = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .query_selector(&format!(
+                "script[src=\"{}\"]",
+                crate::views::rich::script_url()
+            ))
+            .unwrap();
+        assert!(
+            asked.is_some(),
+            "fc-rich.js is asked for under the hash of rich/"
+        );
+
+        // Drawn — as many as can be — within a generous bound: the whole
+        // suite runs beside this test, video encoders and all, on the one
+        // main thread the engines share.
+        for _ in 0..600 {
+            if root.query_selector_all("[data-drawn]").unwrap().length() == 5 {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(50).await;
+        }
+        let state = || -> Vec<String> {
+            let wraps = root
+                .query_selector_all(".rich-block, .rich-inline")
+                .unwrap();
+            (0..wraps.length())
+                .filter_map(|index| wraps.item(index))
+                .filter_map(|node| node.dyn_into::<web_sys::Element>().ok())
+                .map(|wrap| {
+                    format!(
+                        "{} {}",
+                        wrap.class_name(),
+                        if wrap.has_attribute("data-drawn") {
+                            "drawn"
+                        } else {
+                            "typed"
+                        }
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            root.query_selector_all("[data-drawn]").unwrap().length(),
+            5,
+            "{:?}",
+            state()
+        );
+        // The broken graph keeps its source, and nothing is left behind on
+        // a stage.
+        assert_eq!(visible_fallbacks(&root), ["graph {"]);
+        assert!(root.query_selector(".rich-stage *").unwrap().is_none());
+
+        let drawn = |selector: &str| -> web_sys::HtmlElement {
+            root.query_selector(&format!("{selector} > .rich-host > .fc-rich"))
+                .unwrap()
+                .unwrap_or_else(|| panic!("nothing drawn for {selector}"))
+                .dyn_into()
+                .unwrap()
+        };
+        // Formulas: KaTeX, with MathML, in the words' colour, on nothing.
+        let display = drawn(".rich-math");
+        assert!(display.query_selector(".katex-display").unwrap().is_some());
+        assert!(display.query_selector("math").unwrap().is_some(), "MathML");
+        let inline = drawn(".rich-inline");
+        assert!(inline.query_selector(".katex").unwrap().is_some());
+        let words = web_sys::window()
+            .unwrap()
+            .get_computed_style(&root)
+            .unwrap()
+            .unwrap()
+            .get_property_value("color")
+            .unwrap();
+        assert_eq!(inline.style().get_property_value("color").unwrap(), words);
+        assert_eq!(
+            inline
+                .style()
+                .get_property_value("background-color")
+                .unwrap(),
+            "transparent"
+        );
+        // Diagrams and graphs: on the card, in an SVG that fits the bubble.
+        let bubble = root.get_bounding_client_rect().width();
+        for kind in [".rich-mermaid", ".rich-graphviz", ".rich-plot"] {
+            let card = drawn(kind);
+            let ground = card.style().get_property_value("background-color").unwrap();
+            assert!(
+                ground == "rgb(255, 255, 255)" || ground == "rgb(28, 28, 30)",
+                "{kind}: {ground}"
+            );
+            let svg = card.query_selector("svg").unwrap().expect("an svg");
+            let width = svg.get_bounding_client_rect().width();
+            assert!(
+                width > 0.0 && width <= bubble,
+                "{kind}: {width} in {bubble}"
+            );
+        }
+        // The fourteen-node chain is far wider than the bubble: scaled down,
+        // its height with it.
+        let chain = drawn(".rich-graphviz")
+            .query_selector("svg")
+            .unwrap()
+            .unwrap();
+        let natural: f64 = chain.get_attribute("width").unwrap().parse().unwrap();
+        assert!(natural > bubble, "{natural}");
+        // The drawn graph is a control named by its source.
+        let host = root
+            .query_selector(".rich-graphviz > .rich-host")
+            .unwrap()
+            .unwrap();
+        assert_eq!(host.get_attribute("role").as_deref(), Some("button"));
+        assert_eq!(
+            host.get_attribute("aria-label"),
+            Some(format!("digraph {{ rankdir=LR; {wide} }}"))
+        );
+        // The reader who was at the newest message still is.
+        assert!(
+            list.scroll_top() + list.client_height() >= list.scroll_height() - 2,
+            "{} + {} < {}",
+            list.scroll_top(),
+            list.client_height(),
+            list.scroll_height()
+        );
+        list.remove();
     }
 
     /// A daily greeting that used the weather ends with the server's credit

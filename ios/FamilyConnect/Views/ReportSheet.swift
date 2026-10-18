@@ -225,6 +225,7 @@ struct AssistantReportSheet: View {
                         String(localized: "Say something about it (optional)",
                                comment: "Assistant report sheet: the note field"),
                         text: $note, axis: .vertical)
+                        .proseTextEntry()
                         .lineLimit(3...6)
                         .onChange(of: note) { _, typed in
                             if typed.count > Self.noteLimit {

@@ -234,7 +234,8 @@ struct MessageBubbleView: View {
             // A poll sets the balloon's width, so the question wraps
             // against the bars rather than floating narrow above them.
             || message.poll != nil
-            || bodyBlocks.contains { $0.isTable }
+            // A drawing (#97) is as wide as it is, like a table.
+            || bodyBlocks.contains { $0.isTable || $0.isRich }
     }
 
     /// An own message that IS a reply lays its balloon out with
@@ -877,9 +878,11 @@ struct MessageBubbleView: View {
                 MessageBodyBlocks(
                     blocks: bodyBlocks,
                     isStreaming: isStreaming,
-                    isMine: isMine
+                    isMine: isMine,
+                    onDoubleTap: { toggleQuickHeart() },
+                    onLongPress: { onLongPress() }
                 ) { text, carriesCursor in
-                    Text(text)
+                    text
                         .font(bubbleFont)
                         .foregroundStyle(bubbleContentColor)
                         // WHY A REPLY USED TO LOSE ITS LAST LINES.

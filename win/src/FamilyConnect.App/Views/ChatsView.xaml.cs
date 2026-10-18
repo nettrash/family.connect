@@ -520,6 +520,8 @@ public sealed partial class ChatsView : UserControl
         ComposerPanel.Drop += OnDrop;
         BannerCancel.Click += (_, _) => EndComposerMode(clear: editing is not null);
         ComposerBox.PreviewKeyDown += OnComposerKey;
+        // Capital letters at a sentence's start (issue #97): the composer is a multi-line prose field, editing included.
+        CapitalLetters.Attach(ComposerBox);
         ComposerBox.Paste += OnComposerPaste;
         ComposerBox.TextChanged += (_, _) =>
         {
@@ -566,6 +568,7 @@ public sealed partial class ChatsView : UserControl
         ThreadClose.Click += (_, _) => CloseThread();
         ThreadSend.Click += (_, _) => SendInThread();
         ThreadComposer.PreviewKeyDown += OnThreadComposerKey;
+        CapitalLetters.Attach(ThreadComposer);
         ToolTipService.SetToolTip(CallButton, say.Get("Call"));
         AutomationProperties.SetName(CallButton, say.Get("Call"));
         ToolTipService.SetToolTip(VideoCallButton, say.Get("Video Call"));
@@ -2723,6 +2726,7 @@ public sealed partial class ChatsView : UserControl
     {
         // A circle playing in place makes way for the viewer (one thing at a time, S5.3) — Open Full Screen included.
         YieldRound();
+        viewerDrawing = null;
         viewing = new MediaAlbum(items, index, round);
         ViewerOverlay.Visibility = Visibility.Visible;
         ShowViewerItem();
@@ -2733,6 +2737,7 @@ public sealed partial class ChatsView : UserControl
     private void CloseViewer()
     {
         viewing = null;
+        viewerDrawing = null;
         viewerShown++;
         StopViewerVideo();
         var played = viewerRoundPlayed;
@@ -2826,6 +2831,13 @@ public sealed partial class ChatsView : UserControl
         // Only a video message — opened from its circle or its menu, S5.1's test of the whole message — is shown in its circle.
         SetViewerRound(album.IsRound);
         ShowZoom();
+        // A drawing (issue #97) is in hand already, and is no attachment: nothing to fetch, save or share.
+        if (viewerDrawing is { } drawing)
+        {
+            ShowViewerDrawing(drawing);
+            return;
+        }
+        ShowViewerAttachment();
         ViewerLoading.IsActive = true;
         _ = LoadViewerItemAsync(album.Current, album.IsVideo, token);
     }
@@ -3153,7 +3165,7 @@ public sealed partial class ChatsView : UserControl
     /// <summary>Share — Windows' own share window, as the Mac's viewer offers its sharing menu — with the original's bytes.</summary>
     private async Task ShareViewedAsync()
     {
-        if (viewing is not { } album)
+        if (viewing is not { } album || viewerDrawing is not null)
         {
             return;
         }
@@ -3179,7 +3191,7 @@ public sealed partial class ChatsView : UserControl
     /// <summary>Save hands over the page that is up when it is clicked — the original's bytes.</summary>
     private async Task SaveViewedAsync()
     {
-        if (viewing is not { } album)
+        if (viewing is not { } album || viewerDrawing is not null)
         {
             return;
         }
@@ -6887,30 +6899,45 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
-    /// A body laid out (<see cref="BubbleBody"/>): one text block fills the bubble's words and answers null; a body with a
-    /// table answers its blocks, text and tables in turn.
+    /// A body laid out (<see cref="BubbleBody"/>): one text block of words fills the bubble's words and answers null; a body
+    /// with a table, a rich block or an inline formula answers its own element — its blocks, text, tables and rich blocks in
+    /// turn, and a text block holding a formula as a RichTextBlock, the one text element a picture can stand in
+    /// (ChatsView.Rich.cs).
     /// </summary>
     private FrameworkElement? BodyElement(TextBlock words, string body, MentionDto[]? named, bool mine)
     {
         var blocks = BubbleBody.Lay(body, named, connection.Chats.Members(), Reader, connection.Chats.IsBlocked);
+        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         if (blocks is [BodyTextBlock { Runs: var only }])
         {
+            if (services.Rich is not null && HasFormula(only))
+            {
+                return FormulaText(only, mine, ink);
+            }
             FillRuns(words, only, mine);
             return null;
         }
-        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         var panel = new StackPanel { Spacing = 6 };
         foreach (var block in blocks)
         {
             if (block is BodyTableBlock { Table: var table })
             {
-                panel.Children.Add(TableElement(table, ink));
+                panel.Children.Add(TableElement(table, ink, mine));
             }
             else if (block is BodyTextBlock { Runs: var runs })
             {
+                if (services.Rich is not null && HasFormula(runs))
+                {
+                    panel.Children.Add(FormulaText(runs, mine, ink));
+                    continue;
+                }
                 var text = new TextBlock { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Foreground = ink };
                 FillRuns(text, runs, mine);
                 panel.Children.Add(text);
+            }
+            else if (block is BodyRichBlock rich)
+            {
+                panel.Children.Add(RichBlockElement(rich, ink, mine));
             }
         }
         return panel;
@@ -6923,18 +6950,33 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void FillRuns(TextBlock words, IReadOnlyList<BodyRun> runs, bool mine)
     {
-        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         words.Text = string.Empty;
         words.Inlines.Clear();
+        AddRuns(words.Inlines, runs, mine, formula: null);
+    }
+
+    /// <summary>
+    /// <see cref="FillRuns"/>'s inlines, into any inline collection. <paramref name="formula"/> makes an inline formula's inline
+    /// (ChatsView.Rich.cs); without it a formula is its typed text in the code face, like any run.
+    /// </summary>
+    private void AddRuns(InlineCollection inlines, IReadOnlyList<BodyRun> runs, bool mine, Func<BodyRun, Inline>? formula)
+    {
+        var ink = mine ? Palette.Ink() : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         foreach (var run in runs)
         {
+            if (formula is not null && run.Math is not null)
+            {
+                // A formula never carries a link or a mark (MessageBody): it is a run of its own.
+                inlines.Add(formula(run));
+                continue;
+            }
             var styled = StyledRun(run.Text, run.Style, run.Marked);
             if (run.MemberId is { } id && run.Opens)
             {
                 var door = new Hyperlink { UnderlineStyle = UnderlineStyle.None, Foreground = ink };
                 door.Inlines.Add(styled);
                 door.Click += (_, _) => _ = OpenDirectAsync(id);
-                words.Inlines.Add(door);
+                inlines.Add(door);
             }
             else if (BubbleBody.Openable(run.Link) is { } uri)
             {
@@ -6945,18 +6987,19 @@ public sealed partial class ChatsView : UserControl
                 }
                 link.Inlines.Add(styled);
                 link.Click += (_, _) => OpenLinkSoon(uri);
-                words.Inlines.Add(link);
+                inlines.Add(link);
             }
             else
             {
-                words.Inlines.Add(styled);
+                inlines.Add(styled);
             }
         }
     }
 
     /// <summary>
     /// One run in its markdown style: bold, italic, struck, code in a monospaced face, and a heading on the apps' ladder
-    /// (1.29, 1.18 and 1.00 of the body). A name or an assistant token is semibold whatever it sits in.
+    /// (1.29, 1.18 and 1.00 of the body). A name or an assistant token is semibold whatever it sits in. An inline formula not
+    /// drawn (yet) is its typed text, delimiters and all, in the code face (issue #97).
     /// </summary>
     private static Run StyledRun(string text, MarkdownStyle style, bool marked)
     {
@@ -6977,9 +7020,9 @@ public sealed partial class ChatsView : UserControl
         {
             run.TextDecorations = Windows.UI.Text.TextDecorations.Strikethrough;
         }
-        if (style.Code || style.Face == MarkdownFace.Monospaced)
+        if (style.Code || style.Face == MarkdownFace.Monospaced || style.Math is not null)
         {
-            run.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+            run.FontFamily = CodeFace;
         }
         switch (style.Face)
         {
@@ -7000,10 +7043,12 @@ public sealed partial class ChatsView : UserControl
 
     /// <summary>
     /// A table (ios MessageBodyView): the header semibold above a one-pixel rule, the columns sharing the width, cells
-    /// wrapping and aligned as the delimiter row says. Cells carry their styles and nothing else — no links, no names.
+    /// wrapping and aligned as the delimiter row says. Cells carry their styles and nothing else — no links, no names — but an
+    /// inline formula is drawn in a cell as in a line (issue #97).
     /// </summary>
-    private static FrameworkElement TableElement(MarkdownTable table, Brush ink)
+    private FrameworkElement TableElement(MarkdownTable table, Brush ink, bool mine)
     {
+        var look = LookFor(mine);
         var grid = new Grid { ColumnSpacing = 12, RowSpacing = 4, Margin = new Thickness(0, 2, 0, 2) };
         for (var column = 0; column < table.ColumnCount; column++)
         {
@@ -7015,25 +7060,35 @@ public sealed partial class ChatsView : UserControl
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             for (var column = 0; column < cells.Count && column < table.ColumnCount; column++)
             {
-                var cell = new TextBlock
+                var alignment = table.Alignment(column) switch
                 {
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                    Foreground = ink,
-                    TextAlignment = table.Alignment(column) switch
-                    {
-                        MarkdownAlignment.Center => TextAlignment.Center,
-                        MarkdownAlignment.Trailing => TextAlignment.Right,
-                        _ => TextAlignment.Left,
-                    },
+                    MarkdownAlignment.Center => TextAlignment.Center,
+                    MarkdownAlignment.Trailing => TextAlignment.Right,
+                    _ => TextAlignment.Left,
                 };
-                if (header)
+                FrameworkElement cell;
+                if (services.Rich is not null && cells[column].Runs.Any(run => run.Style.Math is not null))
                 {
-                    cell.FontWeight = FontWeights.SemiBold;
+                    cell = FormulaCell(cells[column], header, alignment, ink, look);
                 }
-                foreach (var run in cells[column].Runs)
+                else
                 {
-                    cell.Inlines.Add(StyledRun(run.Text, run.Style, marked: false));
+                    var words = new TextBlock
+                    {
+                        TextWrapping = TextWrapping.Wrap,
+                        IsTextSelectionEnabled = true,
+                        Foreground = ink,
+                        TextAlignment = alignment,
+                    };
+                    if (header)
+                    {
+                        words.FontWeight = FontWeights.SemiBold;
+                    }
+                    foreach (var run in cells[column].Runs)
+                    {
+                        words.Inlines.Add(StyledRun(run.Text, run.Style, marked: false));
+                    }
+                    cell = words;
                 }
                 Grid.SetRow(cell, row);
                 Grid.SetColumn(cell, column);

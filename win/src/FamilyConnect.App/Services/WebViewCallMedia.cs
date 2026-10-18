@@ -128,9 +128,8 @@ internal sealed class WebViewCallMedia : ICallMedia
             started = true;
             try
             {
-                // A ring has to sound before anybody has clicked in the page — which a browser otherwise refuses.
-                var options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = "--autoplay-policy=no-user-gesture-required" };
-                var environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, null, options);
+                // The app's one environment, which carries the autoplay switch a ring needs (WebEngine says why there is one).
+                var environment = await WebEngine.EnvironmentAsync();
                 await view.EnsureCoreWebView2Async(environment);
                 var core = view.CoreWebView2;
                 core.Settings.AreDevToolsEnabled = false;

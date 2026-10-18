@@ -31,4 +31,11 @@
   <ItemGroup>
     <None Include="..\FamilyConnect.Core.Tests\Fixtures\record-vectors.json" Link="Fixtures\record-vectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!--
+    The renderer the app ships (issue #97), LINKED for the same reason: RichDrawingTests reads fcRich.version out of the very
+    fc-rich.js the MSIX carries, so the cache key's version can never be a second, hand-copied string.
+  -->
+  <ItemGroup>
+    <None Include="..\..\src\FamilyConnect.App\Assets\Rich\fc-rich.js" Link="Fixtures\fc-rich.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

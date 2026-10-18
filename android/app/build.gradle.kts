@@ -327,6 +327,12 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.camera.video)
 
+    // androidx.webkit — the hidden WebView that draws formulas, diagrams
+    // and graphs from the bundled engines in assets/rich/ (#97): its asset
+    // loader serves those files and refuses everything else. See the
+    // catalog's header note.
+    implementation(libs.androidx.webkit)
+
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no
     // analytics, no crashlytics — the app's privacy posture is that user

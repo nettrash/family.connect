@@ -9,8 +9,15 @@ namespace FamilyConnect.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>HEADINGS AND BULLETS ARE RUNS, NOT BLOCKS:</b> only a table splits a body, so link detection, the <c>@ai</c>
-/// highlight and member mentions each run over ONE string per text block — the order the Apple client runs them in.
+/// <b>HEADINGS AND BULLETS ARE RUNS, NOT BLOCKS:</b> only a table or a rich block splits a body, so link detection, the
+/// <c>@ai</c> highlight and member mentions each run over ONE string per text block — the order the Apple client runs them in.
+/// </para>
+/// <para>
+/// <b>FORMULAS, DIAGRAMS AND GRAPHS</b> (issue #97; docs/protocol.md, "Rich blocks: formulas, diagrams and graphs"): a fence
+/// tagged <c>math</c>, <c>mermaid</c>, <c>dot</c> (and the rest of the protocol's table) or <c>plot</c>, and display math
+/// (<c>$$…$$</c> or <c>\[…\]</c> on lines of their own), are <see cref="MarkdownRichBlock"/>s; an inline formula
+/// (<c>$…$</c>, <c>$$…$$</c>, <c>\(…\)</c>) is a run carrying <see cref="MarkdownStyle.Math"/>. Only <see cref="Blocks"/>
+/// recognises the rich BLOCKS; <see cref="Render"/> sees a rich fence as a code block and display math as its typed lines.
 /// </para>
 /// <para>
 /// <b>BYTES, AS THE ORIGINAL:</b> the parser walks UTF-8 bytes and every offset is a byte offset, so a rule written
@@ -24,11 +31,14 @@ public static partial class Markdown
 
     /// <summary>A body as the blocks it lays out in — what a bubble draws. Never empty.</summary>
     public static IReadOnlyList<MarkdownBlock> Blocks(string body) =>
-        [.. Parse(Encoding.UTF8.GetBytes(body), tables: true).Select(piece => piece.Table is { } table
-            ? (MarkdownBlock)new MarkdownTableBlock(table)
-            : new MarkdownTextBlock(piece.Text!.ToText()))];
+        [.. Parse(Encoding.UTF8.GetBytes(body), tables: true).Select(piece => piece switch
+        {
+            { Table: { } table } => (MarkdownBlock)new MarkdownTableBlock(table),
+            { Rich: { } rich } => rich,
+            _ => new MarkdownTextBlock(piece.Text!.ToText()),
+        })];
 
-    /// <summary>A body as ONE string, tables NOT recognised — what the link preview card indexes.</summary>
+    /// <summary>A body as ONE string, tables and rich blocks NOT recognised — what the link preview card indexes.</summary>
     public static MarkdownText Render(string body)
     {
         var output = new MarkdownRuns();
@@ -42,21 +52,41 @@ public static partial class Markdown
         return output.ToText();
     }
 
-    /// <summary>Fences first, then line structure inside each plain segment.</summary>
-    private static List<(MarkdownRuns? Text, MarkdownTable? Table)> Parse(byte[] body, bool tables)
+    /// <summary>
+    /// Fences first, then display math, then line structure inside each plain segment. <paramref name="tables"/> is "lay out
+    /// as blocks": off, neither tables nor rich blocks are recognised.
+    /// </summary>
+    private static List<(MarkdownRuns? Text, MarkdownTable? Table, MarkdownRichBlock? Rich)> Parse(byte[] body, bool tables)
     {
-        var output = new List<(MarkdownRuns? Text, MarkdownTable? Table)>();
+        var output = new List<(MarkdownRuns? Text, MarkdownTable? Table, MarkdownRichBlock? Rich)>();
         var current = new MarkdownRuns();
-        foreach (var (code, segment) in Segments(body))
+
+        // A table or a rich block stands alone: the text so far becomes its own block.
+        void Stand(MarkdownTable? table, MarkdownRichBlock? rich)
         {
+            if (!current.IsEmpty)
+            {
+                output.Add((current, null, null));
+                current = new MarkdownRuns();
+            }
+            output.Add((null, table, rich));
+        }
+
+        foreach (var (code, segment, fenced) in Segments(body, tables))
+        {
+            if (fenced is not null)
+            {
+                Stand(null, fenced);
+                continue;
+            }
             if (code)
             {
                 current.Push(segment, Monospaced);
                 continue;
             }
-            // Newlines BETWEEN pieces, never around a table.
+            // Newlines BETWEEN pieces, never around a table or a rich block.
             var needsSeparator = false;
-            foreach (var (lines, table) in Pieces(segment, tables))
+            foreach (var (lines, table, rich) in Pieces(segment, tables))
             {
                 if (lines is not null)
                 {
@@ -69,32 +99,64 @@ public static partial class Markdown
                 }
                 else
                 {
-                    if (!current.IsEmpty)
-                    {
-                        output.Add((current, null));
-                        current = new MarkdownRuns();
-                    }
-                    output.Add((null, table));
+                    Stand(table, rich);
                     needsSeparator = false;
                 }
             }
         }
         if (!current.IsEmpty)
         {
-            output.Add((current, null));
+            output.Add((current, null, null));
         }
         if (output.Count == 0)
         {
-            output.Add((new MarkdownRuns(), null));
+            output.Add((new MarkdownRuns(), null, null));
         }
         return output;
     }
 
-    /// <summary>One fence-free segment's pieces: ordinary lines inline-parsed together, a heading or bullet alone. Split on U+000A only.</summary>
-    private static List<(MarkdownRuns? Lines, MarkdownTable? Table)> Pieces(byte[] segment, bool tables)
+    /// <summary>
+    /// One fence-free segment's pieces. Display math first, over the whole segment ("looked for only outside fences, and
+    /// before tables"), so a table never reaches into a formula's lines; then the line structure of what lies between.
+    /// Split on U+000A only.
+    /// </summary>
+    private static List<(MarkdownRuns? Lines, MarkdownTable? Table, MarkdownRichBlock? Rich)> Pieces(byte[] segment, bool tables)
     {
         var lines = Split(segment);
-        var pieces = new List<(MarkdownRuns? Lines, MarkdownTable? Table)>();
+        if (!tables)
+        {
+            return LinePieces(lines, tables: false);
+        }
+        var pieces = new List<(MarkdownRuns? Lines, MarkdownTable? Table, MarkdownRichBlock? Rich)>();
+        // `start` is the first line not yet laid out.
+        var start = 0;
+        var index = 0;
+        while (index < lines.Count)
+        {
+            if (DisplayMath(index, lines) is not { } math)
+            {
+                index++;
+                continue;
+            }
+            if (start < index)
+            {
+                pieces.AddRange(LinePieces(lines[start..index], tables: true));
+            }
+            pieces.Add((null, null, new MarkdownRichBlock(RichKind.Math, "", math.Source) { Shown = math.Shown }));
+            index = math.End;
+            start = math.End;
+        }
+        if (start < lines.Count)
+        {
+            pieces.AddRange(LinePieces(lines[start..], tables: true));
+        }
+        return pieces;
+    }
+
+    /// <summary>Lines as the pieces they lay out in: ordinary lines inline-parsed together, a heading or bullet alone.</summary>
+    private static List<(MarkdownRuns? Lines, MarkdownTable? Table, MarkdownRichBlock? Rich)> LinePieces(List<byte[]> lines, bool tables)
+    {
+        var pieces = new List<(MarkdownRuns? Lines, MarkdownTable? Table, MarkdownRichBlock? Rich)>();
         var plain = new List<byte[]>();
 
         void FlushPlain()
@@ -103,7 +165,7 @@ public static partial class Markdown
             {
                 return;
             }
-            pieces.Add((Inline(Join(plain)), null));
+            pieces.Add((Inline(Join(plain)), null, null));
             plain.Clear();
         }
 
@@ -116,7 +178,7 @@ public static partial class Markdown
                 FlushPlain();
                 var run = Inline(line[heading.Content..]);
                 run.SetFace(heading.Level switch { 1 => MarkdownFace.Heading1, 2 => MarkdownFace.Heading2, _ => MarkdownFace.Heading3 });
-                pieces.Add((run, null));
+                pieces.Add((run, null, null));
                 index++;
                 continue;
             }
@@ -127,14 +189,14 @@ public static partial class Markdown
                 var run = new MarkdownRuns();
                 run.Push([.. line.AsSpan(0, bullet.Marker), .. "• "u8], MarkdownStyle.Plain);
                 run.Append(Inline(line[bullet.Content..]));
-                pieces.Add((run, null));
+                pieces.Add((run, null, null));
                 index++;
                 continue;
             }
             if (tables && Table(index, lines) is { } found)
             {
                 FlushPlain();
-                pieces.Add((null, found.Table));
+                pieces.Add((null, found.Table, null));
                 index = found.End;
                 continue;
             }
@@ -173,6 +235,97 @@ public static partial class Markdown
             joined.AddRange(lines[index]);
         }
         return [.. joined];
+    }
+
+    // ---- display math (issue #97) ------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Display math opening at line <paramref name="index"/>: its source, the first line after it and its lines as typed (docs/protocol.md rule
+    /// 2, to the letter). A line whose first characters other than spaces and tabs are <c>$$</c> or <c>\[</c> opens it; it
+    /// closes at the FIRST <c>$$</c> or <c>\]</c> after the opener, on that line or a later one, and when anything but spaces
+    /// and tabs follows that closer on its line the lines are not display math at all. The source is what lies between,
+    /// trimmed of spaces, tabs and newlines, and must not then be empty. Every delimiter is ASCII.
+    /// </summary>
+    private static (string Source, int End, string Shown)? DisplayMath(int index, List<byte[]> lines)
+    {
+        var line = lines[index];
+        var at = 0;
+        while (at < line.Length && line[at] is (byte)' ' or (byte)'\t')
+        {
+            at++;
+        }
+        ReadOnlySpan<byte> rest = line.AsSpan(at);
+        byte[] closer;
+        if (rest.StartsWith("$$"u8))
+        {
+            closer = "$$"u8.ToArray();
+        }
+        else if (rest.StartsWith("\\["u8))
+        {
+            closer = "\\]"u8.ToArray();
+        }
+        else
+        {
+            return null;
+        }
+        var row = index;
+        var from = at + 2;
+        var source = new List<byte>();
+        while (true)
+        {
+            var current = lines[row];
+            var found = current.AsSpan(from).IndexOf(closer);
+            if (found >= 0)
+            {
+                var close = from + found;
+                if (!IsBlankSpace(current.AsSpan(close + closer.Length)))
+                {
+                    return null;
+                }
+                source.AddRange(current.AsSpan(from, close - from));
+                break;
+            }
+            source.AddRange(current.AsSpan(from));
+            source.Add((byte)'\n');
+            row++;
+            if (row >= lines.Count)
+            {
+                return null;
+            }
+            from = 0;
+        }
+        var bytes = source.ToArray();
+        var (start, end) = (0, bytes.Length);
+        while (start < end && bytes[start] is (byte)' ' or (byte)'\t' or (byte)'\n')
+        {
+            start++;
+        }
+        while (end > start && bytes[end - 1] is (byte)' ' or (byte)'\t' or (byte)'\n')
+        {
+            end--;
+        }
+        if (start == end)
+        {
+            return null;
+        }
+        // What the bubble shows until the formula is drawn: its lines as typed, delimiters and all, less the
+        // blanks before the opener and after the closer — all that may stand outside them (fc_text's `shown`).
+        var shown = string.Join('\n', lines.GetRange(index, row + 1 - index).Select(typed => Encoding.UTF8.GetString(typed)))
+            .Trim(' ', '\t');
+        return (Encoding.UTF8.GetString(bytes, start, end - start), row + 1, shown);
+    }
+
+    /// <summary>Nothing but spaces and tabs, or nothing at all — the protocol's own, deliberately ASCII, idea of a blank.</summary>
+    private static bool IsBlankSpace(ReadOnlySpan<byte> text)
+    {
+        foreach (var value in text)
+        {
+            if (value is not ((byte)' ' or (byte)'\t'))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---- Swift's string semantics ------------------------------------------------------------------------------
@@ -507,45 +660,118 @@ public static partial class Markdown
         return true;
     }
 
-    /// <summary>Alternating plain and fenced-code segments. An unclosed fence is not a fence; the language tag is dropped.</summary>
-    private static List<(bool Code, byte[] Text)> Segments(byte[] body)
+    /// <summary>
+    /// The info string of a fence's opening line: what follows ALL its backticks (a fence opened with four still has a tag
+    /// after the fourth), trimmed of spaces and tabs.
+    /// </summary>
+    private static ReadOnlySpan<byte> FenceInfo(ReadOnlySpan<byte> line)
+    {
+        var at = 0;
+        while (ClusterIs(line, at, '`') is var width and > 0)
+        {
+            at += width;
+        }
+        var end = line.Length;
+        while (at < end && line[at] is (byte)' ' or (byte)'\t')
+        {
+            at++;
+        }
+        while (end > at && line[end - 1] is (byte)' ' or (byte)'\t')
+        {
+            end--;
+        }
+        return line[at..end];
+    }
+
+    /// <summary>
+    /// What a fence's tag draws, if anything: the info string's first word — up to a space or a tab — lower-cased in ASCII,
+    /// against docs/protocol.md's table. The engine is Graphviz's layout, empty for the other kinds.
+    /// </summary>
+    private static (RichKind Kind, string Engine)? RichTag(ReadOnlySpan<byte> info)
+    {
+        var end = info.IndexOfAny((byte)' ', (byte)'\t');
+        var word = end < 0 ? info : info[..end];
+        // The longest tag is nine letters; anything longer is no tag, and never reaches the stack buffer.
+        if (word.Length > 16)
+        {
+            return null;
+        }
+        Span<byte> lower = stackalloc byte[word.Length];
+        for (var at = 0; at < word.Length; at++)
+        {
+            lower[at] = word[at] is >= (byte)'A' and <= (byte)'Z' ? (byte)(word[at] + 32) : word[at];
+        }
+        var tag = Encoding.UTF8.GetString(lower);
+        return tag switch
+        {
+            "math" or "latex" or "tex" => (RichKind.Math, ""),
+            "mermaid" => (RichKind.Mermaid, ""),
+            "dot" or "graphviz" or "gv" => (RichKind.Graphviz, "dot"),
+            "neato" or "circo" or "fdp" or "sfdp" or "twopi" or "osage" or "patchwork" => (RichKind.Graphviz, tag),
+            "plot" => (RichKind.Plot, ""),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Alternating plain, fenced-code and (when <paramref name="rich"/>) rich segments. An unclosed fence is not a fence; the
+    /// language tag is dropped unless it names a rich block. A rich fence stands alone, as a table does: the newlines around
+    /// it go with it, where a code block's are kept so its code does not weld onto the words around it.
+    /// </summary>
+    private static List<(bool Code, byte[] Text, MarkdownRichBlock? Rich)> Segments(byte[] body, bool rich)
     {
         if (Array.IndexOf(body, (byte)'`') < 0 && body.AsSpan().IndexOf("`"u8) < 0)
         {
-            return [(false, body)];
+            return [(false, body, null)];
         }
-        var result = new List<(bool Code, byte[] Text)>();
+        var result = new List<(bool Code, byte[] Text, MarkdownRichBlock? Rich)>();
         var plain = new List<byte[]>();
         var code = new List<byte[]>();
         var inFence = false;
+        // What the open fence draws, when its tag names a rich block.
+        (RichKind Kind, string Engine)? drawn = null;
         foreach (var line in Split(body))
         {
             var opensOrCloses = HasFencePrefix(line);
             if (!inFence && opensOrCloses)
             {
                 inFence = true;
+                drawn = rich ? RichTag(FenceInfo(line)) : null;
                 // Keep the newline that ENDED the line before the fence.
-                plain.Add([]);
+                if (drawn is null)
+                {
+                    plain.Add([]);
+                }
                 continue;
             }
             if (inFence && opensOrCloses)
             {
                 inFence = false;
-                result.Add((false, Join(plain)));
+                result.Add((false, Join(plain), null));
                 plain.Clear();
-                result.Add((true, Join(code)));
+                var content = Join(code);
                 code.Clear();
-                plain.Add([]);
+                if (drawn is { } tag)
+                {
+                    result.Add((false, [], new MarkdownRichBlock(tag.Kind, tag.Engine, Encoding.UTF8.GetString(content))));
+                    drawn = null;
+                }
+                else
+                {
+                    result.Add((true, content, null));
+                    // Keep the newline that ended the fence.
+                    plain.Add([]);
+                }
                 continue;
             }
             (inFence ? code : plain).Add(line);
         }
         if (inFence)
         {
-            return [(false, body)];
+            return [(false, body, null)];
         }
-        result.Add((false, Join(plain)));
-        result.RemoveAll(segment => !segment.Code && segment.Text.Length == 0);
+        result.Add((false, Join(plain), null));
+        result.RemoveAll(segment => !segment.Code && segment.Rich is null && segment.Text.Length == 0);
         return result;
     }
 

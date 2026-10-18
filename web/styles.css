@@ -755,6 +755,56 @@ button.link, .link {
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; vertical-align: top; }
 .md th { background: var(--soft); }
 .md a { color: var(--tint); text-decoration: underline; }
+/* Formulas, diagrams and graphs (issue #97, views/rich.rs). What was typed
+ * shows until the drawing is whole; then the drawing replaces it in one
+ * step, marked by `data-drawn` on the wrapper. The drawing is made on an
+ * invisible STAGE the size of the wrapper — laid out, so the engines can
+ * measure it, but clipped and out of the flow, so nothing moves while it is
+ * made and no half-drawn diagram widens the chat. */
+.md .rich-block { position: relative; margin: 4px 0; }
+.md .rich-block[data-drawn] > .rich-fallback,
+.md .rich-inline[data-drawn] > .rich-fallback { display: none; }
+/* Not drawn: no host, so no empty button to tab to. */
+.md .rich-block:not([data-drawn]) > .rich-host,
+.md .rich-inline:not([data-drawn]) > .rich-host { display: none; }
+.md .rich-stage {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    overflow: hidden;
+    height: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+/* A formula in a line lays out at its own width, not its fallback's. */
+.md .rich-inline { position: relative; }
+.md .rich-inline > .rich-stage { right: auto; width: max-content; }
+/* A display formula wider than the bubble scrolls rather than spills. */
+.md .rich-math > .rich-host { overflow-x: auto; overflow-y: hidden; }
+/* A diagram or a graph: its card, scaled down — never up — to the bubble. */
+.md .rich-host > .fc-rich-card { max-width: 100%; border-radius: 10px; }
+.md .rich-host > .fc-rich-card svg { max-width: 100%; height: auto; }
+.md .rich-host.is-openable { cursor: zoom-in; border-radius: 10px; }
+.md .rich-host.is-openable:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+/* On the words' baseline: an inline-block's baseline is its last line's,
+ * which for KaTeX is the formula's own. (fc-rich.js says `top`, for the
+ * native snapshots, which line up by the baseline it reports instead.) */
+.md .rich-inline > .rich-host > .fc-rich { vertical-align: baseline; }
+/* Full size, in the photo viewer's frame: fitted to the window, and at its
+ * own size — scrolled — after a click (views/rich.rs `FullSize`). */
+/* Bounded tracks, for the reason the photo's are (above): an auto track
+ * grows to the drawing's own 1000-odd pixels and nothing then fits. */
+.rich-viewer-stage { overflow: auto; padding: 0 16px 16px; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.rich-full { cursor: zoom-in; width: 100%; height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); place-items: center; }
+.rich-full > .fc-rich { max-width: 100%; max-height: 100%; border-radius: 12px; }
+.rich-full svg { width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 120px); }
+/* At its own size: a block that scrolls, from its top left — a centred
+ * overflow would put its left edge where no scroll can reach. */
+.rich-viewer-stage.is-natural { display: block; }
+.rich-viewer-stage.is-natural .rich-full { cursor: zoom-out; display: block; width: max-content; height: auto; margin: 0 auto; }
+.rich-viewer-stage.is-natural .rich-full > .fc-rich { max-width: none; max-height: none; }
+.rich-viewer-stage.is-natural .rich-full svg { max-width: none; max-height: none; }
 /* A mention is BOLD and nothing else (docs/protocol.md, "Mentioning a
  * member"): the tint it used to take is this balloon's own background on
  * my own messages, so @Anna was invisible in exactly the place somebody

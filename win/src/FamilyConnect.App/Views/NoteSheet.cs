@@ -163,6 +163,8 @@ internal sealed class NoteSheet
             MinHeight = 90,
             PlaceholderText = kind == NoteKind.Photo ? say.Get("Say something about it (optional)") : string.Empty,
         };
+        // A note is prose, written in sentences: capital letters at their starts (issue #97).
+        CapitalLetters.Attach(words);
         var counter = Footnote(string.Empty);
         void Count()
         {

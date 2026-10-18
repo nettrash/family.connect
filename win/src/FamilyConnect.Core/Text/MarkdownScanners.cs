@@ -7,9 +7,12 @@ public static partial class Markdown
     private static MarkdownLink MakeLink(byte[] url, byte[] title) =>
         new(Encoding.UTF8.GetString(url), title.Length == 0 ? null : Encoding.UTF8.GetString(title));
 
-    /// <summary>The bytes that end a run of plain text: cmark's <c>SPECIAL_CHARS</c>, the extensions' <c>~ : w</c>, and Apple's <c>^</c>.</summary>
+    /// <summary>
+    /// The bytes that end a run of plain text: cmark's <c>SPECIAL_CHARS</c>, the extensions' <c>~ : w</c>, Apple's <c>^</c>, and
+    /// the <c>$</c> of an inline formula (issue #97).
+    /// </summary>
     private static bool IsSpecial(byte value) =>
-        value is (byte)'\n' or (byte)'\\' or (byte)'`' or (byte)'&' or (byte)'_' or (byte)'*' or (byte)'[' or (byte)']'
+        value is (byte)'\n' or (byte)'$' or (byte)'\\' or (byte)'`' or (byte)'&' or (byte)'_' or (byte)'*' or (byte)'[' or (byte)']'
             or (byte)'<' or (byte)'!' or (byte)'~' or (byte)':' or (byte)'w' or (byte)'^';
 
     /// <summary>CommonMark's left- and right-flanking tests over cmark's own predicates.</summary>

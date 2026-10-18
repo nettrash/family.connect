@@ -590,4 +590,323 @@ class MessageMarkdownTest {
             assertEquals("rewritten: $body", body, plain(body))
         }
     }
+
+    // ---- rich blocks (#97) -------------------------------------------------
+    //
+    // docs/protocol.md, "Rich blocks: formulas, diagrams and graphs", and the
+    // design doc's tables (docs/capitals-and-rich-markdown-2026-10-17.md,
+    // "The cases every parser's tests hold"), row for row. The other three
+    // parsers hold the same rows; these are the contract between them.
+
+    /** Each block as one line: `text:<rendered>`, `rich:<kind>:<engine>:<source>`, `table`. */
+    private fun shape(body: String): List<String> = MessageMarkdown.blocks(body).map { block ->
+        when (block) {
+            is MessageMarkdown.Block.Text -> "text:${block.rendered.text}"
+            is MessageMarkdown.Block.Table -> "table"
+            is MessageMarkdown.Block.Rich -> "rich:${block.kind.wire}:${block.engine ?: "-"}:${block.source}"
+        }
+    }
+
+    /** The one rich block [body] is. */
+    private fun rich(body: String): MessageMarkdown.Block.Rich =
+        MessageMarkdown.blocks(body).single() as MessageMarkdown.Block.Rich
+
+    /** The inline formulas of a single-text-block [body], by source. */
+    private fun formulas(body: String): List<String> {
+        val annotated = single(body).annotated
+        return annotated.getStringAnnotations(MessageMarkdown.MATH_TAG, 0, annotated.length).map { it.item }
+    }
+
+    @Test
+    fun `the design doc's block table`() {
+        val rows = listOf(
+            "```math\nx^2\n```" to listOf("rich:math:-:x^2"),
+            "```Mermaid\ngraph TD\nA-->B\n```" to listOf("rich:mermaid:-:graph TD\nA-->B"),
+            "```mermaid extra words\nA\n```" to listOf("rich:mermaid:-:A"),
+            "```neato\ngraph {a--b}\n```" to listOf("rich:graphviz:neato:graph {a--b}"),
+            "```gv\ndigraph{a->b}\n```" to listOf("rich:graphviz:dot:digraph{a->b}"),
+            "```plot\nsin(x)\n```" to listOf("rich:plot:-:sin(x)"),
+            "```js\nx\n```" to listOf("text:x"),
+            "```mermaid\nA" to listOf("text:```mermaid\nA"),
+            "Look:\n```math\nx\n```\nDone" to listOf("text:Look:", "rich:math:-:x", "text:Done"),
+            "\$\$\nx^2\n\$\$" to listOf("rich:math:-:x^2"),
+            "\$\$x^2\$\$" to listOf("rich:math:-:x^2"),
+            "\\[\na\n\\]" to listOf("rich:math:-:a"),
+            "  \$\$ y \$\$  " to listOf("rich:math:-:y"),
+            "\$\$x\$\$ is it" to listOf("text:\$\$x\$\$ is it"),
+            "Area \$\$x\$\$" to listOf("text:Area \$\$x\$\$"),
+            "\$\$\nx" to listOf("text:\$\$\nx"),
+            "\$\$ \$\$" to listOf("text:\$\$ \$\$"),
+            "```\n\$\$x\$\$\n```" to listOf("text:\$\$x\$\$"),
+        )
+        for ((body, expected) in rows) {
+            assertEquals("body: $body", expected, shape(body))
+        }
+        // The two rows that are text WITH a formula in them, said exactly.
+        assertEquals(listOf("x"), formulas("\$\$x\$\$ is it"))
+        assertEquals(listOf("x"), formulas("Area \$\$x\$\$"))
+        // ...and the ones that are text with NONE.
+        assertEquals(emptyList<String>(), formulas("\$\$\nx"))
+        assertEquals(emptyList<String>(), formulas("\$\$ \$\$"))
+        assertEquals(emptyList<String>(), formulas("```\n\$\$x\$\$\n```"))
+    }
+
+    /** Every tag of the protocol's table, and the layout each one names. */
+    @Test
+    fun `every rich tag, case-blind, and nothing else`() {
+        val tags = mapOf(
+            "math" to ("math" to null), "latex" to ("math" to null), "tex" to ("math" to null),
+            "LaTeX" to ("math" to null), "mermaid" to ("mermaid" to null),
+            "dot" to ("graphviz" to "dot"), "graphviz" to ("graphviz" to "dot"), "GV" to ("graphviz" to "dot"),
+            "neato" to ("graphviz" to "neato"), "circo" to ("graphviz" to "circo"), "fdp" to ("graphviz" to "fdp"),
+            "sfdp" to ("graphviz" to "sfdp"), "twopi" to ("graphviz" to "twopi"),
+            "osage" to ("graphviz" to "osage"), "patchwork" to ("graphviz" to "patchwork"),
+            "plot" to ("plot" to null),
+        )
+        for ((tag, kindAndEngine) in tags) {
+            val block = rich("```$tag\nbody\n```")
+            assertEquals(tag, kindAndEngine.first, block.kind.wire)
+            assertEquals(tag, kindAndEngine.second, block.engine)
+            assertEquals(tag, "body", block.source)
+        }
+        // A tag is a WORD, not a prefix, and the lower-casing is ASCII only:
+        // a Kelvin sign is not a K and a dotless ı is not an i.
+        for (tag in listOf("mathematics", "plotly", "dotnet", "kotlin", "MATH\u0130", "\u212Aotlin")) {
+            assertEquals(tag, listOf("text:body"), shape("```$tag\nbody\n```"))
+        }
+        // Spaces and tabs around the tag are not part of it.
+        assertEquals("graphviz", rich("```  \tneato  \nbody\n```").kind.wire)
+    }
+
+    /**
+     * What a rich block shows until it is drawn: a fence's content, as a
+     * code block shows it today; a display formula's lines as typed,
+     * delimiters and all.
+     */
+    @Test
+    fun `a rich block's fallback is the source as it shows today`() {
+        assertEquals("x^2", rich("```math\nx^2\n```").shown)
+        assertEquals("\$\$\nx^2\n\$\$", rich("\$\$\nx^2\n\$\$").shown)
+        assertEquals("  \$\$ y \$\$  ", rich("  \$\$ y \$\$  ").shown)
+        assertEquals("\\[a\\]", rich("\\[a\\]").shown)
+        // A multi-line display formula keeps its inner lines and trims only
+        // the edges of the whole.
+        assertEquals("a\n  b", rich("\$\$\n a\n  b \n\$\$").source)
+    }
+
+    /** Rule 2: the FIRST closer decides, and must end its line. */
+    @Test
+    fun `a display formula closes at the first closer, which must end its line`() {
+        assertEquals(listOf("rich:math:-:x"), shape("\$\$ x \$\$ \t"))
+        // The first `$$` has words after it: not display math, even though
+        // a later line would have closed cleanly.
+        assertEquals(1, MessageMarkdown.blocks("\$\$\na \$\$ b\n\$\$").size)
+        assertTrue(MessageMarkdown.blocks("\$\$\na \$\$ b\n\$\$").single() is MessageMarkdown.Block.Text)
+        // `\[` closes only on `\]`, and `$$` only on `$$`.
+        // (As text, the backslash escapes the bracket, as it always has.)
+        assertEquals(listOf("text:[\na\n\$\$"), shape("\\[\na\n\$\$"))
+        // Before tables: a formula with a pipe in it is a formula.
+        assertEquals(listOf("rich:math:-:|a| \\\\\n|---|"), shape("\$\$\n|a| \\\\\n|---|\n\$\$"))
+        // An escaped opener is not one.
+        assertEquals(listOf("text:\$\$x\$\$"), shape("\\\$\$x\$\$"))
+    }
+
+    /** Rule 3: a rich block splits the text around it exactly as a table does. */
+    @Test
+    fun `a rich block stands alone`() {
+        assertEquals(
+            listOf("text:above", "rich:math:-:E=mc^2", "text:below"),
+            shape("above\n\$\$E=mc^2\$\$\nbelow"),
+        )
+        assertEquals(
+            listOf("rich:plot:-:sin(x)", "rich:mermaid:-:A"),
+            shape("```plot\nsin(x)\n```\n```mermaid\nA\n```"),
+        )
+        // A blank line typed by the author is kept, as a table keeps one.
+        assertEquals(listOf("text:a\n", "rich:math:-:x", "text:\nb"), shape("a\n\n\$\$x\$\$\n\nb"))
+        // Code and rich blocks side by side keep their own shapes.
+        assertEquals(
+            listOf("text:let x = 1", "rich:math:-:x"),
+            shape("```\nlet x = 1\n```\n```math\nx\n```"),
+        )
+        // The links of the text around a rich block index THEIR block.
+        val blocks = MessageMarkdown.blocks("see [this](https://example.com)\n```math\nx\n```")
+        val first = blocks.first() as MessageMarkdown.Block.Text
+        val link = first.rendered.links.single()
+        assertEquals("this", first.rendered.text.substring(link.start, link.end))
+    }
+
+    /** An empty rich fence is still a rich block — fc-rich.js calls it "empty". */
+    @Test
+    fun `an empty rich fence is a rich block with nothing to draw`() {
+        val block = rich("```math\n```")
+        assertEquals("", block.source)
+        assertEquals("", block.shown)
+    }
+
+    @Test
+    fun `the design doc's inline table`() {
+        val rows = listOf(
+            "\$x\$" to listOf("x"),
+            "\$5 and \$10" to emptyList(),
+            "costs \$5, or \$6." to emptyList(),
+            "a\$b\$c" to emptyList(),
+            "\$x\$s" to emptyList(),
+            "\$ x\$" to emptyList(),
+            "\$x \$" to emptyList(),
+            "\\\$x\$" to emptyList(),
+            "\$a\\\$b\$" to listOf("a\\\$b"),
+            "see \$\$x\$\$ now" to listOf("x"),
+            "\\(x^2\\)" to listOf("x^2"),
+            "`\$x\$`" to emptyList(),
+            "*see \$a*b\$*" to listOf("a*b"),
+            "\$x\ny\$" to emptyList(),
+            "[a](http://x.y/\$b\$)" to emptyList(),
+            "€\$x\$" to listOf("x"),
+            "2\$x\$" to emptyList(),
+        )
+        for ((body, expected) in rows) {
+            assertEquals("body: $body", expected, formulas(body))
+        }
+        // The table row: `a` in the header, `c` in the first row.
+        val table = table("| \$a\$ | b |\n|---|---|\n| \$c\$ | d |")
+        fun cellFormulas(cell: androidx.compose.ui.text.AnnotatedString) =
+            cell.getStringAnnotations(MessageMarkdown.MATH_TAG, 0, cell.length).map { it.item }
+        assertEquals(listOf("a"), cellFormulas(table.header[0]))
+        assertEquals(emptyList<String>(), cellFormulas(table.header[1]))
+        assertEquals(listOf("c"), cellFormulas(table.rows[0][0]))
+    }
+
+    /**
+     * What the inline rows READ as — the run is the source with its
+     * delimiters, monospaced, so the not-yet-drawn bubble shows exactly
+     * what was typed; the escapes outside a formula are still resolved.
+     */
+    @Test
+    fun `an inline formula's run is its source with its delimiters`() {
+        assertEquals("\$x\$", plain("\$x\$"))
+        assertEquals("\$x\$", plain("\\\$x\$"))
+        assertEquals("\$a\\\$b\$", plain("\$a\\\$b\$"))
+        assertEquals("see \$\$x\$\$ now", plain("see \$\$x\$\$ now"))
+        assertEquals("\\(x^2\\)", plain("\\(x^2\\)"))
+        // Inside the emphasis, and the emphasis is still consumed.
+        val rendered = single("*see \$a*b\$*")
+        assertEquals("see \$a*b\$", rendered.text)
+        val range = rendered.math.single()
+        assertEquals("\$a*b\$", rendered.text.substring(range.first, range.last + 1))
+        // The run is monospaced, and carries the inline-content id.
+        val code = rendered.annotated.spanStyles.any {
+            it.item.fontFamily == androidx.compose.ui.text.font.FontFamily.Monospace &&
+                it.start == range.first && it.end == range.last + 1
+        }
+        assertTrue("the run is monospaced", code)
+        val ids = rendered.annotated.getStringAnnotations(range.first, range.last + 1).map { it.item }
+        assertTrue(ids.toString(), MessageMarkdown.MATH_ID_PREFIX + "a*b" in ids)
+    }
+
+    /** Markdown inside a formula is not markdown — its backticks included. */
+    @Test
+    fun `markdown inside a formula is left to KaTeX`() {
+        assertEquals(listOf("a_1 + b_2"), formulas("\$a_1 + b_2\$"))
+        assertEquals("\$a_1 + b_2\$", plain("\$a_1 + b_2\$"))
+        assertEquals(listOf("**x**"), formulas("\$**x**\$"))
+        assertEquals(listOf("\\frac{a}{b}"), formulas("then \$\\frac{a}{b}\$ ok"))
+        // `_` is a word character, so in `_$x$_` no `$` can open or close:
+        // the emphasis wins — and the answer is the same at every depth.
+        assertEquals(emptyList<String>(), formulas("_\$x\$_"))
+        assertEquals("\$x\$", plain("_\$x\$_"))
+        // A code span wins over a formula that would reach into it.
+        assertEquals(emptyList<String>(), formulas("\$a `b\$` c"))
+    }
+
+    /** The precedence of the three delimiters, and their content rules. */
+    @Test
+    fun `inline delimiters, by precedence`() {
+        assertEquals(listOf("a", "b"), formulas("\$\$a\$\$ and \\(b\\)"))
+        assertEquals(emptyList<String>(), formulas("\$\$ \$\$"))
+        assertEquals(emptyList<String>(), formulas("\\( \\)"))
+        assertEquals(emptyList<String>(), formulas("\\(a\nb\\)"))
+        // An escaped `\(` is a literal parenthesis.
+        assertEquals(emptyList<String>(), formulas("\\\\(a\\)"))
+        // A failed closer is skipped and the search goes on.
+        assertEquals(listOf("a \$b"), formulas("\$a \$b\$"))
+        // Money next to a formula.
+        assertEquals(listOf("x"), formulas("\$x\$ costs \$5"))
+        // ...and the rule taken literally when money comes FIRST: the `$`
+        // before `x` has a space before it and cannot close, so the opener
+        // at `$5` runs on to the next `$` that can. Every port does this.
+        assertEquals(listOf("5 but \$x"), formulas("it costs \$5 but \$x\$ is free"))
+        // The same formula twice is two runs, one source.
+        assertEquals(listOf("x", "x"), formulas("\$x\$ and \$x\$"))
+        assertEquals(listOf("x"), MessageMarkdown.mathSources(single("\$x\$ and \$x\$").annotated))
+    }
+
+    /** ASCII on purpose: four languages, one idea of a word character. */
+    @Test
+    fun `the word guard is ASCII`() {
+        assertEquals(listOf("x"), formulas("é\$x\$"))
+        assertEquals(listOf("x"), formulas("Привет \$x\$, пока"))
+        assertEquals(listOf("x"), formulas("Привет\$x\$пока"))
+        assertEquals(listOf("x"), formulas("٣\$x\$"))
+        assertEquals(emptyList<String>(), formulas("_\$x\$"))
+        assertEquals(emptyList<String>(), formulas("Z\$x\$"))
+        assertEquals(listOf("π r^2"), formulas("Площадь: \$π r^2\$ 🎉"))
+    }
+
+    /**
+     * A formula in a link LABEL is flattened to what was typed — no
+     * drawing inside a link; in the destination it is never a formula; and
+     * a formula that swallows the `]` beats the link, as a code span does.
+     */
+    @Test
+    fun `formulas and links, in the order a reader meets them`() {
+        val rendered = single("[area \$r^2\$](https://example.com/\$x\$)")
+        assertEquals("area \$r^2\$", rendered.text)
+        assertEquals(emptyList<String>(), MessageMarkdown.mathSources(rendered.annotated))
+        val link = rendered.links.single()
+        assertEquals("https://example.com/\$x\$", link.url)
+        assertEquals("area \$r^2\$", rendered.text.substring(link.start, link.end))
+        // The formula reaches past the `]`: formula `a](b`, and no link.
+        val swallowed = single("[\$a](b\$)")
+        assertEquals(listOf("a](b"), MessageMarkdown.mathSources(swallowed.annotated))
+        assertTrue(swallowed.links.isEmpty())
+        // In a table cell links are not drawn, but a destination is still
+        // a destination.
+        val cell = table("| [a](u/\$b\$) |\n|---|").header.single()
+        assertEquals(emptyList<String>(), MessageMarkdown.mathSources(cell))
+    }
+
+    /** The readings every port shares beyond the design doc's tables. */
+    @Test
+    fun `the shared readings of the rules`() {
+        // A code span that a formula's closer would have to cross wins...
+        assertEquals(emptyList<String>(), formulas("\$a `b\$` c\$"))
+        // ...but a lone backtick opens nothing.
+        assertEquals(listOf("a`b"), formulas("\$a`b\$"))
+        // Inline `$$ x $$` keeps its spaces; only display math is trimmed.
+        assertEquals(listOf(" x "), formulas("see \$\$ x \$\$ now"))
+        // An unclosed `$$`: the first `$` is text and the next is tried.
+        assertEquals(emptyList<String>(), formulas("x \$\$\$x\$"))
+        // The first display closer decides: words after it, and it is text.
+        assertEquals(listOf("text:\$\$a\$\$b\$\$"), shape("\$\$a\$\$b\$\$"))
+        // The info string follows ALL the leading backticks.
+        assertEquals(listOf("rich:math:-:x"), shape("````math\nx\n````"))
+        // A carriage return is not blank — not in an info string, not
+        // after a display closer.
+        assertEquals(listOf("text:x"), shape("```math\r\nx\n```"))
+        assertEquals(listOf("x"), formulas("\$\$x\$\$\r"))
+        // A formula's opening line never becomes a row of the table above.
+        assertEquals(
+            listOf("table", "rich:math:-:|x|"),
+            shape("| a |\n|---|\n| 1 |\n\$\$ |x| \$\$"),
+        )
+    }
+
+    /** Headings, bullets and the text around a formula keep working. */
+    @Test
+    fun `formulas ride headings and bullets`() {
+        assertEquals(listOf("x"), formulas("# Solve \$x\$"))
+        assertEquals("• root \$\\sqrt{2}\$", plain("- root \$\\sqrt{2}\$"))
+        assertEquals(listOf("\\sqrt{2}"), formulas("- root \$\\sqrt{2}\$"))
+    }
 }

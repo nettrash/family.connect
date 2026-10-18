@@ -35,7 +35,14 @@
 //  and every pass here runs PER TEXT BLOCK: each one is its own laid-out
 //  string, so each one is its own offset space. Table cells are skipped
 //  entirely — they carry no links by construction, which is the whole
-//  reason a table costs the balloon nothing.
+//  reason a table costs the balloon nothing. A rich block (a formula, a
+//  diagram, a graph — #97) is carried through untouched: it is drawn as a
+//  picture, and a picture has no glyphs to link.
+//
+//  An INLINE formula is a run of its own source text (MessageMarkdown's
+//  `InlineMathAttribute`), and nothing here ever lands on it: `$x.com$` is
+//  a formula, not a web address, and a `@` inside one names nobody. Every
+//  pass below skips a match that touches a formula's run.
 //
 
 import Foundation
@@ -103,7 +110,7 @@ nonisolated enum MessageLinks {
                         decorated(
                             rendered, isMine: isMine, mentions: mentions,
                             drawSource: index == 0 ? text : nil))
-                case .table:
+                case .table, .rich:
                     return block
                 }
             }
@@ -306,6 +313,9 @@ nonisolated enum MessageLinks {
                 // author's own destination is what the message declares, so
                 // it stands and the detector's duplicate is dropped.
                 guard attributed[range].runs.allSatisfy({ $0.link == nil }) else { continue }
+                // Never inside a formula: what it says is mathematics, and
+                // it is about to be drawn as a picture with nothing to tap.
+                guard !touchesFormula(range, in: attributed) else { continue }
                 // Applied ONTO the rendered attributed string rather than
                 // onto a fresh copy: a copy carries no emphasis, so taking
                 // it wholesale would throw the markdown away.
@@ -341,7 +351,8 @@ nonisolated enum MessageLinks {
             guard let url = MemberMentions.url(for: mention.userID) else { continue }
             let nsRange = NSRange(range, in: rendered)
             guard let target = attributedRange(nsRange, in: attributed, of: rendered),
-                  attributed[target].runs.allSatisfy({ $0.link == nil })
+                  attributed[target].runs.allSatisfy({ $0.link == nil }),
+                  !touchesFormula(target, in: attributed)
             else { continue }
             attributed[target].inlinePresentationIntent = .stronglyEmphasized
             attributed[target].link = url
@@ -430,7 +441,9 @@ nonisolated enum MessageLinks {
         }
         for range in ranges {
             let nsRange = NSRange(range, in: rendered)
-            guard let target = attributedRange(nsRange, in: attributed, of: rendered) else {
+            guard let target = attributedRange(nsRange, in: attributed, of: rendered),
+                  !touchesFormula(target, in: attributed)
+            else {
                 continue
             }
             attributed[target].inlinePresentationIntent = .stronglyEmphasized
@@ -440,6 +453,13 @@ nonisolated enum MessageLinks {
             // tells this mark apart from markdown's own bold.
             attributed[target].foregroundColor = isMine ? .white : .primary
         }
+    }
+
+    /// Whether `range` overlaps an inline formula's run (#97).
+    private static func touchesFormula(
+        _ range: Range<AttributedString.Index>, in attributed: AttributedString
+    ) -> Bool {
+        attributed[range].runs.contains { $0[MessageMarkdown.InlineMathAttribute.self] != nil }
     }
 
     /// A markdown destination that can actually be opened, or nil when it

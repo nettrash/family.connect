@@ -35,7 +35,7 @@ LANGUAGES = ["de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"]
 # Keys that are deliberately English-only: pure format strings with nothing
 # to translate, and the sample data placeholders in text fields.
 NEVER_TRANSLATED = {
-    "%@ %lld", "%@, %@", "%@: %@", "%lld", "+%lld", "@%@",
+    "%@", "%@ %lld", "%@, %@", "%@: %@", "%lld", "+%lld", "@%@",
     "ABCD2345", "Family Connect", "The Smiths", "chat.example.com",
 }
 

@@ -102,6 +102,7 @@ struct PollComposerView: View {
         Form {
             Section {
                 TextField("Ask the family something…", text: $question, axis: .vertical)
+                    .proseTextEntry()
                     .lineLimit(1...3)
                     .focused($focusedField, equals: .question)
             } header: {
@@ -117,6 +118,7 @@ struct PollComposerView: View {
                 ForEach($options) { $option in
                     HStack {
                         TextField("Option", text: $option.text)
+                            .proseTextEntry()
                             .focused($focusedField, equals: .option(option.id))
                         if options.count > PollPresentation.minOptions {
                             Button {

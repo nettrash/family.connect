@@ -639,4 +639,269 @@ struct MessageMarkdownTests {
         }
         #expect(linked == ["https://example.com"], "got \(linked)")
     }
+
+    // MARK: - Formulas, diagrams and graphs (#97)
+
+    /// One block, written down the way the design doc's table writes it,
+    /// so a failure reads as the row that broke.
+    private func describe(_ block: MessageMarkdown.Block) -> String {
+        switch block {
+        case .text(let text):
+            var out = "text " + String(text.characters).debugDescription
+            let formulas = formulaSources(text)
+            if !formulas.isEmpty { out += " math \(formulas)" }
+            return out
+        case .table:
+            return "table"
+        case .rich(let rich):
+            var out = "rich \(rich.kind.rawValue) " + rich.source.debugDescription
+            if let engine = rich.engine { out += " engine \(engine)" }
+            return out
+        }
+    }
+
+    private func described(_ body: String) -> [String] {
+        MessageMarkdown.blocks(body).map(describe)
+    }
+
+    /// The formula of every inline-math run, in order.
+    private func formulaSources(_ text: AttributedString) -> [String] {
+        text.runs.compactMap { $0[MessageMarkdown.InlineMathAttribute.self]?.source }
+    }
+
+    /// Every inline formula in a body as the bubble draws it, table cells
+    /// included.
+    private func inlineFormulas(_ body: String) -> [String] {
+        MessageMarkdown.blocks(body).flatMap { block -> [String] in
+            switch block {
+            case .text(let text):
+                return formulaSources(text)
+            case .table(let table):
+                return (table.header + table.rows.flatMap { $0 }).flatMap(formulaSources)
+            case .rich:
+                return []
+            }
+        }
+    }
+
+    /// The design doc's "Blocks" table, row for row
+    /// (docs/capitals-and-rich-markdown-2026-10-17.md) — the same rows the
+    /// Kotlin, C# and Rust parsers hold.
+    nonisolated static let blockTable: [(body: String, blocks: [String])] = [
+        ("```math\nx^2\n```", ["rich math \"x^2\""]),
+        ("```Mermaid\ngraph TD\nA-->B\n```", ["rich mermaid \"graph TD\\nA-->B\""]),
+        ("```mermaid extra words\nA\n```", ["rich mermaid \"A\""]),
+        ("```neato\ngraph {a--b}\n```", ["rich graphviz \"graph {a--b}\" engine neato"]),
+        ("```gv\ndigraph{a->b}\n```", ["rich graphviz \"digraph{a->b}\" engine dot"]),
+        ("```plot\nsin(x)\n```", ["rich plot \"sin(x)\""]),
+        ("```js\nx\n```", ["text \"x\""]),
+        ("```mermaid\nA", ["text \"```mermaid\\nA\""]),
+        ("Look:\n```math\nx\n```\nDone", ["text \"Look:\"", "rich math \"x\"", "text \"Done\""]),
+        ("$$\nx^2\n$$", ["rich math \"x^2\""]),
+        ("$$x^2$$", ["rich math \"x^2\""]),
+        ("\\[\na\n\\]", ["rich math \"a\""]),
+        ("  $$ y $$  ", ["rich math \"y\""]),
+        ("$$x$$ is it", ["text \"$$x$$ is it\" math [\"x\"]"]),
+        ("Area $$x$$", ["text \"Area $$x$$\" math [\"x\"]"]),
+        ("$$\nx", ["text \"$$\\nx\""]),
+        ("$$ $$", ["text \"$$ $$\""]),
+        ("```\n$$x$$\n```", ["text \"$$x$$\""]),
+    ]
+
+    @Test("the design doc's block table", arguments: blockTable)
+    func richBlockTable(_ row: (body: String, blocks: [String])) {
+        #expect(described(row.body) == row.blocks, "\(row.body.debugDescription)")
+    }
+
+    /// The design doc's "Inline" table, row for row.
+    nonisolated static let inlineTable: [(body: String, formulas: [String])] = [
+        ("$x$", ["x"]),
+        ("$5 and $10", []),
+        ("costs $5, or $6.", []),
+        ("a$b$c", []),
+        ("$x$s", []),
+        ("$ x$", []),
+        ("$x $", []),
+        ("\\$x$", []),
+        ("$a\\$b$", ["a\\$b"]),
+        ("see $$x$$ now", ["x"]),
+        ("\\(x^2\\)", ["x^2"]),
+        ("`$x$`", []),
+        ("*see $a*b$*", ["a*b"]),
+        ("$x\ny$", []),
+        ("[a](http://x.y/$b$)", []),
+        ("| $a$ | b |\n|---|---|\n| $c$ | d |", ["a", "c"]),
+        ("€$x$", ["x"]),
+        ("2$x$", []),
+    ]
+
+    @Test("the design doc's inline table", arguments: inlineTable)
+    func inlineMathTable(_ row: (body: String, formulas: [String])) {
+        #expect(inlineFormulas(row.body) == row.formulas, "\(row.body.debugDescription)")
+    }
+
+    /// The rows above, read for what the reader SEES: a formula's run is
+    /// its source exactly as typed, delimiters and all, in the code face
+    /// until it is drawn — and what is not a formula is not touched.
+    @Test("an inline formula keeps its characters; what is not one is plain text")
+    func inlineMathCharacters() throws {
+        #expect(plain("$5 and $10") == "$5 and $10")
+        #expect(plain("costs $5, or $6.") == "costs $5, or $6.")
+        // The escape still does its ordinary job: the text reads `$x$`.
+        #expect(plain("\\$x$") == "$x$")
+        #expect(plain("see $$x$$ now") == "see $$x$$ now")
+        #expect(plain("\\(x^2\\)") == "\\(x^2\\)")
+        #expect(plain("$a\\$b$") == "$a\\$b$")
+
+        let rendered = MessageMarkdown.render("*see $a*b$*")
+        #expect(String(rendered.characters) == "see $a*b$")
+        let formula = try #require(rendered.runs.first { $0[MessageMarkdown.InlineMathAttribute.self] != nil })
+        #expect(String(rendered[formula.range].characters) == "$a*b$")
+        // Inside the emphasis, and in the code face.
+        #expect(formula.inlinePresentationIntent?.contains(.emphasized) == true)
+        #expect(formula.inlinePresentationIntent?.contains(.code) == true)
+        // Markdown inside the formula is not markdown — and markdown
+        // around it still is.
+        #expect(plain("**bold** $a_1 * b_2$ _it_") == "bold $a_1 * b_2$ it")
+    }
+
+    @Test("two formulas side by side stay two runs, even when they are the same formula")
+    func adjacentFormulas() {
+        let rendered = MessageMarkdown.render("\\(a\\)\\(a\\) and $b$ $b$")
+        let runs = rendered.runs.compactMap { run -> String? in
+            run[MessageMarkdown.InlineMathAttribute.self] == nil
+                ? nil : String(rendered[run.range].characters)
+        }
+        #expect(runs == ["\\(a\\)", "\\(a\\)", "$b$", "$b$"])
+    }
+
+    @Test("inline math in non-ASCII text, headings, bullets and links")
+    func inlineMathEdges() {
+        // Cyrillic around a formula, and inside one.
+        #expect(inlineFormulas("Площадь $πr^2$, верно?") == ["πr^2"])
+        #expect(inlineFormulas("Я знаю $\\text{ответ}$") == ["\\text{ответ}"])
+        #expect(plain("Площадь $πr^2$, верно?") == "Площадь $πr^2$, верно?")
+        // A non-ASCII letter before the opener is not a word character.
+        #expect(inlineFormulas("é$x$") == ["x"])
+        #expect(inlineFormulas("日本$x$です") == ["x"])
+        // …but an ASCII one after the closer is.
+        #expect(inlineFormulas("$x$a") == [])
+        // Emoji are not in the way.
+        #expect(inlineFormulas("🎉 $e^{i\\pi}+1=0$ 🎉") == ["e^{i\\pi}+1=0"])
+        // In a heading, a bullet and a link's LABEL — never its destination.
+        #expect(inlineFormulas("# Area $x^2$") == ["x^2"])
+        #expect(inlineFormulas("- term $y$") == ["y"])
+        // In a link's label a formula is flattened to its typed text: no
+        // drawing inside a tappable run.
+        #expect(inlineFormulas("[the $z$ page](https://example.com/$q$)") == [])
+        #expect(plain("[the $z$ page](https://example.com/$q$)") == "the $z$ page")
+        // A formula that swallows the `]` beats the link, as a code span
+        // would.
+        #expect(inlineFormulas("[$a](b$)") == ["a](b"])
+        #expect(MessageMarkdown.render("[$a](b$)").runs.allSatisfy { $0.link == nil })
+        // Inline `$$ x $$` keeps its spaces (only display math is trimmed).
+        #expect(inlineFormulas("so $$ x $$ here") == [" x "])
+        // An unclosed `$$`: one dollar is text and the next is tried again.
+        #expect(inlineFormulas("x $$$x$") == [])
+        // A carriage return is not a line break to the formula rules.
+        #expect(inlineFormulas("$a\rb$") == ["a\rb"])
+        #expect(inlineFormulas("$a`b$") == ["a`b"])
+        #expect(inlineFormulas("$a `b$` c$") == [])
+        #expect(inlineFormulas("<https://example.com/$a$>") == [])
+        // A code span that would open inside a candidate stops it.
+        #expect(inlineFormulas("$a `b$` c") == [])
+        // A lone backtick opens nothing, so it does not.
+        #expect(inlineFormulas("$a `b$") == ["a `b"])
+        // An escaped backslash does not escape the dollar after it.
+        #expect(inlineFormulas("\\\\$x$") == ["x"])
+        // `\(` without a closer is an escaped parenthesis.
+        #expect(plain("\\(not math") == "(not math")
+        // A `$$` with nothing in it is two dollars.
+        #expect(inlineFormulas("a $$ $$ b") == [])
+    }
+
+    @Test("rich blocks in non-ASCII bodies, and their fallbacks")
+    func richBlockEdges() throws {
+        #expect(described("Смотри:\n$$\n\\frac{а}{б}\n$$\nвот") == [
+            "text \"Смотри:\"", "rich math \"\\\\frac{а}{б}\"", "text \"вот\"",
+        ])
+        // A display formula shows its delimiters until it is drawn.
+        let blocks = MessageMarkdown.blocks("  $$ y $$  ")
+        guard case .rich(let display) = try #require(blocks.first) else {
+            Issue.record("expected a rich block, got \(blocks)")
+            return
+        }
+        #expect(display.fallback == "$$ y $$")
+        let multi = MessageMarkdown.blocks("\\[\na\n\\]")
+        guard case .rich(let bracketed) = try #require(multi.first) else {
+            Issue.record("expected a rich block, got \(multi)")
+            return
+        }
+        #expect(bracketed.fallback == "\\[\na\n\\]")
+        // A fence shows its content, as a code block does.
+        let fenced = MessageMarkdown.blocks("```mermaid\ngraph TD\n```")
+        guard case .rich(let mermaid) = try #require(fenced.first) else {
+            Issue.record("expected a rich block, got \(fenced)")
+            return
+        }
+        #expect(mermaid.fallback == "graph TD")
+        // Four backticks and a tag after them; a tag in mixed case.
+        #expect(described("````DOT\na->b\n````") == ["rich graphviz \"a->b\" engine dot"])
+        // A closer with words after it is not searched past.
+        #expect(described("$$\na $$ b\n$$") == ["text \"$$\\na $$ b\\n$$\""])
+        // Display math wins over a table: its lines are the formula's.
+        #expect(described("$$\n| a | b |\n|---|---|\n$$") == ["rich math \"| a | b |\\n|---|---|\""])
+        // Rich blocks between a table and text, and two in a row.
+        #expect(described("| a |\n| - |\n| 1 |\n```plot\nx\n```\n$$y$$\nend") == [
+            "table", "rich plot \"x\"", "rich math \"y\"", "text \"end\"",
+        ])
+        // A code block before a rich one keeps its own text block.
+        #expect(described("```\ncode\n```\n```math\nx\n```") == ["text \"code\"", "rich math \"x\""])
+    }
+
+    /// `render` is the flat string the link detector and the preview card
+    /// index: it draws nothing, so a rich fence is the code block an older
+    /// client shows and display math is text — the Rust port's answer too.
+    @Test("the flat render shows rich blocks as their source")
+    func flatRenderOfRichBlocks() {
+        #expect(plain("```math\nx^2\n```") == "x^2")
+        #expect(plain("Look:\n```mermaid\nA\n```\nDone") == "Look:\nA\nDone")
+        #expect(plain("$$\nx\n$$") == "$$\nx\n$$")
+    }
+
+    @Test("the link detector and the mentions keep out of a formula")
+    func formulasAreNotLinks() {
+        let attributed = MessageLinks.attributedBody(
+            "$example.com$ and @ai $@ai$ see https://example.com", isMine: false)
+        let linked = attributed.runs.compactMap { run -> String? in
+            run.link == nil ? nil : String(attributed[run.range].characters)
+        }
+        #expect(linked == ["https://example.com"])
+        let marked = attributed.runs.compactMap { run -> String? in
+            guard run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true else { return nil }
+            return String(attributed[run.range].characters)
+        }
+        #expect(marked == ["@ai"])
+        #expect(MessageLinks.firstWebLinkAsDrawn(in: "$https://example.com/x$") == nil)
+    }
+
+    @Test("rich blocks are carried through the decorated blocks")
+    func decoratedBlocksCarryRich() {
+        let blocks = MessageLinks.blocks("see https://example.com\n```dot\na->b\n```", isMine: true)
+        #expect(blocks.count == 2)
+        #expect(blocks.last?.isRich == true)
+        guard case .text(let text) = blocks.first else {
+            Issue.record("expected text first, got \(blocks)")
+            return
+        }
+        #expect(text.runs.contains { $0.link != nil })
+    }
+
+    @Test("a body with inline math and no rich block is still one text block")
+    func inlineMathKeepsOneBlock() {
+        let blocks = MessageMarkdown.blocks("**Area** is $\\pi r^2$, see [notes](https://example.com)")
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.isRich == false)
+        #expect(blocks.first?.isTable == false)
+    }
 }

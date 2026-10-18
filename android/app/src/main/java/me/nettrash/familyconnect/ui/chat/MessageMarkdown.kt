@@ -1,5 +1,6 @@
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -56,6 +57,18 @@ import androidx.compose.ui.unit.em
  * by a test on both sides so it stays a stated limit rather than a
  * surprise.
  *
+ * **Rich blocks (#97)** — formulas, Mermaid diagrams, Graphviz graphs and
+ * plots — are DRAWN rather than set in type (docs/protocol.md, "Rich
+ * blocks: formulas, diagrams and graphs", whose numbered rules this file
+ * implements and whose names the comments below use). A rich fence or a
+ * display formula is a [Block.Rich] that splits the text around it exactly
+ * as a table does; an inline formula is a RUN, like a heading — its source
+ * with its delimiters, monospaced, carrying an inline-content annotation
+ * ([MATH_TAG] and Compose's own `appendInlineContent` id) that the bubble
+ * swaps for the drawing once there is one. The characters stay in the
+ * string either way, so no offset moves when the picture lands: Compose
+ * lays a placeholder over exactly those characters.
+ *
  * Deliberately NOT `LinkAnnotation.Url` for the links it finds, for the
  * reason [MessageLinks] documents at length: Compose mounts each link range
  * as its own clickable child that consumes the pointer down, which silently
@@ -76,7 +89,20 @@ object MessageMarkdown {
         val annotated: AnnotatedString,
         val text: String,
         val links: List<LinkSpan>,
-    )
+    ) {
+        /**
+         * Where this block's inline formulas sit, as ranges over [text].
+         *
+         * Read from the annotations rather than carried as a field, so the
+         * two can never disagree — and so that every existing way of
+         * building a [Rendered] stays correct without knowing formulas
+         * exist. What it is FOR: the link detector runs over [text], and a
+         * formula's source is not prose — `$555-1234$` must not become a
+         * phone number sitting under a drawing (see [MessageLinks.outside]).
+         */
+        val math: List<IntRange>
+            get() = mathRanges(annotated)
+    }
 
     /**
      * One piece of a rendered body.
@@ -106,7 +132,66 @@ object MessageMarkdown {
             val rows: List<List<AnnotatedString>>,
             val alignments: List<TextAlign>,
         ) : Block
+
+        /**
+         * A formula on its own line, a diagram or a graph (#97): something
+         * the bubble DRAWS, through the hidden web view (RichRenderer).
+         *
+         * [source] is exactly what goes to the engine — a fence's content
+         * as a code block's would be, or a display formula's text trimmed
+         * of the spaces, tabs and newlines around it. [engine] is
+         * Graphviz's layout (`dot` unless the fence named another) and null
+         * for every other kind.
+         *
+         * [shown] is what the bubble draws until the drawing lands, and for
+         * good if it never does: a fence shows its content, exactly as a
+         * code block does today, and a display formula shows the lines as
+         * they were typed, delimiters and all (the design doc's "In the
+         * bubble"). It is the FALLBACK, never a second source of truth:
+         * the cache key and the job are built from [source] alone.
+         */
+        data class Rich(
+            val kind: RichKind,
+            val engine: String?,
+            val source: String,
+            val shown: String,
+        ) : Block
     }
+
+    /**
+     * What a rich block is. [wire] is the job's `kind` (fc-rich.js), and the
+     * word every port's parser uses for it.
+     */
+    enum class RichKind(val wire: String) {
+        MATH("math"),
+        MERMAID("mermaid"),
+        GRAPHVIZ("graphviz"),
+        PLOT("plot"),
+    }
+
+    /**
+     * The string-annotation tag on an inline formula's run; the item is
+     * the formula's source (what goes to KaTeX, without delimiters).
+     */
+    const val MATH_TAG = "fc.math"
+
+    /**
+     * Prefix of the `InlineTextContent` id an inline formula's run carries.
+     * The rest of the id is the source, so two runs of the same formula
+     * share one drawing and one map entry.
+     */
+    const val MATH_ID_PREFIX = "fc.math:"
+
+    /** The formula ranges of [annotated], in order. */
+    fun mathRanges(annotated: AnnotatedString): List<IntRange> =
+        annotated.getStringAnnotations(MATH_TAG, 0, annotated.length)
+            .map { it.start until it.end }
+
+    /** The formula sources of [annotated], each once, in order of appearance. */
+    fun mathSources(annotated: AnnotatedString): List<String> =
+        annotated.getStringAnnotations(MATH_TAG, 0, annotated.length)
+            .map { it.item }
+            .distinct()
 
     private val BOLD = SpanStyle(fontWeight = FontWeight.Bold)
     private val ITALIC = SpanStyle(fontStyle = FontStyle.Italic)
@@ -175,11 +260,32 @@ object MessageMarkdown {
                     builder.append(segment.text)
                     builder.addStyle(CODE, start, builder.length)
                 }
+                // A rich fence stands alone (rule 3): it closes the text
+                // block before it, like a table, and the segment after it
+                // opens a new one. `segments` already let the newlines on
+                // either side go with the split.
+                is Segment.Rich -> {
+                    flush(force = false)
+                    out += segment.block
+                }
                 is Segment.Text -> {
                     val lines = segment.text.split("\n")
                     val pending = mutableListOf<String>()
                     var i = 0
                     while (i < lines.size) {
+                        // DISPLAY MATH FIRST (rule 2: "before tables"). A
+                        // heading or a bullet can never start with `$$` or
+                        // `\[`, so probing it ahead of them changes nothing
+                        // for them, and a formula holding a `|` is a formula.
+                        val display = displayMathAt(lines, i)
+                        if (display != null) {
+                            appendLines(builder, pending, links)
+                            pending.clear()
+                            flush(force = false)
+                            out += display.block
+                            i = display.end
+                            continue
+                        }
                         // PRECEDENCE: heading, then bullet, then table —
                         // the order Apple walks in (MessageMarkdown.swift,
                         // `pieces(of:)`), and the order this file's own
@@ -350,6 +456,10 @@ object MessageMarkdown {
             // bullet it says it is and not a fourth row that swallows
             // the marker. Apple breaks on the same two.
             if (headingAt(lines[i]) != null || bulletAt(lines[i]) != null) break
+            // Display math is found BEFORE tables (rule 2), so a formula's
+            // opening line never becomes a row of the grid above it —
+            // `$$ |x| $$` under a table is a formula, as it is anywhere.
+            if (displayMathAt(lines, i) != null) break
             val cells = rowCells(lines[i]) ?: break
             // Padded and truncated here so every row has the header's
             // width — a ragged grid would have to be handled in the
@@ -441,11 +551,119 @@ object MessageMarkdown {
     private fun cell(source: String): AnnotatedString =
         buildAnnotatedString { inline(source, links = null) }
 
+    // ---- display math --------------------------------------------------------
+
+    /** A display formula and the line index just past it. */
+    private class ParsedDisplay(val block: Block.Rich, val end: Int)
+
+    /**
+     * The display formula starting at line [from], or null (rule 2).
+     *
+     * A line whose first non-space characters are `$$` or `\[` opens one;
+     * it closes at the FIRST matching `$$` or `\]` after the opener, on the
+     * same line or a later one, and only if nothing but spaces and tabs
+     * follows that closer on its line. The first closer DECIDES: one with
+     * words after it (`$$x$$ is it`) means this is not display math at all
+     * — those lines are text, and the inline pass finds `$$x$$` in them —
+     * rather than a cue to keep looking for a later closer that fits, which
+     * would make the answer depend on how far down the message one looked.
+     *
+     * "Non-space" is read as neither a space nor a tab, the pair every
+     * other clause of the rules names together.
+     */
+    private fun displayMathAt(lines: List<String>, from: Int): ParsedDisplay? {
+        val first = lines[from]
+        var lead = 0
+        while (lead < first.length && isSpaceOrTab(first[lead])) lead += 1
+        val closer = when {
+            first.startsWith("$$", lead) -> "$$"
+            first.startsWith("\\[", lead) -> "\\]"
+            else -> return null
+        }
+        val openEnd = lead + 2
+        var k = from
+        while (k < lines.size) {
+            val line = lines[k]
+            val at = line.indexOf(closer, if (k == from) openEnd else 0)
+            if (at < 0) {
+                k += 1
+                continue
+            }
+            // The first closer decides — see above.
+            if (!line.substring(at + closer.length).all(::isSpaceOrTab)) return null
+            val inner = if (k == from) {
+                line.substring(openEnd, at)
+            } else {
+                buildString {
+                    append(first.substring(openEnd))
+                    for (middle in from + 1 until k) append('\n').append(lines[middle])
+                    append('\n').append(line.substring(0, at))
+                }
+            }
+            val source = inner.trim { it == ' ' || it == '\t' || it == '\n' }
+            if (source.isEmpty()) return null
+            return ParsedDisplay(
+                Block.Rich(
+                    kind = RichKind.MATH,
+                    engine = null,
+                    source = source,
+                    // Delimiters and all, exactly as typed.
+                    shown = lines.subList(from, k + 1).joinToString("\n"),
+                ),
+                end = k + 1,
+            )
+        }
+        // Never closed: text as typed.
+        return null
+    }
+
+    private fun isSpaceOrTab(c: Char): Boolean = c == ' ' || c == '\t'
+
     // ---- fences ------------------------------------------------------------
 
     private sealed interface Segment {
         data class Text(val text: String) : Segment
         data class Code(val text: String) : Segment
+        data class Rich(val block: Block.Rich) : Segment
+    }
+
+    /** What a rich fence's tag asks for: the kind, and Graphviz's layout. */
+    private data class RichTag(val kind: RichKind, val engine: String?)
+
+    /**
+     * The fence tags that draw (rule 1), keyed by the ASCII-lower-cased
+     * first word of the info string. `dot`, `graphviz` and `gv` are
+     * Graphviz with the `dot` layout; a layout's own name is Graphviz laid
+     * out by that layout.
+     */
+    private val RICH_TAGS: Map<String, RichTag> = buildMap {
+        for (tag in listOf("math", "latex", "tex")) put(tag, RichTag(RichKind.MATH, null))
+        put("mermaid", RichTag(RichKind.MERMAID, null))
+        for (tag in listOf("dot", "graphviz", "gv")) put(tag, RichTag(RichKind.GRAPHVIZ, "dot"))
+        for (layout in listOf("neato", "circo", "fdp", "sfdp", "twopi", "osage", "patchwork")) {
+            put(layout, RichTag(RichKind.GRAPHVIZ, layout))
+        }
+        put("plot", RichTag(RichKind.PLOT, null))
+    }
+
+    /**
+     * The rich tag an opening fence line carries, or null for an ordinary
+     * code block.
+     *
+     * The info string is the rest of the line after its backticks, trimmed
+     * of spaces and tabs; its first word decides, lower-cased in ASCII ONLY
+     * — Kotlin's `lowercase()` would also fold a Turkish dotted capital or
+     * a Kelvin sign into the ASCII range, and the four parsers must give
+     * one answer for every byte.
+     */
+    private fun richTagOf(fenceLine: String): RichTag? {
+        val info = fenceLine.dropWhile { it == '`' }.trim(::isSpaceOrTab)
+        val word = info.takeWhile { !isSpaceOrTab(it) }
+        if (word.isEmpty()) return null
+        val lower = buildString(word.length) {
+            for (c in word) append(if (c in 'A'..'Z') c + ('a' - 'A') else c)
+        }
+        return RICH_TAGS[lower]
     }
 
     /**
@@ -464,9 +682,21 @@ object MessageMarkdown {
         val plain = mutableListOf<String>()
         val code = mutableListOf<String>()
         var inFence = false
+        // The open fence's rich tag, or null while it is an ordinary one.
+        var rich: RichTag? = null
         for (line in lines) {
             val marker = line.startsWith(FENCE)
             if (!inFence && marker) {
+                rich = richTagOf(line)
+                if (rich != null) {
+                    // A RICH fence stands alone, like a table: the newline
+                    // that ended the line above goes with the split rather
+                    // than staying behind as a trailing empty line in the
+                    // text block — the bubble's gap between blocks stands
+                    // in for it.
+                    inFence = true
+                    continue
+                }
                 // The language tag on an opening fence is dropped: nothing
                 // here highlights syntax, so it would only be noise.
                 //
@@ -486,6 +716,18 @@ object MessageMarkdown {
                 inFence = false
                 result += Segment.Text(plain.joinToString("\n"))
                 plain.clear()
+                val tag = rich
+                if (tag != null) {
+                    // The source is the content exactly as a code block's
+                    // would be (rule 1), and so is what shows until it is
+                    // drawn. Nothing is pushed for the newline that ended
+                    // the closing fence: it goes with the split, as above.
+                    val source = code.joinToString("\n")
+                    code.clear()
+                    rich = null
+                    result += Segment.Rich(Block.Rich(tag.kind, tag.engine, source, shown = source))
+                    continue
+                }
                 result += Segment.Code(code.joinToString("\n"))
                 code.clear()
                 // Keep the newline that ended the fence, so text after a
@@ -513,10 +755,38 @@ object MessageMarkdown {
      *
      * A null [links] sink means links are not allowed HERE — a table cell —
      * and `[label](url)` is then left exactly as typed. See [cell].
+     *
+     * Formulas are found ONCE, here, over the whole run ([mathSpans]), and
+     * the pass below walks index RANGES of this one string rather than
+     * substrings of it. That is what makes the answer the same at every
+     * depth: the ASCII word guard looks at the character before a `$`, and
+     * in `_$x$_` that character is the underscore — a word character — so
+     * there is no formula there. Re-scanning the substring an emphasis run
+     * hands its content as would see `$x$` at the very start of a string
+     * and find one, and the same message would read differently on this
+     * port than on the three that do not recurse that way.
      */
     private fun AnnotatedString.Builder.inline(source: String, links: MutableList<LinkSpan>?) {
-        var i = 0
-        val n = source.length
+        val math = mathSpans(source).associateBy { it.start }
+        inlineRange(source, 0, source.length, math, links, inLink = false)
+    }
+
+    /** [inline] over `source[from, to)`; see there. */
+    private fun AnnotatedString.Builder.inlineRange(
+        source: String,
+        from: Int,
+        to: Int,
+        math: Map<Int, MathSpan>,
+        links: MutableList<LinkSpan>?,
+        /**
+         * Inside a link's label. A formula there is FLATTENED to what was
+         * typed, delimiters and all, as plain text: a picture inside a link
+         * would be a tap target whose words nobody can read, and every port
+         * draws a label as text.
+         */
+        inLink: Boolean,
+    ) {
+        var i = from
         val run = StringBuilder()
 
         fun flush() {
@@ -526,11 +796,36 @@ object MessageMarkdown {
             }
         }
 
-        while (i < n) {
+        while (i < to) {
             val c = source[i]
 
+            // An inline formula (rule 4). First, because markdown inside a
+            // formula is not markdown: its `*`, `_`, backslashes and
+            // backticks all belong to KaTeX. The run is the source WITH its
+            // delimiters, monospaced — what shows until the drawing lands,
+            // and for good if it never does — under an inline-content id the
+            // bubble maps to the drawing. A span reaching past this range
+            // (a link label cut through it) is not one here.
+            val formula = math[i]
+            if (formula != null && formula.end <= to && inLink) {
+                run.append(source, formula.start, formula.end)
+                i = formula.end
+                continue
+            }
+            if (formula != null && formula.end <= to) {
+                flush()
+                val start = length
+                val content = source.substring(formula.contentStart, formula.contentEnd)
+                pushStringAnnotation(MATH_TAG, content)
+                appendInlineContent(MATH_ID_PREFIX + content, source.substring(formula.start, formula.end))
+                pop()
+                addStyle(CODE, start, length)
+                i = formula.end
+                continue
+            }
+
             // Backslash escapes the next character, whatever it is.
-            if (c == '\\' && i + 1 < n) {
+            if (c == '\\' && i + 1 < to) {
                 run.append(source[i + 1])
                 i += 2
                 continue
@@ -539,7 +834,7 @@ object MessageMarkdown {
             // Code span. Nothing inside is markup.
             if (c == '`') {
                 val close = source.indexOf('`', i + 1)
-                if (close > i + 1) {
+                if (close > i + 1 && close < to) {
                     flush()
                     val start = length
                     append(source.substring(i + 1, close))
@@ -551,18 +846,17 @@ object MessageMarkdown {
 
             // [label](url)
             if (c == '[' && links != null) {
-                val closeLabel = source.indexOf(']', i + 1)
-                if (closeLabel > i && closeLabel + 1 < n && source[closeLabel + 1] == '(') {
-                    val closeUrl = closingParen(source, closeLabel + 2)
+                val closeLabel = indexOutside(source, "]", i + 1, to, math)
+                if (closeLabel > i && closeLabel + 1 < to && source[closeLabel + 1] == '(') {
+                    val closeUrl = closingParen(source, closeLabel + 2, to)
                     if (closeUrl > closeLabel + 1) {
-                        val label = source.substring(i + 1, closeLabel)
                         val url = source.substring(closeLabel + 2, closeUrl).trim()
-                        if (label.isNotEmpty() && url.isNotEmpty()) {
+                        if (closeLabel > i + 1 && url.isNotEmpty()) {
                             flush()
                             val start = length
                             // The label may itself be marked up; the URL
                             // never is.
-                            inline(label, links)
+                            inlineRange(source, i + 1, closeLabel, math, links, inLink = true)
                             links += LinkSpan(start = start, end = length, url = normalize(url))
                             i = closeUrl + 1
                             continue
@@ -572,17 +866,17 @@ object MessageMarkdown {
             }
 
             // **bold** / __bold__
-            if ((c == '*' || c == '_') && i + 1 < n && source[i + 1] == c) {
+            if ((c == '*' || c == '_') && i + 1 < to && source[i + 1] == c) {
                 val marker = "$c$c"
-                val close = if (opensEmphasis(source, i, 2, c)) {
-                    closingIndex(source, marker, i + 2)
+                val close = if (opensEmphasis(source, i, 2, c, from, to)) {
+                    closingIndex(source, marker, i + 2, to, math)
                 } else {
                     -1
                 }
                 if (close > i + 2) {
                     flush()
                     val start = length
-                    inline(source.substring(i + 2, close), links)
+                    inlineRange(source, i + 2, close, math, links, inLink)
                     addStyle(BOLD, start, length)
                     i = close + 2
                     continue
@@ -590,16 +884,16 @@ object MessageMarkdown {
             }
 
             // ~~strike~~
-            if (c == '~' && i + 1 < n && source[i + 1] == '~') {
-                val close = if (opensEmphasis(source, i, 2, c)) {
-                    closingIndex(source, "~~", i + 2)
+            if (c == '~' && i + 1 < to && source[i + 1] == '~') {
+                val close = if (opensEmphasis(source, i, 2, c, from, to)) {
+                    closingIndex(source, "~~", i + 2, to, math)
                 } else {
                     -1
                 }
                 if (close > i + 2) {
                     flush()
                     val start = length
-                    inline(source.substring(i + 2, close), links)
+                    inlineRange(source, i + 2, close, math, links, inLink)
                     addStyle(STRIKE, start, length)
                     i = close + 2
                     continue
@@ -608,15 +902,15 @@ object MessageMarkdown {
 
             // *italic* / _italic_
             if (c == '*' || c == '_') {
-                val close = if (opensEmphasis(source, i, 1, c)) {
-                    closingIndex(source, c.toString(), i + 1)
+                val close = if (opensEmphasis(source, i, 1, c, from, to)) {
+                    closingIndex(source, c.toString(), i + 1, to, math)
                 } else {
                     -1
                 }
                 if (close > i + 1) {
                     flush()
                     val start = length
-                    inline(source.substring(i + 1, close), links)
+                    inlineRange(source, i + 1, close, math, links, inLink)
                     addStyle(ITALIC, start, length)
                     i = close + 1
                     continue
@@ -629,6 +923,224 @@ object MessageMarkdown {
         flush()
     }
 
+    // ---- inline math ---------------------------------------------------------
+
+    /**
+     * One inline formula in a run's source: `[start, end)` is the whole of
+     * it, delimiters included; `[contentStart, contentEnd)` is what KaTeX
+     * gets.
+     */
+    internal data class MathSpan(val start: Int, val end: Int, val contentStart: Int, val contentEnd: Int)
+
+    /**
+     * Every inline formula in [source], in order (rule 4).
+     *
+     * CODE SPANS FIRST, found exactly as the inline pass finds them (after
+     * escapes, a backtick up to the next one, never empty): a formula is
+     * never looked for inside one, and its closer search stops where one
+     * opens — `$a `b$` c$` holds no formula, while in `$a`b$` the lone
+     * backtick opens nothing and the formula is `a`b`.
+     *
+     * Then ONE pass left to right over what is left, which is what puts
+     * formulas and links in the order a reader meets them. A formula that
+     * starts in a link's label and swallows its `]` wins, the way a code
+     * span would — `[$a](b$)` is the formula `a](b` and no link. A link
+     * whose `]` is reached first claims its destination, and nothing in a
+     * destination is ever a formula (`[a](http://x.y/$b$)`). Destinations
+     * count in a table cell too, where links are not drawn: "never in a
+     * link's destination" is about what the author wrote. Which `]` closes
+     * a label, and when a label is empty, follow the inline pass: a `[` can
+     * only ever pair with the first `]` after it.
+     */
+    internal fun mathSpans(source: String): List<MathSpan> {
+        if (source.indexOf('$') < 0 && !source.contains("\\(")) return emptyList()
+        val code = codeSpans(source)
+        val out = mutableListOf<MathSpan>()
+        var codeIndex = 0
+        // The earliest `[` still waiting for its `]`, or -1.
+        var open = -1
+        var i = 0
+        val n = source.length
+        while (i < n) {
+            // Skip a code span outright; remember where the next one starts,
+            // which is as far as any formula's closer may be looked for.
+            while (codeIndex < code.size && code[codeIndex].last < i) codeIndex += 1
+            val nextCode = code.getOrNull(codeIndex)
+            if (nextCode != null && i >= nextCode.first) {
+                i = nextCode.last + 1
+                continue
+            }
+            val limit = nextCode?.first ?: n
+            val c = source[i]
+            if (c == '$' || (c == '\\' && source.startsWith("\\(", i))) {
+                val span = mathAt(source, i, limit)
+                if (span != null) {
+                    out += span
+                    i = span.end
+                    continue
+                }
+            }
+            when (c) {
+                '\\' -> {
+                    i += if (i + 1 < n) 2 else 1
+                    continue
+                }
+                '[' -> if (open < 0) open = i
+                ']' -> {
+                    val opener = open
+                    open = -1
+                    if (opener >= 0 && i > opener + 1 && i + 1 < n && source[i + 1] == '(') {
+                        val closeUrl = closingParen(source, i + 2, n)
+                        if (closeUrl > i + 1 && source.substring(i + 2, closeUrl).isNotBlank()) {
+                            i = closeUrl + 1
+                            continue
+                        }
+                    }
+                }
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /**
+     * The code spans of [source], as the inline pass finds them, in order —
+     * each range covering both backticks.
+     */
+    private fun codeSpans(source: String): List<IntRange> {
+        val out = mutableListOf<IntRange>()
+        var i = 0
+        val n = source.length
+        while (i < n) {
+            val c = source[i]
+            if (c == '\\' && i + 1 < n) {
+                i += 2
+                continue
+            }
+            if (c == '`') {
+                val close = source.indexOf('`', i + 1)
+                if (close > i + 1) {
+                    out += i..close
+                    i = close + 1
+                    continue
+                }
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /**
+     * The formula opening at [at], its closer looked for before [to], by
+     * the precedence of rule 4: `$$…$$`, then `\(…\)`, then `$…$`.
+     */
+    private fun mathAt(source: String, at: Int, to: Int): MathSpan? = when {
+        source.startsWith("$$", at) && !escaped(source, at) -> pairedMath(source, at, "$$", to)
+        source.startsWith("\\(", at) && !escaped(source, at) -> pairedMath(source, at, "\\)", to)
+        source[at] == '$' -> singleDollarMath(source, at, to)
+        else -> null
+    }
+
+    /**
+     * `$$…$$` or `\(…\)` opening at [at]: up to the NEXT [closer], whatever
+     * comes before it. The content must hold something other than spaces
+     * and tabs and must not cross a line break.
+     */
+    private fun pairedMath(source: String, at: Int, closer: String, to: Int): MathSpan? {
+        val contentStart = at + 2
+        val close = source.indexOf(closer, contentStart)
+        if (close < 0 || close + closer.length > to) return null
+        if (!validContent(source, contentStart, close)) return null
+        return MathSpan(at, close + closer.length, contentStart, close)
+    }
+
+    /**
+     * `$…$` opening at [at] — the guarded form, the one that has to tell a
+     * formula from money.
+     *
+     * The opener must not be escaped, must not follow a word character or
+     * a `$`, and must be followed by neither a space, a tab nor a `$`. The
+     * closer is the first later `$` that is preceded by neither a space, a
+     * tab nor a backslash and followed by neither a word character nor a
+     * `$`; one that fails is skipped and the search goes on. So in
+     * `$5 and $10` the only candidate closer has a space before it, and
+     * nothing there is math.
+     */
+    private fun singleDollarMath(source: String, at: Int, to: Int): MathSpan? {
+        if (escaped(source, at)) return null
+        if (at > 0 && (isAsciiWord(source[at - 1]) || source[at - 1] == '$')) return null
+        if (at + 1 >= to) return null
+        val next = source[at + 1]
+        if (next == ' ' || next == '\t' || next == '$') return null
+        var j = at + 1
+        while (j < to) {
+            val c = source[j]
+            // A formula does not cross a line — no closer past one can count.
+            if (c == '\n') return null
+            if (c == '$') {
+                val before = source[j - 1]
+                val after = if (j + 1 < source.length) source[j + 1] else null
+                val closes = before != ' ' && before != '\t' && before != '\\' &&
+                    (after == null || (!isAsciiWord(after) && after != '$'))
+                if (closes) {
+                    if (!validContent(source, at + 1, j)) return null
+                    return MathSpan(at, j + 1, at + 1, j)
+                }
+            }
+            j += 1
+        }
+        return null
+    }
+
+    /** Something other than spaces and tabs, and no line break. */
+    private fun validContent(source: String, from: Int, to: Int): Boolean {
+        var any = false
+        for (k in from until to) {
+            val c = source[k]
+            if (c == '\n') return false
+            if (!isSpaceOrTab(c)) any = true
+        }
+        return any
+    }
+
+    /** Preceded by an ODD number of backslashes. */
+    private fun escaped(source: String, at: Int): Boolean {
+        var count = 0
+        var k = at - 1
+        while (k >= 0 && source[k] == '\\') {
+            count += 1
+            k -= 1
+        }
+        return count % 2 == 1
+    }
+
+    /**
+     * An ASCII letter, an ASCII digit or `_` — ASCII ON PURPOSE (rule 4).
+     * `Char.isLetterOrDigit()` would call `é` and `٣` word characters, and
+     * four languages have four ideas of what a letter is; this has one.
+     * So `€$x$` is a formula and `2$x$` is not.
+     */
+    private fun isAsciiWord(c: Char): Boolean =
+        c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_'
+
+    /**
+     * The first [needle] in `source[from, to)` that does not sit inside a
+     * formula, or -1 — so a `]` written inside one cannot close a link's
+     * label around it.
+     */
+    private fun indexOutside(source: String, needle: String, from: Int, to: Int, math: Map<Int, MathSpan>): Int {
+        var j = source.indexOf(needle, from)
+        while (j >= 0 && j + needle.length <= to) {
+            if (!insideMath(j, needle.length, math)) return j
+            j = source.indexOf(needle, j + 1)
+        }
+        return -1
+    }
+
+    /** Does `[at, at + width)` touch a formula? */
+    private fun insideMath(at: Int, width: Int, math: Map<Int, MathSpan>): Boolean =
+        math.values.any { at < it.end && it.start < at + width }
+
     /**
      * The `)` that closes a link destination opened at [from], or -1.
      *
@@ -638,10 +1150,10 @@ object MessageMarkdown {
      * the stray `)` is left in the text. CommonMark requires balance here
      * for exactly this reason.
      */
-    private fun closingParen(source: String, from: Int): Int {
+    private fun closingParen(source: String, from: Int, to: Int): Int {
         var depth = 0
         var i = from
-        while (i < source.length) {
+        while (i < to) {
             when (source[i]) {
                 // A backslash escapes the next character, destination
                 // included, so a literal paren can still be written.
@@ -670,30 +1182,36 @@ object MessageMarkdown {
      * - an underscore run must additionally not follow an alphanumeric,
      *   which is what keeps `snake_case_name` whole. Asterisks have no such
      *   rule — `5*6*7` really is CommonMark for `567` with an italic 6.
+     *
+     * [from] and [to] bound the run being parsed: its edges count as the
+     * start and end of the text, exactly as they did when the run was a
+     * substring of its own.
      */
-    private fun opensEmphasis(source: String, at: Int, width: Int, delimiter: Char): Boolean {
+    private fun opensEmphasis(source: String, at: Int, width: Int, delimiter: Char, from: Int, to: Int): Boolean {
         val after = at + width
-        if (after >= source.length || source[after].isWhitespace()) return false
-        if (delimiter == '_' && at > 0 && source[at - 1].isLetterOrDigit()) return false
+        if (after >= to || source[after].isWhitespace()) return false
+        if (delimiter == '_' && at > from && source[at - 1].isLetterOrDigit()) return false
         return true
     }
 
     /**
-     * The index of the matching CLOSER for [marker] at or after [from], or
-     * -1.
+     * The index of the matching CLOSER for [marker] at or after [from] and
+     * before [to], or -1.
      *
      * A closer must not be preceded by whitespace (nothing closes ` * `),
      * and an underscore run must not be followed by an alphanumeric — the
-     * other half of what keeps `snake_case_name` whole.
+     * other half of what keeps `snake_case_name` whole. Nor may it sit
+     * inside a formula: in `*see $a*b$*` the asterisk in `a*b` is KaTeX's,
+     * and the emphasis closes on the one after the formula.
      */
-    private fun closingIndex(source: String, marker: String, from: Int): Int {
+    private fun closingIndex(source: String, marker: String, from: Int, to: Int, math: Map<Int, MathSpan>): Int {
         val delimiter = marker[0]
         var j = source.indexOf(marker, from)
-        while (j >= 0) {
+        while (j >= 0 && j + marker.length <= to) {
             val precededByText = j > from && !source[j - 1].isWhitespace()
             val after = j + marker.length
             val followedByWord = delimiter == '_' &&
-                after < source.length &&
+                after < to &&
                 source[after].isLetterOrDigit()
             // A closer must be a delimiter run of the SAME LENGTH as the
             // opener. Without this the outer `*` of
@@ -706,8 +1224,10 @@ object MessageMarkdown {
             // message reads differently on two platforms.
             val partOfLongerRun =
                 (j > 0 && source[j - 1] == delimiter && j - 1 >= from) ||
-                    (after < source.length && source[after] == delimiter)
-            if (precededByText && !followedByWord && !partOfLongerRun) return j
+                    (after < to && source[after] == delimiter)
+            if (precededByText && !followedByWord && !partOfLongerRun && !insideMath(j, marker.length, math)) {
+                return j
+            }
             j = source.indexOf(marker, j + 1)
         }
         return -1

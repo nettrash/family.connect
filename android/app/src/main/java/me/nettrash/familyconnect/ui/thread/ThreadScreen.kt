@@ -16,6 +16,7 @@
 
 package me.nettrash.familyconnect.ui.thread
 
+import me.nettrash.familyconnect.ui.components.ProseKeyboard
 import me.nettrash.familyconnect.ui.chat.LocalTranscripts
 import androidx.compose.runtime.CompositionLocalProvider
 import android.Manifest
@@ -220,6 +221,7 @@ fun ThreadScreen(
                         modifier = Modifier.weight(1f),
                         placeholder = { Text(stringResource(R.string.s_reply_in_thread)) },
                         maxLines = 5,
+                        keyboardOptions = ProseKeyboard.Sentences,
                     )
                     // Disabled until the root is here to answer: a reply
                     // with nothing to quote is not a reply in this chain.

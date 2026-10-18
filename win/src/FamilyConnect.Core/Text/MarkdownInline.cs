@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace FamilyConnect.Core;
 
 public static partial class Markdown
@@ -17,13 +19,17 @@ public static partial class Markdown
         Image,
         /// <summary>Apple's <c>^[text](attributes)</c>: the text, attributes not drawn.</summary>
         Attributes,
+        /// <summary>An inline formula (issue #97): Text is what was typed, Source what lies between the delimiters. A leaf.</summary>
+        Math,
     }
 
     private sealed class Node(NodeKind kind, byte[] text)
     {
         public NodeKind Kind = kind;
-        /// <summary>The characters of a Text, Code or Html node.</summary>
+        /// <summary>The characters of a Text, Code, Html or Math node.</summary>
         public byte[] Text = text;
+        /// <summary>A Math node's formula, its delimiters off.</summary>
+        public byte[] Source = [];
         public byte[] Url = [];
         public byte[] Title = [];
         public int Parent = -1;
@@ -81,6 +87,30 @@ public static partial class Markdown
         /// <summary>cmark 0.30's <c>no_link_openers</c>: set when a link closes, cleared by the next <c>[</c> or <c>^[</c>.</summary>
         private bool noLinkOpeners = true;
         private bool scannedForBackticks;
+
+        /// <summary>
+        /// Where the LAST maximal backtick run of each length starts — so the formula rules can ask, in constant time, whether a
+        /// run they meet would open a code span (it would when a run of its length comes later). See <see cref="OpensCodeSpan"/>.
+        /// </summary>
+        private readonly Dictionary<int, int> lastBacktickRun = LastBacktickRuns(text);
+
+        private static Dictionary<int, int> LastBacktickRuns(byte[] text)
+        {
+            var last = new Dictionary<int, int>();
+            var at = 0;
+            while (at < text.Length)
+            {
+                if (text[at] != (byte)'`')
+                {
+                    at++;
+                    continue;
+                }
+                var length = BacktickRun(text, at);
+                last[length] = at;
+                at += length;
+            }
+            return last;
+        }
 
         // ---- tree plumbing (cmark's node.c) --------------------------------------------------------------------
 
@@ -243,6 +273,8 @@ public static partial class Markdown
                     return HandleDelimiter(c);
                 case (byte)'~':
                     return HandleTilde();
+                case (byte)'$':
+                    return HandleDollar();
                 case (byte)'[':
                 {
                     pos++;
@@ -358,10 +390,23 @@ public static partial class Markdown
             return null;
         }
 
-        /// <summary><c>\</c> escapes ASCII punctuation, makes a hard break before a newline, and is itself anywhere else.</summary>
+        /// <summary>
+        /// <c>\</c> escapes ASCII punctuation, makes a hard break before a newline, and is itself anywhere else — and <c>\(</c>
+        /// may open a formula. Reaching here means this backslash is not itself escaped (an escaped one went as the second half of
+        /// <c>\\</c>), which is the protocol's "a <c>\(</c> that is not itself escaped".
+        /// </summary>
         private int HandleBackslash()
         {
             pos++;
+            if (Peek() == '(')
+            {
+                var start = pos - 1;
+                if (ScanMathCloser(start + 2, "\\)"u8) is { } close)
+                {
+                    pos = close + 2;
+                    return MathNode(start, start + 2, close, close + 2);
+                }
+            }
             var c = Peek();
             if (c >= 0 && RustChar.IsAsciiPunctuation(c))
             {
@@ -374,6 +419,152 @@ public static partial class Markdown
                 return Add(NodeKind.LineBreak);
             }
             return TextNode("\\"u8);
+        }
+
+        // ---- inline formulas (issue #97, docs/protocol.md rule 4) ---------------------------------------------------
+
+        /// <summary>
+        /// <c>$</c>: a <c>$$…$$</c> formula, else a <c>$…$</c> one, else the character. An escaped <c>$</c> never gets here — <c>\$</c>
+        /// went whole to <see cref="HandleBackslash"/>. When <c>$$</c> finds no closer the <c>$…$</c> rule is tried at the same
+        /// <c>$</c> and fails (a <c>$</c> followed by a <c>$</c> does not open); one <c>$</c> is then text and the next looked at afresh.
+        /// </summary>
+        private int HandleDollar()
+        {
+            var start = pos;
+            if (ByteAt(start + 1) == '$' && ScanMathCloser(start + 2, "$$"u8) is { } close)
+            {
+                pos = close + 2;
+                return MathNode(start, start + 2, close, close + 2);
+            }
+            if (SingleDollarCloser(start) is { } single)
+            {
+                pos = single + 1;
+                return MathNode(start, start + 1, single, single + 1);
+            }
+            pos++;
+            return TextNode("$"u8);
+        }
+
+        /// <summary>
+        /// The closer of a <c>$…$</c> formula opening at <paramref name="start"/>, or null. The opener must not follow a word
+        /// character or a <c>$</c> and must be followed by something other than a space, a tab or a <c>$</c>; a closer is a later
+        /// <c>$</c> on the same line with neither a space, a tab nor a backslash before it and neither a word character nor a
+        /// <c>$</c> after it, a failed candidate skipped. The guard keeps money as money: in <c>$5 and $10</c> the only candidate
+        /// has a space before it.
+        /// </summary>
+        private int? SingleDollarCloser(int start)
+        {
+            if (start > 0 && (IsWordByte(text[start - 1]) || text[start - 1] == (byte)'$'))
+            {
+                return null;
+            }
+            if (ByteAt(start + 1) is -1 or ' ' or '\t' or '$')
+            {
+                return null;
+            }
+            var at = start + 1;
+            while (at < text.Length)
+            {
+                switch (text[at])
+                {
+                    case (byte)'\n':
+                        return null;
+                    case (byte)'`':
+                        if (OpensCodeSpan(at))
+                        {
+                            return null;
+                        }
+                        at += BacktickRun(text, at);
+                        continue;
+                    case (byte)'$':
+                        var after = ByteAt(at + 1);
+                        if (text[at - 1] is not ((byte)' ' or (byte)'\t' or (byte)'\\') && !(after >= 0 && (IsWordByte((byte)after) || after == '$')))
+                        {
+                            return at;
+                        }
+                        break;
+                }
+                at++;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Where the first <paramref name="closer"/> (<c>$$</c> or <c>\)</c>) at or after <paramref name="from"/> starts, on the
+        /// same line, with something other than spaces and tabs before it — or null. The first one decides: an empty
+        /// <c>$$ $$</c> is not a formula, and is not searched past.
+        /// </summary>
+        private int? ScanMathCloser(int from, ReadOnlySpan<byte> closer)
+        {
+            var at = from;
+            while (at < text.Length)
+            {
+                if (text.AsSpan(at).StartsWith(closer))
+                {
+                    foreach (var value in text.AsSpan(from, at - from))
+                    {
+                        if (value is not ((byte)' ' or (byte)'\t'))
+                        {
+                            return at;
+                        }
+                    }
+                    return null;
+                }
+                switch (text[at])
+                {
+                    case (byte)'\n':
+                        return null;
+                    case (byte)'`':
+                        if (OpensCodeSpan(at))
+                        {
+                            return null;
+                        }
+                        at += BacktickRun(text, at);
+                        break;
+                    default:
+                        at++;
+                        break;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Whether the backtick run at <paramref name="at"/> would open a code span — which a formula's search must not cross,
+        /// because code spans come FIRST. cmark opens one when a later run has exactly its length; after an odd number of
+        /// backslashes the run loses its first backtick to the escape, and what is left is the run that might open.
+        /// </summary>
+        private bool OpensCodeSpan(int at)
+        {
+            var run = BacktickRun(text, at);
+            var backslashes = 0;
+            for (var back = at - 1; back >= 0 && text[back] == (byte)'\\'; back--)
+            {
+                backslashes++;
+            }
+            var (start, length) = backslashes % 2 == 1 ? (at + 1, run - 1) : (at, run);
+            return length > 0 && length <= MaxBackticks && lastBacktickRun.TryGetValue(length, out var last) && last > start;
+        }
+
+        private static int BacktickRun(byte[] text, int at)
+        {
+            var end = at;
+            while (end < text.Length && text[end] == (byte)'`')
+            {
+                end++;
+            }
+            return end - at;
+        }
+
+        /// <summary>The protocol's word character: an ASCII letter, an ASCII digit or <c>_</c>. No byte of a non-ASCII character is one.</summary>
+        private static bool IsWordByte(byte value) => RustChar.IsAsciiAlphanumeric(value) || value == (byte)'_';
+
+        /// <summary>A formula node over <c>start..end</c>, its source <c>inner..close</c> — all beside ASCII delimiters.</summary>
+        private int MathNode(int start, int inner, int close, int end)
+        {
+            var node = Add(NodeKind.Math, text[start..end]);
+            nodes[node].Source = text[inner..close];
+            return node;
         }
 
         private int HandleEntity()
@@ -1147,6 +1338,9 @@ public static partial class Markdown
                 case NodeKind.Html:
                     output.Push(n.Text, style with { Html = true });
                     break;
+                case NodeKind.Math:
+                    output.Push(n.Text, style with { Math = Encoding.UTF8.GetString(n.Source) });
+                    break;
                 case NodeKind.Emphasis:
                     style = style with { Emphasis = true };
                     RenderChildren(node, ref style, output);
@@ -1189,7 +1383,10 @@ public static partial class Markdown
             }
         }
 
-        /// <summary>A label's or alt text's plain text: soft breaks stay <c>\n</c>, a hard break vanishes.</summary>
+        /// <summary>
+        /// A label's or alt text's plain text: soft breaks stay <c>\n</c>, a hard break vanishes, and a formula is what was typed,
+        /// delimiters and all — a link never carries a drawing.
+        /// </summary>
         private List<byte> Flatten(int node)
         {
             var output = new List<byte>();
@@ -1198,7 +1395,7 @@ public static partial class Markdown
             {
                 switch (nodes[current].Kind)
                 {
-                    case NodeKind.Text or NodeKind.Code or NodeKind.Html:
+                    case NodeKind.Text or NodeKind.Code or NodeKind.Html or NodeKind.Math:
                         output.AddRange(nodes[current].Text);
                         break;
                     case NodeKind.SoftBreak:

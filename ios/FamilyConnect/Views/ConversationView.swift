@@ -582,6 +582,12 @@ struct ConversationView: View {
         return nil
     }
 
+    /// What the link-card and drawing pin hook watches: either counter
+    /// moving means a bubble's art landed and its height changed.
+    private var bubbleArtGenerations: [Int] {
+        [previewLoader.generation, RichRenderer.shared.generation]
+    }
+
     /// Is the floating jump-to-newest button up? The rule is shared with
     /// the Mac (and, in intent, with Android) — see ThreadFollow.
     private var showsJumpToNewest: Bool {
@@ -782,11 +788,14 @@ struct ConversationView: View {
                     || (!hasSettled && !opensInHistory) else { return }
                 pinToBottom(proxy, animated: true)
             }
-            .onChange(of: previewLoader.generation) {
-                // A link-preview card just landed: the bubble hosting it
-                // grew, and a bubble above the viewport growing slides
-                // the visible region into older content — same problem
-                // as reaction catch-up below, same repair.
+            .onChange(of: bubbleArtGenerations) {
+                // A link-preview card just landed, or a formula, a diagram
+                // or a graph was drawn in place of its source (#97): the
+                // bubble hosting it changed height, and a bubble above the
+                // viewport growing slides the visible region into older
+                // content — same problem as reaction catch-up below, same
+                // repair. One hook for both, not two: this chain is at the
+                // length where CI's type checker gives up on `body`.
                 guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
@@ -1923,6 +1932,7 @@ struct ConversationView: View {
     /// The message field.
     private var messageField: some View {
         TextField("Message", text: typedDraft, axis: .vertical)
+            .proseTextEntry()
             .focused($inputFocused)
             // The backstop for the door this side does not own:
             // the field's OWN paste — the edit menu's Paste item,

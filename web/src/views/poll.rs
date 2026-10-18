@@ -285,7 +285,7 @@ pub fn poll_composer(props: &PollComposerProps) -> Html {
                 <h2 id="poll-title">{ t("New poll") }</h2>
                 <label class="field">
                     <span>{ t("Question") }</span>
-                    <input value={(*question).clone()} oninput={on_question} maxlength="4000" />
+                    <input value={(*question).clone()} oninput={on_question} maxlength="4000" autocapitalize="sentences" />
                 </label>
                 <p class="footnote">{ t("The question is the message everyone sees.") }</p>
                 <fieldset class="options">
@@ -294,6 +294,7 @@ pub fn poll_composer(props: &PollComposerProps) -> Html {
                         <div class="option-row">
                             <input
                                 value={option.clone()}
+                                autocapitalize="sentences"
                                 oninput={edit_option(index)}
                                 maxlength={MAX_OPTION_CHARS.to_string()}
                                 aria-label={t1("Option %lld", &(index + 1).to_string())}

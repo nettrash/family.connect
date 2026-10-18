@@ -1139,7 +1139,8 @@ fn md_text(text: &fc_text::markdown::Text) -> serde_json::Value {
                 };
                 serde_json::json!({"text": span.text, "emphasis": style.emphasis, "strong": style.strong,
                     "code": style.code, "strikethrough": style.strikethrough, "line_break": style.line_break,
-                    "html": style.html, "link": md_link(&style.link), "image": md_link(&style.image), "font": font})
+                    "html": style.html, "link": md_link(&style.link), "image": md_link(&style.image), "font": font,
+                    "math": style.math})
             })
             .collect(),
     )
@@ -1160,6 +1161,11 @@ fn md_blocks(body: &str) -> serde_json::Value {
                     }).collect::<Vec<_>>(),
                     "header": table.header.iter().map(md_text).collect::<Vec<_>>(),
                     "rows": table.rows.iter().map(|row| row.iter().map(md_text).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                }}),
+                // Issue #97: a formula, a diagram or a graph standing on its own.
+                Block::Rich(rich) => serde_json::json!({"rich": {
+                    "kind": rich.kind.word(), "engine": rich.engine, "source": rich.source,
+                    "shown": rich.shown,
                 }}),
             })
             .collect(),

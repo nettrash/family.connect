@@ -34,6 +34,7 @@ use crate::api::{NewNote, NotePatch, TaskLine};
 use crate::media::use_media;
 use crate::model::{Attachment, Member, Mention, Note, TaskItem};
 use crate::time;
+use crate::views::capitals;
 use crate::views::consent::{AssistantConsentBar, AssistantConsentDialog};
 
 /// What the pane's sheet is showing.
@@ -1904,6 +1905,9 @@ fn note_sheet(props: &SheetProps) -> Html {
     };
     let redraw = use_force_update();
     let field = use_node_ref();
+    // The note's words — a note, a caption, a list's or an event's title —
+    // capitalised at a sentence's start on a computer (#97).
+    capitals::use_capitals(field.clone());
     let dialog = use_node_ref();
     let editable = props.mine && !props.gone;
 
@@ -2371,6 +2375,7 @@ fn note_sheet(props: &SheetProps) -> Html {
                             <input
                                 class="task-line"
                                 type="text"
+                                autocapitalize="sentences"
                                 value={line.text.clone()}
                                 aria-label={t("Thing to do")}
                                 oninput={Callback::from(move |event: InputEvent| {
@@ -2800,6 +2805,7 @@ fn note_sheet(props: &SheetProps) -> Html {
                     <textarea
                         ref={field.clone()}
                         rows="4"
+                        autocapitalize="sentences"
                         value={draft_now.text.clone()}
                         oninput={on_text.0}
                         placeholder={if kind == Kind::Photo { t("Say something about it (optional)") } else { "" }}

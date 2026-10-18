@@ -452,6 +452,7 @@ struct ThreadView: View {
                 }
             }
             TextField("Reply in thread", text: $draft, axis: .vertical)
+                .proseTextEntry()
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
                 .focused($composerFocused)

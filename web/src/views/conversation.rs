@@ -128,7 +128,7 @@ pub struct ConversationProps {
 /// How close to the bottom still counts as "reading the newest", in
 /// pixels. A reader a line or two up is still following along; one who has
 /// scrolled a screen away is reading history and must not be yanked down.
-const PINNED_SLACK_PX: i32 = 48;
+pub(crate) const PINNED_SLACK_PX: i32 = 48;
 
 /// How long a jumped-to message stays tinted, in milliseconds — the apps'
 /// 1.6 s.

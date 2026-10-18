@@ -503,7 +503,8 @@ validated by the server: `body` goes out exactly as it came in, the 4000-charact
 characters that were typed, `reply_to.excerpt` is a cut of that same raw text, and a push carries it
 verbatim. What a client does when DRAWING it is a client's business, and clients do render a
 markdown subset in the bubble — emphasis, inline code, strikethrough, fenced code blocks, headings
-(`#`, `##`, `###`), bullet and numbered lists, and tables — so a message written on one platform
+(`#`, `##`, `###`), bullet and numbered lists, tables, and the rich blocks below (formulas,
+diagrams and graphs) — so a message written on one platform
 reads the same on another. That is a rendering convention rather than a wire format: a client that
 renders none of it shows the source, which is still exactly what was written, and nothing about a
 message means anything different because of it. Anything that needed the server to agree — a stored
@@ -513,6 +514,86 @@ The subset grew, and the wire did not, which is the whole point of it being a co
 pushed it was the assistant: ask for three options and it answers with a list, ask it to compare
 two things and it answers with a table, and until the bubbles drew them those arrived as literal
 hashes and pipe characters in front of the family.
+
+**Rich blocks: formulas, diagrams and graphs.** Issue #97 added four things a bubble DRAWS rather than sets in type. They are still a rendering
+convention: the wire is unchanged, an older client shows the source, and the source is what a
+reply excerpt, a chat-list preview, a push, copy and share all carry.
+
+| Written as | Drawn as | Engine |
+|---|---|---|
+| a fence tagged `math`, `latex` or `tex`; `$$…$$` or `\[…\]` on lines of their own | a formula on its own line | KaTeX 0.17.0, with mhchem (`\ce{…}`, `\pu{…}`) |
+| `$…$`, `$$…$$` or `\(…\)` inside a line | a formula in the line | the same |
+| a fence tagged `mermaid` | a diagram: flowchart, sequence, class, state, Gantt, pie, … | Mermaid 11.16.0 |
+| a fence tagged `dot`, `graphviz` or `gv` — or a layout name: `neato`, `circo`, `fdp`, `sfdp`, `twopi`, `osage`, `patchwork` | a graph of nodes and edges, laid out by that engine (`dot` for the first three) | Graphviz 14.1.1, as Viz.js 3.24.0 |
+| a fence tagged `plot` | a graph of functions | md's plotter (md 1.6), see below |
+
+A `plot` fence is one directive or one series per line. Directives: `x: a..b`, `y: a..b`, `title:`,
+`xlabel:`, `ylabel:`, `legend:`, `grid:`, `axes:`, `width:`, `height:`, `samples:`. Series: an
+expression in `x`, optionally named (`envelope = exp(-abs(x)/5)`); a parametric curve
+`(cos(t), sin(t)) for t in 0..2*pi`; or `points: 1,2 3,5 4,4`. The functions are the usual ones
+(`sin` … `atanh`, `sqrt`, `cbrt`, `abs`, `exp`, `ln`, `log2`, `log10`, `floor`, `ceil`, `round`,
+`atan2`, `pow`, `hypot`) and the constants `pi` and `e`. A plot that cannot be parsed fails like
+any other block.
+
+**What counts, exactly** — the four parsers (Swift, Kotlin, C#, Rust) must agree on every one of
+these, so they are written as rules rather than examples:
+
+1. **A rich fence** is an ordinary fence (it opens and closes at the start of a line, and an
+   unclosed one is text as typed) whose info string — the rest of the opening line after its
+   backticks, trimmed — has a first word that, lower-cased in ASCII, is one of the tags in the
+   table. Its source is the fence's content exactly as a code block's would be. Any other tag, or
+   none, is a code block as before.
+2. **Display math** is looked for only outside fences, and before tables. A line whose first
+   non-space characters are `$$` or `\[` opens it; it closes at the first matching `$$` or `\]`
+   after the opener — on the same line or a later one — provided nothing but spaces and tabs
+   follows the closer on its line. The source is what lies between, trimmed of spaces, tabs and
+   newlines, and must not then be empty. It is the FIRST closer that decides: when something other
+   than spaces and tabs follows it, the lines are not display math (`$$a$$b$$` is text, and the inline
+   rules then apply). Without such a closer it is not display math either, and those lines are text.
+   Display math is found over the whole text before tables are, so a formula's lines are never a
+   table's rows.
+3. **A rich block stands alone.** It splits the text around it exactly as a table does: the text
+   before and after become their own blocks, and a text block left empty is dropped.
+4. **Inline math** is looked for in text and in table cells, after code spans and never inside
+   one, and never in a link's destination. In order of precedence:
+   - `$$…$$`: the first `$$` that is not escaped, up to the next `$$`;
+   - `\(…\)`: a `\(` that is not itself escaped, up to the next `\)`;
+   - `$…$`: an opening `$` that is not escaped and is not preceded by a word character or a `$`,
+     and is followed by neither a space, a tab nor a `$`; it closes at the first later `$` that is
+     preceded by neither a space, a tab nor a backslash, and followed by neither a word character
+     nor a `$`. A candidate closer that fails this is skipped and the search goes on.
+
+   The content must hold something other than spaces and tabs, and must not cross a line break; an
+   inline formula's source keeps its spaces. An opener that finds no closer is text, and the search
+   starts again at the next `$` (`x $$$x$` holds no formula). A closer is never looked for past a
+   backtick run that opens a code span — code spans win, as they do over emphasis. "Escaped" means preceded by an
+   odd number of backslashes. A **word character** is an ASCII letter, an ASCII digit or `_` —
+   ASCII on purpose, so that four languages with four ideas of what a letter is give one answer.
+   The guard is what keeps money as money: in `$5 and $10` the only candidate closer has a space
+   before it, so nothing there is math. Markdown inside a formula is not markdown: in
+   `*see $a*b$*` the formula is `a*b`, inside the emphasis. A formula inside a link's text is set
+   as the text it was typed as — a link never carries a drawing — and a link, mention or `@ai` mark
+   that overlaps a formula is not one.
+
+**How it is drawn.** Every client draws the same way, with the same files: the engines above plus
+`fc-rich.js`, which takes one block and draws it — `web/rich/` is the copy every other client's
+copy must equal byte for byte (CI compares them). Nothing is fetched: the native clients load
+`rich.html` from the app's own files into a hidden web view that refuses every other request and
+turn what it draws into an image; the web client draws in the page. Mermaid runs with
+`securityLevel: 'strict'` and KaTeX with `trust: false`, so a message cannot run script, load a
+picture from somewhere, or link anywhere.
+
+- A **formula** is drawn in the bubble's own text colour on no background, at the bubble's text
+  size; an inline one sits on the line's baseline.
+- A **diagram or graph** is drawn on a card in the theme's background colour, at its natural size,
+  and scaled down to fit the bubble. Tapping it opens it full size.
+- A block that **cannot be drawn** — the engine refused it, it drew nothing, or it took longer than
+  fifteen seconds — shows its source in the monospaced face, delimiters and all, as an unknown
+  fence does. Until a block has been drawn it shows the same.
+
+A native client keeps what it drew, keyed by `fcRich.version`, the kind, the layout engine, the
+theme, the colours, the text size and the source, so a message is drawn once rather than every
+time it scrolls into view.
 
 **Only the three chat bubbles render it** — the family chat, a direct chat, and the assistant's
 own. Every other surface shows the same body as SOURCE, and that is deliberate in each case: the

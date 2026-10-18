@@ -420,6 +420,27 @@ jobs:
       - name: Server push words
         run: python3 server/i18n/generate.py . --check
 
+  # The files that draw formulas, diagrams and graphs (issue #97, docs/protocol.md "Rich blocks"):
+  # web/rich/ is the one set, and every native client ships a copy of it. A copy that drifted would
+  # draw the same message differently on one platform, so each is compared with it byte for byte —
+  # every mismatch named before the step fails.
+  rich:
+    name: One set of rich files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Every copy equals web/rich
+        run: |
+          status=0
+          for copy in ios/FamilyConnect/Rich android/app/src/main/assets/rich win/src/FamilyConnect.App/Assets/Rich; do
+            if ! diff -r web/rich "$copy"; then
+              echo "::error::$copy differs from web/rich -- copy web/rich over it"
+              status=1
+            fi
+          done
+          exit $status
+
   ios:
     name: iOS (unit tests)
     needs: changes
@@ -952,8 +973,12 @@ jobs:
           try {
             $names = $zip.Entries.FullName | ForEach-Object { [System.Uri]::UnescapeDataString($_).Replace('\', '/') }
           } finally { $zip.Dispose() }
+          # Assets/Rich draws formulas, diagrams and graphs (#97): the page, its script, an engine,
+          # and a font from the subfolder, which is the part a flattened include would lose.
           $required = @('FamilyConnect.exe', 'AppxManifest.xml', 'Assets/AppIcon.ico',
-            'Assets/Square44x44Logo.png', 'Assets/Square150x150Logo.png', 'Assets/StoreLogo.png')
+            'Assets/Square44x44Logo.png', 'Assets/Square150x150Logo.png', 'Assets/StoreLogo.png',
+            'Assets/Rich/rich.html', 'Assets/Rich/fc-rich.js', 'Assets/Rich/mermaid.min.js',
+            'Assets/Rich/fonts/KaTeX_Main-Regular.woff2')
           $missing = $required | Where-Object { $names -notcontains $_ }
           if ($missing) { throw "MSIX payload is missing: $($missing -join ', ')" }
           Write-Host "MSIX payload OK: $($names.Count) entries."

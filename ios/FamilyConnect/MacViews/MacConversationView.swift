@@ -1224,6 +1224,13 @@ struct MacConversationView: View {
                 guard followsBottom else { return }
                 proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
+            .onChange(of: RichRenderer.shared.generation) {
+                // A formula, a diagram or a graph was drawn (#97): its
+                // bubble changed height, as one does when a card lands.
+                // The same rule and the same repair.
+                guard followsBottom else { return }
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+            }
             .onChange(of: messages.count) { oldCount, newCount in
                 // Grow the window over what just arrived, or new messages
                 // fall outside the rendered slice and the thread looks

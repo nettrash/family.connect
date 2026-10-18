@@ -9,6 +9,11 @@
     <meta name="robots" content="noindex,nofollow" />
     <meta name="color-scheme" content="light dark" />
     <link data-trunk rel="css" href="styles.css" />
+    <!-- The rich-block renderer and its engines (issue #97), copied as they
+         are into dist/rich/. NOT loaded here: the client injects
+         rich/fc-rich.js?v=<hash of rich/> the first time a bubble has a
+         formula, a diagram or a graph to draw (views/rich.rs, build.rs). -->
+    <link data-trunk rel="copy-dir" href="rich" />
 </head>
 <body>
 </body>

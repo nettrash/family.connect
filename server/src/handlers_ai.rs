@@ -360,6 +360,24 @@ pub fn compose_system_prompt(configured: &str, notes: &[String], language: Optio
     parts.join("\n\n")
 }
 
+/// What the assistant is told about how its answer will be drawn (issue #97).
+///
+/// Every client draws a markdown subset in the bubble — and, since #97,
+/// formulas, Mermaid and Graphviz diagrams and graphs of functions
+/// (docs/protocol.md, "Rich blocks"). A model that does not know that writes
+/// a formula as prose or an ASCII sketch, and writes the one fence it could
+/// not have guessed, `plot`, not at all. So it is said once, in every prompt,
+/// with the plot fence's shape spelled out, since no model has seen it.
+///
+/// It is a NOTE, composed in before the language line like any other, and
+/// says nothing about language: the last word stays the language
+/// instruction's.
+pub const FORMATTING_INSTRUCTION: &str = "Your answer is shown with Markdown. When it genuinely helps, you may also \
+     write formulas in LaTeX — inline between single dollar signs, or on lines of their own between double \
+     dollar signs — draw diagrams in fenced ```mermaid or ```dot blocks, and draw a graph of a function in a \
+     fenced ```plot block: one line per setting or curve, such as `x: -5..5`, `title: Growth`, then \
+     expressions in x like `sin(x)` or `x^2/2`. Plain words are better when they do the job.";
+
 /// What the assistant is told about being mentioned in a group chat.
 ///
 /// Worth saying explicitly, because the honest description of what it can
@@ -2032,6 +2050,8 @@ async fn thread_prompt(
         }
     }
 
+    notes.push(FORMATTING_INSTRUCTION.to_string());
+
     let draw = state.cfg.ai.contextual_images_route();
     Ok(Some(Prompt {
         ask: Ask::Words {
@@ -2829,6 +2849,7 @@ async fn mention_prompt(
     };
     notes.extend(vision_note);
     notes.extend(faces_note);
+    notes.push(FORMATTING_INSTRUCTION.to_string());
 
     let audience = events::chat_member_ids(&state.pool, chat_id)
         .await
@@ -3990,8 +4011,8 @@ async fn answer(
 #[cfg(test)]
 mod tests {
     use super::{
-        HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage,
-        HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
+        FORMATTING_INSTRUCTION, HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS,
+        HistoryMessage, HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
         MENTION_WITH_HISTORY_INSTRUCTION, MIRROR_LANGUAGE_INSTRUCTION, Numbered, POLL_NOTE,
         compose_system_prompt, fallback_words, history_note_header, language_instruction,
         mention_poll_note, mention_vision_note, numbered_turn_content, poll_line, render_history,
@@ -5115,6 +5136,37 @@ mod tests {
                 "the mirror rule belongs in the fallback, not in the note: {note}"
             );
         }
+    }
+
+    /// The formatting note names what the bubbles draw (docs/protocol.md,
+    /// "Rich blocks") in the delimiters and fence tags the parsers accept —
+    /// a note that taught `\(…\)` or ```` ```math ```` alone would still
+    /// work, but the plot fence has to be spelled exactly or it is a code
+    /// block — and, like every note, leaves language to the last line.
+    #[test]
+    fn the_formatting_note_names_what_the_bubbles_draw() {
+        for needle in [
+            "dollar signs",
+            "```mermaid",
+            "```dot",
+            "```plot",
+            "x: -5..5",
+        ] {
+            assert!(
+                FORMATTING_INSTRUCTION.contains(needle),
+                "{needle} is missing: {FORMATTING_INSTRUCTION}"
+            );
+        }
+        assert!(
+            !FORMATTING_INSTRUCTION.contains("language"),
+            "the language belongs to the last line alone: {FORMATTING_INSTRUCTION}"
+        );
+        let prompt = compose_system_prompt(
+            "Be brief.",
+            &[FORMATTING_INSTRUCTION.to_string()],
+            Some("de"),
+        );
+        assert!(prompt.ends_with("Answer in German."), "{prompt}");
     }
 
     /// The wider instruction has to say what is still NOT visible, or the

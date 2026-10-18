@@ -139,6 +139,12 @@ web-sys = { version = "0.3", features = [
     "StorageEvent",
     "CompositionEvent",
     "FormData",
+    # Issue #97: the built-in capitals' `beforeinput` and Backspace, and the
+    # rich-block renderer's one <script> in the head.
+    "InputEvent",
+    "InputEventInit",
+    "KeyboardEvent",
+    "HtmlHeadElement",
 ] }
 
 [dev-dependencies]
