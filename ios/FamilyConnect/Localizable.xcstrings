@@ -10,7 +10,8 @@
       "shouldTranslate" : false
     },
     "%@" : {
-
+      "comment" : "A value shown on its own, such as a name or a count already formatted.",
+      "shouldTranslate" : false
     },
     "%@ — %@ mentioned you" : {
       "comment" : "A Mac notification's title when a family-chat message names the reader: family name, sender.",
