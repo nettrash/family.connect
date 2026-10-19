@@ -3,7 +3,7 @@
 //  FamilyConnectTests
 //
 //  The two strings the system keeps and hands back, pinned on the
-//  simulator: what CallKit is told as the handle of an outgoing call
+//  simulator: what CallKit is told as the handle of a call, either way
 //  (a linked contact's number, an e-mail, or the display name), and how
 //  the person the system names — customIdentifier, handle type, contact
 //  identifier — turns into a CallRequest. iPhone only, like the code.
@@ -42,6 +42,32 @@ struct CallIntentsTests {
         let unlinked = CallKitController.handle(peerName: "Zoë", link: nil)
         #expect(unlinked.type == .generic)
         #expect(unlinked.value == "Zoë")
+    }
+
+    /// Issue #92: an incoming call from a linked member used to keep the
+    /// name, which iOS 26 files under Unknown Callers.
+    @Test("an incoming call carries the same handle as an outgoing one, and the name")
+    func incomingHandle() {
+        let linked = ContactLink(contactIdentifier: "C1", contactName: "Anna Smith",
+                                 phoneNumbers: ["+1 (555) 123-4567"], emailAddresses: ["anna@example.com"])
+        let fromAnna = CallKitController.incomingUpdate(peerName: "Anna", hasVideo: true, link: linked)
+        #expect(fromAnna.remoteHandle == CXHandle(type: .phoneNumber, value: "+1 (555) 123-4567"))
+        #expect(fromAnna.localizedCallerName == "Anna")
+        #expect(fromAnna.hasVideo)
+        #expect(!fromAnna.supportsHolding && !fromAnna.supportsGrouping && !fromAnna.supportsDTMF)
+
+        let emailOnly = ContactLink(contactIdentifier: "C2", contactName: "Bob", emailAddresses: ["bob@example.com"])
+        #expect(CallKitController.incomingUpdate(peerName: "Bob", hasVideo: false, link: emailOnly).remoteHandle
+                == CXHandle(type: .emailAddress, value: "bob@example.com"))
+
+        let unlinked = CallKitController.incomingUpdate(peerName: "Zoë", hasVideo: false, link: nil)
+        #expect(unlinked.remoteHandle == CXHandle(type: .generic, value: "Zoë"))
+        #expect(!unlinked.hasVideo)
+
+        for link in [linked, emailOnly, nil] {
+            #expect(CallKitController.incomingUpdate(peerName: "Anna", hasVideo: false, link: link).remoteHandle
+                    == CallKitController.handle(peerName: "Anna", link: link), "both directions agree")
+        }
     }
 
     @Test("a person Siri resolved (our custom identifier) is our handle, whatever else they carry")

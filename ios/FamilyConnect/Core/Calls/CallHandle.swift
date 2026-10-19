@@ -13,7 +13,8 @@
 //  that feed Siri's suggestions (CallDonation). It is NOT what CallKit
 //  shows: a `.generic` handle's raw value is what a Recents row displays,
 //  so CallKitController reports a linked contact's number or, failing
-//  that, the display name — see `handle(peerName:link:)` there — and
+//  that, the display name, for incoming and outgoing calls alike — see
+//  `handle(peerName:link:)` there — and
 //  CallRequestRouter turns either back into a member.
 //
 
