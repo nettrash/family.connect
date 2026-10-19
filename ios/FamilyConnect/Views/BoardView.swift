@@ -739,6 +739,8 @@ private struct NoteEditor: View {
     }
 
     @State private var text: String
+    /// The note's emoji as you type (#101).
+    @State private var emojiTyping = EmojiTypingField()
     @State private var color: String
     @State private var size: NoteSize
     @State private var font: NoteFont
@@ -1043,7 +1045,7 @@ private struct NoteEditor: View {
                 }
                 Section {
                     if canEdit {
-                        TextField("Note", text: $text, axis: .vertical)
+                        TextField("Note", text: emojiTyping.binding($text), axis: .vertical)
                             .proseTextEntry()
                             .lineLimit(3...8)
                             // The cap lives where the typing is: a note the

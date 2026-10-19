@@ -520,7 +520,8 @@ public sealed partial class ChatsView : UserControl
         ComposerPanel.Drop += OnDrop;
         BannerCancel.Click += (_, _) => EndComposerMode(clear: editing is not null);
         ComposerBox.PreviewKeyDown += OnComposerKey;
-        // Capital letters at a sentence's start (issue #97): the composer is a multi-line prose field, editing included.
+        // Capital letters at a sentence's start (issue #97) and emoji as you type (#101): the composer is a multi-line prose
+        // field, editing included.
         CapitalLetters.Attach(ComposerBox);
         ComposerBox.Paste += OnComposerPaste;
         ComposerBox.TextChanged += (_, _) =>

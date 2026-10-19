@@ -238,11 +238,13 @@ internal fun AssistantReportSheet(
                     }
                 }
             }
+            // The server's cap, enforced here so nobody types past it and is
+            // refused (`POST /reports/assistant`). Emoji as you type (#101)
+            // runs before it, like on every prose field.
+            val (noteValue, onNoteValue) = proseValue(note) { typed -> note = typed.take(ASSISTANT_NOTE_LIMIT) }
             OutlinedTextField(
-                value = note,
-                // The server's cap, enforced here so nobody types past it
-                // and is refused (`POST /reports/assistant`).
-                onValueChange = { typed -> note = typed.take(ASSISTANT_NOTE_LIMIT) },
+                value = noteValue,
+                onValueChange = onNoteValue,
                 label = { Text(stringResource(R.string.s_say_something_about_it_optional)) },
                 minLines = 3,
                 maxLines = 6,

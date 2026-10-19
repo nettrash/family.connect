@@ -32,6 +32,13 @@
     <None Include="..\FamilyConnect.Core.Tests\Fixtures\record-vectors.json" Link="Fixtures\record-vectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!--
+    The emoji-as-you-type vectors (issue #101), printed by tools/board-oracle (its emoji-typing command), for
+    EmojiTypingTests, LINKED from beside the Core tests, where CI compares them with a fresh print, like the record vectors.
+  -->
+  <ItemGroup>
+    <None Include="..\FamilyConnect.Core.Tests\Fixtures\emoji-typing-vectors.json" Link="Fixtures\emoji-typing-vectors.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <!--
     The renderer the app ships (issue #97), LINKED for the same reason: RichDrawingTests reads fcRich.version out of the very
     fc-rich.js the MSIX carries, so the cache key's version can never be a second, hand-copied string.
   -->

@@ -137,12 +137,20 @@ nonisolated enum Capitals {
 
     /// Rule 4: inside a fence (an odd number of lines starting with three
     /// backticks before the caret), or inside a code span on the current
-    /// line (an odd number of backticks on it, outside a fence).
-    private static func isInCode(_ before: String) -> Bool {
-        let lines = before.split(omittingEmptySubsequences: false, whereSeparator: isLineBreak)
-        let fences = lines.filter { $0.hasPrefix("```") }.count
+    /// line (an odd number of backticks on it, outside a fence). Emoji as
+    /// you type (#101, EmojiTyping) skips code by the same test.
+    ///
+    /// Read by SCALARS, as the Rust's `in_code` reads its chars: a line
+    /// break is a "\n" or a "\r", and a backtick is U+0060 itself. Swift's
+    /// Character view would disagree twice — a backtick with a combining
+    /// mark after it is one Character that is not "`", and U+1FEF GREEK
+    /// VARIA compares EQUAL to "`" because the two are canonically the same.
+    static func isInCode(_ before: String) -> Bool {
+        let scalars = before.unicodeScalars
+        let lines = scalars.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" }
+        let fences = lines.filter { $0.starts(with: "```".unicodeScalars) }.count
         if fences % 2 == 1 { return true }
-        let current = lines.last ?? Substring(before)
+        let current = lines.last ?? scalars[...]
         return current.filter { $0 == "`" }.count % 2 == 1
     }
 }

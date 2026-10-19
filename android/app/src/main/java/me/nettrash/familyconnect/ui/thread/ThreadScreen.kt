@@ -17,6 +17,7 @@
 package me.nettrash.familyconnect.ui.thread
 
 import me.nettrash.familyconnect.ui.components.ProseKeyboard
+import me.nettrash.familyconnect.ui.components.EmojiTypingField
 import me.nettrash.familyconnect.ui.chat.LocalTranscripts
 import androidx.compose.runtime.CompositionLocalProvider
 import android.Manifest
@@ -129,6 +130,8 @@ fun ThreadScreen(
     var draft by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
     }
+    // Emoji as you type (#101): the live replacement a Backspace takes back.
+    val replyEmoji = remember { EmojiTypingField() }
     var viewingAlbum by remember { mutableStateOf<AttachmentAlbum?>(null) }
     var pendingSave by remember { mutableStateOf<AttachmentDto?>(null) }
     val context = LocalContext.current
@@ -217,7 +220,8 @@ fun ThreadScreen(
                     }
                     OutlinedTextField(
                         value = draft,
-                        onValueChange = { draft = it },
+                        // Emoji as you type (#101), like every prose field.
+                        onValueChange = { draft = replyEmoji.onValueChange(draft, it) },
                         modifier = Modifier.weight(1f),
                         placeholder = { Text(stringResource(R.string.s_reply_in_thread)) },
                         maxLines = 5,

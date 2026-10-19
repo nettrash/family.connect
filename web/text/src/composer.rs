@@ -312,8 +312,9 @@ fn is_abbreviation(text: &str) -> bool {
 
 /// Rule 4: the caret is inside a fence (an odd number of lines before it
 /// start with three backticks) or a code span (an odd number of backticks
-/// on its own line, outside a fence).
-fn in_code(before: &str) -> bool {
+/// on its own line, outside a fence). Emoji as you type (#101) skips code
+/// by the same test.
+pub(crate) fn in_code(before: &str) -> bool {
     let fences = before
         .split(is_line_break)
         .filter(|line| line.starts_with("```"))

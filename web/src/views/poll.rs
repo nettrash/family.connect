@@ -9,6 +9,7 @@ use fc_text::i18n::{t, t1, tn, tp};
 use yew::prelude::*;
 
 use crate::model::{Message, Poll};
+use crate::views::emoji_typing;
 
 pub const MIN_OPTIONS: usize = 2;
 pub const MAX_OPTIONS: usize = 10;
@@ -226,6 +227,10 @@ pub fn poll_composer(props: &PollComposerProps) -> Html {
     let question = use_state(String::new);
     let options = use_state(|| vec![String::new(), String::new()]);
     let problem = use_state(|| Option::<&'static str>::None);
+    // The question and the options are prose: emoji as they are typed
+    // (#101), on whichever of them the typing is in.
+    let dialog = use_node_ref();
+    emoji_typing::use_emoji_typing(dialog.clone());
 
     let on_question = {
         let question = question.clone();
@@ -281,7 +286,7 @@ pub fn poll_composer(props: &PollComposerProps) -> Html {
     };
     html! {
         <div class="dialog-backdrop">
-            <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="poll-title">
+            <div ref={dialog} class="dialog" role="dialog" aria-modal="true" aria-labelledby="poll-title">
                 <h2 id="poll-title">{ t("New poll") }</h2>
                 <label class="field">
                     <span>{ t("Question") }</span>
@@ -397,5 +402,57 @@ mod tests {
         assert!(validate("Q", &options(&[&longer, "b"])).is_err());
         let eleven: Vec<String> = (0..11).map(|n| n.to_string()).collect();
         assert!(validate("Q", &eleven).is_err());
+    }
+
+    /// #101: the question and every option make emoji as they are typed,
+    /// and the poll sent is what the fields show.
+    #[wasm_bindgen_test]
+    async fn the_question_and_the_options_make_emoji_as_they_are_typed() {
+        use crate::views::emoji_typing::tests::type_keys;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+
+        let sent = Rc::new(RefCell::new(Vec::<(String, Vec<String>)>::new()));
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let heard = sent.clone();
+        let handle = yew::Renderer::<PollComposer>::with_root_and_props(
+            root.clone(),
+            PollComposerProps {
+                on_submit: Callback::from(move |poll| heard.borrow_mut().push(poll)),
+                on_cancel: Callback::noop(),
+            },
+        )
+        .render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let inputs = root.query_selector_all(".dialog input").unwrap();
+        let input =
+            |index: u32| -> web_sys::HtmlElement { inputs.item(index).unwrap().unchecked_into() };
+        for (index, keys) in [
+            (0, "Lunch :fork_and_knife:?"),
+            (1, "Pizza :)"),
+            (2, "Sushi <3"),
+        ] {
+            input(index).focus().unwrap();
+            type_keys(&input(index), keys);
+            gloo_timers::future::TimeoutFuture::new(20).await;
+        }
+        root.query_selector(".dialog-actions .primary")
+            .unwrap()
+            .unwrap()
+            .unchecked_into::<web_sys::HtmlElement>()
+            .click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(
+            *sent.borrow(),
+            vec![(
+                "Lunch 🍴?".to_string(),
+                vec!["Pizza 😊".to_string(), "Sushi ❤️".to_string()]
+            )]
+        );
+        handle.destroy();
+        root.remove();
     }
 }

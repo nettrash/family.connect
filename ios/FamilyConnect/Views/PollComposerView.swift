@@ -30,6 +30,8 @@ struct PollComposerView: View {
     let onCancel: () -> Void
 
     @State private var question = ""
+    /// Emoji as you type (#101), in the question and every option.
+    @State private var emojiTyping = EmojiTypingField()
     /// Starts at the minimum, because a poll with one option is not a
     /// poll and an empty list looks broken.
     @State private var options: [Option] = [Option(), Option()]
@@ -101,7 +103,7 @@ struct PollComposerView: View {
     private var form: some View {
         Form {
             Section {
-                TextField("Ask the family something…", text: $question, axis: .vertical)
+                TextField("Ask the family something…", text: emojiTyping.binding($question, field: "question"), axis: .vertical)
                     .proseTextEntry()
                     .lineLimit(1...3)
                     .focused($focusedField, equals: .question)
@@ -117,7 +119,7 @@ struct PollComposerView: View {
             Section {
                 ForEach($options) { $option in
                     HStack {
-                        TextField("Option", text: $option.text)
+                        TextField("Option", text: emojiTyping.binding($option.text, field: option.id))
                             .proseTextEntry()
                             .focused($focusedField, equals: .option(option.id))
                         if options.count > PollPresentation.minOptions {

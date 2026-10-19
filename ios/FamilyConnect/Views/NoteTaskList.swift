@@ -101,6 +101,8 @@ struct NoteTaskRow: View {
     let onTick: (Bool) -> Void
     let onRemove: (() -> Void)?
     @Binding var text: String
+    /// The line's emoji as you type (#101).
+    @State private var emojiTyping = EmojiTypingField()
 
     var body: some View {
         HStack(spacing: 10) {
@@ -119,7 +121,7 @@ struct NoteTaskRow: View {
                     : text)
             .accessibilityAddTraits(done ? [.isButton, .isSelected] : .isButton)
             if canEdit {
-                TextField("Thing to do", text: $text)
+                TextField("Thing to do", text: emojiTyping.binding($text))
                     .proseTextEntry()
                     .textFieldStyle(.plain)
                 if let onRemove {

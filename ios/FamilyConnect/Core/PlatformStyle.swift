@@ -77,12 +77,19 @@ extension View {
     /// change, and matches Android's `KeyboardCapitalization.Sentences`
     /// field for field. The Mac has no keyboard capitalisation to ask for —
     /// MacCapitalKeys does it there, on the multi-line fields.
+    ///
+    /// Emoji as you type (#101) runs on the same fields. On the Mac this
+    /// marks the field for it (MacProseFieldMark): every multi-line field
+    /// is prose already, and the mark is how MacCapitalKeys tells a
+    /// single-line prose field — a list's line, a poll's option — from a
+    /// search or a username. On iOS it is the field's binding instead
+    /// (EmojiTypingField), because a phone's keyboard sends no keys.
     @ViewBuilder
     func proseTextEntry() -> some View {
         #if os(iOS)
         textInputAutocapitalization(.sentences)
         #else
-        self
+        background(MacProseFieldMark())
         #endif
     }
 

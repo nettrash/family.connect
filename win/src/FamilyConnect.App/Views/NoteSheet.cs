@@ -163,7 +163,8 @@ internal sealed class NoteSheet
             MinHeight = 90,
             PlaceholderText = kind == NoteKind.Photo ? say.Get("Say something about it (optional)") : string.Empty,
         };
-        // A note is prose, written in sentences: capital letters at their starts (issue #97).
+        // A note is prose, written in sentences: capital letters at their starts (issue #97), and emoji as you type (#101). The
+        // same box is a photo's caption and an event's or a list's title.
         CapitalLetters.Attach(words);
         var counter = Footnote(string.Empty);
         void Count()
@@ -409,6 +410,8 @@ internal sealed class NoteSheet
             row.Children.Add(TickBox(line.Id, line.Text));
             var text = new TextBox { Text = line.Text, PlaceholderText = say.Get("Thing to do") };
             AutomationProperties.SetName(text, say.Get("Thing to do"));
+            // A list's line is prose on one line: emoji as you type (issue #101), and no capitals (#97 is multi-line only).
+            CapitalLetters.AttachEmoji(text);
             Capped(text, NoteText.MaxTaskItemChars, value =>
             {
                 if (index < draft.Lines.Count)

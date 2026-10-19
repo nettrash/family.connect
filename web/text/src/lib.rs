@@ -10,6 +10,9 @@
 //!   table splits a body), exactly as Apple's Foundation renders it.
 //! - [`emoji`] — which messages are "emoji only" and how big they draw, the
 //!   quick reaction set, and the "More reactions…" catalogue.
+//! - [`emoji_typing`] — emoji as you type (#101): `:-)` and Telegram's other
+//!   emoticons, and `:name:` shortcodes, become emoji the moment they are
+//!   typed; a Backspace straight after takes one back.
 //! - [`reactions`] — a message's reactions as chips and as "See who reacted".
 //! - [`mentions`] — `@Name`: the composer's trigger and suggestions, who a
 //!   text names at send, and which tokens an incoming body highlights.
@@ -81,6 +84,7 @@ pub mod calendar;
 pub mod call_record;
 pub mod composer;
 pub mod emoji;
+pub mod emoji_typing;
 pub mod excerpt;
 pub mod greeting_places;
 pub mod i18n;

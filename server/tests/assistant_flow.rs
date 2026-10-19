@@ -1888,6 +1888,14 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant in a family's p
      You can only see this one conversation.";
 const MIRROR_LANGUAGE: &str = "Answer in the language the message you were sent is written in, whatever language these \
      instructions are in.";
+/// The note on what the bubbles draw (#97), which every assistant request now carries just before the
+/// language line — spelled out here rather than imported, like the line above, so a change to it is a
+/// change these pins notice.
+const FORMATTING: &str = "Your answer is shown with Markdown. When it genuinely helps, you may also write formulas in \
+     LaTeX — inline between single dollar signs, or on lines of their own between double dollar signs — draw \
+     diagrams in fenced ```mermaid or ```dot blocks, and draw a graph of a function in a fenced ```plot block: one \
+     line per setting or curve, such as `x: -5..5`, `title: Growth`, then expressions in x like `sin(x)` or \
+     `x^2/2`. Plain words are better when they do the job.";
 
 /// Upload a photo and hand back its attachment id.
 async fn upload_photo(ts: &TestServer, token: &str, with_preview: bool) -> i64 {
@@ -2538,7 +2546,7 @@ async fn with_either_lock_shut_a_mention_with_a_photo_is_the_text_request_it_alw
 
     let expected_messages = json!([
         {"role": "system", "content": format!(
-            "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+            "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}",
             family_connect::handlers_ai::MENTION_INSTRUCTION
         )},
         {"role": "user", "content": "[photo] @ai what is this?"},
@@ -2590,7 +2598,7 @@ async fn a_text_only_mention_serialises_exactly_as_before() {
 
     let call = mock.wait_for(TEXT_DEPLOYMENT).await;
     let expected: Value = serde_json::from_str(concat!(
-        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nYou have been mentioned with @ai in a family group chat. You can see ONLY the message that mentioned you, and the message it quotes when there is one; you cannot see the rest of the conversation, who else is in it, or anything said earlier. If answering needs context you were not given, say so in one line and ask for it. Keep the answer short — this is a group chat, not a document.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},"#,
+        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nYou have been mentioned with @ai in a family group chat. You can see ONLY the message that mentioned you, and the message it quotes when there is one; you cannot see the rest of the conversation, who else is in it, or anything said earlier. If answering needs context you were not given, say so in one line and ask for it. Keep the answer short — this is a group chat, not a document.\n\nYour answer is shown with Markdown. When it genuinely helps, you may also write formulas in LaTeX — inline between single dollar signs, or on lines of their own between double dollar signs — draw diagrams in fenced ```mermaid or ```dot blocks, and draw a graph of a function in a fenced ```plot block: one line per setting or curve, such as `x: -5..5`, `title: Growth`, then expressions in x like `sin(x)` or `x^2/2`. Plain words are better when they do the job.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},"#,
         r#"{"content":"@ai what is the weather","role":"user"}],"model":"test-gpt-oss","stream":true,"stream_options":{"include_usage":true}}"#,
     ))
     .expect("the pinned request is JSON");
@@ -2927,7 +2935,7 @@ async fn expected_history_mention(
         "max_tokens": 1024,
         "messages": [
             {"role": "system", "content": format!(
-                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{transcript}\n\n{MIRROR_LANGUAGE}",
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{transcript}\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}",
                 family_connect::handlers_ai::MENTION_WITH_HISTORY_INSTRUCTION
             )},
             {"role": "user", "content": body},
@@ -3494,7 +3502,7 @@ async fn with_history_off_the_switch_sends_no_history_photo() {
         "max_tokens": 1024,
         "messages": [
             {"role": "system", "content": format!(
-                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}",
                 family_connect::handlers_ai::MENTION_INSTRUCTION
             )},
             {"role": "user", "content": "@ai what did Olive send?"},
@@ -3615,7 +3623,7 @@ async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
             follow_up.body["messages"],
             json!([
                 {"role": "system", "content": format!(
-                    "{DEFAULT_SYSTEM_PROMPT}\n\n{MIRROR_LANGUAGE}"
+                    "{DEFAULT_SYSTEM_PROMPT}\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}"
                 )},
                 {"role": "user", "content": "[photo] what is this?"},
                 {"role": "assistant", "content": "a picture of something"},
@@ -3687,7 +3695,7 @@ async fn a_lone_unreadable_photo_in_the_transcript_is_named_even_though_nothing_
              say so if it is what you are being asked about. You still cannot see any member's \
              private chat with you, or any one-to-one chat between two members. 1 picture(s) in \
              the transcript could not be included, because they were too large or in a format \
-             you cannot read. Say so rather than guessing what they showed.\n\n{MIRROR_LANGUAGE}"
+             you cannot read. Say so rather than guessing what they showed.\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}"
         )),
         "the omission is NAMED, after the transcript and before the language line: {system}"
     );
@@ -3902,7 +3910,7 @@ async fn a_draw_capable_server_declares_one_tool_and_a_text_only_server_declares
     say(&ts, &owner, chat, "what is the weather").await;
     let text_only = mock.wait_for(TEXT_DEPLOYMENT).await;
     let expected: Value = serde_json::from_str(
-        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},{"content":"what is the weather","role":"user"}],"model":"test-gpt-oss","stream":true,"stream_options":{"include_usage":true}}"#,
+        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nYour answer is shown with Markdown. When it genuinely helps, you may also write formulas in LaTeX — inline between single dollar signs, or on lines of their own between double dollar signs — draw diagrams in fenced ```mermaid or ```dot blocks, and draw a graph of a function in a fenced ```plot block: one line per setting or curve, such as `x: -5..5`, `title: Growth`, then expressions in x like `sin(x)` or `x^2/2`. Plain words are better when they do the job.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},{"content":"what is the weather","role":"user"}],"model":"test-gpt-oss","stream":true,"stream_options":{"include_usage":true}}"#,
     )
     .expect("the pinned request is JSON");
     assert_eq!(text_only.body, expected, "{}", text_only.raw);
@@ -5434,7 +5442,7 @@ async fn with_history_off_there_are_no_names_and_so_no_faces() {
         "max_tokens": 1024,
         "messages": [
             {"role": "system", "content": format!(
-                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{FORMATTING}\n\n{MIRROR_LANGUAGE}",
                 family_connect::handlers_ai::MENTION_INSTRUCTION
             )},
             {"role": "user", "content": "@ai hello"},

@@ -2741,6 +2741,57 @@ mod tests {
         mounted.gone();
     }
 
+    /// #101: emoji as you type in the composer, on any device — the draft
+    /// the composer sends is what the box shows, and a Backspace straight
+    /// after puts back what was typed. A paste is left as it is.
+    #[wasm_bindgen_test]
+    async fn the_composer_makes_emoji_as_they_are_typed() {
+        use crate::views::emoji_typing::tests::type_keys;
+        capitals::tests::as_computer(Some(false));
+        let heard = Rc::new(Heard::default());
+        let mounted = Mounted::with(slot_props(&heard, None)).await;
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        area.focus().unwrap();
+        mounted.type_in("").await;
+        type_keys(area.unchecked_ref(), "so :fire: :)");
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(area.value(), "so 🔥 😊");
+        key(area.unchecked_ref(), "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1);
+        assert_eq!(heard.sent.borrow()[0].body, "so 🔥 😊");
+
+        mounted.type_in("").await;
+        area.set_selection_range(0, 0).unwrap();
+        type_keys(area.unchecked_ref(), "ok :)⌫");
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(area.value(), "ok :)");
+        key(area.unchecked_ref(), "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow()[1].body, "ok :)");
+
+        // A paste of the same characters: not typed, so not replaced.
+        mounted.type_in("hi :").await;
+        area.set_selection_range(4, 4).unwrap();
+        let init = web_sys::InputEventInit::new();
+        init.set_input_type("insertFromPaste");
+        init.set_data(Some(")"));
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let paste = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        area.dispatch_event(&paste).unwrap();
+        assert!(!paste.default_prevented());
+        assert_eq!(area.value(), "hi :");
+        capitals::tests::as_computer(None);
+        mounted.gone();
+    }
+
     /// A TOUCH ACTS ON ITS `pointerup` inside the button — user activation,
     /// where its `pointerdown` is not — and the `click` a browser may send
     /// after it is swallowed, so one tap is one activation (S8.8). Lifted
