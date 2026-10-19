@@ -242,6 +242,13 @@ pub struct Outgoing {
     /// flag; a row kept by a build from before it reads as an ordinary one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub round: bool,
+    /// This message is an ANIMATION: its one attachment — an animated
+    /// picture made into a silent looping video — is sent with
+    /// `animation: true` (docs/protocol.md, "Animations"). On the row, like
+    /// `round`, so a retry sends the same flag; a row kept by a build from
+    /// before it reads as an ordinary video.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub animation: bool,
     /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
     /// ends the row outright.
     pub attempts: u32,
@@ -264,6 +271,20 @@ pub struct Draft {
     pub sticker: bool,
     /// Sent as a video message: one square video, no words, drawn round.
     pub round: bool,
+}
+
+/// Whether `draft` goes as an ANIMATION (docs/protocol.md, "Animations"):
+/// its one attachment an animated picture this client made into a video,
+/// and nothing that is a sticker, a video message or a poll. An animation
+/// staged beside other attachments goes as the ordinary video it is — the
+/// server refuses `animation` on anything but exactly one attachment, and
+/// every client draws a message of several as what it otherwise is. A
+/// caption is allowed.
+pub fn sends_as_animation(draft: &Draft) -> bool {
+    !draft.sticker
+        && !draft.round
+        && draft.poll.is_none()
+        && matches!(draft.attachments.as_slice(), [only] if only.animation && only.kind == "video")
 }
 
 /// Why a queued message whose bytes a reload took fails at once — it has
@@ -1278,6 +1299,7 @@ impl Store {
     /// joins the END of the outbox; `apply_message` settles both when the
     /// server's copy arrives. Answers the provisional ids given, in order.
     pub fn queue_send(&mut self, chat_id: i64, client_msg_id: String, draft: Draft) -> Vec<i64> {
+        let animation = sends_as_animation(&draft);
         let mut items = Vec::with_capacity(draft.attachments.len());
         for prepared in &draft.attachments {
             let provisional = self.next_provisional();
@@ -1301,6 +1323,7 @@ impl Store {
             items,
             sticker: draft.sticker,
             round: draft.round,
+            animation,
             attempts: 0,
             failed: None,
         });
@@ -1418,6 +1441,7 @@ impl Store {
             .map(|item| crate::model::Attachment {
                 sticker: row.sticker,
                 round: row.round,
+                animation: row.animation,
                 ..item.as_attachment()
             })
             .collect();
@@ -3685,6 +3709,66 @@ mod tests {
             2,
             "a video's bytes do not survive a reload"
         );
+    }
+
+    fn animation_draft(body: &str) -> Draft {
+        Draft {
+            body: body.into(),
+            attachments: vec![Prepared {
+                kind: "video".into(),
+                mime: "video/mp4".into(),
+                size: 182_330,
+                width: Some(480),
+                height: Some(270),
+                duration_ms: Some(2_100),
+                file: Some(web_sys::Blob::new().expect("a blob")),
+                preview: Some(web_sys::Blob::new().expect("a poster")),
+                animation: true,
+                ..Prepared::default()
+            }],
+            ..Draft::default()
+        }
+    }
+
+    /// AN ANIMATION in the outbox is one row carrying the flag, and its
+    /// pending bubble is already the animation — caption or not
+    /// (docs/protocol.md, "Animations"). Beside another attachment it is the
+    /// ordinary video it otherwise is: the flag is one attachment's or
+    /// nobody's. The flag rides on the row through a reload.
+    #[wasm_bindgen_test]
+    fn a_queued_animation_carries_its_flag_alone_and_draws_as_one() {
+        let mut queued = store();
+        queued.queue_send(42, "a".into(), animation_draft(""));
+        queued.queue_send(42, "c".into(), animation_draft("look"));
+        assert!(queued.outbox[0].animation && !queued.outbox[0].round);
+        assert!(queued.outbox[1].animation, "a caption is allowed");
+        let drawn = queued.threads[&42].messages[0]
+            .animation()
+            .expect("the pending bubble is the animation");
+        assert_eq!(drawn.id, queued.outbox[0].items[0].provisional_id);
+        assert!(drawn.has_preview && !drawn.round && !drawn.sticker);
+        assert!(queued.threads[&42].messages[1].animation().is_some());
+
+        let mut two = animation_draft("");
+        two.attachments.push(two.attachments[0].clone());
+        queued.queue_send(42, "two".into(), two);
+        assert!(!queued.outbox[2].animation, "never on two attachments");
+        assert!(queued.threads[&42].messages[2].animation().is_none());
+        let kept = serde_json::to_value(&queued.outbox[2]).expect("encodes");
+        assert!(kept.get("animation").is_none(), "written only when true");
+        let mut still = animation_draft("");
+        still.attachments[0].animation = false;
+        assert!(!sends_as_animation(&still));
+        let mut round = animation_draft("");
+        round.round = true;
+        assert!(!sends_as_animation(&round), "never beside round");
+
+        let kept = serde_json::to_string(&queued.outbox).expect("the outbox is kept as JSON");
+        let rows: Vec<Outgoing> = serde_json::from_str(&kept).expect("and read back");
+        let mut after = store();
+        after.restore_outbox(rows);
+        assert!(after.outbox[0].animation, "the flag rides on the row");
+        assert!(after.threads[&42].messages[0].animation().is_some());
     }
 
     /// The pack's limits ride on the roster, and are the capability: with

@@ -111,15 +111,21 @@ val releaseSigning: Map<String, String>? = run {
 
 android {
     namespace = "me.nettrash.familyconnect"
-    compileSdk = 36
-    // 36.1 (Android 16.1): what core-telecom 1.1.x — the Phone app's call
-    // log for Family calls (TelecomCalls) — compiles against. targetSdk
-    // stays 36; nothing in behaviour changes with the compile floor.
-    compileSdkMinor = 1
+    // 37 (Android 17). core-telecom 1.1.x — the Phone app's call log for
+    // Family calls (TelecomCalls) — needs at least 36.1, and core 1.19 and
+    // Compose 1.12 need 37, so 37.0 covers all of them without a minor.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "me.nettrash.familyconnect"
         minSdk = 26
+        // 36, not 37, on purpose (2026-10-19): on an Android 17 emulator a
+        // build targeting 37 cannot re-compress an oversized video —
+        // SELinux stops the codec service reading the app's buffers, and
+        // MediaPrep.compressAsBefore fails — while the same build targeting
+        // 36 passes there. Raise it once that path has been checked on a
+        // real Android 17 phone; the local network permission it brings is
+        // already handled (data/net/LocalNetworkAccess.kt).
         targetSdk = 36
         versionCode = storedVersionCode
         versionName = resolvedVersionName
@@ -174,6 +180,13 @@ android {
             // is signed. See the note above `releaseSigning`.
             signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
+            // Unreferenced resources go too, after R8. Nothing in the app
+            // looks a resource up by name (no getIdentifier), and what is
+            // read at run time without an R reference is not a resource:
+            // the rich-block engines are assets/rich/ and the emoji names
+            // are a Java resource (resources/emoji-names.tsv) — neither is
+            // touched by the resource shrinker.
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -212,6 +225,16 @@ android {
                 // Robolectric's native runtime calls System.load, which
                 // JDK 24+ warns about unless native access is granted.
                 it.jvmArgs("--enable-native-access=ALL-UNNAMED")
+                // Robolectric on SDK 36+ (src/test/resources/robolectric.properties
+                // pins 36) sets up ApplicationSharedMemory by writing a raw
+                // FileDescriptor through jdk.internal.access.SharedSecrets,
+                // which JDK 17+ hides: without these every test class fails
+                // at runner init with "Failed to interact with raw
+                // FileDescriptor internals". See robolectric.org/getting-started.
+                it.jvmArgs(
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                )
                 // DataStore's bundled protobuf reads memory through
                 // sun.misc.Unsafe, which JDK 24+ warns about. The flag exists
                 // from JDK 23; an older JVM would refuse to start with it.

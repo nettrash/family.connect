@@ -274,7 +274,12 @@
     <string name="s_new_message">Новое сообщение</string>
     <string name="e_finish_editing_first">Сначала закончи изменение этого сообщения.</string>
     <string name="e_message_at_limit">Сообщение уже достигло предела в %1$d символов.</string>
-    <string name="e_paste_truncated">Сообщение может быть не длиннее %1$d символов. Остальное не вставилось.</string>
+    <plurals name="e_paste_truncated">
+        <item quantity="one">Сообщение может быть не длиннее %1$d символа. Остальное не вставилось.</item>
+        <item quantity="few">Сообщение может быть не длиннее %1$d символов. Остальное не вставилось.</item>
+        <item quantity="many">Сообщение может быть не длиннее %1$d символов. Остальное не вставилось.</item>
+        <item quantity="other">Сообщение может быть не длиннее %1$d символа. Остальное не вставилось.</item>
+    </plurals>
     <plurals name="s_n_new_messages">
         <item quantity="one">%1$d новое сообщение</item>
         <item quantity="few">%1$d новых сообщения</item>
@@ -319,10 +324,20 @@
     <string name="s_flip_camera">Сменить камеру</string>
     <string name="e_camera_permission">Family нужно разрешение на использование камеры.</string>
     <string name="s_video_calls_are_off_on_this_server">Видеозвонки отключены на этом сервере</string>
-    <string name="e_attachment_limit">Сообщение может содержать не более %1$d вложений.</string>
+    <plurals name="e_attachment_limit">
+        <item quantity="one">Сообщение может содержать не более %1$d вложения.</item>
+        <item quantity="few">Сообщение может содержать не более %1$d вложений.</item>
+        <item quantity="many">Сообщение может содержать не более %1$d вложений.</item>
+        <item quantity="other">Сообщение может содержать не более %1$d вложения.</item>
+    </plurals>
     <string name="s_share_choose_chat">Поделиться в…</string>
     <string name="s_shared_with_family">Поделились с Family</string>
-    <string name="e_share_too_many">Сохранены только первые %1$d элементов.</string>
+    <plurals name="e_share_too_many">
+        <item quantity="one">Сохранён только первый %1$d элемент.</item>
+        <item quantity="few">Сохранены только первые %1$d элемента.</item>
+        <item quantity="many">Сохранены только первые %1$d элементов.</item>
+        <item quantity="other">Сохранены только первые %1$d элемента.</item>
+    </plurals>
     <string name="e_share_unavailable">Сначала вступи в семью, потом делись сюда.</string>
     <string name="e_share_failed">Не удалось прочитать то, чем поделились.</string>
     <string name="s_no_connection">Нет соединения</string>
@@ -412,9 +427,24 @@
     <string name="s_member_limit">Лимит участников</string>
     <string name="s_limit_members">Ограничить число участников</string>
     <string name="s_most_members">Максимум участников</string>
-    <string name="s_member_limit_none">Своего лимита нет. Этот сервер допускает до %1$d участников в семье.</string>
-    <string name="s_member_limit_frozen">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</string>
-    <string name="s_member_limit_room">Занято %1$d из %2$d мест.</string>
+    <plurals name="s_member_limit_none">
+        <item quantity="one">Своего лимита нет. Этот сервер допускает до %1$d участника в семье.</item>
+        <item quantity="few">Своего лимита нет. Этот сервер допускает до %1$d участников в семье.</item>
+        <item quantity="many">Своего лимита нет. Этот сервер допускает до %1$d участников в семье.</item>
+        <item quantity="other">Своего лимита нет. Этот сервер допускает до %1$d участника в семье.</item>
+    </plurals>
+    <plurals name="s_member_limit_frozen">
+        <item quantity="one">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</item>
+        <item quantity="few">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</item>
+        <item quantity="many">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</item>
+        <item quantity="other">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</item>
+    </plurals>
+    <plurals name="s_member_limit_room">
+        <item quantity="one">Занято %1$d из %2$d места.</item>
+        <item quantity="few">Занято %1$d из %2$d мест.</item>
+        <item quantity="many">Занято %1$d из %2$d мест.</item>
+        <item quantity="other">Занято %1$d из %2$d места.</item>
+    </plurals>
     <string name="s_decrease">Уменьшить</string>
     <string name="s_increase">Увеличить</string>
     <string name="e_member_limit_failed">Не удалось изменить лимит участников. Попробуйте ещё раз.</string>
@@ -548,7 +578,12 @@
     </plurals>
     <string name="s_mentions_you">Упоминает тебя</string>
     <string name="s_mention_member">Упомянуть %1$s</string>
-    <string name="s_note_characters_left">Осталось %1$d символов</string>
+    <plurals name="s_note_characters_left">
+        <item quantity="one">Остался %1$d символ</item>
+        <item quantity="few">Осталось %1$d символа</item>
+        <item quantity="many">Осталось %1$d символов</item>
+        <item quantity="other">Осталось %1$d символа</item>
+    </plurals>
     <string name="s_your_note">Твоя заметка</string>
     <string name="s_note_preview">Предпросмотр</string>
     <string name="s_font">Шрифт</string>
@@ -561,12 +596,26 @@
     <string name="s_rsvp_going">Иду</string>
     <string name="s_rsvp_maybe">Может быть</string>
     <string name="s_rsvp_no">Не смогу</string>
-    <string name="s_rsvp_going_count">Идут: %1$d</string>
-    <string name="s_rsvp_maybe_count">Может быть: %1$d</string>
-    <string name="s_rsvp_going_maybe_count">Идут: %1$d, может быть: %2$d</string>
+    <plurals name="s_rsvp_going_count">
+        <item quantity="one">Идут: %1$d</item>
+        <item quantity="few">Идут: %1$d</item>
+        <item quantity="many">Идут: %1$d</item>
+        <item quantity="other">Идут: %1$d</item>
+    </plurals>
+    <plurals name="s_rsvp_maybe_count">
+        <item quantity="one">Может быть: %1$d</item>
+        <item quantity="few">Может быть: %1$d</item>
+        <item quantity="many">Может быть: %1$d</item>
+        <item quantity="other">Может быть: %1$d</item>
+    </plurals>
+    <plurals name="s_rsvp_going_maybe_count">
+        <item quantity="one">Идут: %1$d, может быть: %2$d</item>
+        <item quantity="few">Идут: %1$d, может быть: %2$d</item>
+        <item quantity="many">Идут: %1$d, может быть: %2$d</item>
+        <item quantity="other">Идут: %1$d, может быть: %2$d</item>
+    </plurals>
     <string name="s_add_event">Добавить событие</string>
     <string name="s_event_when">Когда</string>
-    <string name="s_event_where">Где</string>
     <string name="s_event_place">Место</string>
     <string name="s_event_has_end">Есть окончание</string>
     <string name="s_event_starts">Начало</string>
@@ -576,14 +625,17 @@
     <string name="s_event">Событие</string>
     <string name="s_list">Список</string>
     <string name="s_new_list">Новый список</string>
-    <string name="s_add_list">Список</string>
     <string name="s_add_task_list">Добавить список дел</string>
     <string name="s_things_to_do">Дела</string>
     <string name="s_thing_to_do">Дело</string>
     <string name="s_add_a_thing">Добавить дело</string>
     <string name="s_nothing_on_this_list">В этом списке пока ничего нет.</string>
-    <string name="s_your_list">Ваш список</string>
-    <string name="s_tasks_done_of">Сделано %1$d из %2$d</string>
+    <plurals name="s_tasks_done_of">
+        <item quantity="one">Сделано %1$d из %2$d</item>
+        <item quantity="few">Сделано %1$d из %2$d</item>
+        <item quantity="many">Сделано %1$d из %2$d</item>
+        <item quantity="other">Сделано %1$d из %2$d</item>
+    </plurals>
     <string name="s_done">Готово</string>
     <plurals name="s_more_things">
         <item quantity="one">+%1$d ещё</item>
@@ -642,7 +694,12 @@
     <string name="s_sticker_add_failed">Не удалось добавить стикер. Попробуй ещё раз.</string>
     <string name="s_sticker_unreadable">Не удалось прочитать эту картинку.</string>
     <string name="s_sticker_animated_must_be_webp">Анимированные стикеры должны быть в формате WebP. Этот добавить нельзя.</string>
-    <string name="s_sticker_label_too_long">Описание может содержать не более %1$d символов.</string>
+    <plurals name="s_sticker_label_too_long">
+        <item quantity="one">Описание может содержать не более %1$d символа.</item>
+        <item quantity="few">Описание может содержать не более %1$d символов.</item>
+        <item quantity="many">Описание может содержать не более %1$d символов.</item>
+        <item quantity="other">Описание может содержать не более %1$d символа.</item>
+    </plurals>
     <string name="s_sticker_remove_not_allowed">Убрать стикер может только тот, кто его добавил, или владелец семьи.</string>
     <string name="s_sticker_remove_failed">Не удалось убрать стикер. Попробуй ещё раз.</string>
     <string name="s_sticker_not_available_offline">Этого стикера ещё нет на телефоне. Попробуй ещё раз, когда будет сеть.</string>

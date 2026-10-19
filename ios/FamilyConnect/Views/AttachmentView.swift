@@ -192,7 +192,7 @@ struct AttachmentView: View {
             }
         } else if attachment.isFile {
             fileRow
-        } else if attachment.isVideo, transcriptSubject != nil {
+        } else if attachment.isVideo, !attachment.isAnimation, transcriptSubject != nil {
             // A video's text sits under its tile like a voice note's under
             // its player, and outside the tile's gestures for the same
             // reason. Only where there is a message to name: a viewer or
@@ -288,7 +288,13 @@ struct AttachmentView: View {
             } else if isAwaitingBytes {
                 ProgressView()
             }
-            if attachment.isVideo {
+            if attachment.isAnimation {
+                // A picture that moves (#96): its video over the poster,
+                // muted and looping while on screen, and the small "GIF" —
+                // no play button, no duration.
+                AnimationSurface(attachment: attachment, cornerRadius: 14)
+                AnimationBadge()
+            } else if attachment.isVideo {
                 VideoBadgeOverlay(attachment: attachment)
             }
         }
@@ -313,7 +319,7 @@ struct AttachmentView: View {
         .onTapGesture(count: 1) { onOpen() }
         .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(attachment.isVideo ? "Video" : "Photo")
+        .accessibilityLabel(attachment.isAnimation ? "GIF" : attachment.isVideo ? "Video" : "Photo")
         .accessibilityAddTraits(.isButton)
         // A bare gesture publishes no accessibility action — measured, see
         // ZZAXProbeTests.

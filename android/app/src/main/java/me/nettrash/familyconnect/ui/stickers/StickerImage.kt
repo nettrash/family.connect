@@ -75,6 +75,7 @@ import kotlinx.coroutines.Dispatchers
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.PackPicture
+import me.nettrash.familyconnect.ui.chat.animationsRemoved
 import me.nettrash.familyconnect.ui.components.LocalAttachments
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -234,9 +235,14 @@ fun StickerImage(
     // The density goes onto a bitmap drawable so its intrinsic size is in
     // the same units the painter reports; the layout then fits it whole.
     val resources = LocalResources.current
-    val painter = remember(current) {
+    // Frame zero, still, whenever the system asks for less motion — in the
+    // chat, the panel, the pack and the enlarged view alike (docs/protocol.md,
+    // "Sticker pack", amended for #96). An AnimatedImageDrawable that is never
+    // started draws its first frame.
+    val still = animationsRemoved()
+    val painter = remember(current, still) {
         (current as? BitmapDrawable)?.setTargetDensity(resources.displayMetrics)
-        DrawablePainter(current)
+        DrawablePainter(current, animate = !still)
     }
     Image(
         painter = painter,
@@ -322,7 +328,11 @@ fun ChatSticker(
  * the composition: a sticker scrolled out of a LazyColumn stops costing
  * frames, and one scrolled back in starts again.
  */
-private class DrawablePainter(private val drawable: Drawable) : Painter(), RememberObserver {
+private class DrawablePainter(
+    private val drawable: Drawable,
+    /** False: frame zero, never started — what "animations off" asks for. */
+    private val animate: Boolean = true,
+) : Painter(), RememberObserver {
 
     private var tick by mutableIntStateOf(0)
     private val handler = Handler(Looper.getMainLooper())
@@ -360,7 +370,7 @@ private class DrawablePainter(private val drawable: Drawable) : Painter(), Remem
     override fun onRemembered() {
         drawable.callback = callback
         drawable.setVisible(true, true)
-        (drawable as? Animatable)?.start()
+        if (animate) (drawable as? Animatable)?.start()
     }
 
     override fun onForgotten() = stop()

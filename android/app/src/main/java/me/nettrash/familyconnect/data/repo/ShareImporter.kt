@@ -56,7 +56,16 @@ class DefaultShareImporter @Inject constructor(
             val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
             val kind = PastedMedia.kindFor(uri.scheme, mime) ?: continue
             val item = runCatching {
-                when (kind) {
+                // An animated GIF, WebP or PNG becomes an animation (#96) — a
+                // share never lands in the assistant's chat (shareTargets).
+                // Null for everything else, and for one that cannot be made
+                // (rule C), which goes exactly as it did.
+                val animated = if (kind == AttachmentDto.KIND_PHOTO || kind == AttachmentDto.KIND_FILE) {
+                    mediaPrep.prepareIfAnimated(uri)
+                } else {
+                    null
+                }
+                animated ?: when (kind) {
                     // The SAME preparation the picker and the clipboard
                     // use. A third path would be a third set of bugs.
                     AttachmentDto.KIND_PHOTO -> mediaPrep.preparePhoto(uri)

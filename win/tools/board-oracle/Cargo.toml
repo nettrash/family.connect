@@ -35,6 +35,13 @@
 # keys typed into a field with what it then holds. Every port is held to all of it; copy it to the
 # same two places, and CI compares all three.
 #
+#     cd win/tools/board-oracle && cargo run --quiet -- animation-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/animation-plan-vectors.json
+#
+# The seventh prints fc_text::animation — an animated GIF, WebP or PNG sent as a silent looping video
+# (issue #96): each format's frame delay, the shortest-frame rule, and which frame shows on each tick
+# of the 30-a-second grid, with the size and bitrate. Every port's encoder follows it; copy it to the
+# same two places, and CI compares all three.
+#
 # and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
 # workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.
 [package]

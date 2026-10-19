@@ -47,7 +47,7 @@ fun interface LocalDataWiper {
         GonePackItemEntity::class,
         TranscriptEntity::class,
     ],
-    version = 32,
+    version = 33,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -561,6 +561,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v33: whether a message's stored attachment set knows the ANIMATION
+         * flag (#96; docs/protocol.md, "Animations"). MIGRATION_30_31's shape
+         * exactly: one column, NOT NULL DEFAULT 0, because 0 is the truth for
+         * every row already here — this build's predecessors wrote each
+         * received set back without `animation`, so an animation another
+         * client sent reads as a plain video. The flag itself rides inside
+         * `attachmentsJson`; this column only says which rows to read again
+         * (`MessageRepository.repairUnknownAnimationFlags`). Byte-matches the
+         * entity's @ColumnInfo default, which Room validates on launch.
+         */
+        val MIGRATION_32_33: Migration = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsKnowAnimation INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -660,6 +677,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_29_30,
                 MIGRATION_30_31,
                 MIGRATION_31_32,
+                MIGRATION_32_33,
             )
         }
     }

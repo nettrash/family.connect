@@ -65,6 +65,8 @@ use crate::webcodecs::{
     VideoEncoder, VideoFrame,
 };
 
+pub mod animation;
+
 /// Whether a picked video is transcoded at all. One switch, so that turning
 /// the whole path off is one word and not a hunt: `false` sends every video
 /// exactly as the client did before issue #74.

@@ -83,6 +83,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -575,11 +576,17 @@ fun FamilyAdminScreen(
                     Text(
                         text = when (val capState = MemberCap.state(state.maxMembers, state.memberCount, ceiling)) {
                             is MemberCap.State.OpenToCeiling ->
-                                stringResource(R.string.s_member_limit_none, capState.ceiling)
+                                pluralStringResource(R.plurals.s_member_limit_none, capState.ceiling, capState.ceiling)
                             is MemberCap.State.Frozen ->
-                                stringResource(R.string.s_member_limit_frozen, capState.memberCount)
+                                pluralStringResource(R.plurals.s_member_limit_frozen, capState.memberCount, capState.memberCount)
                             is MemberCap.State.Room ->
-                                stringResource(R.string.s_member_limit_room, capState.memberCount, capState.cap)
+                                // The seats agree with the cap, so it picks the form.
+                                pluralStringResource(
+                                    R.plurals.s_member_limit_room,
+                                    capState.cap,
+                                    capState.memberCount,
+                                    capState.cap,
+                                )
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1412,8 +1419,8 @@ fun BirthdayDialog(
     // Keyed on the value being edited: one dialog serves every roster
     // row, and a picker that kept the last member's date would offer to
     // save it onto the next one.
-    var month by remember(birthday) { mutableStateOf(birthday?.month ?: today.monthValue) }
-    var day by remember(birthday) { mutableStateOf(birthday?.day ?: today.dayOfMonth) }
+    var month by remember(birthday) { mutableIntStateOf(birthday?.month ?: today.monthValue) }
+    var day by remember(birthday) { mutableIntStateOf(birthday?.day ?: today.dayOfMonth) }
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },

@@ -334,8 +334,18 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 9: ANIMATIONS (docs/protocol.md, "Animations"; issue #96). The one bit a queued send needs to stay an animation
+    /// across a relaunch — step 6's round column, one over. Its default is what every row already in the outbox means.
+    /// </summary>
+    private static readonly string[] Nine =
+    [
+        // A queued send that is an ANIMATION: without it a GIF queued offline would land as an ordinary video.
+        "ALTER TABLE outbox ADD COLUMN animation INTEGER NOT NULL DEFAULT 0",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight, Nine];
 }

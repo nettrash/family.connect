@@ -44,6 +44,7 @@ public sealed class MediaAlbum
         Items = items;
         Index = Math.Clamp(index, 0, items.Count - 1);
         IsRound = round && items is [{ Kind: "video", Round: true }];
+        IsAnimation = !IsRound && items is [{ Kind: "video", Animation: true }];
     }
 
     /// <summary>The photos and videos a message carries, in the order they were sent — what its tiles open onto.</summary>
@@ -64,6 +65,12 @@ public sealed class MediaAlbum
 
     /// <summary>A video message, shown in its circle and called one (S5.1); everything else is the ordinary item it is.</summary>
     public bool IsRound { get; }
+
+    /// <summary>
+    /// Opened onto an ANIMATION (docs/protocol.md, "Animations"): one video carrying the flag, alone — shown larger, playing,
+    /// muted and looping, with no player controls.
+    /// </summary>
+    public bool IsAnimation { get; }
 
     public bool HasPrevious => Index > 0;
 
@@ -113,6 +120,8 @@ public sealed class MediaAlbum
         // And a circle is a video on the wire and a video message to the person watching it — only when S5.1's test said
         // so of the whole message: a flagged photo, or a flagged video among several, is the ordinary item it otherwise is.
         : IsRound ? say.Get("Video message")
+        // And an animation is a video on the wire and a GIF to the person looking at it.
+        : IsAnimation ? say.Get("GIF")
         : AttachmentText.DisplayName(Current.Kind, Current.Name, say);
 
     /// <summary>"2 of 5" while there is somewhere to page, and nothing when there is not.</summary>

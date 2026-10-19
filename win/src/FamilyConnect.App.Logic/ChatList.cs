@@ -164,6 +164,12 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
             // Asked BEFORE "Video" (S5.7): a circle is a video on the wire and a video message to the reader.
             return say.Get("Video message");
         }
+        if (message.AnimationVideo is not null)
+        {
+            // An animation says "GIF" where a video says "Video" (docs/protocol.md, "Animations") — and its caption first,
+            // as any video's row does.
+            return say.Get("GIF");
+        }
         return media[0].Kind switch
         {
             "photo" when media.Count > 1 => say.Format("%lld Photos", media.Count),

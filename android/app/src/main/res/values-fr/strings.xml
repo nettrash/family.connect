@@ -267,7 +267,11 @@
     <string name="s_new_message">Nouveau message</string>
     <string name="e_finish_editing_first">Termine d’abord la modification de ce message.</string>
     <string name="e_message_at_limit">Le message a déjà atteint la limite de %1$d caractères.</string>
-    <string name="e_paste_truncated">Un message peut contenir au maximum %1$d caractères. Le reste n’a pas été collé.</string>
+    <plurals name="e_paste_truncated">
+        <item quantity="one">Un message peut contenir au maximum %1$d caractère. Le reste n’a pas été collé.</item>
+        <item quantity="many">Un message peut contenir au maximum %1$d caractères. Le reste n’a pas été collé.</item>
+        <item quantity="other">Un message peut contenir au maximum %1$d caractères. Le reste n’a pas été collé.</item>
+    </plurals>
     <plurals name="s_n_new_messages">
         <item quantity="one">%1$d nouveau message</item>
         <item quantity="many">%1$d nouveaux messages</item>
@@ -311,10 +315,18 @@
     <string name="s_flip_camera">Changer de caméra</string>
     <string name="e_camera_permission">Family a besoin de l’autorisation d’utiliser la caméra.</string>
     <string name="s_video_calls_are_off_on_this_server">Les appels vidéo sont désactivés sur ce serveur</string>
-    <string name="e_attachment_limit">Un message peut porter au plus %1$d pièces jointes.</string>
+    <plurals name="e_attachment_limit">
+        <item quantity="one">Un message peut porter au plus %1$d pièce jointe.</item>
+        <item quantity="many">Un message peut porter au plus %1$d pièces jointes.</item>
+        <item quantity="other">Un message peut porter au plus %1$d pièces jointes.</item>
+    </plurals>
     <string name="s_share_choose_chat">Partager vers…</string>
     <string name="s_shared_with_family">Partagé avec Family</string>
-    <string name="e_share_too_many">Seuls les %1$d premiers éléments ont été gardés.</string>
+    <plurals name="e_share_too_many">
+        <item quantity="one">Seul le premier %1$d élément a été gardé.</item>
+        <item quantity="many">Seuls les %1$d premiers éléments ont été gardés.</item>
+        <item quantity="other">Seuls les %1$d premiers éléments ont été gardés.</item>
+    </plurals>
     <string name="e_share_unavailable">Rejoins d\'abord une famille, puis partage ici.</string>
     <string name="e_share_failed">Impossible de lire ce qui a été partagé.</string>
     <string name="s_no_connection">Pas de connexion</string>
@@ -403,9 +415,21 @@
     <string name="s_member_limit">Limite de membres</string>
     <string name="s_limit_members">Limiter les membres</string>
     <string name="s_most_members">Nombre maximal</string>
-    <string name="s_member_limit_none">Aucune limite de votre part. Ce serveur autorise jusqu’à %1$d membres par famille.</string>
-    <string name="s_member_limit_frozen">%1$d membres actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré.</string>
-    <string name="s_member_limit_room">%1$d place(s) sur %2$d utilisée(s).</string>
+    <plurals name="s_member_limit_none">
+        <item quantity="one">Aucune limite de votre part. Ce serveur autorise jusqu’à %1$d membre par famille.</item>
+        <item quantity="many">Aucune limite de votre part. Ce serveur autorise jusqu’à %1$d membres par famille.</item>
+        <item quantity="other">Aucune limite de votre part. Ce serveur autorise jusqu’à %1$d membres par famille.</item>
+    </plurals>
+    <plurals name="s_member_limit_frozen">
+        <item quantity="one">%1$d membre actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré.</item>
+        <item quantity="many">%1$d membres actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré.</item>
+        <item quantity="other">%1$d membres actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré.</item>
+    </plurals>
+    <plurals name="s_member_limit_room">
+        <item quantity="one">%1$d place(s) sur %2$d utilisée(s).</item>
+        <item quantity="many">%1$d place(s) sur %2$d utilisée(s).</item>
+        <item quantity="other">%1$d place(s) sur %2$d utilisée(s).</item>
+    </plurals>
     <string name="s_decrease">Diminuer</string>
     <string name="s_increase">Augmenter</string>
     <string name="e_member_limit_failed">Impossible de modifier la limite de membres. Réessayez.</string>
@@ -468,6 +492,7 @@
     <string name="s_pick_a_chat">Choisissez une conversation dans la liste.</string>
     <plurals name="p_members">
         <item quantity="one">%1$d membre</item>
+        <item quantity="many">%1$d membres</item>
         <item quantity="other">%1$d membres</item>
     </plurals>
     <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
@@ -480,22 +505,27 @@
     <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
     <plurals name="p_photos">
         <item quantity="one">%1$d photo</item>
+        <item quantity="many">%1$d photos</item>
         <item quantity="other">%1$d photos</item>
     </plurals>
     <plurals name="p_videos">
         <item quantity="one">%1$d vidéo</item>
+        <item quantity="many">%1$d vidéos</item>
         <item quantity="other">%1$d vidéos</item>
     </plurals>
     <plurals name="p_audio">
         <item quantity="one">%1$d message vocal</item>
+        <item quantity="many">%1$d messages vocaux</item>
         <item quantity="other">%1$d messages vocaux</item>
     </plurals>
     <plurals name="p_files">
         <item quantity="one">%1$d fichier</item>
+        <item quantity="many">%1$d fichiers</item>
         <item quantity="other">%1$d fichiers</item>
     </plurals>
     <plurals name="p_attachments">
         <item quantity="one">%1$d pièce jointe</item>
+        <item quantity="many">%1$d pièces jointes</item>
         <item quantity="other">%1$d pièces jointes</item>
     </plurals>
     <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
@@ -526,7 +556,11 @@
     </plurals>
     <string name="s_mentions_you">Te mentionne</string>
     <string name="s_mention_member">Mentionner %1$s</string>
-    <string name="s_note_characters_left">Encore %1$d caractères</string>
+    <plurals name="s_note_characters_left">
+        <item quantity="one">Encore %1$d caractère</item>
+        <item quantity="many">Encore %1$d caractères</item>
+        <item quantity="other">Encore %1$d caractères</item>
+    </plurals>
     <string name="s_your_note">Ta note</string>
     <string name="s_note_preview">Aperçu</string>
     <string name="s_font">Police</string>
@@ -539,12 +573,23 @@
     <string name="s_rsvp_going">J’y vais</string>
     <string name="s_rsvp_maybe">Peut-être</string>
     <string name="s_rsvp_no">Je ne peux pas</string>
-    <string name="s_rsvp_going_count">%1$d y vont</string>
-    <string name="s_rsvp_maybe_count">%1$d peut-être</string>
-    <string name="s_rsvp_going_maybe_count">%1$d y vont, %2$d peut-être</string>
+    <plurals name="s_rsvp_going_count">
+        <item quantity="one">%1$d y va</item>
+        <item quantity="many">%1$d y vont</item>
+        <item quantity="other">%1$d y vont</item>
+    </plurals>
+    <plurals name="s_rsvp_maybe_count">
+        <item quantity="one">%1$d peut-être</item>
+        <item quantity="many">%1$d peut-être</item>
+        <item quantity="other">%1$d peut-être</item>
+    </plurals>
+    <plurals name="s_rsvp_going_maybe_count">
+        <item quantity="one">%1$d y va, %2$d peut-être</item>
+        <item quantity="many">%1$d y vont, %2$d peut-être</item>
+        <item quantity="other">%1$d y vont, %2$d peut-être</item>
+    </plurals>
     <string name="s_add_event">Ajouter un événement</string>
     <string name="s_event_when">Quand</string>
-    <string name="s_event_where">Où</string>
     <string name="s_event_place">Lieu</string>
     <string name="s_event_has_end">A une fin</string>
     <string name="s_event_starts">Début</string>
@@ -554,17 +599,20 @@
     <string name="s_event">Événement</string>
     <string name="s_list">Liste</string>
     <string name="s_new_list">Nouvelle liste</string>
-    <string name="s_add_list">Ajouter une liste</string>
     <string name="s_add_task_list">Ajouter une liste de tâches</string>
     <string name="s_things_to_do">À faire</string>
     <string name="s_thing_to_do">Tâche</string>
     <string name="s_add_a_thing">Ajouter une tâche</string>
     <string name="s_nothing_on_this_list">Rien sur cette liste pour l\'instant.</string>
-    <string name="s_your_list">Votre liste</string>
-    <string name="s_tasks_done_of">%1$d sur %2$d faites</string>
+    <plurals name="s_tasks_done_of">
+        <item quantity="one">%1$d sur %2$d faite</item>
+        <item quantity="many">%1$d sur %2$d faites</item>
+        <item quantity="other">%1$d sur %2$d faites</item>
+    </plurals>
     <string name="s_done">Terminé</string>
     <plurals name="s_more_things">
         <item quantity="one">+%1$d autre</item>
+        <item quantity="many">+%1$d autres</item>
         <item quantity="other">+%1$d autres</item>
     </plurals>
     <string name="s_nobody_answered">Personne n\'a encore répondu.</string>
@@ -618,7 +666,11 @@
     <string name="s_sticker_add_failed">Impossible d\'ajouter l\'autocollant. Réessaie.</string>
     <string name="s_sticker_unreadable">Cette image n\'a pas pu être lue.</string>
     <string name="s_sticker_animated_must_be_webp">Les autocollants animés doivent être au format WebP. Celui-ci ne peut pas être ajouté.</string>
-    <string name="s_sticker_label_too_long">Une description peut contenir au maximum %1$d caractères.</string>
+    <plurals name="s_sticker_label_too_long">
+        <item quantity="one">Une description peut contenir au maximum %1$d caractère.</item>
+        <item quantity="many">Une description peut contenir au maximum %1$d caractères.</item>
+        <item quantity="other">Une description peut contenir au maximum %1$d caractères.</item>
+    </plurals>
     <string name="s_sticker_remove_not_allowed">Seule la personne qui a ajouté un autocollant, ou le propriétaire de la famille, peut le retirer.</string>
     <string name="s_sticker_remove_failed">Impossible de retirer l\'autocollant. Réessaie.</string>
     <string name="s_sticker_not_available_offline">Cet autocollant n\'est pas encore sur ce téléphone. Réessaie quand tu seras en ligne.</string>

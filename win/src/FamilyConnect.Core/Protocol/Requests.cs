@@ -29,7 +29,13 @@ public sealed record SendRequest(
     /// Absent otherwise — never <c>false</c> — and never sent to a server whose <c>GET /families/mine</c> does not name
     /// <c>max_round_video_ms</c>, which would ignore it and deliver a square video.
     /// </summary>
-    bool? Round = null);
+    bool? Round = null,
+    /// <summary>
+    /// <c>true</c> sends the message's one video as an ANIMATION — an animated picture made into a silent looping video,
+    /// drawn as a picture that plays by itself (docs/protocol.md, "Animations"). Absent otherwise — never <c>false</c>. No
+    /// discovery key guards it: a server that predates it ignores it and delivers the ordinary video the file still is.
+    /// </summary>
+    bool? Animation = null);
 
 public sealed record PollRequest(string[] Options);
 

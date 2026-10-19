@@ -26,6 +26,7 @@
 package me.nettrash.familyconnect
 
 import android.net.Uri
+import androidx.annotation.PluralsRes
 import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -128,7 +129,12 @@ class MainViewModel @Inject constructor(
     }
 
     /** One sentence the activity shows as a toast, then consumes. */
-    data class ShareNotice(@param:StringRes val resId: Int, val arg: Int? = null)
+    sealed interface ShareNotice {
+        data class Words(@param:StringRes val resId: Int) : ShareNotice
+
+        /** A sentence about [count] things, in the form the language gives that number. */
+        data class Counted(@param:PluralsRes val resId: Int, val count: Int) : ShareNotice
+    }
 
     private val _shareFlow = MutableStateFlow<ShareFlow?>(null)
     val shareFlow: StateFlow<ShareFlow?> = _shareFlow
@@ -162,7 +168,7 @@ class MainViewModel @Inject constructor(
             val snapshot = sessionRepository.snapshot()
             if (!snapshot.canChat) {
                 if (uris.isNotEmpty() || !text.isNullOrBlank()) {
-                    _shareNotice.value = ShareNotice(R.string.e_share_unavailable)
+                    _shareNotice.value = ShareNotice.Words(R.string.e_share_unavailable)
                 }
                 return@launch
             }
@@ -176,8 +182,8 @@ class MainViewModel @Inject constructor(
                 is ShareIn.Verdict.Attach -> {
                     _shareFlow.value = ShareFlow.Preparing
                     if (verdict.dropped > 0) {
-                        _shareNotice.value = ShareNotice(
-                            R.string.e_share_too_many,
+                        _shareNotice.value = ShareNotice.Counted(
+                            R.plurals.e_share_too_many,
                             AttachmentDto.MAX_PER_MESSAGE,
                         )
                     }
@@ -192,7 +198,7 @@ class MainViewModel @Inject constructor(
                         return@launch
                     }
                     if (prepared.isEmpty()) {
-                        _shareNotice.value = ShareNotice(R.string.e_share_failed)
+                        _shareNotice.value = ShareNotice.Words(R.string.e_share_failed)
                         _shareFlow.value = null
                     } else {
                         shareStash.deposit(prepared, text = null)

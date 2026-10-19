@@ -783,6 +783,14 @@ pub struct Attachment {
     /// square video tile, which is what the attachment otherwise is.
     #[serde(default, skip_serializing_if = "is_false")]
     pub round: bool,
+    /// This video is an ANIMATION — an animated picture its sender made into
+    /// a silent looping video (docs/protocol.md, "Animations"). Present only
+    /// when true, set by the send and never changed, never beside `sticker`
+    /// or `round` and never on anything but a video. A client that has not
+    /// heard of it draws a video with its poster, which is what the
+    /// attachment otherwise is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub animation: bool,
     /// A voice note's shape: 48 lowercase hex digits, one level 0–15 per
     /// slice of the recording, measured by the sender (docs/protocol.md, "A
     /// voice note's waveform"). Absent where none was sent — a picked sound
@@ -944,6 +952,28 @@ impl Message {
         match self.attachments() {
             [only] if only.kind == "audio" => Some(only),
             _ => None,
+        }
+    }
+
+    /// The animation this message IS, if it is one — drawn as a picture that
+    /// moves (docs/protocol.md, "Animations"). The one test every client
+    /// shares, `fc_text::animation_source::is_animation`: exactly one
+    /// attachment, a video, carrying `animation: true`. A caption is
+    /// allowed; two attachments, or the flag on anything but a video, are
+    /// the ordinary message it otherwise is.
+    pub fn animation(&self) -> Option<&Attachment> {
+        let flags: Vec<fc_text::animation_source::AttachmentFlags> = self
+            .attachments()
+            .iter()
+            .map(|attachment| fc_text::animation_source::AttachmentFlags {
+                kind: &attachment.kind,
+                animation: attachment.animation,
+            })
+            .collect();
+        if fc_text::animation_source::is_animation(&flags) {
+            self.attachments().first()
+        } else {
+            None
         }
     }
 
@@ -1365,6 +1395,52 @@ mod tests {
         assert!(kept.get("round").is_none());
         let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
         assert_eq!(kept["round"], true);
+    }
+
+    /// AN ANIMATION is a video with one more field (docs/protocol.md,
+    /// "Animations"): read as the server sends it, drawn as an animation
+    /// only by the one test every client shares — exactly one attachment, a
+    /// video, `animation: true` — WITH or without a caption, and written
+    /// back only when true.
+    #[wasm_bindgen_test]
+    fn an_animation_is_a_video_with_one_more_field() {
+        let sent: Message = serde_json::from_str(
+            r#"{"id": 1600, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-19T10:00:00Z",
+                "attachments": [{"id": 93, "kind": "video", "mime": "video/mp4",
+                                 "size": 182330, "width": 480, "height": 270,
+                                 "duration_ms": 2100, "has_preview": true, "animation": true}]}"#,
+        )
+        .expect("reads");
+        let drawn = sent.animation().expect("an animation");
+        assert_eq!((drawn.id, drawn.size), (93, Some(182_330)));
+        assert!(sent.round_video().is_none() && sent.sticker().is_none());
+        // A caption is allowed: still an animation.
+        let mut captioned = sent.clone();
+        captioned.body = "look at him go".into();
+        assert!(captioned.animation().is_some());
+
+        let plain: Message = serde_json::from_str(
+            r#"{"id": 1601, "chat_id": 42, "sender_id": 9, "body": "",
+                "created_at": "2026-10-19T10:00:00Z",
+                "attachments": [{"id": 94, "kind": "video", "mime": "video/mp4"}]}"#,
+        )
+        .expect("reads");
+        assert!(plain.animation().is_none(), "absent is an ordinary video");
+        assert!(!plain.attachments()[0].animation);
+        let mut pair = sent.clone();
+        let again = pair.attachments()[0].clone();
+        pair.attachments.as_mut().expect("has some").push(again);
+        assert!(pair.animation().is_none(), "never two");
+        for kind in ["photo", "file", "audio", "location"] {
+            let mut other = sent.clone();
+            other.attachments.as_mut().expect("has some")[0].kind = kind.into();
+            assert!(other.animation().is_none(), "a flagged {kind}");
+        }
+        let kept = serde_json::to_value(&plain.attachments()[0]).expect("encodes");
+        assert!(kept.get("animation").is_none());
+        let kept = serde_json::to_value(&sent.attachments()[0]).expect("encodes");
+        assert_eq!(kept["animation"], true);
     }
 
     /// A pack item live, labelled, and as a tombstone — which carries

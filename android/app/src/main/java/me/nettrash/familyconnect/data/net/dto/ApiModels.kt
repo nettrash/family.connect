@@ -649,6 +649,22 @@ data class AttachmentDto(
      */
     val round: Boolean? = null,
     /**
+     * `true` when (and only when) the message carrying this was sent as an
+     * ANIMATION (docs/protocol.md, "Animations"; #96): an animated GIF, WebP
+     * or PNG the sender turned into a silent looping H.264 MP4, still a
+     * `kind=video` in every other respect — drawn as a picture that moves,
+     * with a small "GIF" label and no player chrome. The round flag's pattern
+     * exactly: absent otherwise and never `false`, nullable so a stored copy
+     * round-trips what the wire said, set by the send and never changed,
+     * never beside `sticker` or `round`.
+     *
+     * Rides inside the attachments JSON a message row stores. A row cached by
+     * a build from before the key was written back without it; such rows are
+     * marked (`MessageEntity.attachmentsKnowAnimation`, MIGRATION_32_33) and
+     * read again on resync by `MessageRepository.repairUnknownAnimationFlags`.
+     */
+    val animation: Boolean? = null,
+    /**
      * A voice note's WAVEFORM (#79; docs/protocol.md, "A voice note's
      * waveform"): 48 lowercase hex digits, one level 0–15 per equal slice of
      * the recording, made by the sender's own meter — so the bubble draws its
@@ -674,6 +690,13 @@ data class AttachmentDto(
      * that attachment otherwise is.
      */
     val isRound: Boolean get() = round == true && kind == KIND_VIDEO
+
+    /**
+     * Sent as an animation (#96). The kind is checked too, as the round
+     * flag's is: the flag on anything but a video draws as what it is. The
+     * MESSAGE-level test ("exactly one attachment") is the caller's.
+     */
+    val isAnimation: Boolean get() = animation == true && kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
     val isAudio: Boolean get() = kind == KIND_AUDIO
     val isLocation: Boolean get() = kind == KIND_LOCATION
@@ -1038,6 +1061,13 @@ data class SendMessageRequest(
      * is; never sent as `false`, and never beside it.
      */
     val round: Boolean? = null,
+    /**
+     * `true` sends the message's one `kind=video` attachment as an ANIMATION
+     * (docs/protocol.md, "Animations"; #96). Null — and therefore omitted —
+     * for every other message, exactly as [round] is; never sent as `false`,
+     * and never beside [sticker] or [round].
+     */
+    val animation: Boolean? = null,
 )
 
 /**

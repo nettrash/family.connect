@@ -801,6 +801,10 @@ actor APIClient {
         /// (docs/protocol.md, "Video messages", #79). Absent, never
         /// `false`, on everything else — the sticker's rule.
         let round: Bool?
+        /// `true` sends the message's one video as an ANIMATION
+        /// (docs/protocol.md, "Animations", #96). Absent, never `false`,
+        /// on everything else.
+        let animation: Bool?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
@@ -810,6 +814,7 @@ actor APIClient {
             case mentions
             case sticker
             case round
+            case animation
         }
     }
 
@@ -835,7 +840,8 @@ actor APIClient {
         pollOptions: [String]? = nil,
         mentions: [MentionDTO]? = nil,
         sticker: Bool = false,
-        round: Bool = false
+        round: Bool = false,
+        animation: Bool = false
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -847,7 +853,8 @@ actor APIClient {
                 poll: pollOptions.map { NewPollRequest(options: $0) },
                 mentions: mentions,
                 sticker: sticker ? true : nil,
-                round: round ? true : nil))
+                round: round ? true : nil,
+                animation: animation ? true : nil))
         return response.message
     }
 

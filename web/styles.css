@@ -425,6 +425,28 @@ button.link, .link {
     pointer-events: none;
 }
 
+/* An animation (#96, docs/protocol.md "Animations"): a picture that moves, in
+ * a photo's box — its looping video or its poster, filled like a photo — and
+ * the one word "GIF" in a corner, the same in every language. No play button:
+ * it plays by itself. */
+.tile video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.gif-label {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgb(0 0 0 / 45%);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    line-height: 16px;
+    pointer-events: none;
+}
+/* Opened larger: as large as the stage allows, fitted whole. */
+.viewer-animation video { width: 100%; height: 100%; }
+
 .album { position: relative; padding: 0; background: transparent; display: block; cursor: pointer; max-width: 100%; }
 .album-card { position: relative; width: 100%; }
 .album-layer { position: absolute; inset: 0; }

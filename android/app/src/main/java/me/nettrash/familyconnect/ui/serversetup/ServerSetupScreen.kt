@@ -64,6 +64,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.net.LocalNetworkAccess
+import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
 
 @Composable
 fun ServerSetupScreen(
@@ -71,6 +78,29 @@ fun ServerSetupScreen(
     viewModel: ServerSetupViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Android 17: a server on the home network is unreachable — the probe
+    // would just time out — until the local network grant is held, so it is
+    // asked for first, and the probe runs on whatever the answer was.
+    val localNetwork = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { viewModel.probeAndSave() }
+    val connect: () -> Unit = {
+        scope.launch {
+            val url = ServerUrlNormalizer.normalize(state.url)
+            if (url != null &&
+                LocalNetworkAccess.needsGrant(context) &&
+                LocalNetworkAccess.serverIsLocal(url) &&
+                LocalNetworkAccess.claimAsk(context)
+            ) {
+                localNetwork.launch(LocalNetworkAccess.PERMISSION)
+            } else {
+                viewModel.probeAndSave()
+            }
+        }
+    }
 
     LaunchedEffect(state.saved) {
         if (state.saved) onSaved()
@@ -127,7 +157,7 @@ fun ServerSetupScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                 // Enter connects — the first field of the whole product
                 // did nothing on Enter.
-                keyboardActions = KeyboardActions(onGo = { viewModel.probeAndSave() }),
+                keyboardActions = KeyboardActions(onGo = { connect() }),
             )
 
             // Animated so typing/deleting "http" doesn't jump the layout.
@@ -156,7 +186,7 @@ fun ServerSetupScreen(
 
             Spacer(Modifier.height(24.dp))
             Button(
-                onClick = viewModel::probeAndSave,
+                onClick = connect,
                 enabled = !state.probing && state.url.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {

@@ -252,7 +252,8 @@ public static class ClientFrames
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
         bool sticker = false,
-        bool round = false)
+        bool round = false,
+        bool animation = false)
     {
         var frame = new JsonObject
         {
@@ -270,6 +271,11 @@ public static class ClientFrames
         {
             // A video message (docs/protocol.md, "Video messages"): the sticker's pattern — present only when true.
             frame["round"] = true;
+        }
+        if (animation)
+        {
+            // An animation (docs/protocol.md, "Animations"): the same pattern — present only when true.
+            frame["animation"] = true;
         }
         if (replyToMessageId is { } reply)
         {

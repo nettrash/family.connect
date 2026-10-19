@@ -237,8 +237,11 @@ enum ClipboardAttachment {
         return UIPasteboard.general.string
     }
 
+    /// `animates`: whether an animated GIF, WebP or PNG becomes an
+    /// ANIMATION here (#96) — true in a family or direct chat, false in the
+    /// assistant's, where it goes as it always went.
     @MainActor
-    static func prepare(limit: Int) async throws -> MediaPrep.Prepared {
+    static func prepare(limit: Int, animates: Bool = false) async throws -> MediaPrep.Prepared {
         guard let provider = UIPasteboard.general.itemProviders.first else {
             throw Failure.nothingToPaste
         }
@@ -252,7 +255,8 @@ enum ClipboardAttachment {
                     fileAt: scratch,
                     type: type,
                     name: suggestedName(for: type, suggested: suggested),
-                    limit: limit)
+                    limit: limit,
+                    animates: animates)
                 // prepareVideo hands back the source itself when the clip goes
                 // as it is (within the profile, or after a transcode that
                 // failed or did not help — rules A, C and D); only delete the
@@ -271,7 +275,7 @@ enum ClipboardAttachment {
         // security-scoped, which `MediaPrep.prepareFile` already knows how
         // to hold open while it copies.
         if offered.contains(.fileURL), let url = await fileURL(from: provider) {
-            return try await MediaPrep.prepare(fileAt: url, limit: limit)
+            return try await MediaPrep.prepare(fileAt: url, limit: limit, animates: animates)
         }
         throw Failure.nothingToPaste
     }
@@ -347,13 +351,14 @@ enum ClipboardAttachment {
         NSPasteboard.general.string(forType: .string)
     }
 
+    /// `animates`: the phone's rule (#96).
     @MainActor
-    static func prepare(limit: Int) async throws -> MediaPrep.Prepared {
+    static func prepare(limit: Int, animates: Bool = false) async throws -> MediaPrep.Prepared {
         let pasteboard = NSPasteboard.general
         // A copied file first: it has real bytes on disk and a real name,
         // which is strictly better than any representation of it.
         if let url = fileURL(on: pasteboard) {
-            return try await MediaPrep.prepare(fileAt: url, limit: limit)
+            return try await MediaPrep.prepare(fileAt: url, limit: limit, animates: animates)
         }
         guard let type = dataType(on: pasteboard),
               let data = pasteboard.data(forType: NSPasteboard.PasteboardType(type.identifier)),
@@ -365,7 +370,8 @@ enum ClipboardAttachment {
             data: data,
             type: type,
             name: suggestedName(for: type, suggested: nil),
-            limit: limit)
+            limit: limit,
+            animates: animates)
     }
 
     private static func fileURL(on pasteboard: NSPasteboard) -> URL? {

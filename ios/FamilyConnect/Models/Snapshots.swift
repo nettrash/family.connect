@@ -808,6 +808,19 @@ nonisolated enum MessagePresentation {
         Set(messages.lazy.filter(isRoundVideo).compactMap(\.serverID))
     }
 
+    /// True when a message IS an animation (docs/protocol.md, "Animations",
+    /// #96): exactly ONE attachment, a `video` carrying `animation: true`.
+    /// Unlike a video message it may have words beside it.
+    static func isAnimation(_ message: MessageSnapshot) -> Bool {
+        message.attachments.count == 1 && message.attachments[0].isAnimation
+    }
+
+    /// The server ids of the animations among `messages` — a quote of one
+    /// with no words says "GIF" (`quoteWord`).
+    static func animationMessageIDs(_ messages: [MessageSnapshot]) -> Set<Int64> {
+        Set(messages.lazy.filter(isAnimation).compactMap(\.serverID))
+    }
+
     /// A reply quoting a video message says "Video message" (S5.7;
     /// docs/protocol.md, "How it is drawn").
     ///
@@ -817,28 +830,39 @@ nonisolated enum MessagePresentation {
     /// device holds and knows to be round names itself; an excerpt that has
     /// words keeps them, and a quoted message out of the cache stays as the
     /// server sent it.
-    static func quoteWord(excerpt: String, messageID: Int64, roundIDs: Set<Int64>) -> String {
-        guard excerpt.isEmpty, roundIDs.contains(messageID) else { return excerpt }
-        return String(localized: "Video message")
+    ///
+    /// An ANIMATION with no caption is named the same way, "GIF" (#96): "a
+    /// reply's quote says GIF where a video's says Video".
+    static func quoteWord(
+        excerpt: String, messageID: Int64, roundIDs: Set<Int64>, animationIDs: Set<Int64> = []
+    ) -> String {
+        guard excerpt.isEmpty else { return excerpt }
+        if roundIDs.contains(messageID) { return String(localized: "Video message") }
+        if animationIDs.contains(messageID) { return String(localized: "GIF") }
+        return excerpt
     }
 
     /// The message with both levels of its quote named by `quoteWord`.
     static func namingRoundQuotes(
-        _ message: MessageSnapshot, roundIDs: Set<Int64>
+        _ message: MessageSnapshot, roundIDs: Set<Int64>, animationIDs: Set<Int64> = []
     ) -> MessageSnapshot {
-        guard !roundIDs.isEmpty, let quote = message.replyTo else { return message }
+        guard !roundIDs.isEmpty || !animationIDs.isEmpty, let quote = message.replyTo else {
+            return message
+        }
         var named = message
         named.replyTo = ReplyToSnapshot(
             messageID: quote.messageID,
             senderID: quote.senderID,
             excerpt: quoteWord(
-                excerpt: quote.excerpt, messageID: quote.messageID, roundIDs: roundIDs),
+                excerpt: quote.excerpt, messageID: quote.messageID, roundIDs: roundIDs,
+                animationIDs: animationIDs),
             parent: quote.parent.map {
                 QuotedParentSnapshot(
                     messageID: $0.messageID,
                     senderID: $0.senderID,
                     excerpt: quoteWord(
-                        excerpt: $0.excerpt, messageID: $0.messageID, roundIDs: roundIDs))
+                        excerpt: $0.excerpt, messageID: $0.messageID, roundIDs: roundIDs,
+                        animationIDs: animationIDs))
             })
         return named
     }

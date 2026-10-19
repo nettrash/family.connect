@@ -71,10 +71,18 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 @Singleton
-class MediaPrep @Inject constructor(
-    @param:ApplicationContext private val context: Context,
+class MediaPrep internal constructor(
+    private val context: Context,
     private val contentResolver: ContentResolver,
+    /** What turns an animated picture into its video (#96); a fake in the routing tests. */
+    private val animations: AnimationMaker,
 ) {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        contentResolver: ContentResolver,
+    ) : this(context, contentResolver, PlatformAnimationMaker)
 
     /** What the picker gave us, ready to upload. */
     data class Prepared(
@@ -106,6 +114,13 @@ class MediaPrep @Inject constructor(
          * recorded. Null for everything else.
          */
         val waveform: String? = null,
+        /**
+         * An ANIMATION (#96; docs/protocol.md, "Animations"): the silent
+         * looping MP4 an animated GIF, WebP or PNG was made into, sent with
+         * `animation: true` as a message of its own. Always `kind=video`,
+         * `video/mp4`, with its size, its length and its first frame.
+         */
+        val animation: Boolean = false,
     )
 
     /** The item could not be read or decoded at all. */
@@ -167,6 +182,110 @@ class MediaPrep @Inject constructor(
                 previewJpeg = preview,
             )
         }
+
+    // -- Animations (#96) ---------------------------------------------------
+
+    /**
+     * A picture from the PHOTO PICKER in a family or direct chat
+     * (docs/protocol.md, "Animations" → "What becomes one"):
+     *
+     *  - an ANIMATED GIF, WebP or PNG becomes the protocol's silent looping
+     *    video — or, when that cannot be made, goes exactly as it went before
+     *    #96 (rule C): a GIF or WebP as its own bytes, a file; an animated PNG
+     *    as the photo it always was;
+     *  - a STILL GIF or WebP, or a BMP, goes as a file, as it does from every
+     *    other door. It used to be flattened to a JPEG here: a GIF picked from
+     *    the gallery arrived as a still photograph, its animation lost
+     *    without a word;
+     *  - everything else is a photo, as before ([preparePhoto]).
+     *
+     * The assistant's chat does not come here: its model is shown a
+     * photograph, so the picker keeps [preparePhoto] there.
+     */
+    suspend fun preparePickedPicture(uri: Uri, limit: Long = SIZE_LIMIT): Prepared {
+        val picture = classify(uri)
+        return when (picture.kind) {
+            AnimatedPicture.Kind.ANIMATED -> {
+                val bytes = checkNotNull(picture.bytes)
+                animationOf(bytes, limit) ?: if (PackPicture.sniff(bytes) == PackPicture.MIME_PNG) {
+                    preparePhoto(uri, limit)
+                } else {
+                    prepareFile(uri, limit)
+                }
+            }
+            AnimatedPicture.Kind.STILL_GIF,
+            AnimatedPicture.Kind.STILL_WEBP,
+            AnimatedPicture.Kind.BMP,
+            -> prepareFile(uri, limit)
+            AnimatedPicture.Kind.OTHER -> preparePhoto(uri, limit)
+        }
+    }
+
+    /**
+     * An item from the FILES, the CLIPBOARD or a SHARE (#96): when it is an
+     * animated GIF, WebP or PNG, the animation's video. Null when it is not
+     * an animated picture — and when the video cannot be made (rule C): the
+     * door then prepares it exactly as it did before #96, which from these
+     * doors is a GIF or WebP as a file and a pasted or shared PNG as a photo.
+     */
+    suspend fun prepareIfAnimated(uri: Uri, limit: Long = SIZE_LIMIT): Prepared? {
+        val picture = classify(uri)
+        if (picture.kind != AnimatedPicture.Kind.ANIMATED) return null
+        return animationOf(checkNotNull(picture.bytes), limit)
+    }
+
+    /** What a picture is by its own bytes, and the bytes when it is animated — the video is made of them. */
+    private class Classified(val kind: AnimatedPicture.Kind, val bytes: ByteArray?)
+
+    /**
+     * Read the first bytes, and the whole picture only when they say GIF,
+     * WebP, PNG or BMP: a PDF or a JPEG is never read twice for this.
+     * Unreadable, or past the photo read limit, is OTHER — the door's own
+     * path then meets the same item and says what it always said.
+     */
+    private suspend fun classify(uri: Uri): Classified = withContext(Dispatchers.IO) {
+        val head = readBytes(uri, Long.MAX_VALUE, stopAfter = AnimatedPicture.HEAD_BYTES)
+        if (head == null || !AnimatedPicture.mayMatter(head)) {
+            return@withContext Classified(AnimatedPicture.Kind.OTHER, null)
+        }
+        val bytes = readBytes(uri, PHOTO_READ_LIMIT) ?: return@withContext Classified(AnimatedPicture.Kind.OTHER, null)
+        val kind = AnimatedPicture.kindOf(bytes)
+        Classified(kind, bytes.takeIf { kind == AnimatedPicture.Kind.ANIMATED })
+    }
+
+    /**
+     * The animation in [source] as the protocol's video, ready to stage — or
+     * null (rule C): it could not be decoded or encoded, has no size, or came
+     * out over the ceiling. Never re-planned and never compared with the
+     * picture's size (rule D does not apply: a video is the only way it can
+     * be drawn as one).
+     */
+    private suspend fun animationOf(source: ByteArray, limit: Long): Prepared? {
+        val file = cacheFile("mp4")
+        val made = try {
+            animations.make(source, file)
+        } catch (e: CancellationException) {
+            file.delete()
+            throw e
+        } ?: run {
+            file.delete()
+            return null
+        }
+        if (!file.isFile || file.length() == 0L || file.length() > limit) {
+            file.delete()
+            return null
+        }
+        return Prepared(
+            file = file,
+            mime = AnimationSend.MIME,
+            kind = AttachmentDto.KIND_VIDEO,
+            width = made.width,
+            height = made.height,
+            durationMs = made.durationMs.toInt(),
+            previewJpeg = made.poster,
+            animation = true,
+        )
+    }
 
     // -- Videos ------------------------------------------------------------
 
@@ -1214,14 +1333,20 @@ class MediaPrep @Inject constructor(
         }
     }
 
-    /** Bounded read — a picked photo has no business being huge. */
-    private fun readBytes(uri: Uri, limit: Long): ByteArray? = runCatching {
+    /**
+     * Bounded read — a picked photo has no business being huge. With
+     * [stopAfter], only that many bytes from the start (fewer for a shorter
+     * file): the head a type is told by.
+     */
+    private fun readBytes(uri: Uri, limit: Long, stopAfter: Int? = null): ByteArray? = runCatching {
         contentResolver.openInputStream(uri)?.use { stream ->
             val buffer = ByteArrayOutputStream()
             val chunk = ByteArray(64 * 1024)
             var total = 0L
             while (true) {
-                val read = stream.read(chunk)
+                val want = stopAfter?.let { minOf(chunk.size.toLong(), it - total).toInt() } ?: chunk.size
+                if (want <= 0) break
+                val read = stream.read(chunk, 0, want)
                 if (read < 0) break
                 total += read
                 if (total > limit) return@use null

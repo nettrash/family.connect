@@ -54,9 +54,15 @@ public sealed partial class FamilyView : UserControl
     /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards: the pack, what has been
     /// decoded of it, and whether an add or a removal is under way.
     /// </summary>
+    /// <remarks>
+    /// The grid's stickers MOVE where this machine can and Windows' animation effects are on, only while on screen ("Sticker
+    /// pack", amended 2026-10-19, #96) — on a <see cref="StickerShelf{TPicture}"/> of the conversation's own budget, which
+    /// makes the least recently drawn still, moved by one <see cref="StickerAnimator"/>.
+    /// </remarks>
     private readonly PackModel pack;
     private readonly Action<PackItemDto> onPack;
-    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
+    private readonly StickerAnimator stickers;
+    private readonly StickerShelf<StickerPicture> stickerThumbs;
     private bool changingPack;
     private IReadOnlyList<JoinRequestDto> requests = [];
     private IReadOnlyList<ReportDto> reports = [];
@@ -87,6 +93,10 @@ public sealed partial class FamilyView : UserControl
         family = new FamilyModel(connection.Api, connection.Chats);
         pack = connection.Stickers;
         InitializeComponent();
+        stickers = new StickerAnimator(DispatcherQueue);
+        stickerThumbs = new StickerShelf<StickerPicture>(
+            StickerAnimation.MaxHeldBytes, StickerAnimation.MaxKept,
+            stickers.IsShowing, stickers.MakeStill, stickers.Release);
         var say = services.Say;
 
         StickersHeading.Text = say.Get("Family Stickers");
@@ -285,6 +295,9 @@ public sealed partial class FamilyView : UserControl
         connection.Live.Resynced += onResync;
         Unloaded += (_, _) =>
         {
+            // Nothing moves on a screen that has gone, and every frame is given back rather than left to a finalizer.
+            stickers.Stop();
+            stickerThumbs.Clear();
             connection.Router.PackChanged -= onPack;
             connection.Router.RosterChanged -= onRoster;
             connection.Router.BlockChanged -= onBlock;
@@ -471,12 +484,15 @@ public sealed partial class FamilyView : UserControl
         return cell;
     }
 
-    /// <summary>A pack item's picture: its ORIGINAL bytes, whatever <c>has_preview</c> says, drawn still.</summary>
+    /// <summary>
+    /// A pack item's picture: its ORIGINAL bytes, whatever <c>has_preview</c> says — animated where this machine can, still
+    /// when Windows' animation effects are off.
+    /// </summary>
     private async Task ShowStickerAsync(Image image, TextBlock word, PackItemDto item)
     {
         try
         {
-            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            if (!stickerThumbs.TryGet(item.Id, out var decoded))
             {
                 var (bytes, error) = await pack.BytesAsync(item);
                 if (bytes is null)
@@ -488,17 +504,23 @@ public sealed partial class FamilyView : UserControl
                     return;
                 }
                 var scale = XamlRoot?.RasterizationScale ?? 1;
-                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.ManageCell, scale, animate: false);
-                // A null is kept: this grid is redrawn on every frame about the family, and a codec that is not there
-                // is still not there.
-                stickerThumbs[item.Id] = decoded;
+                // Asked again: the grid is redrawn on every frame about the family, and another cell of this item may have
+                // decoded it while this one fetched.
+                if (!stickerThumbs.TryGet(item.Id, out decoded))
+                {
+                    decoded = await StickerImaging.DecodeAsync(
+                        bytes, StickerLook.ManageCell, scale, StickerImaging.AnimationsWanted());
+                    // A null is kept: a codec that is not there is still not there.
+                    stickerThumbs.Put(item.Id, decoded, decoded?.Bytes ?? 0);
+                }
             }
             if (decoded is null)
             {
                 // The word stays: it is what says a sticker is here.
                 return;
             }
-            image.Source = decoded.First;
+            // The item's clock carries on across a redraw.
+            stickers.Show(image, decoded, stickerThumbs.Started(item.Id, stickers.Now));
             word.Visibility = Visibility.Collapsed;
         }
         catch (Exception e)

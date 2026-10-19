@@ -76,6 +76,11 @@ pub enum ClientFrame {
         /// `false` are the same.
         #[serde(default)]
         round: Option<bool>,
+        /// Optional: `true` sends the one attachment as an ANIMATION, a
+        /// silent looping video drawn as a picture that moves (protocol.md,
+        /// "Animations"; issue #96). Absent and `false` are the same.
+        #[serde(default)]
+        animation: Option<bool>,
     },
     Read {
         chat_id: i64,
@@ -620,6 +625,7 @@ async fn handle_client_text(
                 mentions,
                 sticker,
                 round,
+                animation,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -644,6 +650,7 @@ async fn handle_client_text(
                 mentions.as_deref().unwrap_or(&[]),
                 sticker.unwrap_or(false),
                 round.unwrap_or(false),
+                animation.unwrap_or(false),
                 language,
             )
             .await
@@ -926,6 +933,7 @@ mod tests {
                 mentions: None,
                 sticker: None,
                 round: None,
+                animation: None,
             }
         );
     }
@@ -951,6 +959,7 @@ mod tests {
                 mentions: None,
                 sticker: None,
                 round: None,
+                animation: None,
             }
         );
     }
@@ -978,6 +987,7 @@ mod tests {
                 mentions: None,
                 sticker: None,
                 round: None,
+                animation: None,
             }
         );
     }
@@ -1004,6 +1014,7 @@ mod tests {
                 mentions: None,
                 sticker: None,
                 round: None,
+                animation: None,
             }
         );
     }
@@ -1031,6 +1042,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round: false,
+                animation: false,
                 waveform: None,
             }
         }
@@ -1113,6 +1125,7 @@ mod tests {
                 }]),
                 sticker: None,
                 round: None,
+                animation: None,
             }
         );
     }
@@ -1865,6 +1878,7 @@ mod tests {
                 mentions: None,
                 sticker: Some(true),
                 round: None,
+                animation: None,
             }
         );
     }
@@ -1892,6 +1906,7 @@ mod tests {
                 mentions: None,
                 sticker: None,
                 round: Some(true),
+                animation: None,
             }
         );
         // And `false` is a statement a client may make, parsed as made.
@@ -1901,6 +1916,45 @@ mod tests {
             panic!("a send frame");
         };
         assert_eq!(round, Some(false));
+    }
+
+    /// protocol.md's animation `send` ("Animations"; issue #96): the flag
+    /// rides the ordinary frame beside the one attachment it applies to,
+    /// exactly as `round` and `sticker` do — and, unlike them, beside a
+    /// caption. A frame without it reads as "not an animation".
+    #[test]
+    fn client_send_frame_carries_the_animation_flag() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-0000-4000-8000-000000000002", "body": "when the pizza arrives", "attachment_ids": [93], "animation": true}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("4f9e21c0-0000-4000-8000-000000000002")
+                    .expect("valid uuid"),
+                body: "when the pizza arrives".to_string(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                attachment_ids: Some(vec![93]),
+                poll: None,
+                mentions: None,
+                sticker: None,
+                round: None,
+                animation: Some(true),
+            }
+        );
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-0000-4000-8000-000000000002", "body": "", "attachment_ids": [93], "animation": false}"#;
+        let ClientFrame::Send { animation, .. } = serde_json::from_str(json).expect("parses")
+        else {
+            panic!("a send frame");
+        };
+        assert_eq!(animation, Some(false));
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "4f9e21c0-0000-4000-8000-000000000002", "body": "", "attachment_ids": [93]}"#;
+        let ClientFrame::Send { animation, .. } = serde_json::from_str(json).expect("parses")
+        else {
+            panic!("a send frame");
+        };
+        assert_eq!(animation, None);
     }
 
     /// `pack_item` as protocol.md draws it: a live item whole, and a
@@ -1929,6 +1983,7 @@ mod tests {
                     accuracy_m: None,
                     sticker: false,
                     round: false,
+                    animation: false,
                     waveform: None,
                 }),
                 created_at: Some(time::macros::datetime!(2026-09-30 10:00 UTC)),

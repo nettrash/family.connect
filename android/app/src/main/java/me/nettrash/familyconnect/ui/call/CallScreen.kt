@@ -97,6 +97,7 @@ import me.nettrash.familyconnect.ui.chat.CallRecordWording
 import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.KeepScreenAwake
+import me.nettrash.familyconnect.ui.components.LocalNetworkPermissionForCall
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
@@ -116,6 +117,9 @@ fun CallScreen(
     val context = LocalContext.current
 
     val live = state as? CallState.Live
+    // Placed or answered: the media is coming up, and a peer on the same
+    // Wi-Fi is reached by LAN address — Android 17's local network grant.
+    LocalNetworkPermissionForCall(underWay = state is CallState.Outgoing || state is CallState.Connecting)
     val isVideoCall = live?.video ?: ((state as? CallState.Ended)?.video ?: false)
 
     val micPermission = rememberLauncherForActivityResult(

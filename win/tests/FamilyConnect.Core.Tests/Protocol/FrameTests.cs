@@ -572,4 +572,99 @@ public class FrameTests
             ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a01", "", attachmentIds: [90], sticker: true)).RootElement;
         Assert.False(sticker.TryGetProperty("round", out _));
     }
+
+    // ---- animations (docs/protocol.md, "Animations") -------------------------------------------
+
+    /// <summary>
+    /// The flag is on the ATTACHMENT, present only when true, read wherever <c>round</c> is — the plural and the legacy
+    /// singular — and an animation may carry a caption.
+    /// </summary>
+    [Fact]
+    public void AnAnimationIsOneFlaggedVideoWithOrWithoutWords()
+    {
+        var frame = ServerFrame.Parse(
+            """
+            {"type": "message", "message": {"id": 1342, "chat_id": 42, "sender_id": 9,
+             "client_msg_id": null, "body": "ha", "created_at": "2026-10-19T10:00:00Z",
+             "attachments": [{"id": 93, "kind": "video", "mime": "video/mp4", "size": 182330, "width": 480,
+                              "height": 270, "duration_ms": 2100, "has_preview": true, "animation": true}],
+             "attachment": {"id": 93, "kind": "video", "mime": "video/mp4", "size": 182330, "width": 480,
+                            "height": 270, "duration_ms": 2100, "has_preview": true, "animation": true}}}
+            """);
+        var message = Assert.IsType<ServerFrame.Message>(frame).Value;
+        var video = Assert.Single(message.Media);
+        Assert.True(video.Animation);
+        Assert.False(video.Round);
+        Assert.False(video.Sticker);
+        Assert.True(message.Attachment!.Animation);
+        Assert.Equal(93, message.AnimationVideo!.Id);
+        Assert.Equal(2100, message.AnimationVideo.DurationMs);
+        // Not a circle (that needs round: true and no body), and not a sticker.
+        Assert.Null(message.RoundVideo);
+        Assert.Null(message.StickerPicture);
+    }
+
+    /// <summary>
+    /// THE ONE TEST, the sticker's and the video message's: exactly ONE attachment, <c>kind=video</c>, <c>animation: true</c>.
+    /// The body is not asked — a caption is allowed — and a video without the flag is an ordinary video.
+    /// </summary>
+    [Fact]
+    public void OnlyOneFlaggedVideoIsAnAnimation()
+    {
+        var plain = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-19T10:00:00Z",
+             "attachments": [{"id": 93, "kind": "video", "mime": "video/mp4", "size": 182330}]}
+            """)!;
+        Assert.False(plain.Media[0].Animation);
+        Assert.Null(plain.AnimationVideo);
+
+        MessageDto With(string body, params AttachmentDto[] media) =>
+            new(1, 42, 9, null, body, "2026-10-19T10:00:00Z", Attachments: media);
+        var flagged = new AttachmentDto(93, "video", "video/mp4", 182330, 480, 270, 2100, true, Animation: true);
+        Assert.NotNull(With("", flagged).AnimationVideo);
+        Assert.NotNull(With("look at this", flagged).AnimationVideo);
+        Assert.Null(With("", flagged, flagged with { Id = 94 }).AnimationVideo);
+        Assert.Null(With("", flagged with { Kind = "photo" }).AnimationVideo);
+        Assert.Null(With("", flagged with { Animation = false }).AnimationVideo);
+        Assert.Null(With("").AnimationVideo);
+        Assert.Null(With("", flagged).RoundVideo);
+
+        var legacy = Wire.Decode<MessageDto>(
+            """
+            {"id": 1, "chat_id": 42, "sender_id": 9, "client_msg_id": null, "body": "",
+             "created_at": "2026-10-19T10:00:00Z",
+             "attachment": {"id": 93, "kind": "video", "mime": "video/mp4", "animation": true}}
+            """)!;
+        Assert.Equal(93, legacy.AnimationVideo!.Id);
+    }
+
+    /// <summary>What this device caches of an animation is read back an animation: the flag survives the cache's own JSON.</summary>
+    [Fact]
+    public void AnAnimationSurvivesTheCachesOwnEncoding()
+    {
+        AttachmentDto[] media = [new AttachmentDto(93, "video", "video/mp4", 182330, 480, 270, 2100, true, Animation: true)];
+        var again = Wire.Decode<AttachmentDto[]>(Wire.Encode(media))!;
+        Assert.True(Assert.Single(again).Animation);
+    }
+
+    [Fact]
+    public void ASendSaysAnimationOnlyWhenItIsOne()
+    {
+        var animation = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a03", "ha", attachmentIds: [93], animation: true)).RootElement;
+        Assert.Equal("send", animation.GetProperty("type").GetString());
+        Assert.True(animation.GetProperty("animation").GetBoolean());
+        Assert.Equal("ha", animation.GetProperty("body").GetString());
+        Assert.False(animation.TryGetProperty("round", out _));
+        Assert.False(animation.TryGetProperty("sticker", out _));
+
+        var plain = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a03", "", attachmentIds: [93])).RootElement;
+        Assert.False(plain.TryGetProperty("animation", out _));
+        var round = System.Text.Json.JsonDocument.Parse(
+            ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a03", "", attachmentIds: [91], round: true)).RootElement;
+        Assert.False(round.TryGetProperty("animation", out _));
+    }
 }

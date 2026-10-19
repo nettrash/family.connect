@@ -365,6 +365,7 @@ import me.nettrash.familyconnect.ui.components.ReportSheet
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.ui.platform.LocalWindowInfo
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -551,9 +552,7 @@ fun ChatScreen(
     var scrollToJump by remember { mutableStateOf<JumpRequest?>(null) }
     // Half the viewport, so animateScrollToItem's top-edge alignment lands
     // the target in the middle instead.
-    val centreOffsetPx = with(LocalDensity.current) {
-        (LocalConfiguration.current.screenHeightDp.dp / 2).roundToPx()
-    }
+    val centreOffsetPx = LocalWindowInfo.current.containerSize.height / 2
     // How far below the top edge an anchored open lands the divider. The
     // margin is not decoration: land the target flush against the top and
     // the near-old-end band fires load-older, whose own window growth
@@ -764,7 +763,11 @@ fun ChatScreen(
     val hasCamera = remember(context) {
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
     }
-    val replyingToRound = stringResource(R.string.s_video_message)
+    // What a quote names in place of an empty excerpt (#79, #96), resolved
+    // here: the recorder's session is built outside composition.
+    val quotedVideoMessage = stringResource(R.string.s_video_message)
+    val quotedGif = stringResource(R.string.s_gif)
+    val quotedSticker = stringResource(R.string.s_sticker)
     val openVideoRecorder: () -> Unit = open@{
         val recorder = videoRecorder ?: return@open
         if (!viewModel.mayOpenVideoRecorder()) return@open
@@ -780,7 +783,16 @@ fun ChatScreen(
                     if (sender == myUserId) memberYou else memberNames[sender] ?: memberFallbackName
                 }.orEmpty(),
                 replyExcerpt = reply?.let { draft ->
-                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) replyingToRound else draft.excerpt
+                    if (draft.excerpt.isEmpty()) {
+                        when (quotedMedia(items, draft.messageId)) {
+                            QuotedMedia.VIDEO_MESSAGE -> quotedVideoMessage
+                            QuotedMedia.GIF -> quotedGif
+                            QuotedMedia.STICKER -> quotedSticker
+                            null -> draft.excerpt
+                        }
+                    } else {
+                        draft.excerpt
+                    }
                 }.orEmpty(),
                 voiceBlocked = viewModel.notSent.value.isNotEmpty(),
             ),
@@ -1696,15 +1708,13 @@ fun ChatScreen(
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
-                // Shown, not sent: answering a video message, the banner
-                // names it — its excerpt is its empty body (#79, S5.7). The
-                // draft the send carries stays the server's cut.
+                // Shown, not sent: answering a video message, an animation or
+                // a sticker, the banner names it — its excerpt is its empty
+                // body (#79, S5.7; #96). The draft the send carries stays the
+                // server's cut.
                 replyDraft = replyDraft?.let { draft ->
-                    if (draft.excerpt.isEmpty() && quotesRound(items, draft.messageId)) {
-                        draft.copy(excerpt = stringResource(R.string.s_video_message))
-                    } else {
-                        draft
-                    }
+                    val named = if (draft.excerpt.isEmpty()) quotedMedia(items, draft.messageId) else null
+                    if (named != null) draft.copy(excerpt = quotedMediaLabel(named)) else draft
                 },
                 replyAuthorName = replyDraft?.senderId?.let { sender ->
                     if (sender == myUserId) {
@@ -2523,14 +2533,14 @@ private fun EditBanner(onCancel: () -> Unit) {
 internal fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
-    onViewThread: () -> Unit = {},
-    /** A video message's "Open full screen" (#79, S5.4); null — no row — on anything else. */
-    onOpenFullScreen: (() -> Unit)? = null,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    onViewThread: () -> Unit = {},
+    /** A video message's "Open full screen" (#79, S5.4); null — no row — on anything else. */
+    onOpenFullScreen: (() -> Unit)? = null,
     /**
      * Reply needs a server id to quote, so it is hidden — not disabled —
      * on a message that has not been acked yet.
@@ -2671,12 +2681,12 @@ internal fun MessageContextMenu(
 @Composable
 private fun MessageSafetyMenu(
     isSenderBlocked: Boolean,
-    /** An assistant reply: one row, and it is the assistant's report. */
-    isAssistantReply: Boolean = false,
     onBack: () -> Unit,
     onReport: () -> Unit,
     onToggleBlock: () -> Unit,
     modifier: Modifier = Modifier,
+    /** An assistant reply: one row, and it is the assistant's report. */
+    isAssistantReply: Boolean = false,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -4419,10 +4429,10 @@ private fun BubbleContent(
                 },
                 excerpt = when {
                     replyHidden -> ""
-                    // The quoted message is a circle this list holds: its
-                    // excerpt is its (empty) body, so the quote names it
-                    // (#79, S5.7).
-                    item.quotesRound && quotedExcerpt.isEmpty() -> stringResource(R.string.s_video_message)
+                    // The quoted message is a circle, an animation or a sticker
+                    // this list holds: its excerpt is its (empty) body, so the
+                    // quote names it (#79, S5.7; #96).
+                    quotedExcerpt.isEmpty() && item.quotedMedia != null -> quotedMediaLabel(item.quotedMedia)
                     else -> quotedExcerpt
                 },
                 isMine = isMine,
@@ -5970,7 +5980,9 @@ internal fun StagedAttachmentChip(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (staged.kind == AttachmentDto.KIND_VIDEO) {
+            // An animation is a picture that moves (#96): no play glyph on it,
+            // here or in the bubble — the chip's words say "GIF".
+            if (staged.kind == AttachmentDto.KIND_VIDEO && !staged.animation) {
                 // The same 45%-black circle the bubble thumbnails and grid
                 // cells put behind their play glyph (Attachments.kt) — a
                 // bare white glyph disappears on a bright first frame.
@@ -6001,10 +6013,10 @@ internal fun StagedAttachmentChip(
                     )
                 } else {
                     stringResource(
-                        if (staged.kind == AttachmentDto.KIND_VIDEO) {
-                            R.string.s_video
-                        } else {
-                            R.string.s_photo
+                        when {
+                            staged.animation -> R.string.s_gif
+                            staged.kind == AttachmentDto.KIND_VIDEO -> R.string.s_video
+                            else -> R.string.s_photo
                         },
                     )
                 },
@@ -7018,3 +7030,13 @@ private object CreateSoundDocument : androidx.activity.result.contract.ActivityR
     override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
         intent?.data?.takeIf { resultCode == android.app.Activity.RESULT_OK }
 }
+
+/** The word a quote shows for a message with no words of its own (#79, #96). */
+@Composable
+private fun quotedMediaLabel(kind: QuotedMedia): String = stringResource(
+    when (kind) {
+        QuotedMedia.VIDEO_MESSAGE -> R.string.s_video_message
+        QuotedMedia.GIF -> R.string.s_gif
+        QuotedMedia.STICKER -> R.string.s_sticker
+    },
+)

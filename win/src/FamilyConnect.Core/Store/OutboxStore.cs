@@ -43,7 +43,13 @@ public sealed record OutboxRow(
     /// and the message says <c>round: true</c>. Written down with the row for the sticker's reason — a circle recorded
     /// offline is still a circle when the app has been closed and opened again before it lands, never a square video.
     /// </summary>
-    bool Round = false)
+    bool Round = false,
+    /// <summary>
+    /// This send is an ANIMATION (docs/protocol.md, "Animations"): its one video is an animated picture made into a silent
+    /// looping MP4, and the message says <c>animation: true</c>. Written down with the row for the sticker's reason — an
+    /// animation queued offline is still one when the app has been closed and opened again before it lands.
+    /// </summary>
+    bool Animation = false)
 {
     /// <summary>Shown as failed, with a retry affordance — and nothing else is coming.</summary>
     public bool Failed => FailedCode is not null;
@@ -82,9 +88,9 @@ public sealed class OutboxStore(Database database)
             """
             INSERT INTO outbox (client_msg_id, chat_id, body, reply_to_id, attachment_ids,
                                 pending_files, staged_files, poll_json, mentions_json, queued_at,
-                                attempts, next_attempt_at, failed_code, sticker, round)
+                                attempts, next_attempt_at, failed_code, sticker, round, animation)
             VALUES ($id, $chat, $body, $reply, $attachments, $files, $staged, $poll, $mentions,
-                    $queued, $attempts, $next, $failed, $sticker, $round)
+                    $queued, $attempts, $next, $failed, $sticker, $round, $animation)
             ON CONFLICT(client_msg_id) DO UPDATE SET
                 body = excluded.body, attachment_ids = excluded.attachment_ids,
                 pending_files = excluded.pending_files, attempts = excluded.attempts,
@@ -116,6 +122,7 @@ public sealed class OutboxStore(Database database)
         command.Parameters.AddWithValue("$failed", row.FailedCode ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$sticker", row.Sticker ? 1 : 0);
         command.Parameters.AddWithValue("$round", row.Round ? 1 : 0);
+        command.Parameters.AddWithValue("$animation", row.Animation ? 1 : 0);
         command.ExecuteNonQuery();
     }
 
@@ -314,6 +321,7 @@ public sealed class OutboxStore(Database database)
                 : null,
             FailedCode: Text("failed_code"),
             Sticker: Convert.ToInt64(reader["sticker"]) != 0,
-            Round: Convert.ToInt64(reader["round"]) != 0);
+            Round: Convert.ToInt64(reader["round"]) != 0,
+            Animation: Convert.ToInt64(reader["animation"]) != 0);
     }
 }

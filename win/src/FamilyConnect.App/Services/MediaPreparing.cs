@@ -47,6 +47,12 @@ namespace FamilyConnect.App.Services;
 /// went as files before, reach those rules too, and go as audio when they come out.
 /// </para>
 /// <para>
+/// <b>AN ANIMATED GIF, WEBP OR PNG BECOMES AN ANIMATION</b> in a chat's composer (issue #96; docs/protocol.md, "Animations"):
+/// the protocol's silent looping MP4, made by <see cref="AnimationPreparing"/> and sent with <c>animation: true</c>. One that
+/// cannot be made goes exactly as before — a GIF or WebP as a file, an APNG as a photo — and a still one never leaves its
+/// old route.
+/// </para>
+/// <para>
 /// <b>NOTHING HERE MAY LOSE A SEND THAT WORKED IN 1.1</b> (rule C). Every Windows call is guarded, and
 /// anything that fails — a stream Windows cannot read, a codec it does not have (HEVC without its
 /// extension, Ogg without the web media one), a transcode that throws, stalls or comes out wrong — sends
@@ -88,12 +94,26 @@ internal static class MediaPreparing
     private const string ShellAudioChannels = "System.Audio.ChannelCount";
     private const string ShellAudioSampleRate = "System.Audio.SampleRate";
 
-    public static async Task<PrepOutcome> PrepareAsync(StorageFile file, CancellationToken cancel = default)
+    /// <param name="animations">
+    /// Whether an animated GIF, WebP or PNG goes as an ANIMATION — the protocol's silent looping video (docs/protocol.md,
+    /// "Animations"; <see cref="AnimationPreparing"/>). A chat's composer says yes; the assistant's chat (its model is shown a
+    /// photograph), the board and a video message's own path do not, and those pictures go exactly as before.
+    /// </param>
+    public static async Task<PrepOutcome> PrepareAsync(StorageFile file, CancellationToken cancel = default, bool animations = false)
     {
         var name = file.Name;
         var size = (long)(await file.GetBasicPropertiesAsync()).Size;
         var head = await HeadAsync(file);
         var declared = MediaPrep.DeclaredType(file.ContentType ?? string.Empty, name);
+        if (animations && size is > 0 and <= MediaPrep.SizeLimit && AnimationPrep.MayBe(head))
+        {
+            // "Animated" is the picture's own statement, and a GIF's second image can be anywhere in it: the whole file is read.
+            var bytes = await BytesAsync(file);
+            if (AnimationPrep.Route(animations, size, bytes) is { } format)
+            {
+                return await AnimationAsync(file, bytes, format, declared, name, cancel);
+            }
+        }
         var routed = MediaPrep.Route(file.ContentType ?? string.Empty, name, head);
         // Nothing over the ceiling is refused up front any more: a 400 MB 4K clip is exactly what a transcode is for.
         return routed.Route switch
@@ -113,6 +133,29 @@ internal static class MediaPreparing
     /// </summary>
     public static async Task<bool> IsPhotoAsync(StorageFile file) =>
         MediaPrep.Route(file.ContentType ?? string.Empty, file.Name, await HeadAsync(file)).Route == MediaRoute.Photo;
+
+    /// <summary>
+    /// An animated picture made into the protocol's video — off the window's thread, since every frame is decoded, composited
+    /// and encoded — or, when that does not come out, EXACTLY AS IT WENT BEFORE #96 (rule C): a GIF or a WebP as its original
+    /// bytes, as a file; an animated PNG down the photo route, as the still JPEG it always became.
+    /// </summary>
+    /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled.</exception>
+    private static async Task<PrepOutcome> AnimationAsync(
+        StorageFile file, byte[] bytes, AnimationFormat format, string declared, string name, CancellationToken cancel)
+    {
+        cancel.ThrowIfCancellationRequested();
+        if (await Task.Run(() => AnimationPreparing.PrepareAsync(bytes, cancel), cancel) is { } made)
+        {
+            return PrepOutcome.Staged(made);
+        }
+        if (format == AnimationFormat.Apng)
+        {
+            Diagnostics.Write("an animated PNG could not be made into a video; it goes as a photo, as before");
+            return await PhotoAsync(file);
+        }
+        Diagnostics.Write($"an animated {format} could not be made into a video; it goes as a file, as before");
+        return PrepOutcome.Staged(new StagedMedia("file", declared, bytes, Name: MediaPrep.SanitizedName(name) ?? "file"));
+    }
 
     /// <summary>A file, as every file has always gone: untouched, named, and refused over the ceiling.</summary>
     private static async Task<PrepOutcome> AsFileAsync(StorageFile file, string declared, long size) =>
@@ -1535,7 +1578,7 @@ internal static class MediaPreparing
     }
 
     /// <summary>A new encoder, fed pixels only: nothing of the original's metadata comes along.</summary>
-    private static async Task<byte[]> EncodeAsync(byte[] pixels, uint width, uint height, double quality)
+    internal static async Task<byte[]> EncodeAsync(byte[] pixels, uint width, uint height, double quality)
     {
         using var output = new InMemoryRandomAccessStream();
         var options = new BitmapPropertySet

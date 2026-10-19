@@ -167,7 +167,14 @@ public sealed record AttachmentDto(
     /// absent on a picked sound file, a video, anything else, and everything an older client or server sent. Read
     /// through <see cref="FamilyConnect.Core.Waveform.LevelsOrPlaceholder"/>, never trusted to be well formed.
     /// </summary>
-    string? Waveform = null)
+    string? Waveform = null,
+    /// <summary>
+    /// This video is an ANIMATION (docs/protocol.md, "Animations"): an animated GIF, WebP or PNG the sender turned into a
+    /// silent looping H.264 MP4. Present on the wire only when true, set by the send and never changed — every other video,
+    /// and everything an older server sent, reads false here. Never beside <see cref="Sticker"/> or <see cref="Round"/>,
+    /// never on anything but a video; in every other respect it is still <c>kind=video</c>.
+    /// </summary>
+    bool Animation = false)
 {
     public bool IsPhoto => Kind == "photo";
     public bool IsVideo => Kind == "video";
@@ -241,6 +248,19 @@ public sealed record MessageDto(
     /// </remarks>
     public AttachmentDto? RoundVideo =>
         string.IsNullOrEmpty(Body) && Media is [{ Round: true, Kind: "video" } video] ? video : null;
+
+    /// <summary>
+    /// The video this message IS, when it is an ANIMATION — drawn as a picture that plays by itself, muted, looping, with a
+    /// small "GIF" label and no player controls (docs/protocol.md, "Animations", "How it is drawn").
+    /// </summary>
+    /// <remarks>
+    /// THE STICKER'S AND THE VIDEO MESSAGE'S ONE TEST: exactly ONE attachment, that attachment is <c>kind=video</c>, and it
+    /// carries <c>animation: true</c>. Unlike a video message an animation MAY carry a caption, so the body is not asked.
+    /// Anything else — two attachments, the flag on a photo, a server that ignores the flag — is null, and is drawn as the
+    /// ordinary message it otherwise is.
+    /// </remarks>
+    public AttachmentDto? AnimationVideo =>
+        Media is [{ Animation: true, Kind: "video" } video] ? video : null;
 }
 
 public sealed record TaskItemDto(long Id, string Text, bool Done, long? DoneBy = null);

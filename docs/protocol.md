@@ -1695,7 +1695,10 @@ every sticker on that client, fitted whole and never cropped — never at the pi
 size, which would make a 96-pixel sticker a speck and a 2000-pixel one a poster. The box is 160
 on a side in the platform's own unit — points, dp, CSS pixels, effective pixels — which is a
 RECOMMENDATION each client applies and nothing the wire carries or the server knows. Animated where
-the platform can, frame zero where it cannot. On a chat-list row it is the word "Sticker", in the
+the platform can, frame zero where it cannot — in the chat, the sticker panel, the family's pack and
+the enlarged view alike (*amended 2026-10-19, #96*: the panel and the pack used to be allowed to
+stay still), only while on screen, and frame zero whenever the system asks for less motion (the
+settings listed under "Animations"). On a chat-list row it is the word "Sticker", in the
 reader's language, where a photo's row says so of a photo.
 
 **Tapping one shows it larger**, and offers "Add to family stickers" when the family's pack does
@@ -1927,6 +1930,144 @@ the picture later needs no server change.
   the same grace as any other.
 - **The send path**: the outbox, `client_msg_id` dedup, background uploads and "Sending on an
   unreliable network" apply unchanged, because nothing on it is new.
+
+### Animations
+
+*Decided 2026-10-19 (#96). The reasoning, the audit of what each client did before and the owner's
+four choices are in `docs/animations-2026-10-19.md`; this section is the part the server and every
+client have to agree on.*
+
+An ANIMATION is an animated picture — a GIF, a WebP or a PNG with more than one frame — sent in a
+chat. It does not travel as the picture it is: the SENDER turns it into a silent looping video, the
+way messengers do, and sends that as an ordinary `kind=video` attachment with one extra field,
+`animation: true` — the sticker's and the video message's pattern: the flag says how one attachment
+is DRAWN, and a client that has never heard of it plays the video it still is.
+
+Why a video and not the picture: H.264 in MP4 is the one moving format every client here plays the
+same way, and it is a fraction of a GIF's size. The price is transparency — a video has none, so an
+animation is drawn on white — which is why a STICKER is not an animation: a sticker keeps its own
+bytes, its transparency and its animation exactly as "Sticker pack" says, and nothing here touches
+it.
+
+#### What becomes one
+
+An animated GIF, WebP or PNG that a member puts into a chat's composer — picked from the photo
+library or from files, dropped, pasted or shared in. "Animated" is the picture's own statement,
+read from its bytes: a GIF with a second image, a WebP whose `VP8X` header sets the animation flag,
+a PNG with an `acTL` chunk before its `IDAT` — the tests "Sticker pack" already uses. A STILL GIF,
+WebP or BMP goes exactly as before (a file); so does an animation in the assistant's chat, whose
+model is shown a photograph; and the board and profile pictures stay stills.
+
+#### The file
+
+The video is the profile's ("Preparing media before upload") with no sound, and its timing is
+exact, because four encoders have to make the same clip of the same picture. `fc_text::animation`
+is the reference and its vectors (`animation-plan-vectors.json`) hold every port:
+
+- **Each frame's length** is what the picture states — a GIF's delay in hundredths of a second, a
+  WebP's `ANMF` duration in milliseconds, an APNG's `fcTL` `delay_num ÷ delay_den` seconds (a `den`
+  of 0 meaning hundredths), rounded half up to whole milliseconds — except that a frame stated at
+  **10 ms or less is shown for 100 ms**, which is what every browser does with the many GIFs that
+  say "0" and mean "the default".
+- **The grid.** The animation is SAMPLED thirty times a second: at each tick `k` (time `k ÷ 30` s,
+  from 0 to `ceil(total_ms × 30 ÷ 1000) − 1`, at least one tick) the frame showing is the last one
+  whose start is at or before it. Ticks in a row that show the same frame are ONE video frame,
+  that many ticks long. So nothing runs faster than 30 a second, a held frame stays held, and a
+  slow animation is given no frames it did not have (Rule B). A frame no tick lands on — a flash
+  shorter than a thirtieth of a second — is not in the video.
+- **Each frame is COMPOSITED** — drawn as a viewer would show it at that moment, its disposal and
+  blending applied — and then onto **white** (`#FFFFFF`) wherever it is transparent.
+- **The size** is the profile's size rule applied to the canvas: the short side at most 720, never
+  upscaled, both even. **The bitrate** is the profile's for that size at 30 frames a second.
+- **The container**: MP4, `moov` before `mdat`, H.264 (High, or Main where the encoder offers
+  nothing else), 8-bit SDR BT.709, and **no audio track**. Each video frame lasts its ticks
+  exactly — a timescale that is a multiple of 30. `duration_ms` is `total_ticks × 1000 ÷ 30`,
+  rounded half up. Its poster is the first frame, as a JPEG, sent with
+  `PUT /attachments/{id}/preview` as any video's is.
+- **It loops for ever**, whatever loop count the picture stated: an animation that stopped after
+  three turns would read as frozen.
+- The result is never re-planned — it is already the profile — and Rule D does not apply: a video
+  is the only way an animation can be drawn as one, so it is sent even in the rare case it is
+  larger than the picture. Rule C does: a picture that cannot be decoded or encoded, or that has no
+  size, goes exactly as it went before #96 — a GIF or a WebP as the original bytes, as a file; a PNG
+  as a photograph.
+
+#### Sending one
+
+```
+POST /attachments?kind=video&width=480&height=270&duration_ms=2100   (Content-Type: video/mp4)
+  → 201 {attachment: {id: 93, …}}
+PUT  /attachments/93/preview                                          (the first frame, a JPEG)
+  → 204
+POST /chats/42/messages  {client_msg_id, body: "", attachment_ids: [93], animation: true}
+  → 201 {message: {…, attachments: [{id: 93, kind: "video", mime: "video/mp4", size: 182330,
+                                     width: 480, height: 270, duration_ms: 2100,
+                                     has_preview: true, animation: true}]}}
+```
+
+or, over the socket, `"animation": true` in the `send` frame. `animation: true` on the send — REST
+or the `send` frame — is what makes it one; absent, or `false`, the message is an ordinary video.
+The server stores it on the ATTACHMENT, and every read of that attachment carries
+`"animation": true` from then on, in every place `round` is carried (see "Video messages"). It is
+absent otherwise — never `false` — and it never changes.
+
+#### What the server checks
+
+In the one function REST and the socket share, in `round`'s places and order:
+
+1. `animation` beside a `poll` is `invalid_poll` (400).
+2. `animation` beside `sticker` or `round` is `validation` (400): a message is one of the three, not
+   two. Asked before any id is read.
+3. `animation` with anything but exactly ONE attachment is `invalid_attachment` (400). So an
+   animation staged beside other attachments goes in that set as the ordinary video it is, without
+   the flag: a client never splits a member's set to make one.
+4. **After the claim**, `invalid_attachment` (400) when the attachment is not a `kind=video`; when
+   its type is not `video/mp4`; when `width` or `height` is missing or below 1, or the SHORT side
+   is above 720; or when `duration_ms` is missing or below 1. The refusal takes the whole send with
+   it, and the upload stays unclaimed and good for what it is.
+
+Unlike a video message, an animation MAY carry a caption: a body is allowed, under the body's own
+rules. Its size is held only to `max_attachment_bytes`, as any video's is. The claim writes
+`animation = (requested AND kind = 'video')`, so the database's own CHECKs — `animation` only on a
+video, never beside `sticker` or `round` — can never fire inside a request; every refusal is a 400
+in the outbox's terminal list. The server decodes nothing: the size and the length are the
+sender's declaration, checked as declared.
+
+**It can be edited** like any message with an attachment (see "Editing"): the caption changes, the
+flag and the video never do.
+
+#### How it is drawn
+
+WHICH message is drawn as an animation is one test, the sticker's and the video message's: exactly
+ONE attachment, of `kind` `video`, carrying `animation: true`. Anything else is the ordinary message
+it otherwise is.
+
+An animation is drawn as a PICTURE that moves, not as a video: in the box a photograph of its
+shape would take, with no play button, no duration, no sound control and no scrubber — only a small
+**"GIF"** label in a corner, the word every messenger uses, the same in every language. It plays
+by itself, muted, and loops for ever, while it is on screen, and stops when it scrolls away. It
+shows its poster instead, still, with the label:
+
+- when the system asks for less motion — iOS and macOS Reduce Motion, Android's animations turned
+  off (`ANIMATOR_DURATION_SCALE` 0), Windows' "Animation effects" off, `prefers-reduced-motion:
+  reduce` in a browser — and then a tap plays it in its viewer;
+- and when its `size` is above **8 MiB** (8 388 608 bytes), where it plays when tapped. Below that a
+  tile DOWNLOADS the video to draw itself — the one exception to "a tile never downloads a video"
+  (see "A browser is a client too"), and the reason for the bound.
+
+A tap opens it larger, playing, muted and looping, without player controls. A chat-list row, a
+reply's quote and a push say **"GIF"** where a video's say "Video".
+
+The rest is a video's: the assistant is shown `[video]`, transcripts find no sound, reports say
+`video`, statistics count a `video`, retention, blocking and the unclaimed sweep treat it as any
+attachment, and the send path is unchanged.
+
+#### What old clients and old servers do
+
+A client that has never heard of `animation` ignores the field and draws a video with its poster,
+which plays — silently — in its viewer. A SERVER that predates animations would ignore the flag on
+a send and deliver an ordinary video, which is acceptable: unlike a video message's, an animation's
+file is an ordinary video in every respect, so no discovery key guards the flag.
 
 ### Starting a family
 

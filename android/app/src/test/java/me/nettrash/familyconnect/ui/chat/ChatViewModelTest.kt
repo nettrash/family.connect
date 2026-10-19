@@ -1761,8 +1761,8 @@ class ChatViewModelTest {
         assertThat(result).isEqualTo(ChatViewModel.PasteResult.TRUNCATED)
         assertThat(viewModel.inputState.text.length).isEqualTo(MessageBody.MAX_CHARS)
         assertThat(viewModel.awaitFailure().reason).isEqualTo(
-            RuntimeEnvironment.getApplication()
-                .getString(R.string.e_paste_truncated, MessageBody.MAX_CHARS),
+            RuntimeEnvironment.getApplication().resources
+                .getQuantityString(R.plurals.e_paste_truncated, MessageBody.MAX_CHARS, MessageBody.MAX_CHARS),
         )
     }
 

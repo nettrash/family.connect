@@ -77,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -552,8 +553,9 @@ private fun StickerLabelDialog(
                     supportingText = if (tooLong) {
                         {
                             Text(
-                                stringResource(
-                                    R.string.s_sticker_label_too_long,
+                                pluralStringResource(
+                                    R.plurals.s_sticker_label_too_long,
+                                    PackPicture.MAX_LABEL_CHARS,
                                     PackPicture.MAX_LABEL_CHARS,
                                 ),
                             )

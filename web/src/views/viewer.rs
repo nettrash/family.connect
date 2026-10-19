@@ -15,6 +15,7 @@ use yew::prelude::*;
 
 use crate::media::{download, use_media, Variant};
 use crate::model::Attachment;
+use crate::views::animation::AnimationView;
 use crate::views::attachments::file_name;
 
 /// The zoom a photo may go to.
@@ -68,7 +69,13 @@ pub fn viewer(props: &ViewerProps) -> Html {
     let close = props.on_close.reform(|_: MouseEvent| ());
     let previous = (index > 0).then(|| props.on_step.reform(move |_: MouseEvent| index - 1));
     let next = (index + 1 < count).then(|| props.on_step.reform(move |_: MouseEvent| index + 1));
-    let title = fc_text::media::display_name(&item.kind, item.name.as_deref()).into_owned();
+    // An animation is drawn as a picture that moves, and named as one.
+    let animation = item.kind == "video" && item.animation;
+    let title = if animation {
+        t("GIF").to_string()
+    } else {
+        fc_text::media::display_name(&item.kind, item.name.as_deref()).into_owned()
+    };
 
     html! {
         <div class="viewer" role="dialog" aria-modal="true" aria-label={title.clone()}
@@ -85,7 +92,9 @@ pub fn viewer(props: &ViewerProps) -> Html {
                 if let Some(previous) = previous {
                     <button class="viewer-arrow is-previous" onclick={previous} aria-label={t("Previous")}>{ "‹" }</button>
                 }
-                if item.kind == "video" {
+                if animation {
+                    <AnimationView key={item.id} attachment={item.clone()} />
+                } else if item.kind == "video" {
                     <VideoView key={item.id} attachment={item.clone()} />
                 } else {
                     <PhotoView key={item.id} attachment={item.clone()} />

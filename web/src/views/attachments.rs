@@ -20,6 +20,7 @@ use yew::prelude::*;
 use crate::awake::ScreenAwake;
 use crate::media::{download, use_media, MediaLoader, Variant};
 use crate::model::Attachment;
+use crate::views::animation::AnimationTile;
 use crate::views::attach::{phone_like, PLAY_AFTER};
 use crate::views::quiet::{use_quiet, use_quiet_explain, LiveRegion};
 
@@ -76,6 +77,14 @@ pub fn attachment_stack(props: &StackProps) -> Html {
         .filter(|attachment| !media::is_media(&attachment.kind))
         .cloned()
         .collect();
+    // AN ANIMATION — the one test every client shares: exactly one
+    // attachment, a video, carrying `animation: true` — is drawn as a
+    // picture that moves (docs/protocol.md, "Animations"), with no text
+    // under it: it is silent by construction.
+    let animation = match props.attachments.as_slice() {
+        [only] if only.kind == "video" && only.animation => Some(only.clone()),
+        _ => None,
+    };
     let open = |index: usize| {
         let on_open = props.on_open.clone();
         let media = media.clone();
@@ -89,7 +98,7 @@ pub fn attachment_stack(props: &StackProps) -> Html {
     let videos: Vec<(usize, i64)> = media
         .iter()
         .enumerate()
-        .filter(|(_, attachment)| attachment.kind == "video")
+        .filter(|(_, attachment)| attachment.kind == "video" && animation.is_none())
         .map(|(index, attachment)| (index + 1, attachment.id))
         .collect();
     let marked = videos.len() >= 2;
@@ -109,7 +118,9 @@ pub fn attachment_stack(props: &StackProps) -> Html {
     });
     html! {
         <div class="attachments">
-            if media.len() >= 2 {
+            if let Some(animation) = animation {
+                <AnimationTile attachment={animation} mine={props.mine} on_open={open(0)} />
+            } else if media.len() >= 2 {
                 <Album items={media.clone()} mine={props.mine} on_open={open(0)} />
             } else if let Some(single) = media.first() {
                 <Tile attachment={single.clone()} mine={props.mine} on_open={open(0)} />

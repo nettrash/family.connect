@@ -614,6 +614,9 @@ class FakeChatApi : ChatApi {
     /** Every send's `round` flag, in order — null when the key was omitted (#79). */
     val postedRoundFlags = mutableListOf<Boolean?>()
 
+    /** Every send's `animation` flag, in order — null when the key was omitted (#96). */
+    val postedAnimationFlags = mutableListOf<Boolean?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -624,9 +627,11 @@ class FakeChatApi : ChatApi {
         mentions: List<MentionDto>?,
         sticker: Boolean?,
         round: Boolean?,
+        animation: Boolean?,
     ): ApiResult<MessageResponse> {
         postedStickerFlags += sticker
         postedRoundFlags += round
+        postedAnimationFlags += animation
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
@@ -1467,6 +1472,13 @@ class FakePosterCache : PosterCache {
 
     override suspend fun notePosterUpload(attachmentId: Long, landed: Boolean) {
         noted += attachmentId to landed
+    }
+
+    /** The attachment ids whose ORIGINAL bytes the sender kept (a sticker's, an animation's). */
+    val originals = mutableListOf<Long>()
+
+    override suspend fun seedOriginal(attachmentId: Long, source: File) {
+        originals += attachmentId
     }
 }
 

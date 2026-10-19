@@ -165,6 +165,18 @@ pub fn quotes_round(message: &Message, held: &[Message]) -> bool {
     })
 }
 
+/// Whether `message` answers an ANIMATION among `held` — its quote then
+/// says "GIF" where it has no words of its own (docs/protocol.md,
+/// "Animations"). A quoted message this client does not hold says what the
+/// server's excerpt says.
+pub fn quotes_animation(message: &Message, held: &[Message]) -> bool {
+    message.reply_to.as_ref().is_some_and(|quote| {
+        held.iter().any(|other| {
+            other.id == quote.message_id && other.id != 0 && other.animation().is_some()
+        })
+    })
+}
+
 #[function_component(Conversation)]
 pub fn conversation(props: &ConversationProps) -> Html {
     let chat_id = props.item.chat.id;
@@ -480,6 +492,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
             } else if message.round_video().is_some() {
                 // No words to quote: what it is (S5.7).
                 t("Video message").to_string()
+            } else if message.body.is_empty() && message.animation().is_some() {
+                // An animation with no caption: what it is (#96).
+                t("GIF").to_string()
             } else {
                 crate::store::excerpt(&message.body)
             },
@@ -623,6 +638,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
             if files.is_empty() {
                 return;
             }
+            // An animated picture becomes a looping video in every chat but
+            // the assistant's, whose model is shown a photograph (#96).
+            let assistant = is_ai;
             if let Some(reason) = busy.clone() {
                 media_notice.set(Some(reason));
                 return;
@@ -658,7 +676,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         ));
                         break;
                     }
-                    let prepared = prep::prepare(&file, &batch).await;
+                    let prepared = if assistant {
+                        prep::prepare_for_assistant(&file, &batch).await
+                    } else {
+                        prep::prepare(&file, &batch).await
+                    };
                     // Cancelled, like gone: whoever cancelled has already
                     // put the composer back, and may have started another
                     // batch since — this one touches nothing more.
@@ -1629,6 +1651,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     {quote_revealed}
                                     {parent_revealed}
                                     quote_round={quotes_round(message, &props.messages)}
+                                    quote_animation={quotes_animation(message, &props.messages)}
                                     hidden={row.hidden && !revealed}
                                     shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
                                     sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}

@@ -140,6 +140,30 @@ interface MessageDao {
     @Query("UPDATE messages SET attachmentsKnowRound = 1 WHERE clientMsgId = :clientMsgId")
     suspend fun markRoundFlagKnown(clientMsgId: String)
 
+    /**
+     * Rows a build from before #96 cached that could be ANIMATIONS: the set's
+     * first attachment a video, on the server, and the set not yet known to
+     * carry the flag (docs/protocol.md, "Animations"). Unlike a video
+     * message an animation may carry a caption, so the body is not asked.
+     * Newest first, as [roundFlagUnknown]; "exactly one attachment" is the
+     * caller's to check — see `MessageRepository.repairUnknownAnimationFlags`.
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE attachmentsKnowAnimation = 0
+          AND attachmentKind = 'video'
+          AND serverId IS NOT NULL
+        ORDER BY serverId DESC
+        LIMIT :limit
+        """,
+    )
+    suspend fun animationFlagUnknown(limit: Int): List<MessageEntity>
+
+    /** Settle a row [animationFlagUnknown] returned: it is never asked about again. */
+    @Query("UPDATE messages SET attachmentsKnowAnimation = 1 WHERE clientMsgId = :clientMsgId")
+    suspend fun markAnimationFlagKnown(clientMsgId: String)
+
     @Query("SELECT * FROM messages WHERE serverId = :serverId")
     suspend fun findByServerId(serverId: Long): MessageEntity?
 
@@ -213,7 +237,8 @@ interface MessageDao {
             attachmentLongitude = :longitude,
             attachmentAccuracyM = :accuracyM,
             attachmentsJson = :attachmentsJson,
-            attachmentsKnowRound = 1
+            attachmentsKnowRound = 1,
+            attachmentsKnowAnimation = 1
         WHERE clientMsgId = :clientMsgId
         """,
     )
@@ -277,7 +302,8 @@ interface MessageDao {
             attachmentLongitude = :longitude,
             attachmentAccuracyM = :accuracyM,
             attachmentsJson = :attachmentsJson,
-            attachmentsKnowRound = 1
+            attachmentsKnowRound = 1,
+            attachmentsKnowAnimation = 1
         WHERE serverId = :serverId AND :editSeq >= editSeq
         """,
     )
@@ -370,7 +396,8 @@ interface MessageDao {
      */
     @Query(
         "UPDATE messages SET attachmentId = :attachmentId, attachmentsJson = :attachmentsJson, " +
-            "attachmentsKnowRound = 1 WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
+            "attachmentsKnowRound = 1, attachmentsKnowAnimation = 1 " +
+            "WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
     )
     suspend fun applyOwnAttachments(clientMsgId: String, attachmentId: Long, attachmentsJson: String)
 

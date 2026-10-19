@@ -72,6 +72,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.Observer
 import java.io.File
+import androidx.core.graphics.get
 
 /**
  * The lifecycle CameraX is bound to: the recorder's, not any activity's.
@@ -147,7 +148,7 @@ class CameraXSession(context: Context) : CameraSession {
             while (y < frame.height) {
                 var x = 0
                 while (x < frame.width) {
-                    sum += RoundRecorderRules.luma(frame.getPixel(x, y))
+                    sum += RoundRecorderRules.luma(frame[x, y])
                     count++
                     x += stepX
                 }

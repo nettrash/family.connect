@@ -4082,6 +4082,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            animation: false,
             waveform: None,
         }
     }

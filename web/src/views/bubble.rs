@@ -132,6 +132,10 @@ pub struct BubbleProps {
     /// #79, S5.7). The quote itself carries only the server's excerpt.
     #[prop_or_default]
     pub quote_round: bool,
+    /// The quoted message is an animation this client holds — its quote,
+    /// where it has no caption, says "GIF" (docs/protocol.md, "Animations").
+    #[prop_or_default]
+    pub quote_animation: bool,
     pub shows_sender: bool,
     /// The sender's `avatar_version`, for the picture beside their name at
     /// the head of a run — 0, and initials, for anybody the roster does not
@@ -367,6 +371,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     <span class="quote-text">
                         if quote.excerpt.is_empty() && props.quote_round {
                             { t("Video message") }
+                        } else if quote.excerpt.is_empty() && props.quote_animation {
+                            { t("GIF") }
                         } else {
                             { &quote.excerpt }
                         }
@@ -1022,6 +1028,7 @@ mod tests {
             quote_revealed: false,
             parent_revealed: false,
             quote_round: false,
+            quote_animation: false,
             shows_sender: true,
             run_end: true,
             seen: false,
@@ -2198,6 +2205,109 @@ mod tests {
         assert!(!crate::views::conversation::quotes_round(&reply, &[]));
     }
 
+    fn animation(id: i64, flagged: bool) -> crate::model::Attachment {
+        crate::model::Attachment {
+            id,
+            kind: "video".into(),
+            mime: Some("video/mp4".into()),
+            size: Some(182_330),
+            width: Some(480),
+            height: Some(270),
+            duration_ms: Some(2_100),
+            has_preview: true,
+            animation: flagged,
+            ..Default::default()
+        }
+    }
+
+    /// AN ANIMATION IS DRAWN AS A PICTURE THAT MOVES (docs/protocol.md,
+    /// "Animations"): a photo's box with "GIF" in its corner — no play
+    /// button, no duration — caption or not; the same video without the flag
+    /// is the ordinary video tile. A reply quoting one with no caption says
+    /// "GIF".
+    #[wasm_bindgen_test]
+    async fn an_animation_is_a_tile_that_says_gif_and_so_does_its_quote() {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let mut sent = message(1600, ANNA, "");
+        sent.attachments = Some(vec![animation(93, true)]);
+        let (root, handle) = render(props(sent.clone(), actions.clone())).await;
+        let tile = root
+            .query_selector(".tile.is-animation")
+            .unwrap()
+            .expect("drawn as an animation");
+        assert_eq!(
+            tile.query_selector(".gif-label")
+                .unwrap()
+                .and_then(|label| label.text_content())
+                .as_deref(),
+            Some("GIF")
+        );
+        assert!(
+            tile.query_selector(".play").unwrap().is_none(),
+            "no play button"
+        );
+        assert_eq!(
+            tile.get_attribute("aria-label").as_deref(),
+            Some("Open GIF")
+        );
+        assert!(
+            tile.get_attribute("style")
+                .unwrap_or_default()
+                .contains("aspect-ratio:320/180"),
+            "a photo's box of its shape"
+        );
+        handle.destroy();
+        root.remove();
+
+        let mut captioned = sent.clone();
+        captioned.body = "look at him go".into();
+        let (root, handle) = render(props(captioned, actions.clone())).await;
+        assert!(root.query_selector(".tile.is-animation").unwrap().is_some());
+        assert!(text(&root).contains("look at him go"));
+        handle.destroy();
+        root.remove();
+
+        let mut plain = sent.clone();
+        plain.attachments = Some(vec![animation(93, false)]);
+        let (root, handle) = render(props(plain.clone(), actions.clone())).await;
+        assert!(root.query_selector(".tile.is-animation").unwrap().is_none());
+        assert!(
+            root.query_selector(".tile .play").unwrap().is_some(),
+            "a video"
+        );
+        handle.destroy();
+        root.remove();
+
+        let mut reply = message(1606, ME, "ha");
+        reply.reply_to = Some(crate::model::ReplyTo {
+            message_id: 1600,
+            sender_id: ANNA,
+            excerpt: String::new(),
+            parent: None,
+        });
+        let mut quoting = props(reply.clone(), actions.clone());
+        quoting.quote_animation = true;
+        let (root, handle) = render(quoting).await;
+        assert_eq!(
+            root.query_selector(".quote .quote-text")
+                .unwrap()
+                .and_then(|text| text.text_content())
+                .as_deref(),
+            Some("GIF")
+        );
+        handle.destroy();
+        root.remove();
+        assert!(crate::views::conversation::quotes_animation(
+            &reply,
+            &[sent]
+        ));
+        assert!(!crate::views::conversation::quotes_animation(
+            &reply,
+            &[plain]
+        ));
+        assert!(!crate::views::conversation::quotes_animation(&reply, &[]));
+    }
+
     impl BubbleProps {
         fn clone_for_test(&self) -> BubbleProps {
             BubbleProps {
@@ -2211,6 +2321,7 @@ mod tests {
                 quote_revealed: self.quote_revealed,
                 parent_revealed: self.parent_revealed,
                 quote_round: self.quote_round,
+                quote_animation: self.quote_animation,
                 shows_sender: self.shows_sender,
                 run_end: self.run_end,
                 seen: self.seen,

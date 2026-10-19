@@ -847,7 +847,7 @@ struct MacMessageRow: View {
                 TranscriptSection(
                     attachment: attachment, subject: transcriptSubject, isMine: attachmentsOnTint)
             }
-        } else if attachment.isVideo {
+        } else if attachment.isVideo, !attachment.isAnimation {
             // A video's text sits under its tile, outside the tile's drag
             // and click pair, as a voice note's sits under its player.
             VStack(alignment: .leading, spacing: 4) {
@@ -1504,6 +1504,8 @@ private struct MacAttachmentBlock: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
             .hoverCursor(.pointingHand)
+        } else if attachment.isAnimation {
+            animationTile
         } else if let image = Self.bubbleImage(for: attachment, in: store) {
             // Sized from the attachment's METADATA, as the phone's tile is,
             // not from whatever width the row happened to be proposed: a
@@ -1558,6 +1560,40 @@ private struct MacAttachmentBlock: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
         }
+    }
+
+    /// An ANIMATION (#96): a picture that moves, in the box a photo of its
+    /// shape takes — the poster, its video over it, muted and looping while
+    /// on screen, and the small "GIF". No play button, no duration. Sized
+    /// from metadata whether or not the poster is here yet, so the row does
+    /// not change height when it lands.
+    private var animationTile: some View {
+        let poster = Self.bubbleImage(for: attachment, in: store)
+        return ZStack {
+            LinearGradient(
+                colors: isMine
+                    ? [.white.opacity(0.22), .white.opacity(0.10)]
+                    : [.primary.opacity(0.10), .primary.opacity(0.04)],
+                startPoint: .top, endPoint: .bottom)
+            if let poster {
+                poster
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+            AnimationSurface(attachment: attachment, cornerRadius: 12)
+            AnimationBadge()
+        }
+        .frame(width: tileSize.width, height: tileSize.height)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            if MessagePresentation.drawsHairline(onBalloon: onBalloon, hasImage: poster != nil) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08))
+            }
+        }
+        .hoverCursor(.pointingHand)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("GIF"))
     }
 }
 

@@ -369,6 +369,17 @@ data class MessageEntity(
      * set (the ack, an edit, an own send's uploads) set it too.
      */
     @ColumnInfo(defaultValue = "0") val attachmentsKnowRound: Boolean = true,
+    /**
+     * The same question for the ANIMATION flag (`animation`, #96;
+     * docs/protocol.md, "Animations"): whether the stored set was written by
+     * a build that reads it. A build before it cached an animation another
+     * client sent as a plain video, for good — the catch-up only ever adds —
+     * so `MessageRepository.repairUnknownAnimationFlags` reads the false rows
+     * that could be one again. SQL default 0 (every row an older build wrote,
+     * as MIGRATION_32_33 leaves it), Kotlin default TRUE (every entity this
+     * build constructs holds a set it decoded), exactly as [attachmentsKnowRound].
+     */
+    @ColumnInfo(defaultValue = "0") val attachmentsKnowAnimation: Boolean = true,
 ) {
     /** The wire shape back out of the call columns, or null for a message that is not a call. */
     val call: CallDto?

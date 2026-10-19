@@ -284,14 +284,19 @@ sealed interface ChatListItem {
         /** Visually-bottom bubble of a same-sender same-day run. */
         val isRunEnd: Boolean = true,
         /**
-         * The QUOTED message is a video message this list holds (#79,
-         * S5.7), so the quote says "Video message" — the server's excerpt
-         * is its body, which a circle never has. False when the quoted
-         * message is not loaded: the quote then says what it always said.
+         * What the QUOTED message is when it is a kind of message with no
+         * words of its own and this list holds it: a video message (#79,
+         * S5.7), an animation (#96) or a sticker. Its quote then names it —
+         * "Video message", "GIF", "Sticker" — where the server's excerpt, its
+         * empty body, would leave a blank line. Null when the quoted message
+         * is none of these or is not loaded: the quote says what it always said.
          */
-        val quotesRound: Boolean = false,
+        val quotedMedia: QuotedMedia? = null,
     ) : ChatListItem {
         override val key: String get() = entity.clientMsgId
+
+        /** The QUOTED message is a video message this list holds (#79, S5.7). */
+        val quotesRound: Boolean get() = quotedMedia == QuotedMedia.VIDEO_MESSAGE
 
         /** My current reaction, if any (one per user per message). */
         val myReaction: String? get() = reactionChips.firstOrNull { it.includesMe }?.emoji
@@ -356,8 +361,10 @@ fun buildChatItems(
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
     // The video messages this page holds, by server id, for the quotes that
     // name one (#79, S5.7). Usually empty, so usually free.
-    val roundIds = messagesNewestFirst.mapNotNullTo(HashSet()) { message ->
-        message.serverId?.takeIf { roundOf(message) != null }
+    val quotable = HashMap<Long, QuotedMedia>()
+    messagesNewestFirst.forEach { message ->
+        val serverId = message.serverId ?: return@forEach
+        quotedMediaOf(message)?.let { quotable[serverId] = it }
     }
     messagesNewestFirst.forEachIndexed { index, message ->
         val newer = messagesNewestFirst.getOrNull(index - 1)
@@ -390,7 +397,7 @@ fun buildChatItems(
             isParentHidden = BlockedMessageRule.isQuoteHidden(
                 message.replyParentSenderId, myUserId, blockedUserIds,
             ),
-            quotesRound = message.replyToMessageId?.let { it in roundIds } == true,
+            quotedMedia = message.replyToMessageId?.let { quotable[it] },
             // A hidden row draws no name and no avatar. The flag above is
             // what the bubble reads; this keeps the two from disagreeing
             // if some other surface reads `showSenderName` alone.
@@ -511,6 +518,31 @@ fun roundOf(entity: MessageEntity): AttachmentDto? {
 }
 
 /**
+ * The video of a message sent as an ANIMATION, drawn as a picture that moves,
+ * or null when the message is not one (#96; docs/protocol.md, "Animations" →
+ * "How it is drawn").
+ *
+ * THE TEST, the sticker's and the video message's: exactly ONE attachment,
+ * `kind=video`, carrying `animation: true`. The body is not asked — an
+ * animation may carry a caption. Anything else is the ordinary message it
+ * otherwise is, and a row cached before the field existed is the video it
+ * always was until the resync repair reads it again.
+ */
+fun animationOf(entity: MessageEntity): AttachmentDto? =
+    entity.attachmentList.singleOrNull()?.takeIf { it.isAnimation }
+
+/** A message with no words of its own that a quote names instead (#79, #96). */
+enum class QuotedMedia { VIDEO_MESSAGE, GIF, STICKER }
+
+/** What a quote of [entity] names when its excerpt is empty, or null for an ordinary message. */
+fun quotedMediaOf(entity: MessageEntity): QuotedMedia? = when {
+    roundOf(entity) != null -> QuotedMedia.VIDEO_MESSAGE
+    animationOf(entity) != null -> QuotedMedia.GIF
+    stickerOf(entity) != null -> QuotedMedia.STICKER
+    else -> null
+}
+
+/**
  * Whether "Edit" is offered on a message: the reader's own, once the server
  * has it — and NEVER A STICKER OR A VIDEO MESSAGE.
  *
@@ -602,6 +634,14 @@ fun drawsHairline(onBalloon: Boolean, hasImage: Boolean): Boolean = onBalloon ||
  * banner, which says "Video message" where a circle's empty excerpt would
  * leave a blank line (#79, S5.7). False when the message is not loaded.
  */
-fun quotesRound(items: List<ChatListItem>, messageId: Long): Boolean = items.any { item ->
-    item is ChatListItem.MessageItem && item.entity.serverId == messageId && roundOf(item.entity) != null
+fun quotesRound(items: List<ChatListItem>, messageId: Long): Boolean =
+    quotedMedia(items, messageId) == QuotedMedia.VIDEO_MESSAGE
+
+/**
+ * What [messageId] is in [items] when a quote of it should name it — a video
+ * message, an animation or a sticker (#79, #96) — for the reply banner. Null
+ * when it is an ordinary message or is not loaded.
+ */
+fun quotedMedia(items: List<ChatListItem>, messageId: Long): QuotedMedia? = items.firstNotNullOfOrNull { item ->
+    (item as? ChatListItem.MessageItem)?.entity?.takeIf { it.serverId == messageId }?.let(::quotedMediaOf)
 }

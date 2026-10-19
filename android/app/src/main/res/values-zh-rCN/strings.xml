@@ -253,7 +253,9 @@
     <string name="s_new_message">新消息</string>
     <string name="e_finish_editing_first">请先完成这条消息的编辑。</string>
     <string name="e_message_at_limit">消息已经达到 %1$d 个字符的上限。</string>
-    <string name="e_paste_truncated">一条消息最多 %1$d 个字符。其余内容没有粘贴。</string>
+    <plurals name="e_paste_truncated">
+        <item quantity="other">一条消息最多 %1$d 个字符。其余内容没有粘贴。</item>
+    </plurals>
     <plurals name="s_n_new_messages">
         <item quantity="other">%1$d 条新消息</item>
     </plurals>
@@ -295,10 +297,14 @@
     <string name="s_flip_camera">切换摄像头</string>
     <string name="e_camera_permission">Family 需要使用相机的权限。</string>
     <string name="s_video_calls_are_off_on_this_server">此服务器已关闭视频通话</string>
-    <string name="e_attachment_limit">一条消息最多只能携带 %1$d 个附件。</string>
+    <plurals name="e_attachment_limit">
+        <item quantity="other">一条消息最多只能携带 %1$d 个附件。</item>
+    </plurals>
     <string name="s_share_choose_chat">分享到…</string>
     <string name="s_shared_with_family">分享给 Family</string>
-    <string name="e_share_too_many">只保留了前 %1$d 项。</string>
+    <plurals name="e_share_too_many">
+        <item quantity="other">只保留了前 %1$d 项。</item>
+    </plurals>
     <string name="e_share_unavailable">请先加入家庭，然后再分享到这里。</string>
     <string name="e_share_failed">无法读取分享的内容。</string>
     <string name="s_no_connection">无网络连接</string>
@@ -385,9 +391,15 @@
     <string name="s_member_limit">成员数量上限</string>
     <string name="s_limit_members">限制成员数量</string>
     <string name="s_most_members">最多成员</string>
-    <string name="s_member_limit_none">你没有设置上限。此服务器允许每个家庭最多 %1$d 名成员。</string>
-    <string name="s_member_limit_frozen">当前有 %1$d 名成员。在有人离开前无人可加入；不会移除任何人。</string>
-    <string name="s_member_limit_room">已使用 %2$d 个名额中的 %1$d 个。</string>
+    <plurals name="s_member_limit_none">
+        <item quantity="other">你没有设置上限。此服务器允许每个家庭最多 %1$d 名成员。</item>
+    </plurals>
+    <plurals name="s_member_limit_frozen">
+        <item quantity="other">当前有 %1$d 名成员。在有人离开前无人可加入；不会移除任何人。</item>
+    </plurals>
+    <plurals name="s_member_limit_room">
+        <item quantity="other">已使用 %2$d 个名额中的 %1$d 个。</item>
+    </plurals>
     <string name="s_decrease">减少</string>
     <string name="s_increase">增加</string>
     <string name="e_member_limit_failed">无法更改成员上限，请重试。</string>
@@ -500,7 +512,9 @@
     </plurals>
     <string name="s_mentions_you">提到了你</string>
     <string name="s_mention_member">提及%1$s</string>
-    <string name="s_note_characters_left">还剩%1$d个字符</string>
+    <plurals name="s_note_characters_left">
+        <item quantity="other">还剩%1$d个字符</item>
+    </plurals>
     <string name="s_your_note">你的便签</string>
     <string name="s_note_preview">预览</string>
     <string name="s_font">字体</string>
@@ -513,12 +527,17 @@
     <string name="s_rsvp_going">参加</string>
     <string name="s_rsvp_maybe">也许</string>
     <string name="s_rsvp_no">去不了</string>
-    <string name="s_rsvp_going_count">%1$d人参加</string>
-    <string name="s_rsvp_maybe_count">%1$d人也许</string>
-    <string name="s_rsvp_going_maybe_count">%1$d人参加、%2$d人也许</string>
+    <plurals name="s_rsvp_going_count">
+        <item quantity="other">%1$d人参加</item>
+    </plurals>
+    <plurals name="s_rsvp_maybe_count">
+        <item quantity="other">%1$d人也许</item>
+    </plurals>
+    <plurals name="s_rsvp_going_maybe_count">
+        <item quantity="other">%1$d人参加、%2$d人也许</item>
+    </plurals>
     <string name="s_add_event">添加活动</string>
     <string name="s_event_when">时间</string>
-    <string name="s_event_where">地点</string>
     <string name="s_event_place">地点</string>
     <string name="s_event_has_end">有结束时间</string>
     <string name="s_event_starts">开始</string>
@@ -528,14 +547,14 @@
     <string name="s_event">活动</string>
     <string name="s_list">清单</string>
     <string name="s_new_list">新建清单</string>
-    <string name="s_add_list">添加清单</string>
     <string name="s_add_task_list">添加待办清单</string>
     <string name="s_things_to_do">待办事项</string>
     <string name="s_thing_to_do">待办事项</string>
     <string name="s_add_a_thing">添加一项</string>
     <string name="s_nothing_on_this_list">这个清单里还没有内容。</string>
-    <string name="s_your_list">你的清单</string>
-    <string name="s_tasks_done_of">已完成 %2$d 项中的 %1$d 项</string>
+    <plurals name="s_tasks_done_of">
+        <item quantity="other">已完成 %2$d 项中的 %1$d 项</item>
+    </plurals>
     <string name="s_done">完成</string>
     <plurals name="s_more_things">
         <item quantity="other">还有 %1$d 项</item>
@@ -591,7 +610,9 @@
     <string name="s_sticker_add_failed">无法添加贴纸，请重试。</string>
     <string name="s_sticker_unreadable">无法读取这张图片。</string>
     <string name="s_sticker_animated_must_be_webp">动态贴纸必须是 WebP 格式。无法添加这一张。</string>
-    <string name="s_sticker_label_too_long">描述最多 %1$d 个字符。</string>
+    <plurals name="s_sticker_label_too_long">
+        <item quantity="other">描述最多 %1$d 个字符。</item>
+    </plurals>
     <string name="s_sticker_remove_not_allowed">只有添加贴纸的人或家庭所有者可以移除它。</string>
     <string name="s_sticker_remove_failed">无法移除贴纸，请重试。</string>
     <string name="s_sticker_not_available_offline">这张贴纸还不在这部手机上。联网后再试一次。</string>

@@ -30,6 +30,12 @@
 //! - [`media_plan`] — what a picked video or sound file becomes before it is
 //!   uploaded: kept, or transcoded to the protocol's profile and to exactly
 //!   which numbers — the rules every port is held to by the oracle's vectors.
+//! - [`animation`] — an animated GIF, WebP or PNG sent as a silent looping
+//!   video (#96): which frame shows when on the 30-a-second grid, the size
+//!   and the bitrate, held to the oracle's vectors like `media_plan`.
+//! - [`animation_source`] — what an animated GIF, WebP or PNG states about
+//!   itself (its canvas, each frame's delay), read from its bytes for the
+//!   plan; and the test for which message is drawn as an animation.
 //! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
 //! - [`account`] — usernames, passwords, names, invite codes, birthdays, the
 //!   family's languages and the owner's member cap, by the server's rules.
@@ -77,6 +83,8 @@
 //!   draws them as bars — held to every port by the oracle's vectors.
 
 pub mod account;
+pub mod animation;
+pub mod animation_source;
 pub mod assistant;
 pub mod assistant_consent;
 pub mod assistant_pictures;

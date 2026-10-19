@@ -50,7 +50,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioManager
-import android.net.Uri
+import androidx.core.net.toUri
 import android.telecom.DisconnectCause
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -248,7 +248,7 @@ class TelecomCalls @Inject constructor(
                 displayName = name,
                 // The member, in the app's own namespace — what the call
                 // log shows as the "number" when it cannot show the name.
-                address = Uri.parse("$ADDRESS_SCHEME:${live.peerUserId}"),
+                address = "$ADDRESS_SCHEME:${live.peerUserId}".toUri(),
                 direction = if (incoming) CallAttributesCompat.DIRECTION_INCOMING else CallAttributesCompat.DIRECTION_OUTGOING,
                 callType = if (live.video) CallAttributesCompat.CALL_TYPE_VIDEO_CALL else CallAttributesCompat.CALL_TYPE_AUDIO_CALL,
                 callCapabilities = CallAttributesCompat.SUPPORTS_SET_INACTIVE,

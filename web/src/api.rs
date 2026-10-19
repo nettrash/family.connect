@@ -281,6 +281,10 @@ struct SendRequest<'a> {
     /// messages"): left out when it is not one, never sent as `false`.
     #[serde(skip_serializing_if = "is_false")]
     round: bool,
+    /// What makes the message an animation (docs/protocol.md, "Animations"):
+    /// left out when it is not one, never sent as `false`.
+    #[serde(skip_serializing_if = "is_false")]
+    animation: bool,
 }
 
 fn is_false(flag: &bool) -> bool {
@@ -993,6 +997,7 @@ fn send_request(row: &Outgoing) -> SendRequest<'_> {
             .collect(),
         sticker: row.sticker,
         round: row.round,
+        animation: row.animation,
     }
 }
 
@@ -1730,6 +1735,7 @@ mod tests {
             items: Vec::new(),
             sticker: false,
             round: false,
+            animation: false,
             attempts: 0,
             failed: None,
         }
@@ -1815,6 +1821,27 @@ mod tests {
         assert!(encode(&row()).get("round").is_none());
         round.round = false;
         assert!(encode(&round).get("round").is_none());
+    }
+
+    /// An animation is one video and one flag — with its caption, which an
+    /// animation may carry — and the flag is left out of every other send,
+    /// never sent as `false` (docs/protocol.md, "Animations").
+    #[wasm_bindgen_test]
+    fn an_animation_send_carries_the_flag_and_its_caption() {
+        let mut animation = row();
+        animation.body = "look at him go".into();
+        animation.animation = true;
+        let mut video = item("video", -1);
+        video.attachment_id = Some(93);
+        animation.items = vec![video];
+        assert_eq!(
+            encode(&animation),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "look at him go",
+                               "attachment_ids": [93], "animation": true})
+        );
+        assert!(encode(&row()).get("animation").is_none());
+        animation.animation = false;
+        assert!(encode(&animation).get("animation").is_none());
     }
 
     /// The pack's three answers, in the protocol's shapes: the whole pack

@@ -9,8 +9,18 @@
     URL is http://. TLS servers still validate against the system trust
     anchors as usual.
 -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <!--
+        Lint's InsecureBaseConfiguration is suppressed HERE, for this one
+        element, on purpose: cleartext at the base is the feature, not an
+        oversight (see above). A <domain-config> cannot name a host the
+        family types in at run time, and Android's config has no way to
+        say "private addresses only" — so narrowing it would break every
+        family that runs its server over plain http on its own network.
+    -->
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

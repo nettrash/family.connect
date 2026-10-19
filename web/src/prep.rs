@@ -46,6 +46,7 @@ use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use fc_text::animation_source::{self, Format};
 use fc_text::avatar;
 use fc_text::media::{self, Route};
 use fc_text::media_plan::{self, AudioPlan, Upload};
@@ -90,12 +91,40 @@ impl PrepError {
     }
 }
 
-/// Prepare one picked, dropped or pasted file. `job` is how the caller
-/// stops it and hears how far it has got — a video outside the profile is
-/// transcoded here, which for a long clip is minutes.
+/// Prepare one picked, dropped or pasted file for a chat. `job` is how the
+/// caller stops it and hears how far it has got — a video outside the
+/// profile is transcoded here, which for a long clip is minutes, and so is
+/// an animated picture made into a video.
 pub async fn prepare(file: &File, job: &Job) -> Result<Prepared, PrepError> {
+    prepared(file, job, true).await
+}
+
+/// [`prepare`], for the ASSISTANT's chat: an animated picture goes exactly as
+/// it did before animations — the model is shown a photograph, never a
+/// video (docs/protocol.md, "What becomes one").
+pub async fn prepare_for_assistant(file: &File, job: &Job) -> Result<Prepared, PrepError> {
+    prepared(file, job, false).await
+}
+
+async fn prepared(file: &File, job: &Job, animates: bool) -> Result<Prepared, PrepError> {
     let name = file.name();
     let head = head(file, 12).await;
+    // An animated GIF, WebP or PNG becomes the protocol's silent looping
+    // video (#96). Where this browser cannot make one it goes exactly as it
+    // went before #96 (rule C) — by the routes below, which send a GIF or a
+    // WebP as the file it is and a PNG as a photograph — and so does a
+    // still one, as ever.
+    if animates {
+        if let Some(format) = media::animation_candidate(&file.type_(), &name, &head) {
+            if moves(file, format).await {
+                match animation(file, job).await {
+                    Some(prepared) => return Ok(prepared),
+                    None if job.stopped() => return Err(PrepError::Cancelled),
+                    None => {}
+                }
+            }
+        }
+    }
     match media::route(&file.type_(), &name, &head) {
         Route::Photo => photo(file).await,
         Route::Video => video(file, job).await,
@@ -212,6 +241,73 @@ const STICKER_HEAD: i32 = 64 * 1024;
 /// (fc_text::pack::is_animated).
 const GIF_READ: i32 = 32 * 1024 * 1024;
 
+/// Whether a picked GIF, WebP or PNG MOVES, by its own statement
+/// (fc_text::pack::is_animated): a WebP's flag and a PNG's `acTL` are near
+/// the front; a GIF is read whole, up to [`GIF_READ`].
+async fn moves(file: &Blob, format: Format) -> bool {
+    let read = match format {
+        Format::Gif => GIF_READ,
+        Format::Webp | Format::Png => STICKER_HEAD,
+    };
+    pack::is_animated(&head(file, read).await)
+}
+
+/// The largest animated picture this client makes a video of. Its bytes
+/// are read whole — the delays are walked out of them and the decoder is
+/// handed them — and a picture larger than this goes as the file it is
+/// (rule C).
+const ANIMATION_READ: f64 = 64.0 * 1024.0 * 1024.0;
+
+/// An animated picture as the protocol's silent looping video
+/// (docs/protocol.md, "Animations"): the delays its bytes state, timed by
+/// fc_text::animation, its frames composited and encoded by
+/// crate::encode::animation, its poster the first frame as a JPEG. None is
+/// rule C: this browser could not, or the picture states no size or frame
+/// — and the caller sends the picture exactly as it went before. The result
+/// is never re-planned and rule D does not apply: a video is the only way
+/// an animation is drawn as one.
+async fn animation(file: &File, job: &Job) -> Option<Prepared> {
+    if file.size() > ANIMATION_READ {
+        return None;
+    }
+    let buffer = JsFuture::from(file.array_buffer()).await.ok()?;
+    let bytes = js_sys::Uint8Array::new(&buffer);
+    let statement = animation_source::read(&bytes.to_vec())?;
+    let plan = fc_text::animation::plan(statement.width, statement.height, &statement.stated_ms)?;
+    let made = encode::animation::animation(
+        &bytes,
+        statement.format.mime(),
+        statement.stated_ms.len(),
+        &plan,
+        job,
+    )
+    .await?;
+    if within_limit(&made.blob).is_err() {
+        return None;
+    }
+    let (preview_width, preview_height) =
+        media::fit_within(plan.width, plan.height, media::PREVIEW_EDGE);
+    let preview = draw_jpeg(
+        &Source::Canvas(&made.first),
+        preview_width,
+        preview_height,
+        media::PREVIEW_QUALITY,
+    )
+    .await;
+    Some(Prepared {
+        kind: "video".into(),
+        mime: "video/mp4".into(),
+        size: made.blob.size() as i64,
+        width: Some(i64::from(plan.width)),
+        height: Some(i64::from(plan.height)),
+        duration_ms: i64::try_from(plan.duration_ms).ok(),
+        file: Some(made.blob),
+        preview,
+        animation: true,
+        ..Prepared::default()
+    })
+}
+
 /// A picture for the family's sticker pack (docs/protocol.md, "What a
 /// sticker is made of"). `max_bytes` is the server's `max_pack_item_bytes`.
 ///
@@ -262,6 +358,35 @@ pub async fn sticker(file: &Blob, max_bytes: u64) -> Result<Prepared, pack::Refu
             })
         }
     }
+}
+
+/// Frame zero of a sticker that MOVES — drawn as it is, transparency kept,
+/// as a PNG — for a reader whose system asks for less motion
+/// (docs/protocol.md, "Sticker pack" → "How it is drawn", amended for #96).
+/// None when the picture does not move, and none is needed; or when this
+/// browser could not draw one, and the picture is shown as it is.
+pub async fn first_frame_if_animated(picture: &Blob) -> Option<Blob> {
+    let size = picture.size() as u64;
+    let mut read = head(picture, STICKER_HEAD).await;
+    if pack::is_gif(&read) && size > read.len() as u64 {
+        read = head(picture, GIF_READ).await;
+    }
+    if !pack::is_animated(&read) {
+        return None;
+    }
+    // The spec's own still: `createImageBitmap` of an animated picture is
+    // its default image, or its first frame.
+    let bitmap = decode(picture).await?;
+    let (width, height) = (bitmap.width().max(1), bitmap.height().max(1));
+    let document = web_sys::window()?.document()?;
+    let canvas: HtmlCanvasElement = document.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(width);
+    canvas.set_height(height);
+    let context: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    let drawn = context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0);
+    bitmap.close();
+    drawn.ok()?;
+    to_blob(&canvas, "image/png", 1.0).await
 }
 
 /// `bitmap` drawn at `width`×`height` on a canvas with NOTHING under it, so
@@ -408,6 +533,7 @@ async fn decode(blob: &Blob) -> Option<ImageBitmap> {
 enum Source<'a> {
     Bitmap(&'a ImageBitmap),
     Video(&'a HtmlVideoElement),
+    Canvas(&'a HtmlCanvasElement),
 }
 
 /// `source` drawn at `width`×`height` over white, as a JPEG.
@@ -431,6 +557,9 @@ async fn draw_jpeg(source: &Source<'_>, width: u32, height: u32, quality: f64) -
             .ok()?,
         Source::Video(video) => context
             .draw_image_with_html_video_element_and_dw_and_dh(video, 0.0, 0.0, w, h)
+            .ok()?,
+        Source::Canvas(canvas) => context
+            .draw_image_with_html_canvas_element_and_dw_and_dh(canvas, 0.0, 0.0, w, h)
             .ok()?,
     }
     to_blob(&canvas, "image/jpeg", quality).await
@@ -1787,5 +1916,227 @@ mod tests {
         assert!(same_bytes(&bytes(b"abc"), &bytes(b"abc")).await);
         assert!(!same_bytes(&bytes(b"abc"), &bytes(b"abd")).await);
         assert!(!same_bytes(&bytes(b"abc"), &bytes(b"abcd")).await);
+    }
+
+    // --- animations (docs/protocol.md, "Animations", #96) ---
+
+    use crate::encode::animation::testing::animated_gif;
+
+    /// One pixel of `blob` decoded, as RGBA.
+    async fn pixel_of(blob: &Blob, x: f64, y: f64) -> Vec<u8> {
+        let bitmap = decode(blob).await.expect("decodes");
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(bitmap.width());
+        canvas.set_height(bitmap.height());
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        context
+            .draw_image_with_image_bitmap(&bitmap, 0.0, 0.0)
+            .unwrap();
+        context
+            .get_image_data(x, y, 1.0, 1.0)
+            .unwrap()
+            .data()
+            .to_vec()
+    }
+
+    /// AN ANIMATED GIF BECOMES THE PROTOCOL'S SILENT LOOPING VIDEO: one H.264
+    /// track and no sound, its index first, each frame lasting exactly the
+    /// ticks fc_text::animation plans on its 30-a-second grid — the "0" frame
+    /// shown for 100 ms — at the plan's size, sent as `kind=video` with
+    /// `animation`, its poster the first frame with what was transparent
+    /// drawn on WHITE.
+    #[wasm_bindgen_test]
+    async fn an_animated_gif_becomes_a_silent_looping_video() {
+        let source = animated_gif(128, 96, &[10, 0, 25]);
+        let statement = fc_text::animation_source::read(&source).unwrap();
+        assert_eq!(statement.stated_ms, vec![100, 0, 250]);
+        let plan = fc_text::animation::plan(128, 96, &statement.stated_ms).unwrap();
+        let ticks: Vec<u32> = plan.samples.iter().map(|sample| sample.ticks).collect();
+        assert_eq!(ticks, vec![3, 3, 8]);
+
+        let picked = file(&bytes(&source), "dance.gif", "image/gif");
+        let prepared = prepare(&picked, &Job::default()).await.unwrap();
+        assert_eq!(
+            (prepared.kind.as_str(), prepared.mime.as_str()),
+            ("video", "video/mp4")
+        );
+        assert!(prepared.animation, "sent as an animation");
+        assert_eq!((prepared.width, prepared.height), (Some(128), Some(96)));
+        assert_eq!(prepared.duration_ms, Some(467), "14 ticks, rounded half up");
+        assert_eq!(prepared.name, None, "a video has no name");
+        let sent = prepared.file.as_ref().unwrap();
+        assert_eq!(prepared.size, sent.size() as i64);
+        assert!(prepared.size > 0 && (prepared.size as u64) < media::SIZE_LIMIT);
+
+        let made = whole(sent).await;
+        assert!(media::matches_magic("video/mp4", &made[..12]));
+        let (kinds, movie) = read(&made);
+        assert_eq!(kinds, vec![*b"ftyp", *b"moov", *b"mdat"], "moov first");
+        assert_eq!(movie.tracks.len(), 1, "one track");
+        assert!(movie.audio().is_none(), "no sound");
+        let track = movie.video().unwrap();
+        assert_eq!(&track.entry.as_ref().unwrap().format, b"avc1");
+        assert_eq!(track.timescale % 30, 0, "a multiple of 30");
+        let per_tick = track.timescale / 30;
+        let durations: Vec<u32> = track.samples.iter().map(|sample| sample.duration).collect();
+        assert_eq!(
+            durations,
+            ticks
+                .iter()
+                .map(|ticks| ticks * per_tick)
+                .collect::<Vec<_>>(),
+            "each frame lasts its ticks"
+        );
+        assert!(track.samples[0].sync, "starts on a key frame");
+
+        // The poster: the first frame, the transparent corner white.
+        let poster = prepared.preview.as_ref().expect("a poster");
+        assert_eq!(&whole(poster).await[..3], &[0xFF, 0xD8, 0xFF], "a JPEG");
+        let corner = pixel_of(poster, 10.0, 10.0).await;
+        assert!(
+            corner[..3].iter().all(|&channel| channel > 235),
+            "transparency is white: {corner:?}"
+        );
+        let red = pixel_of(poster, 100.0, 80.0).await;
+        assert!(red[0] > 200 && red[1] < 60 && red[2] < 60, "{red:?}");
+    }
+
+    /// RULE C: where this browser cannot make the video — no ImageDecoder
+    /// (Safari), no H.264 encoder — an animated GIF goes exactly as it went
+    /// before #96: its original bytes, as a file. So does one in the
+    /// ASSISTANT's chat, whose model is shown a photograph; and a stopped
+    /// preparation sends nothing at all. (An animated PNG went as a photo,
+    /// and still does: see the next test.)
+    #[wasm_bindgen_test]
+    async fn an_animation_this_browser_cannot_make_goes_as_the_file_it_is() {
+        let source = animated_gif(64, 48, &[10, 10]);
+        let as_before = |prepared: &Prepared| {
+            assert_eq!(
+                (prepared.kind.as_str(), prepared.mime.as_str()),
+                ("file", "image/gif")
+            );
+            assert!(!prepared.animation);
+            assert_eq!(prepared.name.as_deref(), Some("dance.gif"));
+        };
+        let stands: [(Lack, &'static str); 3] = [
+            (without, "ImageDecoder"),
+            (without, "VideoEncoder"),
+            (refusing, "VideoEncoder"),
+        ];
+        for (stand, class) in stands {
+            let _stand = stand(class);
+            let picked = file(&bytes(&source), "dance.gif", "image/gif");
+            let prepared = prepare(&picked, &Job::default()).await.unwrap();
+            as_before(&prepared);
+            assert_eq!(
+                whole(prepared.file.as_ref().unwrap()).await,
+                source,
+                "{class}"
+            );
+        }
+        let picked = file(&bytes(&source), "dance.gif", "image/gif");
+        as_before(
+            &prepare_for_assistant(&picked, &Job::default())
+                .await
+                .unwrap(),
+        );
+        let stopped = Job::default();
+        stopped.stop();
+        assert_eq!(prepare(&picked, &stopped).await, Err(PrepError::Cancelled));
+        // A STILL GIF is the file it always was.
+        let still = animated_gif(64, 48, &[10]);
+        let picked = file(&bytes(&still), "still.gif", "image/gif");
+        let prepared = prepare(&picked, &Job::default()).await.unwrap();
+        assert_eq!(prepared.kind, "file");
+        assert!(!prepared.animation);
+    }
+
+    /// AN ANIMATED PNG is made a looping video like any animation — and
+    /// where this browser cannot make one, goes exactly as it went before
+    /// #96: as a PHOTOGRAPH, its first image re-encoded as a JPEG over white
+    /// (docs/protocol.md, "The file", Rule C) — never as a file.
+    #[wasm_bindgen_test]
+    async fn an_animated_png_is_a_video_or_else_the_photo_it_was() {
+        use crate::encode::animation::testing::animated_png;
+        let source = animated_png(128, 96, &[10, 20]);
+        assert!(pack::is_animated(&source));
+        let picked = || file(&bytes(&source), "wave.png", "image/png");
+
+        let made = prepare(&picked(), &Job::default()).await.unwrap();
+        assert_eq!(
+            (made.kind.as_str(), made.mime.as_str()),
+            ("video", "video/mp4")
+        );
+        assert!(made.animation);
+        assert_eq!((made.width, made.height), (Some(128), Some(96)));
+        // 100 ms then 200 ms: 3 ticks and 6.
+        assert_eq!(made.duration_ms, Some(300));
+        let (_, movie) = read(&whole(made.file.as_ref().unwrap()).await);
+        let durations: Vec<u32> = movie
+            .video()
+            .unwrap()
+            .samples
+            .iter()
+            .map(|sample| sample.duration)
+            .collect();
+        assert_eq!(durations, vec![3, 6]);
+        assert!(movie.audio().is_none());
+
+        let stands: [(Lack, &'static str); 3] = [
+            (without, "ImageDecoder"),
+            (without, "VideoEncoder"),
+            (refusing, "VideoEncoder"),
+        ];
+        for (stand, class) in stands {
+            let _stand = stand(class);
+            let photo = prepare(&picked(), &Job::default()).await.unwrap();
+            assert_eq!(
+                (photo.kind.as_str(), photo.mime.as_str()),
+                ("photo", "image/jpeg"),
+                "{class}"
+            );
+            assert!(!photo.animation);
+            assert_eq!((photo.width, photo.height), (Some(128), Some(96)));
+            assert!(photo.preview.is_some());
+            let jpeg = photo.file.as_ref().unwrap();
+            let corner = pixel_of(jpeg, 10.0, 10.0).await;
+            assert!(
+                corner[..3].iter().all(|&channel| channel > 235),
+                "{corner:?}"
+            );
+        }
+        // In the assistant's chat, the photograph it always was.
+        let photo = prepare_for_assistant(&picked(), &Job::default())
+            .await
+            .unwrap();
+        assert_eq!(photo.kind, "photo");
+    }
+
+    /// A STICKER THAT MOVES is shown as its frame zero to a reader who asked
+    /// for less motion — transparency kept — and one that does not move
+    /// needs no still.
+    #[wasm_bindgen_test]
+    async fn frame_zero_of_a_moving_picture_keeps_its_transparency() {
+        let moving = bytes(&animated_gif(64, 48, &[10, 10]));
+        let still = first_frame_if_animated(&moving).await.expect("a still");
+        assert_eq!(&whole(&still).await[1..4], b"PNG");
+        assert_eq!(pixel_of(&still, 5.0, 5.0).await[3], 0, "transparent");
+        let red = pixel_of(&still, 50.0, 40.0).await;
+        assert!(red[0] > 200 && red[1] < 60 && red[3] == 255, "{red:?}");
+        assert_eq!(
+            first_frame_if_animated(&bytes(&animated_gif(64, 48, &[10]))).await,
+            None,
+            "a still picture is shown as it is"
+        );
     }
 }

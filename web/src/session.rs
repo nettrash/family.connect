@@ -447,6 +447,7 @@ mod tests {
             items: Vec::new(),
             sticker: false,
             round: false,
+            animation: false,
             attempts: 2,
             failed: None,
         }
