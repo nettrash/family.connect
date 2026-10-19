@@ -60,6 +60,8 @@
 //  floor the protocol does not: a silent track states less than it can be
 //  asked for. Such a track, when it is already AAC, is passed through
 //  rather than costing the clip its whole transcode (`audioTreatment`).
+//  Several tracks that play together are MIXED into the one (rule E, issue
+//  #98), and a result that lost the sound its source had is a failure.
 //
 //  CANCELLATION IS HONOURED, and it is not a failure. A cancelled task stops
 //  the pumps between two samples, the reader and writer are abandoned and
@@ -100,6 +102,9 @@ nonisolated enum MediaTranscoder {
         case readerFailed(String)
         /// Writing the result stopped with an error.
         case writerFailed(String)
+        /// The source has sound and the result would have none — rule E
+        /// (issue #98), a failed transcode however small the result.
+        case soundWouldBeLost
     }
 
     /// Which H.264 encoder does the work.
@@ -132,10 +137,17 @@ nonisolated enum MediaTranscoder {
         }
         let duration = try await asset.load(.duration)
         let (natural, preferred) = try await videoTrack.load(.naturalSize, .preferredTransform)
-        // The planner gives no audio target to a source with no audio track,
-        // and a transcode does not invent silence.
-        let audioTrack = target.audioBitrate == nil
-            ? nil : try await asset.loadTracks(withMediaType: .audio).first
+        // Rule E (issue #98): every sound track that PLAYS is kept — one is
+        // encoded, several are mixed into the one track the profile allows
+        // — and a source with sound never comes out without it. The planner
+        // gives no audio target to a source with no audio track, and a
+        // transcode does not invent silence; a target without audio for a
+        // source that has some would write the picture alone, so it is
+        // refused here rather than trusted.
+        let sound = try await playingSoundTracks(of: asset)
+        if target.audioBitrate == nil, !sound.isEmpty {
+            throw Failure.soundWouldBeLost
+        }
 
         try? FileManager.default.removeItem(at: output)
         let reader = try AVAssetReader(asset: asset)
@@ -181,12 +193,71 @@ nonisolated enum MediaTranscoder {
         writer.add(videoInput)
 
         var pumps = [Pump(output: videoOutput, input: videoInput, label: "video")]
-        if let audioTrack, let bitrate = target.audioBitrate {
-            pumps.append(try await audioPump(
-                track: audioTrack, bitrate: bitrate, reader: reader, writer: writer,
-                mayPassThrough: true))
+        if let bitrate = target.audioBitrate {
+            if sound.count == 1 {
+                pumps.append(try await audioPump(
+                    track: sound[0], bitrate: bitrate, reader: reader, writer: writer,
+                    mayPassThrough: true))
+            } else if sound.count > 1 {
+                pumps.append(try await mixingPump(
+                    tracks: sound, bitrate: bitrate, reader: reader, writer: writer))
+            }
         }
         try await Pump.run(pumps, reader: reader, writer: writer)
+        // Belt and braces: an audio input that was never given a sample is
+        // left out of the file by the writer, without an error.
+        if !sound.isEmpty,
+           try await AVURLAsset(url: output).loadTracks(withMediaType: .audio).isEmpty {
+            throw Failure.soundWouldBeLost
+        }
+    }
+
+    // MARK: - The sound tracks that play
+
+    /// One sound track as rule E counts it: where it is in the file, whether
+    /// it is enabled, and which alternate group it shares, if any.
+    nonisolated struct SoundTrack: Equatable {
+        var index: Int
+        var enabled: Bool
+        /// Tracks with the same group are alternatives, of which a player
+        /// picks one — an iPhone's stereo AAC beside its spatial track.
+        var group: Int?
+    }
+
+    /// Rule E's count (docs/protocol.md, "Preparing media before upload"):
+    /// the indices of the tracks that PLAY — every enabled track, and of
+    /// the enabled tracks in one alternate group only the first. A file
+    /// whose sound tracks are all disabled counts its first.
+    static func playing(_ tracks: [SoundTrack]) -> [Int] {
+        var groups = Set<Int>()
+        var playing: [Int] = []
+        for track in tracks where track.enabled {
+            if let group = track.group, !groups.insert(group).inserted {
+                continue
+            }
+            playing.append(track.index)
+        }
+        if playing.isEmpty, let first = tracks.first {
+            return [first.index]
+        }
+        return playing
+    }
+
+    /// The source's sound tracks that play, from the container's own track
+    /// list — which AVFoundation lists whether or not it can decode them,
+    /// so a track nothing here can read still counts as sound.
+    static func playingSoundTracks(of asset: AVAsset) async throws -> [AVAssetTrack] {
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !tracks.isEmpty else { return [] }
+        let groups = (try? await asset.load(.trackGroups)) ?? []
+        var counted: [SoundTrack] = []
+        for (index, track) in tracks.enumerated() {
+            let enabled = (try? await track.load(.isEnabled)) ?? true
+            let id = NSNumber(value: track.trackID)
+            counted.append(SoundTrack(
+                index: index, enabled: enabled, group: groups.firstIndex { $0.trackIDs.contains(id) }))
+        }
+        return playing(counted).map { tracks[$0] }
     }
 
     /// The layer transform that turns the stored frame upright and scales it
@@ -475,8 +546,41 @@ nonisolated enum MediaTranscoder {
         return Pump(output: output, input: input, label: "audio")
     }
 
+    /// Several sound tracks that play together, MIXED into one AAC-LC track
+    /// (rule E, issue #98): a screen recording's app sound and its
+    /// microphone, a camera's two microphones. The mix is the reader's —
+    /// `AVAssetReaderAudioMixOutput` — so it costs one decode pass and no
+    /// code here. Never passed through: there is no one track to copy.
+    /// Stereo when any of them is, at the highest rate any of them has.
+    static func mixingPump(
+        tracks: [AVAssetTrack], bitrate: Int, reader: AVAssetReader, writer: AVAssetWriter
+    ) async throws -> Pump {
+        var channels = 1
+        var sampleRate: Double?
+        for track in tracks {
+            let format = try await track.load(.formatDescriptions).first
+                .flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+            if format?.mChannelsPerFrame != 1 { channels = 2 }
+            if let rate = format?.mSampleRate, rate > (sampleRate ?? 0) { sampleRate = rate }
+        }
+        guard case .encode(let aac) = audioTreatment(
+            bitrate: bitrate, channels: channels, sourceSampleRate: sampleRate, source: nil)
+        else {
+            throw Failure.unsupportedSettings
+        }
+        return try encodingPump(tracks: tracks, aac: aac, channels: channels, reader: reader, writer: writer)
+    }
+
     static func encodingPump(
         track: AVAssetTrack, aac: AACFormat, channels: Int, reader: AVAssetReader,
+        writer: AVAssetWriter
+    ) throws -> Pump {
+        try encodingPump(tracks: [track], aac: aac, channels: channels, reader: reader, writer: writer)
+    }
+
+    /// One track decoded, or several mixed, then encoded.
+    static func encodingPump(
+        tracks: [AVAssetTrack], aac: AACFormat, channels: Int, reader: AVAssetReader,
         writer: AVAssetWriter
     ) throws -> Pump {
         var layout = AudioChannelLayout()
@@ -486,7 +590,7 @@ nonisolated enum MediaTranscoder {
 
         // Decoded to the rate and channel count the encoder will get, so any
         // resampling or down-mixing happens once, in the reader.
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+        let pcm: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVLinearPCMIsFloatKey: true,
             AVLinearPCMBitDepthKey: 32,
@@ -495,7 +599,10 @@ nonisolated enum MediaTranscoder {
             AVSampleRateKey: aac.sampleRate,
             AVNumberOfChannelsKey: channels,
             AVChannelLayoutKey: layoutData,
-        ])
+        ]
+        let output: AVAssetReaderOutput = tracks.count == 1
+            ? AVAssetReaderTrackOutput(track: tracks[0], outputSettings: pcm)
+            : AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: pcm)
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw Failure.unsupportedSettings }
         reader.add(output)

@@ -38,6 +38,7 @@ import android.content.res.AssetFileDescriptor
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.annotation.OptIn
@@ -179,6 +180,14 @@ class MediaPrep @Inject constructor(
      *    could have gone as it is.
      *  - Rule C: a transcode that fails, or a source with no size to scale
      *    to, sends what 1.1 would have sent ([videoAsBefore]).
+     *  - Rule E (issue #98): a source with more than one sound track that
+     *    plays is transcoded with them all MIXED into the one track the
+     *    profile allows ([SoundMix]), and a result without exactly one sound
+     *    track from a source with some is a FAILED transcode — rule C's, so
+     *    rule D never sees a silent result and can never keep one for being
+     *    smaller. The tracks are read from the container ([Mp4SoundTracks]),
+     *    because Media3 skips a sound track it cannot read and still reports
+     *    success.
      *
      * @param declaredMime what the SOURCE said this is, for a Uri whose
      *   provider will not answer `getType` — a clipboard item, typically.
@@ -224,6 +233,9 @@ class MediaPrep @Inject constructor(
         val input = source?.let(Uri::fromFile) ?: uri
 
         val chosen = try {
+            // Rule E's tracks, before anything is encoded. Null — not an MP4
+            // or a .mov, or one this cannot walk — is how it was before rule E.
+            val sourceSound = withContext(Dispatchers.IO) { soundTracks(source, uri) }
             // "Sendable as that kind": an accepted type, honest bytes, within
             // the ceiling. What rules C and D may fall back on.
             val sendable = source != null && MediaPlan.sendable(
@@ -244,24 +256,41 @@ class MediaPrep @Inject constructor(
                 // sends it the way 1.1 did (compressed), rather than an
                 // upload the server is certain to refuse.
                 MediaPlan.VideoPlan.Keep -> videoAfterFailure(
-                    original, uri, source, sourceMime, sizeBytes, limit,
+                    original, uri, source, sourceMime, sizeBytes, limit, sourceSound,
                 )
                 is MediaPlan.VideoPlan.Transcode -> {
-                    val result = transcodeOrNull(input, TranscodeSettings.forVideo(plan.target, read))
-                    when {
-                        result == null -> videoAfterFailure(
-                            original, uri, source, sourceMime, sizeBytes, limit,
+                    // Several sound tracks that play are mixed; one goes as it always did.
+                    val result = transcodeOrNull(
+                        input,
+                        TranscodeSettings.forVideo(plan.target, read),
+                        SoundMix.plan(sourceSound),
+                    )
+                    val verdict = result?.let {
+                        MediaPlan.judgeTranscode(
+                            sourceBytes = sizeBytes,
+                            sourceSendable = sendable,
+                            resultBytes = it.length(),
+                            sourceSoundTracks = sourceSound?.size,
+                            resultSoundTracks = soundTracksOfMade(it),
                         )
-                        MediaPlan.keepSmaller(sizeBytes, sendable, result.length()) ==
-                            MediaPlan.Upload.SOURCE -> {
-                            result.delete()
+                    }
+                    if (result != null && verdict == null) {
+                        Log.w(TAG, "the transcode did not come out with the source's sound as one track; rule C")
+                    }
+                    when (verdict) {
+                        null -> {
+                            result?.delete()
+                            videoAfterFailure(original, uri, source, sourceMime, sizeBytes, limit, sourceSound)
+                        }
+                        MediaPlan.Upload.SOURCE -> {
+                            checkNotNull(result).delete()
                             checkNotNull(original)
                         }
-                        else -> Chosen(fitting(result, limit), "video/mp4")
+                        MediaPlan.Upload.RESULT -> Chosen(fitting(checkNotNull(result), limit), "video/mp4")
                     }
                 }
                 MediaPlan.VideoPlan.Fallback -> videoAfterFailure(
-                    original, uri, source, sourceMime, sizeBytes, limit,
+                    original, uri, source, sourceMime, sizeBytes, limit, sourceSound,
                 )
             }
         } catch (e: Throwable) {
@@ -300,8 +329,19 @@ class MediaPrep @Inject constructor(
      * What [prepareRoundVideo] made: the clip as it will be sent, whether it
      * is the profile's square ([squared] — false when the pass failed and it
      * goes as recorded), and every file it left, for a discard.
+     *
+     * [soundless]: the file CameraX wrote has NO sound track (issue #98) —
+     * the microphone was taken before the take began, or its encoder failed,
+     * and CameraX carried on with the picture alone. The recorder says so in
+     * REVIEW, as it does for a microphone taken mid-take, rather than let a
+     * silent video message go out unremarked.
      */
-    data class RoundPrepared(val prepared: Prepared, val squared: Boolean, val files: List<File>)
+    data class RoundPrepared(
+        val prepared: Prepared,
+        val squared: Boolean,
+        val files: List<File>,
+        val soundless: Boolean = false,
+    )
 
     /**
      * A video message CameraX has just written (#79, S8.4, "The recording
@@ -317,6 +357,11 @@ class MediaPrep @Inject constructor(
      * itself. Its type is DECLARED "video/mp4": a `file://` Uri has no
      * provider to ask (MediaProbe.essence would read an empty type).
      *
+     * Rule E holds for the pass too (issue #98): a square that lost the
+     * recording's sound is a failed pass, and the clip goes as recorded —
+     * "Couldn't make it round", with its sound. A recording with no sound
+     * track at all is [RoundPrepared.soundless].
+     *
      * Null when nothing readable came out; [file] is then gone too.
      */
     suspend fun prepareRoundVideo(file: File): RoundPrepared? {
@@ -329,6 +374,8 @@ class MediaPrep @Inject constructor(
             file.delete()
             return null
         }
+        // Counted from the container, as rule E counts a picked video's.
+        val recordedSound = withContext(Dispatchers.IO) { Mp4SoundTracks.count(file) }
         var chosen = file
         var squared = true
         if (RoundRecorderRules.needsSquarePass(facts)) {
@@ -340,7 +387,15 @@ class MediaPrep @Inject constructor(
                     audioBitrate = RoundRecorderRules.AUDIO_BITRATE,
                     frameRate = ROUND_FRAME_RATE,
                 ),
-            )
+            )?.let { made ->
+                if (MediaPlan.keptSound(recordedSound, soundTracksOfMade(made))) {
+                    made
+                } else {
+                    Log.w(TAG, "the square pass came out without the recording's sound; sent as recorded")
+                    made.delete()
+                    null
+                }
+            }
             if (square != null) {
                 file.delete()
                 chosen = square
@@ -368,6 +423,7 @@ class MediaPrep @Inject constructor(
                     ),
                     squared = squared,
                     files = listOf(chosen),
+                    soundless = recordedSound == 0,
                 )
             }
         } catch (e: CancellationException) {
@@ -378,7 +434,7 @@ class MediaPrep @Inject constructor(
 
     /**
      * Rule C: the original when it can go as it is, and otherwise
-     * [videoAsBefore].
+     * [videoAsBefore]. [sourceSound] is rule E's tracks, for the compress.
      */
     private suspend fun videoAfterFailure(
         original: Chosen?,
@@ -387,9 +443,10 @@ class MediaPrep @Inject constructor(
         sourceMime: String,
         sizeBytes: Long,
         limit: Long,
+        sourceSound: List<Mp4SoundTracks.SoundTrack>?,
     ): Chosen = when (MediaPlan.onFailure(sourceSendable = original != null)) {
         MediaPlan.OnFailure.ORIGINAL -> checkNotNull(original)
-        MediaPlan.OnFailure.TODAYS_PATH -> videoAsBefore(uri, source, sourceMime, sizeBytes, limit)
+        MediaPlan.OnFailure.TODAYS_PATH -> videoAsBefore(uri, source, sourceMime, sizeBytes, limit, sourceSound)
     }
 
     /**
@@ -405,12 +462,45 @@ class MediaPrep @Inject constructor(
         sourceMime: String,
         sizeBytes: Long,
         limit: Long,
+        sourceSound: List<Mp4SoundTracks.SoundTrack>?,
     ): Chosen {
         if (source != null && sourceMime in SENDABLE_VIDEO_TYPES && sizeBytes <= limit) {
             return Chosen(source, sourceMime)
         }
-        return Chosen(compressAsBefore(source?.let(Uri::fromFile) ?: uri, limit), "video/mp4")
+        return Chosen(compressAsBefore(source?.let(Uri::fromFile) ?: uri, limit, sourceSound), "video/mp4")
     }
+
+    /**
+     * Rule E's list of a picked video's sound tracks that play (issue #98): from the
+     * copy when there is one, and otherwise straight from the provider's
+     * file descriptor — a source over the ceiling is never copied, and its
+     * `moov` may be at the end of several hundred megabytes, which a
+     * positioned read reaches without reading the rest. A provider that
+     * serves a pipe, not a file, cannot be read at a position: null.
+     */
+    private fun soundTracks(source: File?, uri: Uri): List<Mp4SoundTracks.SoundTrack>? {
+        if (source != null) return Mp4SoundTracks.playing(source)
+        return runCatching {
+            contentResolver.openFileDescriptor(uri, "r")?.let { descriptor ->
+                ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { stream ->
+                    Mp4SoundTracks.playing(stream.channel)
+                }
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Rule E's count of a file a transcode just made. A cancellation landing
+     * here takes the file with it, as one landing in [exported] does —
+     * nothing else sweeps the upload cache.
+     */
+    private suspend fun soundTracksOfMade(file: File): Int? =
+        try {
+            withContext(Dispatchers.IO) { Mp4SoundTracks.count(file) }
+        } catch (e: CancellationException) {
+            file.delete()
+            throw e
+        }
 
     /**
      * A transcode's result, provided it can be sent — the only failure after
@@ -429,14 +519,29 @@ class MediaPrep @Inject constructor(
      * Run MediaPlan's transcode, or null when it failed — which is rule C's
      * business, not a reason to fail the send. Cancellation is not a
      * failure: it propagates, and takes the partial output with it.
+     *
+     * [mix]: rule E's, for a source with several sound tracks that play —
+     * they are summed into the one track the output has. Null is the single
+     * item every other transcode has always been.
      */
     @OptIn(UnstableApi::class)
-    private suspend fun transcodeOrNull(input: Uri, settings: TranscodeSettings): File? =
+    private suspend fun transcodeOrNull(input: Uri, settings: TranscodeSettings, mix: SoundMix? = null): File? =
         try {
             exported(if (settings.audioOnly) "m4a" else "mp4") { listener, path ->
-                val composition =
+                val composition = if (mix == null) {
                     TranscodeRecipe.composition(TranscodeRecipe.editedMediaItem(input, settings), settings)
-                TranscodeRecipe.transformer(context, settings, listener).also { it.start(composition, path) }
+                } else {
+                    TranscodeRecipe.mixedComposition(
+                        input,
+                        mix,
+                        TranscodeRecipe.videoEffects(settings),
+                        TranscodeRecipe.hdrMode(settings),
+                    )
+                }
+                // A mix is encoded at the profile's rate for its own width.
+                val told = if (mix == null) settings else settings.copy(audioBitrate = mix.audioBitrate)
+                TranscodeRecipe.transformer(context, told, listener, mixing = mix != null)
+                    .also { it.start(composition, path) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -498,25 +603,57 @@ class MediaPrep @Inject constructor(
      * does to every file this client makes — `moov` first, and Media3's
      * unused reservation taken out — which changes no frame and can only
      * make the result smaller.
+     *
+     * AND RULE E (issue #98). A source with several sound tracks that play
+     * is MIXED here too — 1.1 kept whichever one Media3 inferred, and a
+     * fallback that keeps fewer voices than the source has is a failed one
+     * — with the same scale and Media3's default encoders, so only the
+     * sound differs. And a source with sound that comes out without exactly
+     * one sound track — a QuickTime PCM or `apac` track Media3 cannot read,
+     * so it writes the picture alone and calls that success — is this
+     * compress FAILING, which is the failure 1.1 showed ([UnreadableMedia]).
+     * There is nothing behind this path to fall back on; a video that
+     * arrives without its sound and says nothing is the one outcome worse
+     * than "couldn't send that".
      */
     @OptIn(UnstableApi::class)
-    private suspend fun compressAsBefore(input: Uri, limit: Long): File {
+    private suspend fun compressAsBefore(
+        input: Uri,
+        limit: Long,
+        sourceSound: List<Mp4SoundTracks.SoundTrack>?,
+    ): File {
+        val mix = SoundMix.plan(sourceSound)
         val output = try {
             exported("mp4") { listener, path ->
                 val scale: Effect = Presentation.createForShortSide(COMPRESSED_SHORT_SIDE)
-                val item = EditedMediaItem.Builder(MediaItem.fromUri(input))
-                    .setEffects(Effects(emptyList(), listOf(scale)))
-                    .build()
-                Transformer.Builder(context)
+                val transformer = Transformer.Builder(context)
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .apply { if (mix != null) setAssetLoaderFactory(SoundTrackAssetLoaderFactory(context)) }
                     .addListener(listener)
                     .build()
-                    .also { it.start(item, path) }
+                if (mix != null) {
+                    // 1.1's start(item) is a composition left at HDR_MODE_KEEP_HDR.
+                    transformer.start(
+                        TranscodeRecipe.mixedComposition(input, mix, listOf(scale), Composition.HDR_MODE_KEEP_HDR),
+                        path,
+                    )
+                } else {
+                    val item = EditedMediaItem.Builder(MediaItem.fromUri(input))
+                        .setEffects(Effects(emptyList(), listOf(scale)))
+                        .build()
+                    transformer.start(item, path)
+                }
+                transformer
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
+            throw UnreadableMedia()
+        }
+        if (!MediaPlan.keptSound(sourceSound?.size, soundTracksOfMade(output))) {
+            Log.w(TAG, "the compress did not come out with the source's sound as one track")
+            output.delete()
             throw UnreadableMedia()
         }
         return fitting(output, limit)

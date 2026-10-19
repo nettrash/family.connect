@@ -350,6 +350,14 @@ private struct VideoAttachmentPlayer: View {
     /// handle rather than a flag.
     @State private var stream = AttachmentStreamPlayer()
 
+    /// Whether this page took the audio session for playback and still owes
+    /// it back (issue #98). Without it a video plays in the app's default
+    /// session, `.soloAmbient`, which the Ring/Silent switch MUTES — so a
+    /// clip played on a phone set to silent had no sound, unless a voice
+    /// note or a circle had played earlier in the run and left `.playback`
+    /// behind. That "sometimes" is what read as an upload without audio.
+    @State private var holdsSession = false
+
     var body: some View {
         Group {
             // Nil for one runloop turn longer than before — the actor hop
@@ -366,15 +374,38 @@ private struct VideoAttachmentPlayer: View {
         }
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, current in
-            if current { start() } else { stream.stop() }
+            if current { start() } else { stop() }
         }
         // Paging away or dismissing the viewer mid-load cancels it, so a
         // player is never handed to a page that has gone.
-        .onDisappear { stream.stop() }
+        .onDisappear { stop() }
     }
 
     private func start() {
-        stream.start(attachment: attachment.id, from: coordinator.api)
+        // `onReady` runs before `play()`, so the first frame already has
+        // the session; it never runs for a load that was cancelled.
+        stream.start(attachment: attachment.id, from: coordinator.api) { _ in
+            takeSession()
+        }
+    }
+
+    private func stop() {
+        stream.stop()
+        giveSession()
+    }
+
+    /// The same session a voice note and a circle take (`PlaybackSessionControl`),
+    /// which stands aside while a call holds it.
+    private func takeSession() {
+        guard !holdsSession else { return }
+        holdsSession = true
+        PlaybackSessionControl.system.begin()
+    }
+
+    private func giveSession() {
+        guard holdsSession else { return }
+        holdsSession = false
+        PlaybackSessionControl.system.end()
     }
 }
 

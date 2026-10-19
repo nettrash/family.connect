@@ -43,7 +43,8 @@ use fc_text::media_plan::{self, AudioPlan, AudioSource, VideoPlan, VideoSource, 
 use fc_text::media_probe::{self, AudioProbe};
 use fc_text::mp4::{self, Brand, Media};
 use fc_text::mp4_read::{self, Movie};
-use fc_text::transcode::{self, AudioRoute, KEYFRAME_SECONDS};
+use fc_text::sound_mix::{self, Mixer};
+use fc_text::transcode::{self, AudioRoute, SoundPlan, KEYFRAME_SECONDS};
 use fc_text::transcript::Failure as TextFailure;
 use fc_text::transcript_sound::{self, Extraction, Found, TEXT_BITRATE, TEXT_CHANNELS};
 use futures::channel::mpsc;
@@ -119,6 +120,12 @@ const QUEUE: u32 = 8;
 
 /// Sound handed to the encoder at a time, in frames: a third of a second.
 const SOUND_BLOCK: u32 = 16 * 1024;
+
+/// How far one voice of a mix may be decoded ahead of what the mix has
+/// made, in frames: ten seconds at 48 kHz. Decoded sound is 32-bit floats,
+/// and a voice that started late — or a decoder that is simply faster —
+/// would otherwise be decoded to its end while the mix waits on another.
+const MIX_AHEAD: u64 = 10 * 48_000;
 
 // --- the job ------------------------------------------------------------------------------------
 
@@ -327,6 +334,11 @@ enum Event {
     /// A decoder's `flush` settled — everything it had has been handed over
     /// (true), or it failed.
     Drained(bool),
+    /// Decoded sound from voice `n` of a mix (Rule E, issue #98) — each of
+    /// its decoders tells the one loop which it is.
+    Voice(usize, Sound),
+    /// [`Event::Drained`], from voice `n` of a mix.
+    VoiceDrained(usize, bool),
     Failed,
 }
 
@@ -371,11 +383,20 @@ async fn settled(promise: Result<Promise, JsValue>) -> bool {
 
 /// Tell the loop when a decoder's `flush` has settled.
 fn when_drained(promise: Result<Promise, JsValue>, wake: &Wake) {
+    when_settled(promise, wake, Event::Drained);
+}
+
+/// Tell the loop when a decoder's `flush` has settled, as `said` says it.
+fn when_settled(
+    promise: Result<Promise, JsValue>,
+    wake: &Wake,
+    said: impl Fn(bool) -> Event + 'static,
+) {
     let wake = wake.clone();
     match promise {
         Ok(promise) => spawn_local(async move {
             let drained = JsFuture::from(promise).await.is_ok();
-            let _ = wake.unbounded_send(Event::Drained(drained));
+            let _ = wake.unbounded_send(said(drained));
         }),
         Err(_) => {
             let _ = wake.unbounded_send(Event::Failed);
@@ -779,8 +800,9 @@ pub enum Planned {
 }
 
 /// `file` — sent as `container` — as the planner says it should go. None
-/// when it cannot be read, planned or transcoded here (rule C) — and when
-/// `job` was stopped, which is not rule C: the caller asks the job.
+/// when it cannot be read, planned or transcoded here (rule C), its sound
+/// included (rule E, issue #98) — and when `job` was stopped, which is not
+/// rule C: the caller asks the job.
 pub async fn video(file: &Blob, container: &str, job: &Job) -> Option<Planned> {
     if !VIDEO_TRANSCODE {
         return None;
@@ -793,6 +815,18 @@ pub async fn video(file: &Blob, container: &str, job: &Job) -> Option<Planned> {
         VideoPlan::Fallback => return None,
         VideoPlan::Transcode(target) => target,
     };
+    // Rule E (issue #98), before anything is spent: a source whose sound
+    // this cannot write — a voice this reader cannot use, which the probe
+    // above took for none, alone or beside others — is not transcoded at
+    // all. The result would have gone without it.
+    let plan = transcode::sound_plan(
+        movie.playing_sound_tracks(),
+        movie.sound_readable(),
+        target.audio_bitrate.is_some(),
+    );
+    if plan == SoundPlan::Fallback {
+        return None;
+    }
     if !transcode::could_fit(size, SIZE_LIMIT, &target, source.duration_ms) {
         return None;
     }
@@ -805,10 +839,11 @@ pub async fn video(file: &Blob, container: &str, job: &Job) -> Option<Planned> {
     // Then the sound, before the picture: it is seconds of work, and a clip
     // whose sound cannot be brought to the profile is found out before
     // minutes are spent on its picture.
-    let sound = match (movie.audio(), target.audio_bitrate) {
-        (Some(track), Some(_)) => Some(sound(file, &movie, track, &source, job).await?),
-        (None, None) => None,
-        _ => return None,
+    let sound = match plan {
+        SoundPlan::Write => Some(sound(file, &movie, movie.audio()?, &source, job).await?),
+        SoundPlan::Mix => Some(mix(file, &movie, &movie.voices()?, job).await?),
+        SoundPlan::Silent => None,
+        SoundPlan::Fallback => return None,
     };
     let (picture, frames) = picture(file, &movie, &source, &target, codecs, job).await?;
     let mut tracks = vec![picture];
@@ -1032,7 +1067,10 @@ async fn sound(
                     }
                     Event::Drained(true) => break,
                     Event::Drained(false) | Event::Failed => return None,
-                    Event::Frame(_) | Event::Progress => {}
+                    Event::Frame(_)
+                    | Event::Progress
+                    | Event::Voice(..)
+                    | Event::VoiceDrained(..) => {}
                 }
             }
             drop(decoder);
@@ -1043,6 +1081,283 @@ async fn sound(
             Some((aac.track(u32::try_from(skip).ok()?, lead), aac.parts()))
         }
     }
+}
+
+/// One voice of a mix: its track, its decoder, and how far each has got.
+struct MixLane<'a> {
+    track: &'a mp4_read::Track,
+    decoder: Codec<AudioDecoder>,
+    reader: Reader<'a>,
+    fed: usize,
+    heard: usize,
+    flushing: bool,
+    drained: bool,
+    /// The rate and channels its decoder hands out — known from the first
+    /// of its sound, and held to after.
+    format: Option<(u32, u32)>,
+    /// What it decoded before every voice had said its format, and so
+    /// before there was a mix to put it in.
+    early: Vec<Vec<Vec<f32>>>,
+    early_frames: u64,
+}
+
+/// `data`'s samples, a plane per channel.
+fn planes_of(data: &AudioData) -> Option<Vec<Vec<f32>>> {
+    let frames = data.number_of_frames();
+    (0..data.number_of_channels())
+        .map(|channel| {
+            let plane = Float32Array::new_with_length(frames);
+            data.copy_to(
+                &plane,
+                &object(&[
+                    ("planeIndex", JsValue::from(channel)),
+                    ("format", JsValue::from_str("f32-planar")),
+                ]),
+            )
+            .ok()?;
+            Some(plane.to_vec())
+        })
+        .collect()
+}
+
+/// The sound of a video with more than one voice that plays — a screen
+/// recording's app sound and its microphone — MIXED into one AAC-LC track
+/// (docs/protocol.md, Rule E, issue #98): every voice decoded by a decoder
+/// of its own, summed at its own place in time ([`sound_mix`]), and encoded
+/// once. A mix is never copied, so where there is no AAC encoder — Firefox
+/// — it is rule C; and so is a voice among them that cannot be decoded: a
+/// mix never leaves one out.
+async fn mix(
+    file: &Blob,
+    movie: &Movie,
+    voices: &[&mp4_read::Track],
+    job: &Job,
+) -> Option<(mp4::Track, Vec<JsValue>)> {
+    let (wake, mut events) = mpsc::unbounded();
+    let mut lanes: Vec<MixLane> = Vec::with_capacity(voices.len());
+    // What the index says each voice decodes to — the encoder is asked
+    // about that before a sample is decoded, and asked again about what the
+    // decoders actually hand out.
+    let mut stated = Vec::with_capacity(voices.len());
+    for (index, &track) in voices.iter().enumerate() {
+        let entry = track.entry.as_ref()?;
+        // Only AAC is decoded here, as for one voice.
+        if mp4_read::audio_codec_name(entry) != "aac" || track.samples.is_empty() {
+            return None;
+        }
+        let config = mp4_read::audio_config(&entry.config)?;
+        let channels = media_probe::channels_of(entry).filter(|count| (1..=2).contains(count))?;
+        // HE-AAC decodes at twice the rate its config states.
+        let rate = if matches!(config.object_type, 5 | 29) {
+            config.sample_rate * 2
+        } else {
+            config.sample_rate
+        };
+        stated.push((rate, channels));
+        let decoder_config = object(&[
+            (
+                "codec",
+                JsValue::from_str(&format!("mp4a.40.{}", config.object_type)),
+            ),
+            ("sampleRate", JsValue::from(config.sample_rate)),
+            ("numberOfChannels", JsValue::from(channels)),
+            (
+                "description",
+                Uint8Array::from(entry.config.as_slice()).into(),
+            ),
+        ]);
+        if !webcodecs::supported("AudioDecoder", &decoder_config).await {
+            return None;
+        }
+        let waker = wake.clone();
+        let (init, output, failure) = callbacks(
+            move |data: JsValue, _| {
+                let _ = waker.unbounded_send(Event::Voice(index, Sound(data.unchecked_into())));
+            },
+            &wake,
+        );
+        let decoder = Codec {
+            codec: AudioDecoder::new(&init).ok()?,
+            _output: output,
+            _failure: failure,
+        };
+        decoder.codec.configure(&decoder_config).ok()?;
+        lanes.push(MixLane {
+            track,
+            decoder,
+            reader: Reader::new(file),
+            fed: 0,
+            heard: 0,
+            flushing: false,
+            drained: false,
+            format: None,
+            early: Vec::new(),
+            early_frames: 0,
+        });
+    }
+    // Never above what the voices together come to.
+    let source_rate = voices
+        .iter()
+        .map(|track| track.data_rate())
+        .sum::<Option<u64>>();
+    let encodable = |(rate, channels): (u32, u32)| async move {
+        let bitrate = media_plan::target_audio_bitrate(Some(channels), source_rate);
+        // The highest rate among the voices; where the encoder will not
+        // take it, the one of the two it always takes from its family.
+        for rate in [rate, transcode::audio_output_rate(Some(rate))] {
+            if webcodecs::aac_supported(rate, channels, bitrate).await {
+                return Some((rate, channels, bitrate));
+            }
+        }
+        None
+    };
+    encodable(sound_mix::mix_format(&stated)?).await?;
+
+    let mut mixer: Option<Mixer> = None;
+    let mut encoder: Option<AacEncoder> = None;
+    let mut samples = 0u64;
+    let mut silence = 0u32;
+    loop {
+        if job.stopped() {
+            return None;
+        }
+        for (index, lane) in lanes.iter_mut().enumerate() {
+            let ahead = lane.early_frames + mixer.as_ref().map_or(0, |mixer| mixer.buffered(index));
+            while lane.fed < lane.track.samples.len()
+                && lane.fed - lane.heard < SOUND_AHEAD
+                && ahead < MIX_AHEAD
+            {
+                let sample = &lane.track.samples[lane.fed];
+                let bytes = lane.reader.read(sample.offset, sample.size).await?;
+                let chunk = EncodedAudioChunk::new(&object(&[
+                    ("type", JsValue::from_str("key")),
+                    (
+                        "timestamp",
+                        JsValue::from(micros(sample.pts, lane.track.timescale)),
+                    ),
+                    (
+                        "duration",
+                        JsValue::from(micros(i64::from(sample.duration), lane.track.timescale)),
+                    ),
+                    ("data", bytes.into()),
+                ]))
+                .ok()?;
+                lane.decoder.codec.decode(&chunk).ok()?;
+                lane.fed += 1;
+            }
+            if lane.fed == lane.track.samples.len() && !lane.flushing {
+                lane.flushing = true;
+                when_settled(lane.decoder.codec.flush(), &wake, move |drained| {
+                    Event::VoiceDrained(index, drained)
+                });
+            }
+        }
+        if let (Some(mixer), Some(encoder)) = (mixer.as_mut(), encoder.as_ref()) {
+            while encoder.queued() < QUEUE {
+                let ready = mixer.ready();
+                if ready == 0 || (ready < u64::from(SOUND_BLOCK) && !mixer.finished()) {
+                    break;
+                }
+                let block = mixer.take(u64::from(SOUND_BLOCK));
+                let frames = block[0].len() as u32;
+                let data = Float32Array::new_with_length(frames * mixer.channels());
+                for (channel, plane) in block.iter().enumerate() {
+                    data.set(
+                        &Float32Array::from(plane.as_slice()),
+                        channel as u32 * frames,
+                    );
+                }
+                let sound = AudioData::new(&object(&[
+                    ("format", JsValue::from_str("f32-planar")),
+                    ("sampleRate", JsValue::from(mixer.rate())),
+                    ("numberOfFrames", JsValue::from(frames)),
+                    ("numberOfChannels", JsValue::from(mixer.channels())),
+                    (
+                        "timestamp",
+                        JsValue::from((samples as f64 * 1e6 / f64::from(mixer.rate())).round()),
+                    ),
+                    ("data", data.into()),
+                ]))
+                .ok()?;
+                let sent = encoder.encoder.codec.encode(&sound);
+                sound.close();
+                sent.ok()?;
+                samples += u64::from(frames);
+            }
+            if mixer.done() {
+                break;
+            }
+        }
+        match next(&mut events, &mut silence).await? {
+            Event::Voice(index, sound) => {
+                let lane = lanes.get_mut(index)?;
+                lane.heard += 1;
+                let data = &sound.0;
+                let format = (data.sample_rate().round() as u32, data.number_of_channels());
+                if *lane.format.get_or_insert(format) != format {
+                    return None;
+                }
+                let planes = planes_of(data)?;
+                drop(sound);
+                match mixer.as_mut() {
+                    Some(mixer) => {
+                        let planes: Vec<&[f32]> = planes.iter().map(Vec::as_slice).collect();
+                        if !mixer.push(index, &planes) {
+                            return None;
+                        }
+                    }
+                    None => {
+                        lane.early_frames += planes.first().map_or(0, |plane| plane.len() as u64);
+                        lane.early.push(planes);
+                    }
+                }
+            }
+            Event::VoiceDrained(index, true) => {
+                let lane = lanes.get_mut(index)?;
+                // A voice that decoded to nothing at all cannot be mixed.
+                lane.format?;
+                lane.drained = true;
+                if let Some(mixer) = mixer.as_mut() {
+                    mixer.finish(index);
+                }
+            }
+            Event::VoiceDrained(_, false) | Event::Failed => return None,
+            Event::Frame(_) | Event::Sound(_) | Event::Progress | Event::Drained(_) => {}
+        }
+        // Every voice has said what it decodes to: the mix, and its
+        // encoder, are set up — for what the decoders actually hand out,
+        // which for HE-AAC or a miscounted header is not what the index
+        // said.
+        if mixer.is_none() && lanes.iter().all(|lane| lane.format.is_some()) {
+            let formats: Vec<(u32, u32)> = lanes.iter().filter_map(|lane| lane.format).collect();
+            let (rate, channels, bitrate) = encodable(sound_mix::mix_format(&formats)?).await?;
+            let placed = lanes
+                .iter()
+                .zip(&formats)
+                .map(|(lane, &(own, count))| sound_mix::voice(movie, lane.track, own, count, rate))
+                .collect::<Option<Vec<_>>>()?;
+            let mut made = Mixer::new(rate, channels, &placed)?;
+            for (index, lane) in lanes.iter_mut().enumerate() {
+                for planes in lane.early.drain(..) {
+                    let planes: Vec<&[f32]> = planes.iter().map(Vec::as_slice).collect();
+                    if !made.push(index, &planes) {
+                        return None;
+                    }
+                }
+                lane.early_frames = 0;
+                if lane.drained {
+                    made.finish(index);
+                }
+            }
+            encoder = Some(AacEncoder::start(rate, channels, bitrate, &wake)?);
+            mixer = Some(made);
+        }
+    }
+    drop(lanes);
+    let aac = encoder?.finish(samples).await?;
+    // Every voice's priming and lead are already in the mix where they
+    // belong: the track starts at its first frame.
+    Some((aac.track(0, 0), aac.parts()))
 }
 
 #[derive(Default)]
@@ -1320,7 +1635,7 @@ async fn picture(
             }
             Event::Drained(true) => break,
             Event::Drained(false) | Event::Failed => return None,
-            Event::Sound(_) | Event::Progress => {}
+            Event::Sound(_) | Event::Progress | Event::Voice(..) | Event::VoiceDrained(..) => {}
         }
     }
     drop(decoder);
@@ -3204,6 +3519,247 @@ mod tests {
         let _decoder = Stand::in_for("AudioDecoder", &asked("fcSoundDecoder"));
         assert!(video(&source, "video/mp4", &Job::default()).await.is_none());
         assert!(was_asked("fcSoundDecoder"));
+    }
+
+    /// `seconds` of AAC-LC at `rate` in `channels`, sounding — a tone with
+    /// noise under it — only from second `from` to second `to`, silent
+    /// around it.
+    async fn sounding(rate: u32, seconds: u32, channels: u32, from: u32, to: u32) -> Aac {
+        let frames = seconds * rate;
+        let window = from * rate..to * rate;
+        let planes: Vec<Vec<f32>> = (0..channels)
+            .map(|channel| {
+                noise(frames, rate, 11 + 4 * channel)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        if window.contains(&(index as u32)) {
+                            value
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut at = 0usize;
+        aac_from_pcm(
+            move || {
+                if at >= frames as usize {
+                    return None;
+                }
+                let count = (SOUND_BLOCK as usize).min(frames as usize - at);
+                let data = Float32Array::new_with_length(channels * count as u32);
+                for (index, plane) in planes.iter().enumerate() {
+                    data.set(
+                        &Float32Array::from(&plane[at..at + count]),
+                        (index * count) as u32,
+                    );
+                }
+                at += count;
+                Some((data, count as u32))
+            },
+            rate,
+            channels,
+            if channels == 1 { 64_000 } else { 128_000 },
+        )
+        .await
+        .expect("the test browser encodes AAC")
+    }
+
+    /// How loud channel `channel` of `heard` is from `from` to `to`
+    /// seconds: its RMS.
+    fn loudness(heard: &web_sys::AudioBuffer, channel: u32, from: f64, to: f64) -> f64 {
+        let samples = heard.get_channel_data(channel).unwrap();
+        let rate = f64::from(heard.sample_rate());
+        let (first, last) = ((from * rate) as usize, (to * rate) as usize);
+        let sum: f64 = samples[first..last]
+            .iter()
+            .map(|&sample| f64::from(sample).powi(2))
+            .sum();
+        (sum / (last - first) as f64).sqrt()
+    }
+
+    /// The bytes of `file` with the `index`th `kind` inside its `moov`
+    /// renamed to `to` — a box's type, or a sample entry's format.
+    fn renamed(file: &[u8], kind: &[u8; 4], index: usize, to: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = file.to_vec();
+        let mut at = 0usize;
+        let moov = loop {
+            let header = mp4_read::box_header(&bytes[at..]).unwrap();
+            let size = header.size.unwrap() as usize;
+            if &header.kind == b"moov" {
+                break at..at + size;
+            }
+            at += size;
+        };
+        let found: Vec<usize> = bytes[moov.clone()]
+            .windows(4)
+            .enumerate()
+            .filter(|(_, four)| four == kind)
+            .map(|(offset, _)| moov.start + offset)
+            .collect();
+        let at = found[index];
+        bytes[at..at + 4].copy_from_slice(to);
+        bytes
+    }
+
+    /// Rule E (issue #98): a source with two sound tracks that play — a
+    /// screen recording's app sound and its microphone — is transcoded with
+    /// both MIXED into its one AAC track, each heard where it was: the first
+    /// in the first second, the second in the last. (Before, the first was
+    /// kept and the second dropped.) Apple's twin of this test is
+    /// `twoSoundTracksAreMixed` (ios/FamilyConnectTests/MediaUploadTests.swift).
+    /// The second time, the microphone is one second at 44.1 kHz that the
+    /// file starts two seconds late, with an empty edit: it is resampled to
+    /// the app's 48 kHz, and still heard in the last second.
+    #[wasm_bindgen_test]
+    async fn two_sound_tracks_are_mixed_into_one() {
+        // 60 fps: outside the profile, so the planner says transcode.
+        let picture = shot(640, 360, 600, &steady(180, 10), 10, 3_000_000, None).await;
+        let app = sounding(48_000, 3, 2, 0, 1).await;
+        let along = sounding(48_000, 3, 1, 2, 3).await;
+        let late = sounding(44_100, 1, 1, 0, 1).await;
+        for (microphone, lead) in [(&along, 0), (&late, 2_000)] {
+            let mut reel = Reel {
+                tracks: picture.tracks.clone(),
+                parts: picture.parts.clone(),
+            };
+            reel.tracks.push(app.track(0, 0));
+            reel.parts.push(app.parts());
+            reel.tracks.push(microphone.track(0, lead));
+            reel.parts.push(microphone.parts());
+            mixed_in_both_windows(&reel.bound(), lead).await;
+        }
+    }
+
+    async fn mixed_in_both_windows(source: &Blob, lead: u32) {
+        let source = source.clone();
+        let (_, before) = read(&whole(&source).await);
+        assert_eq!(before.playing_sound_tracks(), 2);
+        let probed = media_probe::video_source(&before, "video/mp4", source.size() as u64).unwrap();
+        let VideoPlan::Transcode(_) = media_plan::plan_video(&probed) else {
+            panic!("the fixture is outside the profile: {probed:?}");
+        };
+
+        let Some(Planned::Made(made)) = video(&source, "video/mp4", &Job::default()).await else {
+            panic!("two voices are transcoded, mixed");
+        };
+        let (kinds, after) = read(&whole(&made).await);
+        assert_eq!(&kinds[1], b"moov", "the index first");
+        let sound: Vec<_> = after
+            .tracks
+            .iter()
+            .filter(|track| &track.handler == b"soun")
+            .collect();
+        assert_eq!(sound.len(), 1, "one sound track");
+        let entry = sound[0].entry.as_ref().unwrap();
+        let config = mp4_read::audio_config(&entry.config).unwrap();
+        assert_eq!(config.object_type, mp4::AAC_LC);
+        assert_eq!(config.sample_rate, 48_000);
+        // Stereo, since one of them is.
+        assert_eq!(config.channels, 2);
+        let length = after.presented_ms(sound[0]).unwrap();
+        assert!((2_900..=3_200).contains(&length), "{length} ms of sound");
+
+        let heard = heard(&made, 48_000).await;
+        assert_eq!(heard.number_of_channels(), 2);
+        for channel in 0..2 {
+            let first = loudness(&heard, channel, 0.2, 0.8);
+            let between = loudness(&heard, channel, 1.3, 1.7);
+            let last = loudness(&heard, channel, 2.2, 2.8);
+            assert!(
+                first > 0.1,
+                "lead {lead}, channel {channel}: the app's sound is {first}"
+            );
+            assert!(
+                last > 0.1,
+                "lead {lead}, channel {channel}: the microphone is {last}"
+            );
+            assert!(
+                between < 0.01,
+                "lead {lead}, channel {channel}: {between} where neither sounds"
+            );
+        }
+    }
+
+    /// A mix never leaves a voice out (Rule E, issue #98): a second voice
+    /// this browser cannot decode, or a browser with no AAC encoder for the
+    /// mix — a mix is never copied — and the original goes as it would have
+    /// (rule C). So does a voice this reader cannot use, alone or beside
+    /// another: before #98 it read as no sound at all, and the picture went
+    /// alone. Those are found out before the picture is so much as asked
+    /// about.
+    #[wasm_bindgen_test]
+    async fn a_transcode_that_would_lose_a_voice_is_not_done() {
+        let mut reel = shot(
+            640,
+            360,
+            600,
+            &steady(60, 10),
+            10,
+            3_000_000,
+            Some((128_000, 2)),
+        )
+        .await;
+        let one_bytes = whole(&reel.bound()).await;
+        let microphone = voices(48_000, 1, 64_000).await;
+        reel.tracks.push(microphone.track(0, 0));
+        reel.parts.push(microphone.parts());
+        let two = reel.bound();
+        let two_bytes = whole(&two).await;
+
+        // The second voice in a format no browser decodes (AMR).
+        let amr = renamed(&two_bytes, b"mp4a", 1, b"samr");
+        let (_, before) = read(&amr);
+        assert_eq!(before.playing_sound_tracks(), 2);
+        assert!(before.voices().is_some(), "the reader has its samples");
+        let undecodable = blob(&amr, "video/mp4");
+        assert!(video(&undecodable, "video/mp4", &Job::default())
+            .await
+            .is_none());
+
+        // No AAC encoder: there is no mix to make, and one voice of two is
+        // not sent instead.
+        {
+            let _encoder = without("AudioEncoder");
+            assert!(video(&two, "video/mp4", &Job::default()).await.is_none());
+        }
+
+        // One voice, its sample sizes renamed away: the reader finds no
+        // samples to write, the probe no audio, the planner no rate for it
+        // — and a player still plays it.
+        let unsized_bytes = renamed(&one_bytes, b"stsz", 1, b"free");
+        let (_, before) = read(&unsized_bytes);
+        assert!(before.audio().is_none());
+        assert_eq!(before.playing_sound_tracks(), 1);
+        let probed =
+            media_probe::video_source(&before, "video/mp4", unsized_bytes.len() as u64).unwrap();
+        assert_eq!(probed.audio_codec, None);
+        let VideoPlan::Transcode(target) = media_plan::plan_video(&probed) else {
+            panic!("the fixture is outside the profile: {probed:?}");
+        };
+        assert_eq!(target.audio_bitrate, None);
+        let silent = blob(&unsized_bytes, "video/mp4");
+        assert!(video(&silent, "video/mp4", &Job::default()).await.is_none());
+        // Beside a voice it can read: never mixed without it.
+        let half = renamed(&two_bytes, b"stsz", 2, b"free");
+        let (_, before) = read(&half);
+        assert_eq!(before.playing_sound_tracks(), 2);
+        assert!(before.audio().is_some() && before.voices().is_none());
+        let half = blob(&half, "video/mp4");
+        assert!(video(&half, "video/mp4", &Job::default()).await.is_none());
+
+        // Neither unreadable source is so much as offered to a picture
+        // encoder.
+        for source in [&silent, &half] {
+            let _encoder = Stand::in_for("VideoEncoder", &asked("fcPictureEncoder"));
+            assert!(video(source, "video/mp4", &Job::default()).await.is_none());
+            assert!(
+                !was_asked("fcPictureEncoder"),
+                "the picture was asked about"
+            );
+        }
     }
 
     /// A transcode says how far it has got, and stops when it is told to —

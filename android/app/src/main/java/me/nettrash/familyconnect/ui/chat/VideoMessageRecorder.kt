@@ -60,6 +60,13 @@ interface CameraSession {
         fun unavailable()
 
         /**
+         * The microphone was taken mid-take — another app or a call has it,
+         * or Android 12's microphone toggle silenced it — so the file goes on
+         * with no sound, or with zeros (S4, issue #98).
+         */
+        fun microphoneTaken()
+
+        /**
          * A recording ended — asked for, at the length limit ([capReached]),
          * or because the camera or the recorder failed ([failed]). [file] is
          * null when nothing readable was written.
@@ -109,6 +116,11 @@ data class RoundClip(
     val notRound: RoundRecorderRules.NotRound?,
     /** Every file this clip made, so a discard leaves none behind. */
     val files: List<File>,
+    /**
+     * The recording has no sound track at all (issue #98): REVIEW says the
+     * recording stopped unexpectedly, as a microphone taken mid-take does.
+     */
+    val soundless: Boolean = false,
 ) {
     val round: Boolean get() = notRound == null
 }
@@ -364,6 +376,21 @@ open class VideoMessageRecorder(
             }
         }
 
+        override fun microphoneTaken() {
+            when (_state.value.phase) {
+                // S4, "Siri, an alarm or another app takes the microphone":
+                // RECORDING stops into REVIEW — with what was recorded, and
+                // the sentence a failed recorder gets, as iOS's machine
+                // routes `.microphoneTaken` with `.recorderFailed` (#98).
+                is Phase.Recording -> stopInto(Notice.STOPPED_UNEXPECTEDLY)
+                // Found only once Stop was pressed (CameraX's last stats):
+                // REVIEW still says so, rather than show a silent take as fine.
+                is Phase.Finishing -> if (stopNotice == null) stopNotice = Notice.STOPPED_UNEXPECTEDLY
+                // The microphone is closed in PREVIEW, and REVIEW's take is done.
+                else -> Unit
+            }
+        }
+
         override fun finalized(file: File?, durationMs: Long, capReached: Boolean, failed: Boolean) {
             onFinalized(file, durationMs, capReached, failed)
         }
@@ -578,8 +605,12 @@ open class VideoMessageRecorder(
             }
             afterStop == AfterStop.TOO_SHORT || (file != null && recorded < ComposerSlot.SHORTEST_RECORDING_MS) -> {
                 file?.delete()
-                _state.update { it.copy(phase = Phase.Preview(firstFrame = true), notice = Notice.TOO_SHORT, ask = null) }
-                announce(R.string.s_video_too_short)
+                // A take the recorder or the microphone ended inside its first
+                // second (#98: a microphone already taken ends it at once) was
+                // not too short — it stopped, and says so.
+                val why = if (stopNotice == Notice.STOPPED_UNEXPECTEDLY) Notice.STOPPED_UNEXPECTEDLY else Notice.TOO_SHORT
+                _state.update { it.copy(phase = Phase.Preview(firstFrame = true), notice = why, ask = null) }
+                announce(why.text)
                 used()
             }
             file == null || !file.exists() -> {
@@ -627,7 +658,11 @@ open class VideoMessageRecorder(
             }
             else -> Unit
         }
-        _state.update { it.copy(phase = Phase.Review(clip), notice = notice) }
+        // A take with no sound track at all (#98) is said in REVIEW, before
+        // Send, whatever else stopped it: the sound is what a video message
+        // is for.
+        val said = if (clip.soundless) Notice.STOPPED_UNEXPECTEDLY else notice
+        _state.update { it.copy(phase = Phase.Review(clip), notice = said) }
     }
 
     // -- REVIEW (S3.4) ----------------------------------------------------------

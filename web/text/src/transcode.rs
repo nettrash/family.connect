@@ -255,6 +255,48 @@ pub fn audio_route(
     })
 }
 
+// --- rule E: a transcode keeps the sound (issue #98) ---------------------------------------------
+
+/// What a video's transcode does about its sound (docs/protocol.md, Rule E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundPlan {
+    /// The source has no sound, and neither has its result.
+    Silent,
+    /// Its one sound track is written, by [`audio_route`].
+    Write,
+    /// Its sound tracks are mixed into one and re-encoded
+    /// ([`crate::sound_mix`]) — never copied, so only where there is an AAC
+    /// encoder.
+    Mix,
+    /// Not transcoded at all — rule C, the original as it would have gone.
+    Fallback,
+}
+
+/// The sound plan for a source with `playing` sound tracks (counted from its
+/// own track list, [`crate::mp4_read::playing_sound_tracks`]), `readable`
+/// when this reader can write from what plays
+/// ([`crate::mp4_read::Movie::sound_readable`]: the track
+/// [`crate::mp4_read::Movie::audio`] picks for one voice, every one of them
+/// for more), and `target_has_sound` when the planner's target has an audio
+/// rate.
+///
+/// A result with no sound from a source with some is a failed transcode,
+/// however much smaller it is: before #98 a sound track the reader could
+/// not use counted as none — the probe saw no audio, the planner set no
+/// audio rate, and the picture went alone. And more than one voice is
+/// MIXED into the one AAC-LC track the profile allows — never thinned to
+/// the first, which would drop the microphone beside a screen recording's
+/// app sound; a voice among them this reader cannot write from fails the
+/// whole transcode rather than be left out of the mix.
+pub fn sound_plan(playing: usize, readable: bool, target_has_sound: bool) -> SoundPlan {
+    match (playing, readable, target_has_sound) {
+        (0, false, false) => SoundPlan::Silent,
+        (1, true, true) => SoundPlan::Write,
+        (2.., true, true) => SoundPlan::Mix,
+        _ => SoundPlan::Fallback,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +539,33 @@ mod tests {
         assert!(!could_fit(ceiling + 1, ceiling, &target, Some(1_200_000)));
         // Unknown length: try.
         assert!(could_fit(ceiling * 4, ceiling, &target, None));
+    }
+
+    /// Rule E (issue #98): a transcode never chooses silence over a source
+    /// with sound, and never one voice of two.
+    #[test]
+    fn a_transcode_keeps_the_sound_or_does_not_happen() {
+        // No sound in, none out.
+        assert_eq!(sound_plan(0, false, false), SoundPlan::Silent);
+        // One voice the reader can use, and a rate for it: written.
+        assert_eq!(sound_plan(1, true, true), SoundPlan::Write);
+        // One voice the reader cannot use — no sample sizes, a format it
+        // does not know — so the probe saw none and the target has no rate:
+        // what used to go out silent.
+        assert_eq!(sound_plan(1, false, false), SoundPlan::Fallback);
+        assert_eq!(sound_plan(1, false, true), SoundPlan::Fallback);
+        assert_eq!(sound_plan(1, true, false), SoundPlan::Fallback);
+        // Two voices that play — app sound and microphone — and every one
+        // readable: mixed, however many.
+        assert_eq!(sound_plan(2, true, true), SoundPlan::Mix);
+        assert_eq!(sound_plan(5, true, true), SoundPlan::Mix);
+        // One of them the reader cannot write from: never mixed without it.
+        assert_eq!(sound_plan(2, false, true), SoundPlan::Fallback);
+        assert_eq!(sound_plan(2, false, false), SoundPlan::Fallback);
+        assert_eq!(sound_plan(2, true, false), SoundPlan::Fallback);
+        // The reader and the planner disagreeing is what it always was:
+        // rule C.
+        assert_eq!(sound_plan(0, true, false), SoundPlan::Fallback);
+        assert_eq!(sound_plan(0, false, true), SoundPlan::Fallback);
     }
 }
