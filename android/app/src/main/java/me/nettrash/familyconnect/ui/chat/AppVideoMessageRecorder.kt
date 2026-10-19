@@ -115,6 +115,7 @@ class AppVideoMessageRecorder private constructor(
                     maxBytes = maxBytes,
                 ),
                 files = made.files,
+                soundless = made.soundless,
             )
         }
 

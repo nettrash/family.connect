@@ -34,6 +34,14 @@ namespace FamilyConnect.App.Services;
 /// Windows can read of the source.
 /// </para>
 /// <para>
+/// <b>A TRANSCODE KEEPS THE SOUND</b> (rule E, issue #98). The source's sound tracks are counted from its own
+/// <c>moov</c> (<see cref="ContainerSound"/>), because Media Foundation does not list a track it cannot read and a
+/// transcode then writes the picture alone. One it does not show is left as it is — nothing here can decode it; more
+/// than one that plays is MIXED into the profile's one audio track by a <see cref="MediaComposition"/> render
+/// (<see cref="MixVideoAsync"/>), since the transcoder carries one audio stream; and a result with no sound track from a
+/// source with one — or a mix with other than one — is a failed transcode, however small.
+/// </para>
+/// <para>
 /// <b>A PICKED SOUND FILE IS RE-ENCODED ONLY WHERE THE AUDIO RULES SAY</b> — lossless, Ogg, or lossy
 /// above 192 kbit/s — into an M4A. AIFF and FLAC, which the server does not take as audio and which
 /// went as files before, reach those rules too, and go as audio when they come out.
@@ -203,9 +211,36 @@ internal static class MediaPreparing
         if (reading is not null && plan is { Kind: VideoPlanKind.Transcode, Target: { } target })
         {
             cancel.ThrowIfCancellationRequested();
-            Diagnostics.Write($"transcoding a video to {target.Width}x{target.Height}, {target.FrameRate:0.###} fps, {target.VideoBitrate} bit/s");
-            // Off the window's thread: the transcode is Media Foundation's, but reading it back and moving its index are ours.
-            var result = await Task.Run(() => TranscodeVideoAsync(file, reading, target, cancel), cancel);
+            // Rule E (issue #98): the sound tracks are counted from the container's own track list — what plays, not
+            // what Media Foundation shows — and only for a source that is about to be transcoded: rule A sends the
+            // others untouched, every track and all. Off the window's thread, since the count reads the file.
+            var tracks = await Task.Run(() => SoundTracksAsync(file), cancel);
+            int? sound = tracks is null ? null : ContainerSound.PlayingIndexes(tracks).Count;
+            var soundText = sound is { } counted ? counted.ToString(System.Globalization.CultureInfo.InvariantCulture) : "unknown";
+            Transcoded? result = null;
+            switch (ContainerSound.BeforeTranscode(sound, reading.Audio is not null))
+            {
+                case SoundBefore.Unheard:
+                    // The confirmed way a transcode went silent: no audio shown, none asked for, none came out, and the
+                    // read-back agreed with itself. Nothing here can decode the track, so nothing can keep it, and the
+                    // original goes (rule C).
+                    Diagnostics.Write("a video has a sound track Media Foundation does not show; transcoding it would lose the sound, so it is left as it is");
+                    break;
+                case SoundBefore.Mix when tracks is not null:
+                    // More than one voice: a profile holds one audio track, so they are mixed into it — every client
+                    // mixes, and a transcode never keeps one voice and drops the other. A mix that fails is rule C.
+                    result = await Task.Run(() => MixVideoAsync(file, reading, target, tracks, cancel), cancel);
+                    break;
+                default:
+                    // The audio asked for (or "none") and the count it was decided from: a silent transcode is then
+                    // something diagnostics.log shows, not something a recipient finds out.
+                    Diagnostics.Write(
+                        $"transcoding a video to {target.Width}x{target.Height}, {target.FrameRate:0.###} fps, {target.VideoBitrate} bit/s, "
+                        + $"audio {(target.AudioBitrate is { } audioBitrate ? $"{audioBitrate} bit/s" : "none")}, sound tracks {soundText}");
+                    // Off the window's thread: the transcode is Media Foundation's, but reading it back and moving its index are ours.
+                    result = await Task.Run(() => TranscodeVideoAsync(file, reading, target, sound, cancel), cancel);
+                    break;
+            }
             if (result is not null)
             {
                 return await ChosenAsync(
@@ -252,6 +287,11 @@ internal static class MediaPreparing
                 return null;
             }
             var stated = await StatedAsync(file);
+            // Kept beside Rule E's count (issue #98), not folded into it. The count reads the container and is the
+            // authority wherever it can walk one; this reads the shell, which is likely blind to the same tracks Media
+            // Foundation is and is off when its query throws — but it is the only second opinion for a file the count
+            // cannot walk (null: a moov it does not vouch for). Both only ever leave a source alone, never send one
+            // silent, so where they disagree the cost is a transcode not made.
             if (MediaEncoding.HidesAudio(
                     profile.Audio is not null,
                     Number(stated, ShellAudioChannels),
@@ -304,8 +344,12 @@ internal static class MediaPreparing
          MediaEncoding.FirstKnown(video.Height, shell?.Height) ?? 0,
          MediaEncoding.Rotation(Number(video.Properties, VideoRotation), shell is null ? null : (long)shell.Orientation));
 
+    /// <summary>
+    /// A planned video's transcode. <paramref name="sourceSound"/> is the source's playing sound tracks as
+    /// <see cref="ContainerSound.Playing(Stream)"/> counted them (null when it could not), which every result is held to.
+    /// </summary>
     private static Task<Transcoded?> TranscodeVideoAsync(
-        StorageFile file, VideoReading reading, VideoTarget target, CancellationToken cancel)
+        StorageFile file, VideoReading reading, VideoTarget target, int? sourceSound, CancellationToken cancel)
     {
         var attempts = MediaEncoding.VideoAttempts(
             target,
@@ -323,7 +367,7 @@ internal static class MediaPreparing
             "video/mp4",
             attempts,
             encoding => VideoProfile(encoding, reading.Audio),
-            (output, asked, token) => VideoCameOutAsync(file, reading.Source.DurationMs, output, asked, token),
+            (output, asked, token) => VideoCameOutAsync(file, reading.Source.DurationMs, sourceSound, output, asked, token),
             reading.Source.DurationMs,
             cancel);
     }
@@ -373,10 +417,13 @@ internal static class MediaPreparing
     /// and the SAME turn (<see cref="MediaEncoding.Matches"/>), a frame rate no higher than asked, SDR where SDR was asked
     /// for — and a picture that is still its source's, the same way up (<see cref="LooksLikeItsSourceAsync"/>). Anything
     /// else is a video that would play sideways, squashed, silent or grey, and is a failed transcode. Only an audio
-    /// track that came out some other way than asked leaves the next way of asking worth trying.
+    /// track that came out some other way than asked leaves the next way of asking worth trying. Silent is judged twice:
+    /// by Media Foundation's view of the result, and by the result's own track list against the source's
+    /// (<paramref name="sourceSound"/>; Rule E, issue #98) — a result with no sound track from a source with one is never
+    /// taken, so rule D can never choose it.
     /// </summary>
     private static async Task<AttemptEnd> VideoCameOutAsync(
-        StorageFile source, long? durationMs, StorageFile output, VideoEncoding asked, CancellationToken cancel)
+        StorageFile source, long? durationMs, int? sourceSound, StorageFile output, VideoEncoding asked, CancellationToken cancel)
     {
         var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
         if (profile.Video is not { } video || VideoCodec(video.Subtype) != "h264")
@@ -388,6 +435,12 @@ internal static class MediaPreparing
         {
             Diagnostics.Write("a transcode came out with its audio track added or lost");
             // A track that was to be passed through and was dropped instead may still be encoded.
+            return asked.KeepAudio ? AttemptEnd.Refused : AttemptEnd.Wrong;
+        }
+        if (sourceSound is > 0 && ContainerSound.LostSound(sourceSound, await PlayingSoundTracksAsync(output)))
+        {
+            Diagnostics.Write("a transcode came out with no sound track where its source had one");
+            // As above: a pass-through that was dropped may still be encoded; anything else would come out silent again.
             return asked.KeepAudio ? AttemptEnd.Refused : AttemptEnd.Wrong;
         }
         VideoProperties? shell = null;
@@ -515,6 +568,217 @@ internal static class MediaPreparing
             Diagnostics.Write($"reading a frame at {at:0.##}s to compare: {e.GetType().Name}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// A video whose sound is on more than one track that plays, transcoded with them all MIXED into the one AAC-LC
+    /// track the profile allows (Rule E, issue #98: "stereo when any of them is, at the highest sample rate any of them
+    /// has, each track at its own place in time"). Null when the mix cannot be made or did not come out right — rule C.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>WHY A COMPOSITION AND NOT THE TRANSCODER.</b> <see cref="MediaTranscoder"/> takes a profile, and a
+    /// <see cref="MediaEncodingProfile"/> has one <c>Audio</c>: what it encodes is whichever audio stream Media Foundation
+    /// selects, and nothing in it sums two. <see cref="MediaComposition"/> is WinRT's own mixer of sound against picture:
+    /// a <see cref="MediaClip"/> plays the picture with ONE of the file's embedded audio tracks
+    /// (<c>MediaClip.SelectedEmbeddedAudioTrackIndex</c>), and <c>BackgroundAudioTrack.CreateFromEmbeddedAudioTrack</c>
+    /// adds any other embedded track of the same clip under it; <c>MediaComposition.RenderToFileAsync(file,
+    /// MediaTrimmingPreference.Precise, profile)</c> renders the lot into one file through the SAME profile the transcoder
+    /// is given (<see cref="VideoProfile"/>) — Windows.Media.Editing, Windows 10 1507 and later. The other road, an
+    /// <c>AudioGraph</c> mixing the tracks into a temporary M4A, would still need a second file muxed in beside the
+    /// picture, and WinRT has no muxer short of a composition anyway.
+    /// </para>
+    /// <para>
+    /// <b>WHAT IS ASSUMED, AND HOW IT IS HELD.</b> That a composition SUMS its clip's audio and its background tracks at
+    /// their own volume (1.0 each — no ducking, no averaging), clamped to full scale, as AVFoundation's audio mix does;
+    /// that a background track made from an embedded track, at <c>Delay</c> zero, plays at the same place in time it has
+    /// in the file; and which embedded track is which (<see cref="ContainerSound.MixMap"/>, by position). None of that is
+    /// documented to that depth or could be tried on the Mac this was written on, so the result is held to everything a
+    /// transcode is — H.264, AAC in the channels asked, the sides and turn asked (<see cref="MediaEncoding.MixAttempts"/>
+    /// asks a turned source both ways), the frame rate, SDR, a frame that still looks like its source — and to exactly
+    /// ONE sound track in its own track list. Anything else is a failed mix, and the original goes.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled: the person took the file back.</exception>
+    private static async Task<Transcoded?> MixVideoAsync(
+        StorageFile file, VideoReading reading, VideoTarget target, IReadOnlyList<SoundTrack> tracks, CancellationToken cancel)
+    {
+        List<DecodedTrack> decoded;
+        try
+        {
+            var clip = await MediaClip.CreateFromFileAsync(file);
+            decoded = [.. clip.EmbeddedAudioTracks.Select(track =>
+            {
+                var audio = track.GetAudioEncodingProperties();
+                return new DecodedTrack(audio.ChannelCount, audio.SampleRate, audio.Bitrate);
+            })];
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"opening a video to mix its sound: {e.GetType().Name} 0x{e.HResult:X8}");
+            return null;
+        }
+        if (ContainerSound.MixMap(tracks, decoded) is not { Count: > 1 } mixed)
+        {
+            // Fewer embedded tracks than sound tracks (one Media Foundation cannot decode), or ones that do not line up:
+            // a mix of the wrong ones would keep fewer voices than the source has.
+            Diagnostics.Write($"a video's {tracks.Count} sound tracks do not line up with the {decoded.Count} Media Foundation reads; it is left as it is");
+            return null;
+        }
+        var mix = ContainerSound.MixFormat(mixed.Select(at => (decoded[at], tracks[at])));
+        var attempts = MediaEncoding.MixAttempts(target, reading.Rotation, reading.RateNumerator, reading.RateDenominator, mix, reading.Hdr);
+        var aac = attempts[0].Audio;
+        Diagnostics.Write(
+            $"mixing {mixed.Count} sound tracks (track ids {string.Join(",", mixed.Select(at => tracks[at].TrackId))}) into a video at "
+            + $"{target.Width}x{target.Height}, {target.FrameRate:0.###} fps, {target.VideoBitrate} bit/s, "
+            + $"audio {aac?.Bitrate} bit/s, {aac?.Channels} channel(s), {aac?.SampleRate} Hz");
+        if (TranscodeFolder() is not { } folder)
+        {
+            return null;
+        }
+        return await TranscodeAttempts.FirstTakenAsync(
+            attempts,
+            (attempt, token) => MixAttemptAsync(
+                file, Path.Combine(folder, $"{Guid.NewGuid():N}.mp4"), mixed, decoded.Count, attempt, reading.Source.DurationMs, token),
+            MediaEncoding.TranscodeCeiling(reading.Source.DurationMs),
+            Diagnostics.Write,
+            cancel);
+    }
+
+    /// <summary>
+    /// One way of asking for a mix, into a file of its own that is gone again when this returns — as
+    /// <see cref="AttemptAsync"/> is for the transcoder. A fresh clip and composition each time: a clip belongs to the
+    /// composition it was added to. The token reaches the render itself, so a cancel or the ceiling stops it.
+    /// </summary>
+    private static async Task<Attempted<Transcoded>> MixAttemptAsync(
+        StorageFile source,
+        string path,
+        IReadOnlyList<int> mixed,
+        int embeddedCount,
+        VideoEncoding attempt,
+        long? durationMs,
+        CancellationToken cancel)
+    {
+        try
+        {
+            await File.WriteAllBytesAsync(path, [], cancel);
+            var output = await StorageFile.GetFileFromPathAsync(path);
+            var clip = await MediaClip.CreateFromFileAsync(source);
+            var embedded = clip.EmbeddedAudioTracks;
+            if (embedded.Count != embeddedCount)
+            {
+                // The positions were worked out against another reading of the same file; they mean nothing now.
+                Diagnostics.Write($"a video read {embedded.Count} embedded sound tracks for a mix, not {embeddedCount}");
+                return Attempted<Transcoded>.Wrong;
+            }
+            // The first voice plays with the picture; every other one is laid under it from the start, at full volume.
+            clip.SelectedEmbeddedAudioTrackIndex = (uint)mixed[0];
+            clip.Volume = 1.0;
+            var composition = new MediaComposition();
+            composition.Clips.Add(clip);
+            foreach (var at in mixed.Skip(1))
+            {
+                var voice = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(embedded[at]);
+                voice.Delay = TimeSpan.Zero;
+                voice.Volume = 1.0;
+                composition.BackgroundAudioTracks.Add(voice);
+            }
+            var failure = await composition
+                .RenderToFileAsync(output, MediaTrimmingPreference.Precise, VideoProfile(attempt, null))
+                .AsTask(cancel);
+            if (failure != TranscodeFailureReason.None)
+            {
+                Diagnostics.Write($"a mix was refused: {failure} ({attempt})");
+                return Attempted<Transcoded>.Refused;
+            }
+            switch (await MixCameOutAsync(source, durationMs, output, attempt, cancel))
+            {
+                case AttemptEnd.Taken:
+                    break;
+                case AttemptEnd.Wrong:
+                    return Attempted<Transcoded>.Wrong;
+                default:
+                    return Attempted<Transcoded>.Refused;
+            }
+            return await FinishedAsync(path, "video/mp4", cancel);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"removing a mix: {e.GetType().Name}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a mix made what was asked: everything <see cref="VideoCameOutAsync"/> holds a transcode to, and ONE sound
+    /// track in the result's own track list (Rule E). What a composition might do differently from the transcoder — the
+    /// turn carried as metadata or turned into the pixels, a sound format of its own choosing, a picture the wrong way
+    /// up — is a REFUSAL, so the next way of asking (the upright one, the encoder's nearest rate) is still tried; what
+    /// no other way of asking would change is Wrong.
+    /// </summary>
+    private static async Task<AttemptEnd> MixCameOutAsync(
+        StorageFile source, long? durationMs, StorageFile output, VideoEncoding asked, CancellationToken cancel)
+    {
+        var profile = await MediaEncodingProfile.CreateFromFileAsync(output);
+        if (profile.Video is not { } video || VideoCodec(video.Subtype) != "h264")
+        {
+            Diagnostics.Write($"a mix came out as {profile.Video?.Subtype ?? "no video"}, not H.264");
+            return AttemptEnd.Wrong;
+        }
+        if (profile.Audio is not { } audio || asked.Audio is not { } aac)
+        {
+            Diagnostics.Write("a mix came out with no sound");
+            return AttemptEnd.Wrong;
+        }
+        if (!MediaEncoding.AacCameOut(aac, AudioCodec(audio.Subtype), audio.ChannelCount))
+        {
+            Diagnostics.Write($"a mix's sound came out {AudioCodec(audio.Subtype)}, {audio.ChannelCount} channel(s); asked {aac}");
+            return AttemptEnd.Refused;
+        }
+        var tracks = await SoundTracksAsync(output);
+        if (!ContainerSound.MixCameOut(tracks?.Count))
+        {
+            Diagnostics.Write($"a mix came out with {tracks?.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "an unreadable number of"} sound tracks, not one");
+            return AttemptEnd.Wrong;
+        }
+        VideoProperties? shell = null;
+        try
+        {
+            shell = await output.Properties.GetVideoPropertiesAsync();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a mix back: {e.GetType().Name}");
+        }
+        var (width, height, rotation) = Geometry(video, shell);
+        if (!MediaEncoding.Matches(asked, (uint)Math.Clamp(width, 0, uint.MaxValue), (uint)Math.Clamp(height, 0, uint.MaxValue), rotation))
+        {
+            Diagnostics.Write($"a mix came out {width}x{height} turned {rotation}; asked {asked.Width}x{asked.Height} turned {asked.Rotation}");
+            return AttemptEnd.Refused;
+        }
+        var rate = MediaEncoding.FrameRate(video.FrameRate?.Numerator ?? 0, video.FrameRate?.Denominator ?? 0, 0);
+        if (!MediaEncoding.FrameRateCameOut(asked, rate))
+        {
+            Diagnostics.Write($"a mix came out at {rate:0.###} fps; asked {asked.FrameRateNumerator}/{asked.FrameRateDenominator}");
+            return AttemptEnd.Wrong;
+        }
+        if (asked.ToSdr && MediaEncoding.IsHdr(Number(video.Properties, TransferFunction), Number(video.Properties, VideoPrimaries)))
+        {
+            Diagnostics.Write("a mix of an HDR source still says it is HDR");
+            return AttemptEnd.Wrong;
+        }
+        if (!MediaEncoding.AudioRateCameOut(aac.Bitrate, audio.Bitrate))
+        {
+            Diagnostics.Write($"a mix's sound came out at {audio.Bitrate} bit/s; asked {aac.Bitrate}");
+            return AttemptEnd.Refused;
+        }
+        return await LooksLikeItsSourceAsync(source, durationMs, output, asked, cancel) ? AttemptEnd.Taken : AttemptEnd.Refused;
     }
 
     private static async Task<PrepOutcome> AudioAsync(
@@ -919,15 +1183,8 @@ internal static class MediaPreparing
         CancellationToken cancel,
         Action<MediaTranscoder, T>? configure = null)
     {
-        var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect", "prepared");
-        try
+        if (TranscodeFolder() is not { } folder)
         {
-            Directory.CreateDirectory(folder);
-            SweepStale(folder);
-        }
-        catch (Exception e)
-        {
-            Diagnostics.Write($"making room for a transcode: {e.GetType().Name}");
             return null;
         }
         return await TranscodeAttempts.FirstTakenAsync(
@@ -983,20 +1240,7 @@ internal static class MediaPreparing
                 default:
                     return Attempted<Transcoded>.Refused;
             }
-            var length = new FileInfo(path).Length;
-            if (length > MediaPrep.SizeLimit)
-            {
-                // Where its index is, nobody needs to know: rule D sends the source, or nothing.
-                return Attempted<Transcoded>.Taken(new Transcoded(length, null, MoovFirst: false));
-            }
-            var bytes = await File.ReadAllBytesAsync(path, cancel);
-            if (!MediaPrep.MatchesMagic(mime, bytes))
-            {
-                Diagnostics.Write("a transcode's bytes are not the type they are sent as");
-                return Attempted<Transcoded>.Wrong;
-            }
-            var arranged = Faststart.MoovFirst(bytes);
-            return Attempted<Transcoded>.Taken(new Transcoded(length, arranged ?? bytes, arranged is not null));
+            return await FinishedAsync(path, mime, cancel);
         }
         finally
         {
@@ -1008,6 +1252,46 @@ internal static class MediaPreparing
             {
                 Diagnostics.Write($"removing a transcode: {e.GetType().Name}");
             }
+        }
+    }
+
+    /// <summary>
+    /// A result that came out as asked, taken in: its length; its bytes, when it is within the ceiling, with its index
+    /// moved to the front where that can be done; or Wrong when its bytes are not the type they are sent as. The
+    /// transcoder's attempts and the mix's (issue #98) end the same way.
+    /// </summary>
+    private static async Task<Attempted<Transcoded>> FinishedAsync(string path, string mime, CancellationToken cancel)
+    {
+        var length = new FileInfo(path).Length;
+        if (length > MediaPrep.SizeLimit)
+        {
+            // Where its index is, nobody needs to know: rule D sends the source, or nothing.
+            return Attempted<Transcoded>.Taken(new Transcoded(length, null, MoovFirst: false));
+        }
+        var bytes = await File.ReadAllBytesAsync(path, cancel);
+        if (!MediaPrep.MatchesMagic(mime, bytes))
+        {
+            Diagnostics.Write("a transcode's bytes are not the type they are sent as");
+            return Attempted<Transcoded>.Wrong;
+        }
+        var arranged = Faststart.MoovFirst(bytes);
+        return Attempted<Transcoded>.Taken(new Transcoded(length, arranged ?? bytes, arranged is not null));
+    }
+
+    /// <summary>The folder every transcode and mix is written into, made and swept; null when it cannot be.</summary>
+    private static string? TranscodeFolder()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "FamilyConnect", "prepared");
+        try
+        {
+            Directory.CreateDirectory(folder);
+            SweepStale(folder);
+            return folder;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"making room for a transcode: {e.GetType().Name}");
+            return null;
         }
     }
 
@@ -1029,6 +1313,30 @@ internal static class MediaPreparing
             }
         }
     }
+
+    /// <summary>
+    /// A video's sound tracks, read from its own <c>moov</c> (<see cref="ContainerSound"/>; Rule E, issue #98), or null
+    /// when it cannot be read or walked — which leaves the transcode to decide as it did before. It reads synchronously
+    /// through the stream adapter, so it is called off the window's thread.
+    /// </summary>
+    private static async Task<IReadOnlyList<SoundTrack>?> SoundTracksAsync(StorageFile file)
+    {
+        try
+        {
+            using var stream = await file.OpenReadAsync();
+            using var read = stream.AsStream();
+            return ContainerSound.Read(read);
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a video's sound tracks: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>How many of a video's sound tracks play (<see cref="SoundTracksAsync"/>), or null when nobody can say.</summary>
+    private static async Task<int?> PlayingSoundTracksAsync(StorageFile file) =>
+        await SoundTracksAsync(file) is { } tracks ? ContainerSound.PlayingIndexes(tracks).Count : null;
 
     /// <summary>The shell's numbers for a file's streams, or null when it has none to give.</summary>
     private static async Task<IDictionary<string, object>?> StatedAsync(StorageFile file)

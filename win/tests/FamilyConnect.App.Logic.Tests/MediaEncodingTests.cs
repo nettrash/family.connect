@@ -378,6 +378,71 @@ public sealed class MediaEncodingTests
     }
 
     /// <summary>
+    /// A mix (Rule E, issue #98) is asked for as the one track it becomes: stereo when any voice is, at the highest rate
+    /// any has, at the profile's row capped by the voices' rates together — never passed through — while the picture is
+    /// asked for exactly as the planner's own attempts ask for it.
+    /// </summary>
+    [Fact]
+    public void AMixIsAskedForAsTheOneTrackItBecomes()
+    {
+        // Media Foundation showed the mono microphone, so the plan's audio is mono's 64 000; the app's sound is stereo.
+        var target = new VideoTarget(1280, 720, 30, 2_000_000, 64_000);
+        var attempts = MediaEncoding.MixAttempts(target, 0, 30, 1, new MixSound(2, 48_000, 192_000), hdr: false);
+        Assert.Equal(
+            [
+                (H264Profile.High, new AacEncoding(48_000, 2, 128_000), false),
+                (H264Profile.Main, new AacEncoding(48_000, 2, 128_000), false),
+            ],
+            attempts.Select(attempt => (attempt.Profile, attempt.Audio!.Value, attempt.KeepAudio)));
+        var planned = MediaEncoding.VideoAttempts(target, 0, 30, 1, 1, 48_000, 64_000, hdr: false)[0];
+        Assert.All(attempts, attempt => Assert.Equal(planned with { Audio = attempt.Audio, Profile = attempt.Profile }, attempt));
+    }
+
+    [Fact]
+    public void TwoMonoVoicesMixToMonoAndNeverRaiseTheirRate()
+    {
+        var target = new VideoTarget(1280, 720, 30, 2_000_000, 64_000);
+        Assert.Equal(
+            [
+                (H264Profile.High, new AacEncoding(44_100, 1, 64_000)),
+                (H264Profile.High, new AacEncoding(44_100, 1, 96_000)),
+                (H264Profile.Main, new AacEncoding(44_100, 1, 96_000)),
+            ],
+            MediaEncoding.MixAttempts(target, 0, 30, 1, new MixSound(1, 44_100, 128_000), hdr: false)
+                .Select(attempt => (attempt.Profile, attempt.Audio!.Value)));
+        // Two thin voices together under the profile's row: the row is capped by them, and 96 000 would raise it.
+        Assert.Equal(
+            [(uint?)40_000, 40_000],
+            MediaEncoding.MixAttempts(target, 0, 30, 1, new MixSound(1, 44_100, 40_000), hdr: false).Select(attempt => attempt.Audio?.Bitrate));
+        // Nothing stated: stereo's row, at 44.1 kHz.
+        Assert.Equal(
+            new AacEncoding(44_100, 2, 128_000),
+            MediaEncoding.MixAttempts(target, 0, 30, 1, new MixSound(null, null, null), hdr: false)[0].Audio);
+    }
+
+    /// <summary>
+    /// A composition may carry a phone's turn as metadata, as the transcoder does, or turn the pixels: a turned source is
+    /// asked for both ways, each way of asking twice, and the read-back keeps whichever came out right.
+    /// </summary>
+    [Fact]
+    public void ATurnedSourceIsAlsoAskedForUpright()
+    {
+        var portrait = new VideoTarget(720, 1280, 30, 2_000_000, 128_000);
+        var attempts = MediaEncoding.MixAttempts(portrait, 90, 30, 1, new MixSound(2, 48_000, 256_000), hdr: true);
+        Assert.Equal(
+            [
+                (H264Profile.High, 1280u, 720u, 90u),
+                (H264Profile.High, 720u, 1280u, 0u),
+                (H264Profile.Main, 1280u, 720u, 90u),
+                (H264Profile.Main, 720u, 1280u, 0u),
+            ],
+            attempts.Select(attempt => (attempt.Profile, attempt.Width, attempt.Height, attempt.Rotation)));
+        Assert.All(attempts, attempt => Assert.True(attempt.ToSdr));
+        Assert.All(attempts, attempt => Assert.Equal(MediaEncoding.Displayed(720, 1280, 0), MediaEncoding.Displayed(attempt.Width, attempt.Height, attempt.Rotation)));
+        Assert.Equal(2, MediaEncoding.MixAttempts(portrait, 180, 30, 1, new MixSound(2, 48_000, 256_000), hdr: false).Count);
+    }
+
+    /// <summary>
     /// A video whose audio sample entry Media Foundation does not surface: no track is read, none is asked for, none comes
     /// out — and the read-back agrees with itself over a silent upload. The shell's numbers are the only witness.
     /// </summary>

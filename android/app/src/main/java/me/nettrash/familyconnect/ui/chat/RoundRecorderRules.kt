@@ -15,7 +15,8 @@
  *  - whether the file CameraX wrote needs the Media3 square pass (S8.4);
  *  - whether a finished clip may go as a video message or must go as a
  *    regular video, and why (S3.6);
- *  - whether a preview is too dark to be a picture (S3.6).
+ *  - whether a preview is too dark to be a picture (S3.6);
+ *  - whether CameraX's audio state is the microphone taken (S4, #98).
  *
  * The recorder (VideoMessageRecorder) asks these; it decides nothing itself.
  */
@@ -23,6 +24,7 @@
 package me.nettrash.familyconnect.ui.chat
 
 import android.view.Surface
+import androidx.camera.video.AudioStats
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.RoundSend
 
@@ -195,6 +197,29 @@ object RoundRecorderRules {
         sizeBytes > maxBytes -> NotRound.TOO_BIG
         else -> null
     }
+
+    // --- S4, the microphone taken mid-take (issue #98) ----------------------
+
+    /**
+     * Whether CameraX's `AudioStats.audioState`, read from every
+     * VideoRecordEvent of a take, means the microphone is gone — S4's "Siri,
+     * an alarm or another app takes the microphone", which stops RECORDING
+     * into REVIEW:
+     *
+     *  - SOURCE_ERROR: the microphone could not be opened or failed — another
+     *    app or a cellular call holds it — and CameraX goes on recording the
+     *    picture alone;
+     *  - ENCODER_ERROR: the audio encoder failed; the same video-only file;
+     *  - SOURCE_SILENCED: Android 12+'s microphone toggle is off, or a
+     *    higher-priority capture took it — the file gets a track of zeros.
+     *
+     * MUTED is `Recording.mute()`, which this app never calls; DISABLED is a
+     * recording made without `withAudioEnabled`, which this one never is.
+     */
+    fun microphoneLost(audioState: Int): Boolean =
+        audioState == AudioStats.AUDIO_STATE_SOURCE_ERROR ||
+            audioState == AudioStats.AUDIO_STATE_ENCODER_ERROR ||
+            audioState == AudioStats.AUDIO_STATE_SOURCE_SILENCED
 
     // --- S3.6, a picture that stays black ----------------------------------
 

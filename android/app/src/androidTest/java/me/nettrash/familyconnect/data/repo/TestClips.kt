@@ -79,6 +79,66 @@ object TestClips {
     }
 
     /**
+     * One sound track of [videoWithSoundTracks]: samples from [startUs] for
+     * [durationUs] — a track that starts late is written with the empty edit
+     * a muxer gives it — holding a tone wherever the movie's time is in
+     * [toneUs], and digital silence elsewhere.
+     */
+    data class SoundTrackSpec(
+        val toneUs: LongRange,
+        val startUs: Long = 0,
+        val durationUs: Long? = null,
+        val channels: Int = 1,
+        val sampleRate: Int = 44_100,
+    )
+
+    /**
+     * An MP4 of H.264 video and SEVERAL AAC-LC sound tracks (issue #98) — a
+     * screen recording's app sound and microphone, a camera with two
+     * microphones — each as its [SoundTrackSpec] says, so a transcode that
+     * kept only one of them, or put one at the wrong time, is audibly wrong.
+     */
+    fun videoWithSoundTracks(
+        file: File,
+        width: Int,
+        height: Int,
+        fps: Int,
+        frames: Int,
+        bitrate: Int,
+        sounds: List<SoundTrackSpec>,
+        audioBitrate: Int = 64_000,
+    ) {
+        val video = encodeVideo(width, height, fps, frames, bitrate, grain = 6)
+        val movieUs = frames * 1_000_000L / fps
+        val audios = sounds.map { spec ->
+            val encoded = encodeAudio(
+                spec.channels, audioBitrate, spec.durationUs ?: (movieUs - spec.startUs), spec.sampleRate,
+            ) { t ->
+                spec.startUs + t in spec.toneUs
+            }
+            spec.startUs to encoded
+        }
+        val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        try {
+            val videoTrack = muxer.addTrack(video.format)
+            val audioTracks = audios.map { (_, encoded) -> muxer.addTrack(encoded.format) }
+            muxer.start()
+            val all = video.samples.map { Triple(videoTrack, it, 0L) } +
+                audios.flatMapIndexed { index, (startUs, encoded) ->
+                    encoded.samples.map { Triple(audioTracks[index], it, startUs) }
+                }
+            val info = MediaCodec.BufferInfo()
+            for ((track, sample, shiftUs) in all.sortedBy { it.second.presentationUs + it.third }) {
+                info.set(0, sample.data.size, sample.presentationUs + shiftUs, sample.flags)
+                muxer.writeSampleData(track, ByteBuffer.wrap(sample.data), info)
+            }
+            muxer.stop()
+        } finally {
+            muxer.release()
+        }
+    }
+
+    /**
      * A 16-bit PCM WAV of a sine tone: what a picked lossless file looks like
      * to the probe. [channels] up to six (a plain PCM header, which is how a
      * 5.1 export from an editor arrives) and any [sampleRate] — 96 000 is the
@@ -231,8 +291,14 @@ object TestClips {
         }
     }
 
-    private fun encodeAudio(channels: Int, bitrate: Int, durationUs: Long): Encoded {
-        val sampleRate = 44_100
+    /** [audible]: whether the tone sounds at a time into the track; silence where it does not. */
+    private fun encodeAudio(
+        channels: Int,
+        bitrate: Int,
+        durationUs: Long,
+        sampleRate: Int = 44_100,
+        audible: (timeUs: Long) -> Boolean = { true },
+    ): Encoded {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -244,7 +310,7 @@ object TestClips {
             input.clear()
             for (frame in 0 until framesPerBuffer) {
                 val t = (buffer * framesPerBuffer + frame).toDouble() / sampleRate
-                val value = (sin(2 * PI * 330.0 * t) * 8_000).toInt().toShort()
+                val value = if (audible((t * 1_000_000).toLong())) (sin(2 * PI * 330.0 * t) * 8_000).toInt().toShort() else 0.toShort()
                 repeat(channels) { input.putShort(value) }
             }
             framesPerBuffer * channels * 2 to buffer * framesPerBuffer * 1_000_000L / sampleRate

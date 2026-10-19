@@ -74,7 +74,9 @@ nonisolated enum MediaProbe {
 
         // A track that is there but cannot be described is "unknown", not
         // absent: only NO audio track may count as "no audio" in rule A.
-        if let track = try? await asset.loadTracks(withMediaType: .audio).first {
+        // The track described is the first that PLAYS (rule E), the one the
+        // transcoder encodes or copies when there is only one.
+        if let track = (try? await MediaTranscoder.playingSoundTracks(of: asset))?.first {
             let (dataRate, formats) = (try? await track.load(.estimatedDataRate, .formatDescriptions))
                 ?? (Float(0), [])
             let format = formats.first

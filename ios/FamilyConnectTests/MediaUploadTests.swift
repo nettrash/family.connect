@@ -1240,4 +1240,182 @@ struct MediaUploadTests {
         #expect(MediaTranscoder.AACFormat.fitting(bitrate: 1_000, channels: 1, sourceSampleRate: 8_000) == nil,
                 "nothing is raised to reach the encoder's floor")
     }
+
+    // MARK: - Rule E: a transcode keeps the sound (issue #98)
+
+    /// The count on its own: every enabled track, one per alternate group,
+    /// and a file whose tracks are all disabled still counts its first.
+    @Test("the sound tracks that play: enabled ones, one per alternate group, else the first")
+    func playingSoundTracks() {
+        typealias Track = MediaTranscoder.SoundTrack
+        #expect(MediaTranscoder.playing([]) == [])
+        #expect(MediaTranscoder.playing([Track(index: 0, enabled: true)]) == [0])
+        #expect(MediaTranscoder.playing([
+            Track(index: 0, enabled: true), Track(index: 1, enabled: true),
+        ]) == [0, 1], "a screen recording's app sound and microphone")
+        #expect(MediaTranscoder.playing([
+            Track(index: 0, enabled: true, group: 0), Track(index: 1, enabled: true, group: 0),
+        ]) == [0], "an iPhone's stereo track and its spatial alternative")
+        #expect(MediaTranscoder.playing([
+            Track(index: 0, enabled: false, group: 0), Track(index: 1, enabled: true, group: 0),
+        ]) == [1], "the enabled one of a pair")
+        #expect(MediaTranscoder.playing([
+            Track(index: 0, enabled: true), Track(index: 1, enabled: false),
+        ]) == [0], "a disabled track does not play")
+        #expect(MediaTranscoder.playing([
+            Track(index: 0, enabled: false), Track(index: 1, enabled: false),
+        ]) == [0], "none enabled counts the first")
+    }
+
+    /// A 1080p30 QuickTime clip with TWO sound tracks: the first carries a
+    /// tone for the first second only, the second for the last second only
+    /// — so a result that kept either one alone is silent for half of it.
+    private func twoSoundTracks(secondEnabled: Bool = true, sameGroup: Bool = false) async throws -> URL {
+        let clip = try await MediaFixtures.write(.init(
+            width: 1920, height: 1080, frameRate: 30, seconds: 2, bitrate: 8_000_000,
+            fileType: .mov, audioChannels: 2))
+        defer { remove(clip) }
+        let asset = AVURLAsset(url: clip)
+        let video = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let audio = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+
+        let url = MediaFixtures.scratch("mov")
+        let movie = AVMutableMovie()
+        movie.defaultMediaDataStorage = AVMediaDataStorage(url: url)
+        let second = CMTime(value: 1, timescale: 1)
+        let firstSecond = CMTimeRange(start: .zero, duration: second)
+        let pictures = try #require(movie.addMutableTrack(withMediaType: .video, copySettingsFrom: video))
+        try pictures.insertTimeRange(
+            CMTimeRange(start: .zero, duration: CMTime(value: 2, timescale: 1)), of: video, at: .zero,
+            copySampleData: true)
+        let early = try #require(movie.addMutableTrack(withMediaType: .audio, copySettingsFrom: audio))
+        try early.insertTimeRange(firstSecond, of: audio, at: .zero, copySampleData: true)
+        let late = try #require(movie.addMutableTrack(withMediaType: .audio, copySettingsFrom: audio))
+        late.insertEmptyTimeRange(firstSecond)
+        try late.insertTimeRange(firstSecond, of: audio, at: second, copySampleData: true)
+        late.isEnabled = secondEnabled
+        if sameGroup {
+            early.alternateGroupID = 1
+            late.alternateGroupID = 1
+        }
+        try movie.writeHeader(to: url, fileType: .mov, options: .addMovieHeaderToDestination)
+        return url
+    }
+
+    /// How loud a file's sound is over its first second and its last, all
+    /// its tracks mixed — each window kept clear of the edges.
+    private func loudness(of url: URL) async throws -> (early: Double, late: Double) {
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let reader = try AVAssetReader(asset: asset)
+        let rate = 44_100
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+            AVSampleRateKey: rate,
+            AVNumberOfChannelsKey: 1,
+        ])
+        reader.add(output)
+        #expect(reader.startReading())
+        var samples: [Float] = []
+        while let buffer = output.copyNextSampleBuffer() {
+            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+            let length = CMBlockBufferGetDataLength(block)
+            var chunk = [Float](repeating: 0, count: length / MemoryLayout<Float>.size)
+            chunk.withUnsafeMutableBytes { bytes in
+                _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: bytes.baseAddress!)
+            }
+            samples += chunk
+        }
+        func rms(from start: Double, to end: Double) -> Double {
+            let window = samples[min(Int(start * Double(rate)), samples.count)..<min(Int(end * Double(rate)), samples.count)]
+            guard !window.isEmpty else { return 0 }
+            return (window.reduce(0) { $0 + Double($1 * $1) } / Double(window.count)).squareRoot()
+        }
+        return (rms(from: 0.1, to: 0.9), rms(from: 1.1, to: 1.9))
+    }
+
+    /// The tone is loud and the gaps are digital silence, so anything well
+    /// above zero is "heard".
+    private static let heard = 0.02
+
+    @Test("a video with two sound tracks that play is transcoded with both, mixed into one AAC track",
+          .timeLimit(.minutes(3)))
+    func twoSoundTracksAreMixed() async throws {
+        let source = try await twoSoundTracks()
+        defer { remove(source) }
+        #expect(try await MediaTranscoder.playingSoundTracks(of: AVURLAsset(url: source)).count == 2)
+        let before = try await loudness(of: source)
+        #expect(before.early > Self.heard && before.late > Self.heard, "the fixture: \(before)")
+
+        guard case .transcode(let target) = MediaPlan.planVideo(try await probe(source)) else {
+            Issue.record("a 1080p QuickTime clip was not planned for a transcode")
+            return
+        }
+        let output = MediaFixtures.scratch("mp4")
+        defer { remove(output) }
+        try await MediaTranscoder.transcodeVideo(from: source, to: target, writingTo: output)
+
+        let tracks = try await AVURLAsset(url: output).loadTracks(withMediaType: .audio)
+        #expect(tracks.count == 1, "the profile has one sound track")
+        let out = try await MediaFixtures.facts(of: output)
+        #expect(out.audioCodec == kAudioFormatMPEG4AAC)
+        let after = try await loudness(of: output)
+        #expect(after.early > Self.heard, "the first track's sound was lost: \(after)")
+        #expect(after.late > Self.heard, "the second track's sound was lost: \(after)")
+    }
+
+    @Test("of two alternative sound tracks, or one enabled and one not, only the one that plays is kept",
+          .timeLimit(.minutes(3)), arguments: [true, false])
+    func onlyTheTrackThatPlaysIsKept(sameGroup: Bool) async throws {
+        let source = try await twoSoundTracks(secondEnabled: sameGroup, sameGroup: sameGroup)
+        defer { remove(source) }
+        #expect(try await MediaTranscoder.playingSoundTracks(of: AVURLAsset(url: source)).count == 1)
+
+        guard case .transcode(let target) = MediaPlan.planVideo(try await probe(source)) else {
+            Issue.record("a 1080p QuickTime clip was not planned for a transcode")
+            return
+        }
+        let output = MediaFixtures.scratch("mp4")
+        defer { remove(output) }
+        try await MediaTranscoder.transcodeVideo(from: source, to: target, writingTo: output)
+
+        let after = try await loudness(of: output)
+        #expect(after.early > Self.heard, "the track that plays was lost: \(after)")
+        #expect(after.late < Self.heard, "a track that does not play was mixed in: \(after)")
+    }
+
+    /// The transcoder never trusts a target that would drop the sound: the
+    /// planner and the transcoder read the same track list, so this is the
+    /// guard for the day they do not.
+    @Test("a target without audio for a source with sound is refused, and rule C sends the original",
+          .timeLimit(.minutes(3)))
+    func targetWithoutAudioForASourceWithSoundIsRefused() async throws {
+        let source = try await landscape1080p60()
+        defer { remove(source) }
+        guard case .transcode(var target) = MediaPlan.planVideo(try await probe(source)) else {
+            Issue.record("a 1080p60 clip was not planned for a transcode")
+            return
+        }
+        target.audioBitrate = nil
+        let silent = target
+        let output = MediaFixtures.scratch("mp4")
+        defer { remove(output) }
+        await #expect(throws: MediaTranscoder.Failure.soundWouldBeLost) {
+            try await MediaTranscoder.transcodeVideo(from: source, to: silent, writingTo: output)
+        }
+
+        let prepared = try await MediaPrep.prepareVideo(
+            from: source, limit: MediaPrep.sizeLimit,
+            transcoder: MediaPrep.Transcoder(
+                video: { source, _, output in
+                    try await MediaTranscoder.transcodeVideo(from: source, to: silent, writingTo: output)
+                },
+                audio: MediaPrep.Transcoder.avFoundation.audio))
+        defer { if prepared.fileURL != source { remove(prepared.fileURL) } }
+        #expect(prepared.fileURL == source, "a silent result went instead of the original")
+    }
 }

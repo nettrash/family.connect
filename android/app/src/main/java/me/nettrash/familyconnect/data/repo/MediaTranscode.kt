@@ -52,6 +52,18 @@
  * that saw none: the settings still say what a track is encoded at if there
  * turns out to be one.
  *
+ * The other side of that (issue #98, Rule E): a sound track MEDIA3 cannot
+ * read is one it leaves out, and the export still succeeds — the picture
+ * alone; MediaPrep counts the result's sound tracks and calls that a failed
+ * transcode. And Media3 infers ONE audio track, so a source with several
+ * that play — a screen recording's app sound and microphone — would lose
+ * all but one. Those are MIXED instead ([SoundMix], [TranscodeRecipe.mixedComposition]):
+ * one sequence per playing track of the same file, each choosing its track
+ * by `tkhd` track_ID ([ChosenSoundTrackSelector]), and Media3's audio graph
+ * sums the sequences — clamped at full scale, as Apple's
+ * AVAssetReaderAudioMixOutput does. A single sound track goes exactly the
+ * way it always did.
+ *
  * The H.264 PROFILE is DefaultEncoderFactory's wherever an encoder offers
  * High: it asks for High at the highest level that encoder supports, on
  * every API this app runs on (26+). Where NO encoder offers High it sets
@@ -67,6 +79,8 @@ import android.content.Context
 import android.media.MediaCodecInfo
 import android.media.metrics.LogSessionId
 import android.net.Uri
+import android.os.Looper
+import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -74,17 +88,25 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
+import androidx.media3.common.util.Clock
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.FrameDropEffect
 import androidx.media3.effect.Presentation
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.trackselection.ExoTrackSelection
+import androidx.media3.exoplayer.trackselection.MappingTrackSelector
+import androidx.media3.transformer.AssetLoader
 import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Codec
 import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultAssetLoaderFactory
+import androidx.media3.transformer.DefaultDecoderFactory
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.EncoderUtil
+import androidx.media3.transformer.ExoPlayerAssetLoader
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
 
@@ -302,14 +324,86 @@ object TranscodeRecipe {
 
     fun composition(item: EditedMediaItem, settings: TranscodeSettings): Composition =
         Composition.Builder(sequence(item))
-            .setHdrMode(
-                if (settings.toneMapToSdr) {
-                    Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL
-                } else {
-                    Composition.HDR_MODE_KEEP_HDR
-                },
-            )
+            .setHdrMode(hdrMode(settings))
             .build()
+
+    fun hdrMode(settings: TranscodeSettings): Int =
+        if (settings.toneMapToSdr) {
+            Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL
+        } else {
+            Composition.HDR_MODE_KEEP_HDR
+        }
+
+    /**
+     * Rule E's mix (issue #98): one sequence per track in [mix], all of the
+     * same [input]. The first carries the picture with [videoEffects] and the
+     * leading sound track; every other one is that file's next sound track
+     * alone (`setRemoveVideo`). Each item names its track by
+     * [SoundTrackChoice], which [SoundTrackAssetLoaderFactory] turns into a
+     * selector for exactly that track — so it needs that factory on the
+     * Transformer ([transformer]'s `mixing`).
+     *
+     * WHAT MEDIA3 DOES WITH IT (1.11's AudioGraph and DefaultAudioMixer):
+     *
+     *  - the mix takes the format of the FIRST sequence's sound after its
+     *    effects, and converts every other input to it (rate, and one or two
+     *    channels) — so the leading track is the one stating the highest
+     *    rate, and only IT is brought to [SoundMix.channels] by
+     *    [mixProcessors]; the others get only [audioProcessors]' surround
+     *    downmix, which Media3's conversion cannot do. Giving them the
+     *    channel spread too STALLED the export on the API 36 emulator (a
+     *    mono track beside a stereo lead: no more input taken, and
+     *    Transformer aborted with "Muxer error" after its watchdog);
+     *  - each input is placed at the time of its own first sample — the
+     *    extractor has applied the track's edit list — and summed with the
+     *    others, clamped at full scale (AudioMixingUtil, PCM 16);
+     *  - an input that ends leaves the others playing, and the export ends
+     *    when every sequence has;
+     *  - the sequences are left to INFER their tracks, as [sequence] says:
+     *    an audio-only sequence whose track Media3 cannot read then has
+     *    nothing to output and FAILS the export — a mix that fails is a
+     *    failed transcode (rule C) — where naming the audio type would have
+     *    filled the gap with silence and called it a voice.
+     */
+    fun mixedComposition(input: Uri, mix: SoundMix, videoEffects: List<Effect>, hdrMode: Int): Composition {
+        val sequences = mix.trackIds.mapIndexed { index, trackId ->
+            val lead = index == 0
+            val item = EditedMediaItem.Builder(
+                MediaItem.Builder().setUri(input).setTag(SoundTrackChoice(trackId)).build(),
+            )
+                .setRemoveVideo(!lead)
+                .setEffects(
+                    Effects(
+                        if (lead) mixProcessors(mix.channels) else audioProcessors(mix.channels),
+                        if (lead) videoEffects else emptyList(),
+                    ),
+                )
+                .build()
+            sequence(item)
+        }
+        return Composition.Builder(sequences).setHdrMode(hdrMode).build()
+    }
+
+    /**
+     * Every count from 1 to 6 brought to [channels]: surround mixed down at
+     * constant power as [audioProcessors] does, mono spread to both sides at
+     * full gain (what Media3's own graph does to a mono input) — so whichever
+     * input the mix takes its format from, it is [channels] wide.
+     */
+    fun mixProcessors(channels: Int): List<AudioProcessor> = listOf(
+        ChannelMixingAudioProcessor().apply {
+            val out = channels.coerceIn(1, 2)
+            for (count in 1..MAX_MIXED_CHANNELS) {
+                putChannelMixingMatrix(
+                    if (count < out) {
+                        ChannelMixingMatrix.createForConstantGain(count, out)
+                    } else {
+                        ChannelMixingMatrix.createForConstantPower(count, minOf(count, out))
+                    },
+                )
+            }
+        },
+    )
 
     /**
      * @param h264Fallback the profile and level to ask for where no encoder
@@ -398,11 +492,14 @@ object TranscodeRecipe {
         context: Context,
         settings: TranscodeSettings,
         listener: Transformer.Listener,
+        /** True for a [mixedComposition]: its items choose their sound tracks. */
+        mixing: Boolean = false,
     ): Transformer =
         Transformer.Builder(context)
             .setVideoMimeType(MimeTypes.VIDEO_H264)
             .setAudioMimeType(MimeTypes.AUDIO_AAC)
             .setEncoderFactory(encoderFactory(context, settings))
+            .apply { if (mixing) setAssetLoaderFactory(SoundTrackAssetLoaderFactory(context)) }
             .addListener(listener)
             .build()
 
@@ -490,5 +587,151 @@ class FrameRateHintEncoderFactory(
         val stated = format.frameRate
         if (stated != Format.NO_VALUE.toFloat() && stated <= cap) return format
         return format.buildUpon().setFrameRate(cap).build()
+    }
+}
+
+/**
+ * Rule E's mix, decided (issue #98, docs/protocol.md, "Preparing media
+ * before upload"): which of a source's sound tracks are summed, in what
+ * order, and how wide. Plain data — MediaTranscodeTest pins it.
+ */
+data class SoundMix(
+    /**
+     * The tracks, by `tkhd` track_ID. The FIRST leads: it goes with the
+     * picture, and Media3's mix takes its sample rate — so it is the track
+     * stating the highest one ("at the highest sample rate any of them
+     * has"), the widest of those, then the earliest in the file.
+     */
+    val trackIds: List<Int>,
+    /** 2 — "stereo when any of them is" — unless every track says it is mono. */
+    val channels: Int,
+) {
+    /**
+     * The profile's rate for the mix's width, never a single track's: what
+     * the probe stated is ONE of the voices, and the sum of several carries
+     * more than any of them.
+     */
+    val audioBitrate: Int get() = MediaPlan.targetAudioBitrate(channels.toLong(), null).toInt()
+
+    companion object {
+        /**
+         * The mix for these [playing] tracks (Mp4SoundTracks.playing), or
+         * null when there is nothing to mix — no list, or fewer than two
+         * tracks (two `trak`s sharing one id count as one, since a selector
+         * by id cannot tell them apart). A track that does not state its
+         * rate leads only when none does; one that does not state its
+         * channels counts as stereo.
+         */
+        fun plan(playing: List<Mp4SoundTracks.SoundTrack>?): SoundMix? {
+            val tracks = playing?.distinctBy { it.id } ?: return null
+            if (tracks.size < 2) return null
+            val order = tracks.sortedWith(
+                compareByDescending<Mp4SoundTracks.SoundTrack> { it.sampleRate ?: 0 }
+                    .thenByDescending { it.channels ?: Int.MAX_VALUE },
+            )
+            return SoundMix(
+                trackIds = order.map { it.id },
+                channels = if (tracks.all { it.channels == 1 }) 1 else 2,
+            )
+        }
+
+        /**
+         * Whether a Format Media3's extractor made is track [trackId]: its id
+         * is the `tkhd` track_ID as a decimal string — prefixed "n:" when a
+         * merging source renumbered it.
+         */
+        fun isTrack(formatId: String?, trackId: Int): Boolean =
+            formatId != null && (formatId == trackId.toString() || formatId.endsWith(":$trackId"))
+
+        /**
+         * Where track [trackId] is among what a track selector is offered —
+         * per renderer, its type and, per track group, each track's Format id
+         * — as (renderer, group, track); null when no AUDIO renderer was
+         * offered it. Matched by id, never by position: a track the
+         * extractor could not read is missing from the list, and every
+         * position after it would point at the wrong voice.
+         */
+        fun locate(renderers: List<Pair<Int, List<List<String?>>>>, trackId: Int): Triple<Int, Int, Int>? {
+            renderers.forEachIndexed { renderer, (type, groups) ->
+                if (type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
+                groups.forEachIndexed { group, ids ->
+                    val track = ids.indexOfFirst { isTrack(it, trackId) }
+                    if (track >= 0) return Triple(renderer, group, track)
+                }
+            }
+            return null
+        }
+    }
+}
+
+/** What a [TranscodeRecipe.mixedComposition] item carries as its MediaItem tag: the sound track it reads. */
+data class SoundTrackChoice(val trackId: Int)
+
+/**
+ * Selects the sound track a [SoundTrackChoice] names, and no other — and
+ * none at all when Media3's extractor does not list it (a codec it cannot
+ * read), which leaves that item without sound: the mix then fails, or comes
+ * out silent and is judged a failed transcode. The picture is selected as
+ * Media3 always does; the parameters are ExoPlayerAssetLoader's own.
+ */
+@UnstableApi
+class ChosenSoundTrackSelector(context: Context, private val trackId: Int) : DefaultTrackSelector(context) {
+
+    init {
+        setParameters(
+            parameters.buildUpon()
+                .setForceHighestSupportedBitrate(true)
+                .setConstrainAudioChannelCountToDeviceCapabilities(false)
+                .build(),
+        )
+    }
+
+    override fun selectAudioTrack(
+        mappedTrackInfo: MappingTrackSelector.MappedTrackInfo,
+        rendererFormatSupports: Array<Array<IntArray>>,
+        rendererMixedMimeTypeAdaptationSupports: IntArray,
+        params: Parameters,
+    ): android.util.Pair<ExoTrackSelection.Definition, Int>? {
+        val offered = (0 until mappedTrackInfo.rendererCount).map { renderer ->
+            val groups = mappedTrackInfo.getTrackGroups(renderer)
+            mappedTrackInfo.getRendererType(renderer) to (0 until groups.length).map { index ->
+                val group = groups[index]
+                (0 until group.length).map { track -> group.getFormat(track).id }
+            }
+        }
+        val (renderer, group, track) = SoundMix.locate(offered, trackId) ?: return null
+        return android.util.Pair(ExoTrackSelection.Definition(mappedTrackInfo.getTrackGroups(renderer)[group], track), renderer)
+    }
+}
+
+/**
+ * The asset loaders of a mix: an item tagged with a [SoundTrackChoice] is
+ * read by Media3's ExoPlayerAssetLoader with a [ChosenSoundTrackSelector] for
+ * that track — which is all Media3 1.11 offers for choosing a track per item
+ * — and anything else by the factory Transformer uses by default.
+ */
+@UnstableApi
+class SoundTrackAssetLoaderFactory(context: Context) : AssetLoader.Factory {
+    private val context = context.applicationContext
+    private val decoders = DefaultDecoderFactory.Builder(this.context).build()
+    private val default = DefaultAssetLoaderFactory(this.context, decoders, Clock.DEFAULT, null)
+
+    override fun createAssetLoader(
+        editedMediaItem: EditedMediaItem,
+        looper: Looper,
+        listener: AssetLoader.Listener,
+        compositionSettings: AssetLoader.CompositionSettings,
+    ): AssetLoader {
+        val choice = editedMediaItem.mediaItem.localConfiguration?.tag as? SoundTrackChoice
+            ?: return default.createAssetLoader(editedMediaItem, looper, listener, compositionSettings)
+        return ExoPlayerAssetLoader.Factory(
+            context,
+            decoders,
+            Clock.DEFAULT,
+            /* mediaSourceFactory= */ null,
+            { selectorContext -> ChosenSoundTrackSelector(selectorContext, choice.trackId) },
+            /* logSessionId= */ null,
+            /* loadControl= */ null,
+        ).createAssetLoader(editedMediaItem, looper, listener, compositionSettings)
     }
 }

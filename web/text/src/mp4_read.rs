@@ -311,6 +311,13 @@ pub struct Movie {
     /// In the movie's timescale (`mvhd`).
     pub duration: u64,
     pub tracks: Vec<Track>,
+    /// The sound tracks that PLAY, found in the `moov`'s own track list
+    /// rather than in [`Movie::tracks`] — which leaves out a track this
+    /// reader skips, and holds one it cannot use with no samples in it (see
+    /// [`playing_sound_tracks`]; docs/protocol.md, Rule E, issue #98). Each
+    /// is its index in [`Movie::tracks`], or None for a `trak` this reader
+    /// skipped (no `tkhd`).
+    pub playing_sound: Vec<Option<usize>>,
 }
 
 impl Movie {
@@ -337,6 +344,37 @@ impl Movie {
                     .iter()
                     .find(|track| track.is(b"soun") && !track.samples.is_empty())
             })
+    }
+
+    /// How many sound tracks play (Rule E, issue #98): see
+    /// [`playing_sound_tracks`].
+    pub fn playing_sound_tracks(&self) -> usize {
+        self.playing_sound.len()
+    }
+
+    /// Every sound track that plays, when this reader can write from each
+    /// of them — a track it read, with samples in it — and None when it
+    /// cannot from even one: a mix that left that one out would drop a
+    /// voice (Rule E, issue #98).
+    pub fn voices(&self) -> Option<Vec<&Track>> {
+        self.playing_sound
+            .iter()
+            .map(|index| {
+                index
+                    .and_then(|index| self.tracks.get(index))
+                    .filter(|track| !track.samples.is_empty())
+            })
+            .collect()
+    }
+
+    /// Whether this reader can write the sound a player plays (Rule E, issue
+    /// #98): with one voice, the track [`Movie::audio`] picks — as before
+    /// #98 — and with more, every one of them ([`Movie::voices`]).
+    pub fn sound_readable(&self) -> bool {
+        match self.playing_sound_tracks() {
+            0 | 1 => self.audio().is_some(),
+            _ => self.voices().is_some(),
+        }
     }
 
     /// How long `track` PLAYS, in milliseconds: the length its edit list
@@ -415,18 +453,129 @@ pub fn parse_moov(moov: &[u8]) -> Result<Movie, ReadError> {
         .ok_or(ReadError::Malformed)?;
     let (timescale, duration) = mvhd_fields(mvhd).ok_or(ReadError::Malformed)?;
     let mut tracks = Vec::new();
+    // Each `trak`'s place in `tracks`, in the order the `moov` lists them.
+    let mut read = Vec::new();
     for (kind, body) in &boxes {
         if kind == b"trak" {
-            if let Some(track) = trak(body)? {
-                tracks.push(track);
+            match trak(body)? {
+                Some(track) => {
+                    read.push(Some(tracks.len()));
+                    tracks.push(track);
+                }
+                None => read.push(None),
             }
         }
     }
+    let playing_sound = sound_tracks_that_play(&boxes)
+        .into_iter()
+        .map(|ordinal| read.get(ordinal).copied().flatten())
+        .collect();
     Ok(Movie {
         timescale,
         duration,
         tracks,
+        playing_sound,
     })
+}
+
+// --- the sound a player plays (issue #98) -------------------------------------------------------
+
+/// How many sound tracks in a whole `moov` box — header included — PLAY
+/// (docs/protocol.md, "Preparing media before upload", Rule E), or None
+/// when the bytes are not a `moov`.
+///
+/// A transcode writes the sound it can read. What it can read is not what a
+/// player plays: a sound track with no sample-size table, or a sample entry
+/// this reader does not know, comes out of [`parse_moov`] with no samples,
+/// and a `trak` with no `tkhd` does not come out at all — and a transcode
+/// that went by [`Movie::audio`] alone would then write the picture without
+/// its sound, and call the clip silent. So this goes by the container's own
+/// list: every `trak` whose `mdia`'s `hdlr` says `soun`, whatever else it
+/// holds or lacks. Of those it counts the ones that play — enabled (`tkhd`
+/// flag 0x1), and of the enabled ones that share a non-zero
+/// `alternate_group` only the first, since a player picks one of a group
+/// (an iPhone's spatial recording carries its stereo AAC and its spatial
+/// track as such a pair). Sound tracks none of which is enabled count one:
+/// the file has sound, whichever a player falls back to.
+pub fn playing_sound_tracks(moov: &[u8]) -> Option<usize> {
+    let header = box_header(moov)?;
+    if &header.kind != b"moov" {
+        return None;
+    }
+    let end = header
+        .size
+        .map(|size| size as usize)
+        .unwrap_or(moov.len())
+        .min(moov.len());
+    let body = moov.get(header.header_len as usize..end)?;
+    Some(sound_tracks_that_play(&children(body)).len())
+}
+
+/// The sound tracks that play among a `moov`'s children (see
+/// [`playing_sound_tracks`]), each as its place among the `trak`s — 0 for
+/// the first `trak`, sound or not. With none enabled, the first sound track
+/// stands for the file's one voice.
+fn sound_tracks_that_play(boxes: &[([u8; 4], &[u8])]) -> Vec<usize> {
+    let mut first_sound = None;
+    let mut playing = Vec::new();
+    let mut groups: Vec<u16> = Vec::new();
+    for (ordinal, (_, body)) in boxes.iter().filter(|(kind, _)| kind == b"trak").enumerate() {
+        let Some((enabled, group)) = sound_track(body) else {
+            continue;
+        };
+        first_sound.get_or_insert(ordinal);
+        if !enabled {
+            continue;
+        }
+        if group != 0 {
+            if groups.contains(&group) {
+                continue;
+            }
+            groups.push(group);
+        }
+        playing.push(ordinal);
+    }
+    if playing.is_empty() {
+        playing.extend(first_sound);
+    }
+    playing
+}
+
+/// Whether a `trak` is a sound track — its `mdia`'s `hdlr` says `soun` —
+/// and if it is, whether it is enabled and its `alternate_group`. A track
+/// with no `tkhd` to say is not enabled; one whose `tkhd` ends before its
+/// group is in no group, which counts it on its own — the side that never
+/// takes a voice for a duplicate.
+fn sound_track(trak: &[u8]) -> Option<(bool, u16)> {
+    let handler = child(trak, b"mdia")
+        .and_then(|mdia| child(mdia, b"hdlr"))
+        .and_then(|hdlr| hdlr.get(8..12))?;
+    if handler != b"soun" {
+        return None;
+    }
+    Some(child(trak, b"tkhd").map_or((false, 0), tkhd_play))
+}
+
+/// A `tkhd`'s enabled flag and `alternate_group`. Version 1 widens the two
+/// times and the duration in front of the group to 64 bits.
+fn tkhd_play(tkhd: &[u8]) -> (bool, u16) {
+    let mut fields = Fields::new(tkhd);
+    let (Some(version), Some(flags)) = (fields.u8(), fields.take(3)) else {
+        return (false, 0);
+    };
+    let enabled = flags[2] & 1 == 1;
+    // Creation and modification times, track id, reserved, duration,
+    // reserved, layer.
+    let before_group = if version == 1 {
+        8 + 8 + 4 + 4 + 8 + 8 + 2
+    } else {
+        4 + 4 + 4 + 4 + 4 + 8 + 2
+    };
+    let group = fields
+        .skip(before_group)
+        .and_then(|()| fields.u16())
+        .unwrap_or(0);
+    (enabled, group)
 }
 
 fn mvhd_fields(body: &[u8]) -> Option<(u32, u64)> {
@@ -1476,12 +1625,299 @@ mod tests {
                 short[0..4].copy_from_slice(&len.to_be_bytes());
             }
             let _ = parse_moov(&short);
+            let _ = playing_sound_tracks(&short);
         }
         // And flipped bytes, one at a time.
         for at in 0..moov.len() {
             let mut bent = moov.clone();
             bent[at] ^= 0xFF;
             let _ = parse_moov(&bent);
+            let _ = playing_sound_tracks(&bent);
         }
+    }
+
+    // --- the sound tracks that play (issue #98) ---
+
+    /// A box with a 32-bit size.
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut bytes = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    /// The same box with its size in 64 bits.
+    fn boxed_large(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut bytes = 1u32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(&((16 + body.len()) as u64).to_be_bytes());
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    /// A `tkhd` of `version`, enabled or not, in `group`: every field a
+    /// real one has, an identity matrix, no size (a sound's).
+    fn tkhd(version: u8, enabled: bool, group: u16) -> Vec<u8> {
+        let mut body = vec![version, 0, 0, if enabled { 0x07 } else { 0x06 }];
+        let wide = version == 1;
+        body.extend_from_slice(&vec![0; if wide { 16 } else { 8 }]); // times
+        body.extend_from_slice(&2u32.to_be_bytes()); // track id
+        body.extend_from_slice(&[0; 4]); // reserved
+        body.extend_from_slice(&vec![0; if wide { 8 } else { 4 }]); // duration
+        body.extend_from_slice(&[0; 8]); // reserved
+        body.extend_from_slice(&[0; 2]); // layer
+        body.extend_from_slice(&group.to_be_bytes());
+        body.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
+        body.extend_from_slice(&[0; 2]); // reserved
+        for value in [0x0001_0000u32, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000] {
+            body.extend_from_slice(&value.to_be_bytes());
+        }
+        body.extend_from_slice(&[0; 8]); // width, height
+        body
+    }
+
+    fn mvhd() -> Vec<u8> {
+        let mut body = vec![0u8; 100];
+        body[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        body
+    }
+
+    fn hdlr(handler: &[u8; 4]) -> Vec<u8> {
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(handler);
+        body.extend_from_slice(&[0; 13]);
+        body
+    }
+
+    /// A `trak`: its `tkhd` (None: none), its handler (None: no `hdlr`),
+    /// and two 10-byte samples — or, `sized` false, a sample table with no
+    /// `stsz`, which this reader reads as a track with no samples.
+    fn sound_trak(tkhd: Option<Vec<u8>>, handler: Option<&[u8; 4]>, sized: bool) -> Vec<u8> {
+        let mut mdhd = vec![0u8; 24];
+        mdhd[12..16].copy_from_slice(&48_000u32.to_be_bytes());
+        let mut stbl = boxed(b"stsd", &[0, 0, 0, 0, 0, 0, 0, 0]);
+        if sized {
+            stbl.extend(boxed(b"stsz", &[0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 2]));
+            stbl.extend(boxed(
+                b"stts",
+                &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 4, 0],
+            ));
+            stbl.extend(boxed(
+                b"stsc",
+                &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1],
+            ));
+            stbl.extend(boxed(b"stco", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]));
+        }
+        let mut mdia = boxed(b"mdhd", &mdhd);
+        if let Some(handler) = handler {
+            mdia.extend(boxed(b"hdlr", &hdlr(handler)));
+        }
+        mdia.extend(boxed(b"minf", &boxed(b"stbl", &stbl)));
+        let mut trak = tkhd.map(|tkhd| boxed(b"tkhd", &tkhd)).unwrap_or_default();
+        trak.extend(boxed(b"mdia", &mdia));
+        trak
+    }
+
+    fn sound(enabled: bool, group: u16) -> Vec<u8> {
+        boxed(
+            b"trak",
+            &sound_trak(Some(tkhd(0, enabled, group)), Some(b"soun"), true),
+        )
+    }
+
+    fn moov(traks: &[Vec<u8>]) -> Vec<u8> {
+        let mut body = boxed(b"mvhd", &mvhd());
+        for trak in traks {
+            body.extend_from_slice(trak);
+        }
+        boxed(b"moov", &body)
+    }
+
+    /// The count, from the bytes and from the parsed index alike — the same
+    /// answer both ways, and the reader still reads the file.
+    fn counted(traks: &[Vec<u8>]) -> usize {
+        let moov = moov(traks);
+        let count = playing_sound_tracks(&moov).unwrap();
+        assert_eq!(parse_moov(&moov).unwrap().playing_sound_tracks(), count);
+        count
+    }
+
+    #[test]
+    fn sound_tracks_that_play_are_counted_from_the_track_list() {
+        let picture = boxed(
+            b"trak",
+            &sound_trak(Some(tkhd(0, true, 0)), Some(b"vide"), true),
+        );
+        assert_eq!(counted(&[]), 0, "no tracks");
+        assert_eq!(
+            counted(std::slice::from_ref(&picture)),
+            0,
+            "a picture alone"
+        );
+        assert_eq!(counted(&[picture.clone(), sound(true, 0)]), 1);
+        assert_eq!(
+            counted(&[picture.clone(), sound(true, 0), sound(true, 0)]),
+            2,
+            "app sound and microphone"
+        );
+        assert_eq!(
+            counted(&[picture.clone(), sound(true, 1), sound(true, 1)]),
+            1,
+            "a stereo track and its spatial alternate"
+        );
+        assert_eq!(counted(&[sound(true, 1), sound(true, 2)]), 2);
+        assert_eq!(
+            counted(&[sound(true, 1), sound(true, 1), sound(true, 0)]),
+            2
+        );
+        assert_eq!(
+            counted(&[sound(false, 0), sound(false, 0)]),
+            1,
+            "none enabled"
+        );
+        assert_eq!(counted(&[sound(true, 0), sound(false, 0)]), 1);
+        // A disabled track does not take its group's place.
+        assert_eq!(counted(&[sound(false, 4), sound(true, 4)]), 1);
+        // The writer's own file: one picture, one sound.
+        let (file, _) = written();
+        assert_eq!(playing_sound_tracks(moov_of(&file)), Some(1));
+        assert_eq!(
+            parse_moov(moov_of(&file)).unwrap().playing_sound_tracks(),
+            1
+        );
+        assert_eq!(playing_sound_tracks(&boxed(b"free", &[])), None);
+        assert_eq!(playing_sound_tracks(&[]), None);
+    }
+
+    /// The tracks a transcode would have taken for silence (issue #98): a
+    /// sound track with no sample sizes reads back with no samples, so
+    /// [`Movie::audio`] passes it by — and it still plays.
+    #[test]
+    fn a_sound_track_the_reader_cannot_use_still_counts() {
+        let unsized_sound = || {
+            boxed(
+                b"trak",
+                &sound_trak(Some(tkhd(0, true, 0)), Some(b"soun"), false),
+            )
+        };
+        let moov_bytes = moov(&[unsized_sound()]);
+        let movie = parse_moov(&moov_bytes).unwrap();
+        assert!(movie.tracks[0].samples.is_empty());
+        assert!(movie.audio().is_none(), "the reader has nothing to copy");
+        assert_eq!(movie.playing_sound_tracks(), 1, "but a player has a voice");
+        assert!(movie.voices().is_none());
+        assert!(!movie.sound_readable());
+        // Beside one it can use: two voices, not one.
+        let movie = parse_moov(&moov(&[sound(true, 0), unsized_sound()])).unwrap();
+        assert!(movie.audio().is_some());
+        assert_eq!(movie.playing_sound_tracks(), 2);
+        // Writing the one it can read would drop the other.
+        assert!(movie.voices().is_none());
+        assert!(!movie.sound_readable());
+        // A `trak` with no `tkhd` is skipped by the reader, and counted
+        // here — as not enabled, so it is the file's one voice alone and
+        // no second voice beside an enabled one.
+        let headless = boxed(b"trak", &sound_trak(None, Some(b"soun"), true));
+        let movie = parse_moov(&moov(std::slice::from_ref(&headless))).unwrap();
+        assert!(movie.tracks.is_empty());
+        assert_eq!(movie.playing_sound_tracks(), 1);
+        assert_eq!(movie.playing_sound, vec![None]);
+        assert_eq!(counted(&[sound(true, 0), headless]), 1);
+        // A `tkhd` that ends before its group: enabled, in no group — so
+        // never folded into another track's.
+        let mut short = tkhd(0, true, 1);
+        short.truncate(30);
+        let cut = boxed(b"trak", &sound_trak(Some(short), Some(b"soun"), true));
+        assert_eq!(playing_sound_tracks(&moov(&[sound(true, 1), cut])), Some(2));
+        // With no `hdlr` at all a track says nothing of what it is, and
+        // the protocol counts by the handler: it is not a sound track.
+        let nameless = boxed(b"trak", &sound_trak(Some(tkhd(0, true, 0)), None, true));
+        assert_eq!(counted(&[nameless]), 0);
+    }
+
+    /// Which tracks play, not only how many: each found in the reader's own
+    /// list, past tracks that are not sound, that do not play, or that it
+    /// skipped.
+    #[test]
+    fn the_voices_are_the_tracks_that_play() {
+        let picture = boxed(
+            b"trak",
+            &sound_trak(Some(tkhd(0, true, 0)), Some(b"vide"), true),
+        );
+        let headless = boxed(b"trak", &sound_trak(None, Some(b"soun"), true));
+        let movie = parse_moov(&moov(&[
+            headless.clone(),
+            picture.clone(),
+            sound(false, 0),
+            sound(true, 2),
+            sound(true, 2),
+            sound(true, 0),
+        ]))
+        .unwrap();
+        // The headless trak is not in `tracks`, so the rest move up one.
+        assert_eq!(movie.tracks.len(), 5);
+        assert_eq!(movie.playing_sound, vec![Some(2), Some(4)]);
+        let voices = movie.voices().unwrap();
+        assert_eq!(voices.len(), 2);
+        assert!(std::ptr::eq(voices[0], &movie.tracks[2]));
+        assert!(std::ptr::eq(voices[1], &movie.tracks[4]));
+        assert!(movie.sound_readable());
+        // None enabled: the first sound track stands for the file's voice.
+        let movie =
+            parse_moov(&moov(&[picture.clone(), sound(false, 0), sound(false, 0)])).unwrap();
+        assert_eq!(movie.playing_sound, vec![Some(1)]);
+        assert!(movie.sound_readable());
+        // A headless trak is not enabled (there is no `tkhd` to say so), so
+        // it plays only as a file's one voice — which the reader skipped:
+        // no voice to write from.
+        let movie = parse_moov(&moov(&[sound(true, 0), headless.clone()])).unwrap();
+        assert_eq!(movie.playing_sound, vec![Some(0)]);
+        let movie = parse_moov(&moov(&[picture.clone(), headless])).unwrap();
+        assert_eq!(movie.playing_sound, vec![None]);
+        assert!(movie.voices().is_none());
+        assert!(!movie.sound_readable());
+        // No sound at all: nothing to read, and nothing missing.
+        let movie = parse_moov(&moov(&[picture])).unwrap();
+        assert!(movie.playing_sound.is_empty());
+        assert_eq!(movie.voices().map(|voices| voices.len()), Some(0));
+        assert!(!movie.sound_readable());
+    }
+
+    #[test]
+    fn a_version_1_tkhd_and_64_bit_boxes_are_read_alike() {
+        let wide = |enabled, group| {
+            boxed(
+                b"trak",
+                &sound_trak(Some(tkhd(1, enabled, group)), Some(b"soun"), true),
+            )
+        };
+        assert_eq!(counted(&[wide(true, 0), wide(true, 0)]), 2);
+        assert_eq!(counted(&[wide(true, 3), wide(true, 3)]), 1);
+        assert_eq!(counted(&[wide(true, 3), wide(true, 5)]), 2);
+        assert_eq!(counted(&[wide(false, 0), wide(true, 0)]), 1);
+        // Every box on the way down — the moov, each trak, its tkhd and
+        // mdia — with its size in 64 bits.
+        let large = |enabled, group| {
+            let mut mdhd = vec![0u8; 24];
+            mdhd[12..16].copy_from_slice(&48_000u32.to_be_bytes());
+            let mut mdia = boxed_large(b"mdhd", &mdhd);
+            mdia.extend(boxed_large(b"hdlr", &hdlr(b"soun")));
+            mdia.extend(boxed_large(b"minf", &boxed_large(b"stbl", &[])));
+            let mut trak = boxed_large(b"tkhd", &tkhd(1, enabled, group));
+            trak.extend(boxed_large(b"mdia", &mdia));
+            boxed_large(b"trak", &trak)
+        };
+        let mut body = boxed(b"mvhd", &mvhd());
+        for trak in [
+            large(true, 0),
+            large(true, 0),
+            large(true, 7),
+            large(true, 7),
+        ] {
+            body.extend(trak);
+        }
+        let moov = boxed_large(b"moov", &body);
+        assert_eq!(playing_sound_tracks(&moov), Some(3));
+        assert_eq!(parse_moov(&moov).unwrap().playing_sound_tracks(), 3);
     }
 }

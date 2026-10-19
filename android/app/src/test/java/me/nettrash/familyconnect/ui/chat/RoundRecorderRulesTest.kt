@@ -11,6 +11,7 @@
 package me.nettrash.familyconnect.ui.chat
 
 import android.view.Surface
+import androidx.camera.video.AudioStats
 import com.google.common.truth.Truth.assertThat
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.MediaPrep
@@ -209,6 +210,23 @@ class RoundRecorderRulesTest {
             .isEqualTo(NotRound.COULDNT_MAKE_ROUND)
         assertThat(RoundRecorderRules.notRound(prepared(durationMs = null), true, 1_000, ceiling))
             .isEqualTo(NotRound.COULDNT_MAKE_ROUND)
+    }
+
+    // --- S4: the microphone taken (issue #98) ----------------------------------------
+
+    @Test
+    fun `the microphone is lost on a source error, an encoder error or silence`() {
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_SOURCE_ERROR)).isTrue()
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_ENCODER_ERROR)).isTrue()
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_SOURCE_SILENCED)).isTrue()
+    }
+
+    /** MUTED is the app's own `Recording.mute()`, which it never calls; DISABLED, a take without audio. */
+    @Test
+    fun `an active, muted or disabled microphone is not lost`() {
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_ACTIVE)).isFalse()
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_MUTED)).isFalse()
+        assertThat(RoundRecorderRules.microphoneLost(AudioStats.AUDIO_STATE_DISABLED)).isFalse()
     }
 
     // --- S3.6: a black picture -----------------------------------------------------

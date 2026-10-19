@@ -57,6 +57,9 @@
 //! - [`transcript_sound`] — the sound a device sends for that text when the
 //!   server's stored copy will not do (a video, Ogg, an oversized file):
 //!   AAC copied where it fits, re-encoded to 64 kbit/s mono where not.
+//! - [`sound_mix`] — a video's sound tracks mixed into one for its
+//!   transcode (#98, Rule E): summed and clamped, each at its own place in
+//!   time, resampled to the highest rate among them.
 //! - [`lookups`] — the assistant looking things up (#72): which providers a
 //!   client names and how, what the consent screen asks, and where the
 //!   server's sources footer starts under an answer.
@@ -101,6 +104,7 @@ pub mod notify;
 pub mod pack;
 pub mod reactions;
 pub mod record;
+pub mod sound_mix;
 pub mod transcode;
 pub mod transcript;
 pub mod transcript_sound;

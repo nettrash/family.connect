@@ -118,6 +118,7 @@ class VideoMessageRecorderTest {
     private var sendSucceeds = true
     private var notRound: RoundRecorderRules.NotRound? = null
     private var preparable = true
+    private var soundless = false
     private val prepared = mutableListOf<File>()
     private var taught = false
     private var limits: RoundVideoLimits? = RoundVideoLimits(60_000, 12_582_912)
@@ -151,6 +152,7 @@ class VideoMessageRecorderTest {
                     durationMs = recordedMs,
                     notRound = notRound,
                     files = listOf(out),
+                    soundless = soundless,
                 )
             },
             sink = RoundVideoSink { chatId, clip, reply ->
@@ -720,6 +722,72 @@ class VideoMessageRecorderTest {
         runCurrent()
         assertThat(recorder.state.value.phase).isInstanceOf(Phase.Review::class.java)
         assertThat(recorder.state.value.notice).isEqualTo(Notice.CAMERA_BUSY)
+    }
+
+    // --- The microphone taken (S4, issue #98) ------------------------------------------
+
+    /** As iOS's machine routes `.microphoneTaken` with `.recorderFailed`: stop → REVIEW, the sentence. */
+    @Test
+    fun `the microphone taken mid-take stops into REVIEW with the sentence`() = runTest {
+        val recorder = recordingFor(4_000)
+        camera.listener!!.microphoneTaken()
+        assertThat(camera.stops).isEqualTo(1)
+        assertThat(recorder.state.value.phase).isEqualTo(Phase.Finishing(4_000))
+        camera.finalized(4_000)
+        runCurrent()
+        assertThat(recorder.state.value.phase).isInstanceOf(Phase.Review::class.java)
+        assertThat(recorder.state.value.notice).isEqualTo(Notice.STOPPED_UNEXPECTEDLY)
+        assertThat(camera.on).isFalse()
+    }
+
+    /** A microphone already taken at Record ends the take at once — that is not "too short". */
+    @Test
+    fun `the microphone taken in the first second says it stopped, not that it was too short`() = runTest {
+        val recorder = recordingFor(300)
+        camera.listener!!.microphoneTaken()
+        camera.finalized(300)
+        runCurrent()
+        assertThat(recorder.state.value.phase).isEqualTo(Phase.Preview(firstFrame = true))
+        assertThat(recorder.state.value.notice).isEqualTo(Notice.STOPPED_UNEXPECTEDLY)
+        assertThat(recorder.state.value.announcement?.text).isEqualTo(R.string.e_recording_stopped_unexpectedly)
+        assertThat(camera.file!!.exists()).isFalse()
+    }
+
+    /** Found only in CameraX's last stats, after the person's own Stop: REVIEW still says so. */
+    @Test
+    fun `a microphone lost only by the time the file is finished still warns in REVIEW`() = runTest {
+        val recorder = recordingFor(6_000)
+        recorder.stop()
+        camera.listener!!.microphoneTaken()
+        camera.finalized(6_000)
+        runCurrent()
+        assertThat(recorder.state.value.phase).isInstanceOf(Phase.Review::class.java)
+        assertThat(recorder.state.value.notice).isEqualTo(Notice.STOPPED_UNEXPECTEDLY)
+        assertThat(camera.stops).isEqualTo(1)
+    }
+
+    @Test
+    fun `the microphone means nothing in PREVIEW or REVIEW`() = runTest {
+        val preview = previewing()
+        camera.listener!!.microphoneTaken()
+        assertThat(preview.state.value.phase).isEqualTo(Phase.Preview(firstFrame = true))
+        assertThat(preview.state.value.notice).isNull()
+        preview.close()
+
+        val review = reviewing()
+        val before = review.state.value
+        camera.listener!!.microphoneTaken()
+        assertThat(review.state.value).isEqualTo(before)
+    }
+
+    /** The backstop: a file with no sound track at all is never a video message that goes unremarked. */
+    @Test
+    fun `a take with no sound track says so in REVIEW before Send`() = runTest {
+        soundless = true
+        val recorder = reviewing()
+        val phase = recorder.state.value.phase as Phase.Review
+        assertThat(phase.clip.soundless).isTrue()
+        assertThat(recorder.state.value.notice).isEqualTo(Notice.STOPPED_UNEXPECTEDLY)
     }
 
     @Test

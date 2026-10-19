@@ -38,6 +38,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaExtractor
@@ -665,7 +666,200 @@ class MediaPrepDeviceTest {
         assertThat(leftovers(except = null)).isEmpty()
     }
 
+    // -- Rule E: several sound tracks are mixed (issue #98) --------------------------
+
+    /**
+     * Apple's `twoSoundTracksAreMixed`, on Media3: the first sound track has
+     * its tone in the first second only, the second in the last second only.
+     * Keeping either one alone leaves a silent second; the mix must sound in
+     * both, as ONE track.
+     */
+    @Test
+    fun twoSoundTracksAreMixedIntoOne(): Unit = runBlocking {
+        val source = File(inputs, "two-voices.mp4")
+        TestClips.videoWithSoundTracks(
+            source, width = 1280, height = 720, fps = 60, frames = 120, bitrate = 20_000_000,
+            sounds = listOf(
+                TestClips.SoundTrackSpec(toneUs = 0L until 1_000_000L),
+                TestClips.SoundTrackSpec(toneUs = 1_000_000L until 2_000_000L),
+            ),
+        )
+        assertThat(Mp4SoundTracks.count(source)).isEqualTo(2)
+        assertThat(loudness(source, track = 0, fromUs = 1_200_000, toUs = 1_800_000)).isLessThan(QUIET)
+
+        val prepared = mediaPrep.prepareVideo(Uri.fromFile(source), declaredMime = "video/mp4")
+
+        assertThat(prepared.file).isNotEqualTo(source)
+        assertThat(Mp4SoundTracks.count(prepared.file)).isEqualTo(1)
+        val first = loudness(prepared.file, track = 0, fromUs = 200_000, toUs = 800_000)
+        val last = loudness(prepared.file, track = 0, fromUs = 1_200_000, toUs = 1_800_000)
+        Log.i(TAG, "mixed: rms $first in the first second, $last in the last")
+        assertThat(first).isGreaterThan(AUDIBLE)
+        assertThat(last).isGreaterThan(AUDIBLE)
+        assertThat(tracks(prepared.file).audio?.getString(MediaFormat.KEY_MIME))
+            .isEqualTo(MediaFormat.MIMETYPE_AUDIO_AAC)
+        assertThat(leftovers(except = prepared.file)).isEmpty()
+    }
+
+    /**
+     * "Each track at its own place in time": the second track's samples
+     * START at one second (the muxer writes it an empty edit). Mixed from
+     * zero, its tone would land in the first second and leave the last one
+     * silent.
+     */
+    @Test
+    fun aSoundTrackThatStartsLateIsMixedWhereItStarts(): Unit = runBlocking {
+        val source = File(inputs, "late-voice.mp4")
+        TestClips.videoWithSoundTracks(
+            source, width = 1280, height = 720, fps = 60, frames = 120, bitrate = 20_000_000,
+            sounds = listOf(
+                TestClips.SoundTrackSpec(toneUs = 0L until 1_000_000L, durationUs = 1_000_000L),
+                TestClips.SoundTrackSpec(toneUs = 1_000_000L until 2_000_000L, startUs = 1_000_000L, channels = 2),
+            ),
+        )
+        assertThat(Mp4SoundTracks.count(source)).isEqualTo(2)
+
+        val prepared = mediaPrep.prepareVideo(Uri.fromFile(source), declaredMime = "video/mp4")
+
+        assertThat(Mp4SoundTracks.count(prepared.file)).isEqualTo(1)
+        // Stereo, because one of them is.
+        assertThat(tracks(prepared.file).audio?.getInteger(MediaFormat.KEY_CHANNEL_COUNT)).isEqualTo(2)
+        val first = loudness(prepared.file, track = 0, fromUs = 200_000, toUs = 800_000)
+        val last = loudness(prepared.file, track = 0, fromUs = 1_200_000, toUs = 1_800_000)
+        Log.i(TAG, "late start: rms $first in the first second, $last in the last")
+        assertThat(first).isGreaterThan(AUDIBLE)
+        assertThat(last).isGreaterThan(AUDIBLE)
+    }
+
+    /**
+     * "Stereo when any of them is, at the highest sample rate any of them
+     * has": a MONO track at 48 kHz and a stereo one at 44.1 kHz come out as
+     * stereo at 48 kHz — the mono track leads (it states the higher rate)
+     * and is spread to both sides, the stereo one is brought to its rate.
+     */
+    @Test
+    fun theMixIsStereoAtTheHighestRate(): Unit = runBlocking {
+        val source = File(inputs, "rates.mp4")
+        TestClips.videoWithSoundTracks(
+            source, width = 1280, height = 720, fps = 60, frames = 120, bitrate = 20_000_000,
+            sounds = listOf(
+                TestClips.SoundTrackSpec(toneUs = 0L until 1_000_000L, sampleRate = 48_000),
+                TestClips.SoundTrackSpec(toneUs = 1_000_000L until 2_000_000L, channels = 2),
+            ),
+        )
+
+        val prepared = mediaPrep.prepareVideo(Uri.fromFile(source), declaredMime = "video/mp4")
+
+        assertThat(Mp4SoundTracks.count(prepared.file)).isEqualTo(1)
+        val audio = checkNotNull(tracks(prepared.file).audio)
+        Log.i(TAG, "mixed rates: $audio")
+        assertThat(audio.getInteger(MediaFormat.KEY_CHANNEL_COUNT)).isEqualTo(2)
+        assertThat(audio.getInteger(MediaFormat.KEY_SAMPLE_RATE)).isEqualTo(48_000)
+        assertThat(loudness(prepared.file, track = 0, fromUs = 200_000, toUs = 800_000)).isGreaterThan(AUDIBLE)
+        assertThat(loudness(prepared.file, track = 0, fromUs = 1_200_000, toUs = 1_800_000)).isGreaterThan(AUDIBLE)
+    }
+
+    /**
+     * "A mix that fails is a failed transcode (Rule C)": the second sound
+     * track's sample entry is renamed to a codec nobody knows — a stand-in
+     * for QuickTime PCM or `apac`, which the container lists and Media3
+     * cannot read. Its voice cannot be mixed, so nothing is transcoded at all
+     * and the ORIGINAL goes, every track in it, byte for byte — never a
+     * result with one voice missing.
+     */
+    @Test
+    fun aMixThatCannotReadEveryVoiceSendsTheOriginal(): Unit = runBlocking {
+        val source = File(inputs, "unreadable-voice.mp4")
+        TestClips.videoWithSoundTracks(
+            source, width = 1280, height = 720, fps = 60, frames = 120, bitrate = 20_000_000,
+            sounds = listOf(
+                TestClips.SoundTrackSpec(toneUs = 0L until 1_000_000L),
+                TestClips.SoundTrackSpec(toneUs = 1_000_000L until 2_000_000L),
+            ),
+        )
+        val bytes = source.readBytes()
+        val entries = Regex("mp4a").findAll(String(bytes, Charsets.ISO_8859_1)).map { it.range.first }.toList()
+        assertThat(entries).hasSize(2)
+        "zzzz".toByteArray(Charsets.US_ASCII).copyInto(bytes, entries[1])
+        source.writeBytes(bytes)
+        assertThat(Mp4SoundTracks.count(source)).isEqualTo(2)
+
+        val prepared = mediaPrep.prepareVideo(Uri.fromFile(source), declaredMime = "video/mp4")
+
+        assertThat(prepared.file.readBytes()).isEqualTo(bytes)
+        assertThat(leftovers(except = prepared.file)).isEmpty()
+    }
+
     // -- Reading the result back ---------------------------------------------------
+
+    /**
+     * The RMS of the [track]-th sound track's decoded samples whose time is
+     * in [fromUs, toUs), in 16-bit steps: a 330 Hz tone at 8 000 is about
+     * 5 600 before any codec, digital silence is 0.
+     */
+    private fun loudness(file: File, track: Int, fromUs: Long, toUs: Long): Double {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(file.absolutePath)
+            val index = (0 until extractor.trackCount)
+                .filter { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("audio/") }[track]
+            val format = extractor.getTrackFormat(index)
+            extractor.selectTrack(index)
+            val decoder = MediaCodec.createDecoderByType(checkNotNull(format.getString(MediaFormat.KEY_MIME)))
+            try {
+                decoder.configure(format, null, null, 0)
+                decoder.start()
+                var rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                var sum = 0.0
+                var count = 0L
+                var inputDone = false
+                val info = MediaCodec.BufferInfo()
+                while (true) {
+                    if (!inputDone) {
+                        val input = decoder.dequeueInputBuffer(10_000)
+                        if (input >= 0) {
+                            val buffer = checkNotNull(decoder.getInputBuffer(input))
+                            val size = extractor.readSampleData(buffer, 0)
+                            if (size < 0) {
+                                decoder.queueInputBuffer(input, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                decoder.queueInputBuffer(input, 0, size, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val output = decoder.dequeueOutputBuffer(info, 10_000)
+                    if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        rate = decoder.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        channels = decoder.outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    } else if (output >= 0) {
+                        val pcm = checkNotNull(decoder.getOutputBuffer(output))
+                            .order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+                        val frames = info.size / 2 / channels
+                        for (frame in 0 until frames) {
+                            val timeUs = info.presentationTimeUs + frame * 1_000_000L / rate
+                            if (timeUs !in fromUs until toUs) continue
+                            for (channel in 0 until channels) {
+                                val value = pcm.get(info.offset / 2 + frame * channels + channel).toDouble()
+                                sum += value * value
+                                count++
+                            }
+                        }
+                        decoder.releaseOutputBuffer(output, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                    }
+                }
+                decoder.stop()
+                return if (count == 0L) 0.0 else kotlin.math.sqrt(sum / count)
+            } finally {
+                decoder.release()
+            }
+        } finally {
+            extractor.release()
+        }
+    }
 
     private class Tracks(val video: MediaFormat?, val audio: MediaFormat?)
 
@@ -739,5 +933,9 @@ class MediaPrepDeviceTest {
 
     private companion object {
         const val TAG = "MediaPrepDeviceTest"
+
+        /** Window RMS above this is the tone (about 5 600 at the source); below [QUIET], nothing. */
+        const val AUDIBLE = 1_500.0
+        const val QUIET = 300.0
     }
 }

@@ -4837,6 +4837,25 @@ not.
 provided the source is itself sendable as that kind (an accepted type, honest bytes, within the
 ceiling). Otherwise the result is used, since it is the only thing that can be sent.
 
+**Rule E — a transcode keeps the sound** (*added 2026-10-19, #98*). Before it transcodes a video, a client
+counts the source's sound tracks from the CONTAINER'S OWN TRACK LIST — every `trak` whose `hdlr` handler
+type is `soun` — not from what its platform's decoder reports, because a decoder that cannot read a
+track does not list it, and a transcode then writes the picture alone. It counts the tracks that PLAY:
+an enabled track (`tkhd` flag `0x1`), and of the enabled tracks that share a non-zero `alternate_group`
+only the first, since a player picks one of them (an iPhone's spatial recording carries its stereo AAC
+and its spatial track as such a pair). A file with sound tracks of which none is enabled counts one.
+
+- A source that has a sound track and a result that has none is a FAILED transcode (Rule C), however
+  much smaller the result is — Rule D never keeps a silent result over a source with sound.
+- A source with MORE THAN ONE sound track that plays is transcoded with them all MIXED into the one
+  AAC-LC track the profile allows (a screen recording can carry the app's sound and the microphone on two
+  tracks; so can a camera with two microphones): stereo when any of them is, at the highest sample rate
+  any of them has, each track at its own place in time. Every client mixes — the sound is always kept,
+  never thinned to one voice. A mix that fails is a failed transcode (Rule C), like any other; and so is a
+  1.1-style fallback re-encode that would keep fewer voices than the source has.
+
+Rule A is unchanged: an upload that goes untouched keeps every track it has.
+
 #### Audio
 
 `kind=audio` covers both halves of the same thing: a sound file picked from disk, and a voice note

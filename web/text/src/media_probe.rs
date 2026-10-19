@@ -80,7 +80,7 @@ pub fn video_source(movie: &Movie, container: &str, size_bytes: u64) -> Option<V
 /// the stereo row's 128 000 and not the mono row's 64 000. The entry's
 /// count is what is left when the config names none, and for every other
 /// format.
-fn channels_of(entry: &mp4_read::SampleEntry) -> Option<u32> {
+pub fn channels_of(entry: &mp4_read::SampleEntry) -> Option<u32> {
     let stated = (entry.channels > 0).then_some(entry.channels);
     if mp4_read::audio_codec_name(entry) != "aac" {
         return stated;

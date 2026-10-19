@@ -427,6 +427,43 @@ object MediaPlan {
     fun keepSmaller(sourceBytes: Long, sourceSendable: Boolean, resultBytes: Long): Upload =
         if (resultBytes > sourceBytes && sourceSendable) Upload.SOURCE else Upload.RESULT
 
+    // -- Rule E — a transcode keeps the sound (issue #98) ----------------------
+    //
+    // Counted from the container's own track list (Mp4SoundTracks), never from
+    // what a decoder reports: a track Media3 cannot read is a track it does not
+    // write, and the export still succeeds. Null is "could not be counted",
+    // which is how things were before rule E — never a reason to refuse.
+    // A source with several sound tracks that play is MIXED into the one the
+    // profile allows (MediaTranscode's SoundMix), so a transcode of a source
+    // with sound comes out with exactly one. Not in the reference's vectors.
+
+    /**
+     * Whether a finished transcode kept the sound: a source with a sound
+     * track that plays must come out with EXACTLY ONE — none is the picture
+     * alone, and more than one is not the profile. Either count unknown: kept.
+     */
+    fun keptSound(sourceSoundTracks: Int?, resultSoundTracks: Int?): Boolean =
+        sourceSoundTracks == null || sourceSoundTracks < 1 || resultSoundTracks == null || resultSoundTracks == 1
+
+    /**
+     * Rules E then D on a finished transcode: null when it lost the sound —
+     * rule C's, with the source's [onFailure] — and otherwise [keepSmaller]'s
+     * answer. Rule D never sees a silent result of a source with sound, so it
+     * can never keep one for being smaller.
+     */
+    fun judgeTranscode(
+        sourceBytes: Long,
+        sourceSendable: Boolean,
+        resultBytes: Long,
+        sourceSoundTracks: Int?,
+        resultSoundTracks: Int?,
+    ): Upload? =
+        if (!keptSound(sourceSoundTracks, resultSoundTracks)) {
+            null
+        } else {
+            keepSmaller(sourceBytes, sourceSendable, resultBytes)
+        }
+
     /** The server's accepted types (server models.rs; docs/protocol.md, "Audio"). */
     private val ACCEPTED_VIDEO = setOf("video/mp4", "video/quicktime")
     private val ACCEPTED_AUDIO = setOf("audio/mp4", "audio/m4a", "audio/mpeg", "audio/wav", "audio/ogg")

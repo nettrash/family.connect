@@ -244,7 +244,7 @@ object Mp4Faststart {
         return boxes
     }
 
-    private fun readFully(channel: FileChannel, buffer: ByteBuffer, position: Long) {
+    internal fun readFully(channel: FileChannel, buffer: ByteBuffer, position: Long) {
         var at = position
         while (buffer.hasRemaining()) {
             val read = channel.read(buffer, at)

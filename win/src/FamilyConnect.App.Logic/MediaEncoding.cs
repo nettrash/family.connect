@@ -315,6 +315,40 @@ public static class MediaEncoding
     }
 
     /// <summary>
+    /// A MIX's encodes (Rule E, issue #98): the ways <see cref="VideoAttempts"/> would ask, with the audio worked out
+    /// for the mix instead of for one track — <see cref="MediaPlan.TargetAudioBitrate"/> of its channels, capped by the
+    /// tracks' bit rates added up, at the highest sample rate any of them has — and never a pass-through, since a mix is
+    /// always encoded. The planner's own numbers are not touched: the target's audio is replaced, not recomputed.
+    /// </summary>
+    /// <remarks>
+    /// <b>EACH WAY OF ASKING IS ASKED TWICE FOR A TURNED SOURCE.</b> A mix is rendered by <c>MediaComposition</c>, not by
+    /// the transcoder, and whether a composition carries a source's turn as metadata — as the transcoder does, and as
+    /// the first of each pair asks — or turns the pixels themselves is not documented, and could not be tried on the Mac
+    /// this was written on. So a quarter-turned source is also asked for UPRIGHT: its displayed sides, no turn. The
+    /// read-back takes whichever came out right (sides, turn, and a frame that still looks like its source), and a
+    /// render that came out the other way is a refusal, not a failure.
+    /// </remarks>
+    public static IReadOnlyList<VideoEncoding> MixAttempts(
+        VideoTarget target,
+        uint rotation,
+        uint sourceFrameRateNumerator,
+        uint sourceFrameRateDenominator,
+        MixSound mix,
+        bool hdr)
+    {
+        var channels = AacChannels(mix.Channels);
+        var mixed = target with { AudioBitrate = MediaPlan.TargetAudioBitrate(channels, mix.Bitrate) };
+        var asked = VideoAttempts(
+            mixed, rotation, sourceFrameRateNumerator, sourceFrameRateDenominator, channels, mix.SampleRate, mix.Bitrate, hdr, audioIsAac: false);
+        if (rotation is not (90 or 270))
+        {
+            return asked;
+        }
+        var (width, height) = Encoded(target.Width, target.Height, 0);
+        return [.. asked.SelectMany(attempt => new[] { attempt, attempt with { Width = width, Height = height, Rotation = 0 } })];
+    }
+
+    /// <summary>
     /// Whether a video's own audio track may be passed through instead of encoded: it is AAC, mono or stereo, and its
     /// stated bit rate is what the planner asked for — which it is exactly when that rate was already at or under the
     /// profile's row, so the cap was the source itself (rule B). Encoding it again at its own rate could only cost it a
