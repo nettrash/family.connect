@@ -621,6 +621,9 @@ pub fn label(item: &Prepared) -> String {
             &media::time_label(item.duration_ms.unwrap_or(0) as f64 / 1000.0),
         ),
         "location" => t("Location").to_string(),
+        // An animated picture made into a looping video (#96) is what it
+        // will be drawn as.
+        "video" if item.animation => t("GIF").to_string(),
         kind => {
             let name = media::display_name(kind, item.name.as_deref()).into_owned();
             if kind == "file" || kind == "audio" {
@@ -1203,5 +1206,16 @@ mod tests {
         };
         assert_eq!(label(&photo), "Photo");
         assert_eq!(label(&Prepared::location(1.0, 2.0, None)), "Location");
+        let animation = Prepared {
+            kind: "video".into(),
+            animation: true,
+            ..Prepared::default()
+        };
+        assert_eq!(label(&animation), "GIF");
+        let video = Prepared {
+            kind: "video".into(),
+            ..Prepared::default()
+        };
+        assert_eq!(label(&video), "Video");
     }
 }

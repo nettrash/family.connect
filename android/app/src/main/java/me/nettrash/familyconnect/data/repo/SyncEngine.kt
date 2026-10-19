@@ -153,6 +153,9 @@ class SyncEngine @Inject constructor(
         // without its flag (docs/audio-video-messages-2026-10-04.md, S5.8):
         // drawn square for good otherwise, for the same `after_id` reason.
         messageRepository.repairUnknownRoundFlags()
+        // 3g. And any possible animation a build from before #96 cached as a
+        // plain video (docs/protocol.md, "Animations"), for the same reason.
+        messageRepository.repairUnknownAnimationFlags()
     }
 
     companion object {

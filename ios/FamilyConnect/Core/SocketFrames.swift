@@ -64,6 +64,18 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         clientMsgID: String,
         replyToMessageID: Int64?,
         attachmentID: Int64)
+    /// An ANIMATION (docs/protocol.md, "Animations", #96): the same `send`
+    /// frame with `"animation": true` and exactly one attachment. Unlike a
+    /// sticker or a video message it MAY carry a caption — and so the
+    /// members that caption names — but never a poll, which this case
+    /// cannot express.
+    case sendAnimation(
+        chatID: Int64,
+        clientMsgID: String,
+        body: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64,
+        mentions: [MentionDTO]?)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -95,6 +107,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case mentions
         case sticker
         case round
+        case animation
         case callID = "call_id"
         case sdp
         case candidate
@@ -147,6 +160,16 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
             try container.encode([attachmentID], forKey: .attachmentIDs)
             try container.encode(true, forKey: .round)
+        case .sendAnimation(
+            let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentID, let mentions):
+            try container.encode("send", forKey: .type)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(clientMsgID, forKey: .clientMsgID)
+            try container.encode(body, forKey: .body)
+            try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encode([attachmentID], forKey: .attachmentIDs)
+            try container.encodeIfPresent(mentions, forKey: .mentions)
+            try container.encode(true, forKey: .animation)
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)

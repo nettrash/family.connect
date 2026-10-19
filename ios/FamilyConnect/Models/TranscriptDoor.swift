@@ -90,6 +90,9 @@ nonisolated enum TranscriptDoor: Equatable {
     /// trying and said under the action (the header above).
     static func route(for attachment: AttachmentDTO, maxBytes: Int64?) -> TranscriptRoute? {
         guard attachment.size > 0 else { return nil }
+        // An ANIMATION has no sound track at all (#96, "transcripts find no
+        // sound"), so there is nothing to offer the text of.
+        guard !attachment.isAnimation else { return nil }
         if storedCopyQualifies(attachment, maxBytes: maxBytes) { return .stored }
         switch attachment.kind {
         case "audio", "video": return .supplied

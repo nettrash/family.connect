@@ -123,6 +123,29 @@ nonisolated enum MediaPrep {
         /// nobody metered those. A `var`, set after preparing, so the copy
         /// `prepareAudio` makes keeps what the recording measured.
         var waveform: String?
+        /// An ANIMATION (docs/protocol.md, "Animations", #96): an animated
+        /// GIF, WebP or PNG made into the profile's silent looping MP4 by
+        /// `prepareAnimation`. The message that carries it — when it is the
+        /// message's only attachment — says `animation: true`. False for
+        /// everything else, a video picked as a video included.
+        var animation: Bool
+
+        init(
+            fileURL: URL,
+            mime: String,
+            kind: String,
+            width: Int? = nil,
+            height: Int? = nil,
+            durationMS: Int? = nil,
+            previewJPEG: Data? = nil,
+            name: String? = nil,
+            animation: Bool
+        ) {
+            self.init(
+                fileURL: fileURL, mime: mime, kind: kind, width: width, height: height,
+                durationMS: durationMS, previewJPEG: previewJPEG, name: name)
+            self.animation = animation
+        }
 
         init(
             fileURL: URL,
@@ -142,6 +165,7 @@ nonisolated enum MediaPrep {
             self.durationMS = durationMS
             self.previewJPEG = previewJPEG
             self.name = name
+            self.animation = false
         }
     }
 
@@ -242,6 +266,12 @@ nonisolated enum MediaPrep {
     nonisolated struct Transcoder: Sendable {
         var video: @Sendable (_ source: URL, _ target: MediaPlan.VideoTarget, _ output: URL) async throws -> Void
         var audio: @Sendable (_ source: URL, _ bitrate: Int, _ output: URL) async throws -> Void
+        /// An animated picture's bytes made into an animation's MP4 (#96).
+        /// Defaulted, so a seam that only cares about videos and audio
+        /// does not have to say anything about it.
+        var animation: @Sendable (_ picture: Data, _ output: URL) async throws -> AnimationEncoder.Encoded = {
+            try await AnimationEncoder.encode($0, writingTo: $1)
+        }
 
         static let avFoundation = Transcoder(
             video: { try await MediaTranscoder.transcodeVideo(from: $0, to: $1, writingTo: $2) },
@@ -732,18 +762,28 @@ nonisolated enum MediaPrep {
     /// preview), a movie through the video path (brought to the profile
     /// unless it is already within it), audio through the audio rules, and
     /// everything else is a file, sent as it is.
+    ///
+    /// `animates` is the composer's: true in a family or direct chat, where
+    /// an animated GIF, WebP or PNG becomes an ANIMATION (`prepareAnimation`,
+    /// #96); false everywhere else — the assistant's chat, the board — where
+    /// it goes exactly as it always went.
     static func prepare(
         fileAt url: URL,
         type explicitType: UTType? = nil,
         name: String? = nil,
         limit: Int,
-        transcoder: Transcoder = .avFoundation
+        transcoder: Transcoder = .avFoundation,
+        animates: Bool = false
     ) async throws -> Prepared {
         // The clipboard KNOWS the type; a picked file only has an
         // extension to go on. Trust the caller when it has something
         // better.
         let type = explicitType ?? UTType(filenameExtension: url.pathExtension)
         if type?.conforms(to: .image) == true {
+            if animates,
+               let animated = try await animationIfAnimated(fileAt: url, limit: limit, transcoder: transcoder) {
+                return animated
+            }
             // An animated image is not a photo, whatever it conforms to.
             if sendsAsFile(imageType: type) {
                 return try await prepareFile(from: url, name: name, limit: limit)
@@ -783,7 +823,8 @@ nonisolated enum MediaPrep {
     /// still downscaled by `preparePhoto`, a pasted clip still gets its
     /// poster frame from `prepareVideo`.
     static func prepare(
-        data: Data, type: UTType, name: String? = nil, limit: Int
+        data: Data, type: UTType, name: String? = nil, limit: Int,
+        transcoder: Transcoder = .avFoundation, animates: Bool = false
     ) async throws -> Prepared {
         // Never "dat" for something we could name: the extension is what
         // `prepareFile` turns into the MIME type the recipient's app opens.
@@ -795,7 +836,8 @@ nonisolated enum MediaPrep {
         }
         do {
             let prepared = try await prepare(
-                fileAt: scratch, type: type, name: name, limit: limit)
+                fileAt: scratch, type: type, name: name, limit: limit,
+                transcoder: transcoder, animates: animates)
             // Every path but one copies or re-encodes; `prepareVideo` hands
             // back the source itself when it goes as it is (rules A, C and
             // D), so only delete the scratch file when it is not the thing
@@ -808,6 +850,88 @@ nonisolated enum MediaPrep {
             try? FileManager.default.removeItem(at: scratch)
             throw error
         }
+    }
+
+    // MARK: - Animations
+
+    /// An animated GIF, WebP or PNG made into an ANIMATION (docs/protocol.md,
+    /// "Animations", #96): the profile's silent looping MP4, sent as a
+    /// `kind=video` whose message says `animation: true`. `AnimationTiming`
+    /// decides which frames and for how long; `AnimationEncoder` draws and
+    /// encodes them.
+    ///
+    /// nil when the bytes are not an animation at all, AND when the video
+    /// could not be made — that is rule C, and the caller then does exactly
+    /// what it did before (a file for a GIF or a WebP, the photo path for a
+    /// PNG). Never re-planned and never held to rule D: a video is the only
+    /// way an animation can be drawn as one. Throws only when cancelled.
+    ///
+    /// `@concurrent` for `prepareVideo`'s reason: every caller is a composer
+    /// on the main actor, and this is a decode and an encode.
+    @concurrent
+    static func prepareAnimation(
+        from data: Data, limit: Int, transcoder: Transcoder = .avFoundation
+    ) async throws -> Prepared? {
+        guard AnimatedPicture.isAnimation(data) else { return nil }
+        let output = temporaryURL(extension: "mp4")
+        let encoded: AnimationEncoder.Encoded
+        do {
+            encoded = try await transcoder.animation(data, output)
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            AppLog.sync.error(
+                "An animation could not be made into a video (\(String(describing: error), privacy: .public)); sending it the way it went before")
+            return nil
+        }
+        let size = fileSize(of: output)
+        // A result the server would refuse is nothing sendable: rule C.
+        guard MediaPlan.sendable(
+            kind: "video", container: "video/mp4",
+            honest: Magic.honest(url: output, mime: "video/mp4"),
+            sizeBytes: size, ceilingBytes: limit)
+        else {
+            try? FileManager.default.removeItem(at: output)
+            return nil
+        }
+        return Prepared(
+            fileURL: output,
+            mime: "video/mp4",
+            kind: "video",
+            width: encoded.width,
+            height: encoded.height,
+            durationMS: encoded.durationMS,
+            previewJPEG: encoded.posterJPEG,
+            animation: true)
+    }
+
+    /// The same, for a picture on disk — read inside its security scope,
+    /// and only when it could be sent at all. nil means "not an animation,
+    /// or rule C": the caller's own path.
+    static func animationIfAnimated(
+        fileAt url: URL, limit: Int, transcoder: Transcoder = .avFoundation
+    ) async throws -> Prepared? {
+        guard fileSize(of: url) <= limit else { return nil }
+        let data: Data? = {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try? Data(contentsOf: url)
+        }()
+        guard let data, AnimatedPicture.isAnimation(data) else { return nil }
+        return try await prepareAnimation(from: data, limit: limit, transcoder: transcoder)
+    }
+
+    /// A document picked with the phone's File item: an ANIMATION when it is
+    /// an animated picture and `animates` (#96), and otherwise exactly what
+    /// that item has always done — the file as it is.
+    static func preparePickedFile(
+        from url: URL, limit: Int, animates: Bool, transcoder: Transcoder = .avFoundation
+    ) async throws -> Prepared {
+        if animates, UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true,
+           let animated = try await animationIfAnimated(fileAt: url, limit: limit, transcoder: transcoder) {
+            return animated
+        }
+        return try await prepareFile(from: url, limit: limit)
     }
 
     /// Image types that must go as `kind=file` rather than as a photo.
@@ -824,6 +948,11 @@ nonisolated enum MediaPrep {
     ///
     /// This is the rule the Mac's own picker was missing: dropping a GIF on
     /// `prepare(fileAt:)` quietly posted a still of it.
+    ///
+    /// Since #96 an ANIMATED GIF or WebP in a family or direct chat becomes
+    /// an animation first (`prepareAnimation`); this is what a still one, a
+    /// BMP, and an animation that could not be made into a video (rule C)
+    /// still do.
     static func sendsAsFile(imageType type: UTType?) -> Bool {
         guard let type else { return false }
         return [UTType.gif, .webP, .bmp].contains { type.conforms(to: $0) }

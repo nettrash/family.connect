@@ -293,6 +293,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "device_language",
         sql: include_str!("../migrations/0054_device_language.sql"),
     },
+    Migration {
+        version: 55,
+        name: "animation",
+        sql: include_str!("../migrations/0055_animation.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

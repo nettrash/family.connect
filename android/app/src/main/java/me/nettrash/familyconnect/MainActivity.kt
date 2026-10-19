@@ -62,6 +62,10 @@ import me.nettrash.familyconnect.data.repo.ShareIn
 import me.nettrash.familyconnect.navigation.startDestinationFor
 import me.nettrash.familyconnect.ui.components.LocalAttachments
 import me.nettrash.familyconnect.ui.components.LocalAvatars
+import me.nettrash.familyconnect.ui.components.LocalNetworkPermissionForServer
+import me.nettrash.familyconnect.data.settings.SettingsRepository
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.ui.chat.LocalPlaybackCoordinator
 import me.nettrash.familyconnect.ui.chat.LocalRichRenderer
 import me.nettrash.familyconnect.rich.RichRenderer
@@ -116,6 +120,10 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var richRenderer: RichRenderer
 
+    /** The server address, for Android 17's local network grant (LocalNetworkAccess). */
+    @Inject
+    lateinit var settings: SettingsRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -137,6 +145,12 @@ class MainActivity : ComponentActivity() {
                 LocalRichRenderer provides richRenderer,
             ) {
                 val boot by viewModel.bootState.collectAsStateWithLifecycle()
+                // A family server on the home network needs Android 17's
+                // local network grant before this phone can reach it at all.
+                val serverUrl by remember {
+                    settings.state.map { it.serverUrl }.distinctUntilChanged()
+                }.collectAsStateWithLifecycle(initialValue = null)
+                LocalNetworkPermissionForServer(serverUrl)
                 val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
                 // What the share flow has to say — one sentence, once. A
                 // toast rather than UI state: the share may be refused
@@ -144,9 +158,11 @@ class MainActivity : ComponentActivity() {
                 val shareNotice by viewModel.shareNotice.collectAsStateWithLifecycle()
                 LaunchedEffect(shareNotice) {
                     shareNotice?.let { notice ->
-                        val text = notice.arg
-                            ?.let { getString(notice.resId, it) }
-                            ?: getString(notice.resId)
+                        val text = when (notice) {
+                            is MainViewModel.ShareNotice.Words -> getString(notice.resId)
+                            is MainViewModel.ShareNotice.Counted ->
+                                resources.getQuantityString(notice.resId, notice.count, notice.count)
+                        }
                         Toast.makeText(this@MainActivity, text, Toast.LENGTH_LONG).show()
                         viewModel.consumeShareNotice()
                     }

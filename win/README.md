@@ -42,6 +42,10 @@ win/
                 TranscodeAttempts — the order a transcode is asked for in, and what ends the asking
                 FrameTurn — a frame of a transcode beside the same frame of its source
                 Faststart — an MP4's index moved in front of its media data
+                AnimationTiming, AnimatedPictures, AnimationFrames, AnimationMp4 — an animated GIF, WebP or PNG as the
+                                protocol's silent looping video (#96): the plan (fc_text::animation's vectors), the three
+                                formats taken apart (a GIF decoded here, APNG and WebP frames cut into standalone stills),
+                                one compositor, BT.709 NV12, and the MP4's sample table made exact on the 1/30 s grid
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
                 Notifications — when this client speaks up, and what it says when it does
@@ -62,7 +66,8 @@ win/
                           Attention, TrayIcon, GlobalHotKey + HotKeySetting (Ctrl+Alt+Shift+F),
                           StartupLaunch (the manifest's startup task),
                           ShareInbox, WindowPlacement, WebViewCallMedia, VoiceRecorder,
-                          MediaPreparing, LocationFinder, StickerImaging, KeepAwake (the
+                          MediaPreparing + AnimationPreparing (an animation's frames into Media Foundation through a
+                          MediaStreamSource), LocationFinder, StickerImaging, KeepAwake (the
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
                           ScreenReader (whether one runs, so the microphone waits for it),
                           VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off),
@@ -839,6 +844,21 @@ cargo run --quiet -- emoji-typing > ../../tests/FamilyConnect.Core.Tests/Fixture
 cd ../../..
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json ios/FamilyConnectTests/Fixtures/
 cp win/tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json android/app/src/test/resources/
+```
+
+A seventh, `animation-plan-vectors.json`, is `fc_text::animation` — an animated GIF, WebP or PNG sent
+in a chat as a silent looping video (issue #96, docs/protocol.md "Animations"): each format's frame
+delay, the shortest-frame rule, and the plan — which source frame shows on each tick of the
+30-a-second grid, the size and the bitrate. Every port's encoder follows it; on Windows the plan
+lives in App.Logic, whose test project links the file from Core.Tests' fixtures. It travels like the
+four above:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- animation-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/animation-plan-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/animation-plan-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/animation-plan-vectors.json android/app/src/test/resources/
 ```
 
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a

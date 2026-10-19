@@ -2,7 +2,9 @@ using System.Diagnostics;
 using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Foundation;
 
 namespace FamilyConnect.App.Views;
 
@@ -24,6 +26,11 @@ namespace FamilyConnect.App.Views;
 /// </para>
 /// <para>
 /// A still picture never reaches the timer at all: it is set and forgotten.
+/// </para>
+/// <para>
+/// <b>ONLY WHILE ON SCREEN</b> (docs/protocol.md, "Sticker pack", amended 2026-10-19, #96). An image scrolled wholly out of its
+/// scroller's view keeps its place on the list but is not drawn to — its clock runs on, so it comes back on the frame that is
+/// due — and when nothing left is on screen the timer stops until something scrolls back.
 /// </para>
 /// <para>
 /// <b>AND IT IS THE ONE PLACE THAT KNOWS WHAT IS ON SCREEN</b>, which is what decides how a picture
@@ -55,6 +62,11 @@ internal sealed class StickerAnimator
         public int Shown { get; set; }
 
         public bool WasLoaded { get; set; }
+
+        /// <summary>Whether any of the image is inside its scroller's view; on screen until a viewport says otherwise.</summary>
+        public bool InView { get; set; } = true;
+
+        public TypedEventHandler<FrameworkElement, EffectiveViewportChangedEventArgs>? Watch { get; set; }
     }
 
     private readonly DispatcherQueueTimer timer;
@@ -97,7 +109,20 @@ internal sealed class StickerAnimator
             return;
         }
         var now = clock.ElapsedMilliseconds;
-        playing.Add(new Playing(image, picture, Math.Min(started ?? now, now), now));
+        var entry = new Playing(image, picture, Math.Min(started ?? now, now), now);
+        entry.Watch = (_, args) =>
+        {
+            var seen = args.EffectiveViewport;
+            // An image not laid out yet has no size to test: it counts as on screen until it has one.
+            entry.InView = image.ActualWidth <= 0 || image.ActualHeight <= 0
+                || RoundInline.InView(seen.X, seen.Y, seen.Width, seen.Height, image.ActualWidth, image.ActualHeight);
+            if (entry.InView && !lostTrack)
+            {
+                timer.Start();
+            }
+        };
+        image.EffectiveViewportChanged += entry.Watch;
+        playing.Add(entry);
         timer.Start();
     }
 
@@ -130,11 +155,11 @@ internal sealed class StickerAnimator
         catch (Exception e)
         {
             Diagnostics.Write($"stilling a sticker: {e.GetType().Name}");
-            playing.RemoveAll(entry => ReferenceEquals(entry.Picture, picture));
+            Drop(entry => ReferenceEquals(entry.Picture, picture));
             picture.MakeStill(dispose: false);
             return;
         }
-        playing.RemoveAll(entry => ReferenceEquals(entry.Picture, picture));
+        Drop(entry => ReferenceEquals(entry.Picture, picture));
         picture.MakeStill(dispose: true);
     }
 
@@ -148,13 +173,39 @@ internal sealed class StickerAnimator
     }
 
     /// <summary>That image is about to show something else.</summary>
-    public void Forget(Image image) => playing.RemoveAll(entry => ReferenceEquals(entry.Image, image));
+    public void Forget(Image image) => Drop(entry => ReferenceEquals(entry.Image, image));
 
     /// <summary>The view is going: nothing moves any more.</summary>
     public void Stop()
     {
         timer.Stop();
-        playing.Clear();
+        Drop(_ => true);
+    }
+
+    /// <summary>The entries that match leave the list, and their images are no longer watched.</summary>
+    private void Drop(Predicate<Playing> which)
+    {
+        foreach (var entry in playing.Where(entry => which(entry)).ToList())
+        {
+            Unwatch(entry);
+        }
+        playing.RemoveAll(which);
+    }
+
+    private static void Unwatch(Playing entry)
+    {
+        if (entry.Watch is { } watch)
+        {
+            entry.Watch = null;
+            try
+            {
+                entry.Image.EffectiveViewportChanged -= watch;
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Write($"no longer watching a sticker: {e.GetType().Name}");
+            }
+        }
     }
 
     private void Tick()
@@ -171,6 +222,7 @@ internal sealed class StickerAnimator
                 }
                 else if (entry.WasLoaded || now - entry.Made > NeverShownMs)
                 {
+                    Unwatch(entry);
                     playing.RemoveAt(at);
                     continue;
                 }
@@ -181,7 +233,13 @@ internal sealed class StickerAnimator
                 }
                 if (entry.Picture is not { Frames: { } frames, Clock: { } durations })
                 {
+                    Unwatch(entry);
                     playing.RemoveAt(at);
+                    continue;
+                }
+                if (!entry.InView)
+                {
+                    // Scrolled away: not drawn to. Its clock runs on, so it comes back on the frame that is due.
                     continue;
                 }
                 var due = Math.Min(StickerAnimation.FrameAt(durations, now - entry.Started), frames.Count - 1);
@@ -191,7 +249,9 @@ internal sealed class StickerAnimator
                     entry.Image.Source = frames[due];
                 }
             }
-            if (playing.Count == 0)
+            // Nothing left, or nothing left on screen (one not loaded yet still needs its turn): the timer rests until a viewport
+            // brings something back.
+            if (playing.TrueForAll(entry => !entry.InView && entry.WasLoaded))
             {
                 timer.Stop();
             }

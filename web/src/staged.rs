@@ -47,6 +47,12 @@ pub struct Prepared {
     /// gone. None for anything else, and for a note whose recorder heard
     /// nothing it could measure.
     pub waveform: Option<String>,
+    /// An animated picture made into a silent looping video (docs/protocol.md,
+    /// "Animations"; `prep::prepare`): a `video/mp4` that is sent with
+    /// `animation: true` when it goes as its message's ONE attachment. Beside
+    /// others it goes as the ordinary video it otherwise is — the flag is the
+    /// message's, and a message of several is never drawn as one.
+    pub animation: bool,
 }
 
 impl Prepared {
@@ -158,6 +164,7 @@ impl OutgoingItem {
             // The row's to say, not the item's: see `Store::enqueue`.
             sticker: false,
             round: false,
+            animation: false,
             waveform: self.waveform.clone(),
         }
     }

@@ -77,6 +77,12 @@ final class PendingMediaItemEntity {
     /// a circle, not a square video — and drawn round at once from the
     /// local poster (S5.6). Defaulted, so a lightweight migration.
     var isRound: Bool = false
+    /// This send is an ANIMATION (docs/protocol.md, "Animations", #96): the
+    /// MP4 an animated picture was made into, alone in its message, whose
+    /// message says `animation: true`. Held here for the sticker's reason —
+    /// a send resumed after a relaunch must still be an animation, not an
+    /// ordinary video. Defaulted, so a lightweight migration.
+    var animation: Bool = false
     /// A voice note's waveform, as the upload sends it (`waveform=`, #79,
     /// docs/protocol.md, "A voice note's waveform"): held here so a send
     /// resumed after a relaunch — or finished by the background session —
@@ -133,6 +139,7 @@ final class PendingMediaItemEntity {
         accuracyM: Int? = nil,
         sticker: Bool = false,
         isRound: Bool = false,
+        animation: Bool = false,
         waveform: String? = nil,
         createdAt: Date = Date()
     ) {
@@ -153,6 +160,7 @@ final class PendingMediaItemEntity {
         self.accuracyM = accuracyM
         self.sticker = sticker
         self.isRound = isRound
+        self.animation = animation
         self.waveform = waveform
         self.createdAt = createdAt
     }
@@ -195,6 +203,7 @@ extension PendingMediaItemEntity {
             accuracyM: accuracyM,
             sticker: sticker,
             isRound: isRound,
+            animation: animation,
             waveform: waveform)
     }
 
@@ -220,6 +229,7 @@ extension PendingMediaItemEntity {
             accuracyM: accuracyM,
             sticker: sticker,
             isRound: isRound,
+            animation: animation,
             waveform: waveform)
     }
 }

@@ -209,6 +209,12 @@ fn attachment_summary(message: &Message) -> Option<Text> {
             // somebody chose, "Video message" says somebody is talking to
             // you (protocol.md, "Video messages").
             "video" if attachment.round => Text::say("Video message", &[]),
+            // And an animation is a video on the wire and a "GIF" on a lock
+            // screen — the word every messenger uses, the same in every
+            // language, and the one its tile is labelled with (protocol.md,
+            // "Animations"; issue #96). A caption, when it has one, is the
+            // message's words and wins before this is asked.
+            "video" if attachment.animation => Text::say("GIF", &[]),
             "video" => Text::say("Video", &[]),
             // A voice note has no name worth showing, so the kind is the
             // summary; a track picked off a disk may carry one, and that
@@ -997,6 +1003,7 @@ mod tests {
                     accuracy_m: None,
                     sticker: false,
                     round: false,
+                    animation: false,
                     waveform: None,
                 }),
                 ..protocol_message()
@@ -1104,6 +1111,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round: false,
+                animation: false,
                 waveform: None,
             }
         }
@@ -1335,6 +1343,7 @@ mod tests {
                 accuracy_m: None,
                 sticker,
                 round: false,
+                animation: false,
                 waveform: None,
             }
         }
@@ -1431,6 +1440,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round,
+                animation: false,
                 waveform: None,
             }
         }
@@ -1523,6 +1533,7 @@ mod tests {
                 accuracy_m: None,
                 sticker: false,
                 round,
+                animation: false,
                 waveform: None,
             }
         }
@@ -1573,6 +1584,92 @@ mod tests {
             "",
             "Anna",
             &carrying(vec![video(91, true)]),
+            1,
+            1,
+        );
+        assert_eq!(hidden.body, "New message");
+    }
+
+    /// An animation is a video on the wire and a "GIF" on a lock screen
+    /// (protocol.md, "Animations"; issue #96): the flag changes what one
+    /// video is CALLED — in every language the same word — nothing about
+    /// how several are counted, nothing about a caption, which is the
+    /// message's own words, and nothing about the operator's switch.
+    #[test]
+    fn an_animation_is_called_a_gif() {
+        fn video(id: i64, animation: bool) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id,
+                kind: "video".to_string(),
+                mime: "video/mp4".to_string(),
+                size: 182_330,
+                width: Some(480),
+                height: Some(270),
+                duration_ms: Some(2_100),
+                has_preview: true,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+                sticker: false,
+                round: false,
+                animation,
+                waveform: None,
+            }
+        }
+        fn carrying(videos: Vec<crate::models::Attachment>) -> Message {
+            Message {
+                body: String::new(),
+                attachment: videos.first().cloned(),
+                attachments: Some(videos),
+                ..protocol_message()
+            }
+        }
+        let gif = attachment_summary(&carrying(vec![video(93, true)])).expect("a summary");
+        assert_eq!(gif.render(None), "GIF");
+        for language in ["de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"] {
+            assert_eq!(gif.render(Some(language)), "GIF", "{language}");
+        }
+        // The same MP4 sent as an ordinary video is still a video.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(93, false)]))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("Video")
+        );
+        // Two videos are counted as videos, whatever either says — the
+        // server never sends that shape, and the word is for ONE.
+        assert_eq!(
+            attachment_summary(&carrying(vec![video(93, true), video(94, false)]))
+                .map(|text| text.render(None))
+                .as_deref(),
+            Some("2 Videos")
+        );
+        // An animation may carry a caption, and a caption is what pushes.
+        let captioned = Message {
+            body: "when the pizza arrives".to_string(),
+            ..carrying(vec![video(93, true)])
+        };
+        let note = message_notification(true, "direct", "", "Anna", &captioned, 1, 1);
+        assert_eq!(note.body, "when the pizza arrives");
+        // The word is what a caption-less one pushes; the operator's switch
+        // still withholds it.
+        let shown = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &carrying(vec![video(93, true)]),
+            1,
+            1,
+        );
+        assert_eq!(shown.body, "GIF");
+        let hidden = message_notification(
+            false,
+            "family",
+            "The Smiths",
+            "Anna",
+            &carrying(vec![video(93, true)]),
             1,
             1,
         );

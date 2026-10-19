@@ -112,6 +112,8 @@ struct StagedAttachment: Identifiable {
     /// over it read out the scratch file it was recorded into.
     var label: String {
         if let name = prepared.name, !name.isEmpty { return name }
+        // An animation is a picture that moves (#96), and says so.
+        if prepared.animation { return String(localized: "GIF") }
         switch prepared.kind {
         case AttachmentDTO.Kind.video: return String(localized: "Video")
         case AttachmentDTO.Kind.audio: return String(localized: "Audio")
@@ -147,7 +149,10 @@ private struct StagedThumbnail: View {
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
-            if item.prepared.kind == AttachmentDTO.Kind.video {
+            if item.prepared.animation {
+                // No play glyph on an animation: it is not played, it moves.
+                AnimationBadge()
+            } else if item.prepared.kind == AttachmentDTO.Kind.video {
                 Image(systemName: "play.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.white, .black.opacity(0.35))

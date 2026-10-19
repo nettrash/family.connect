@@ -21,6 +21,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import androidx.core.content.edit
 
 @Serializable
 data class CallBackEntry(
@@ -84,7 +85,7 @@ class CallBackRegistry(private val store: CallBackStore) {
         private val prefs = context.getSharedPreferences("call_backs", Context.MODE_PRIVATE)
         override fun read(): String? = prefs.getString(KEY, null)
         override fun write(value: String?) {
-            prefs.edit().apply { if (value == null) remove(KEY) else putString(KEY, value) }.apply()
+            prefs.edit { if (value == null) remove(KEY) else putString(KEY, value) }
         }
     }
 

@@ -32,6 +32,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import androidx.core.content.edit
 
 interface TokenStore {
     /** The stored session token, or null when logged out / undecryptable. */
@@ -66,15 +67,15 @@ class KeystoreTokenStore(context: Context) : TokenStore {
     @Synchronized
     override fun save(token: String) {
         val (iv, ct) = encryptWithKeystore(token.toByteArray(Charsets.UTF_8))
-        prefs.edit()
-            .putString(KEY_IV, android.util.Base64.encodeToString(iv, android.util.Base64.NO_WRAP))
-            .putString(KEY_CIPHERTEXT, android.util.Base64.encodeToString(ct, android.util.Base64.NO_WRAP))
-            .apply()
+        prefs.edit {
+            putString(KEY_IV, android.util.Base64.encodeToString(iv, android.util.Base64.NO_WRAP))
+            putString(KEY_CIPHERTEXT, android.util.Base64.encodeToString(ct, android.util.Base64.NO_WRAP))
+        }
     }
 
     @Synchronized
     override fun clear() {
-        prefs.edit().remove(KEY_IV).remove(KEY_CIPHERTEXT).apply()
+        prefs.edit { remove(KEY_IV).remove(KEY_CIPHERTEXT) }
     }
 
     // -- Internals ----------------------------------------------------------

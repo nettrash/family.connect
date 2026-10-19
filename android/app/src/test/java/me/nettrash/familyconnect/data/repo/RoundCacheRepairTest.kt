@@ -215,7 +215,9 @@ class RoundCacheRepairTest {
     /**
      * A row exactly as a pre-#79 build left it: raw SQL, so it is the shape
      * that build wrote (no `round` in the JSON) with every column it never
-     * knew at its default.
+     * knew at its default — except the ANIMATION question (#96), marked
+     * known here so these tests count the round repair's reads alone; its
+     * own repair is AnimationCacheRepairTest's.
      */
     private fun cachedByOldBuild(
         serverId: Long?,
@@ -230,10 +232,11 @@ class RoundCacheRepairTest {
             """
             INSERT INTO messages (clientMsgId, serverId, chatId, senderId, body, createdAt, status,
                 attachmentId, attachmentKind, attachmentMime, attachmentSize, attachmentWidth,
-                attachmentHeight, attachmentDurationMs, attachmentHasPreview, attachmentsJson)
+                attachmentHeight, attachmentDurationMs, attachmentHasPreview, attachmentsJson,
+                attachmentsKnowAnimation)
             VALUES ('$clientMsgId', ${serverId ?: "NULL"}, $CHAT, $PEER, '$body', ${serverId ?: 0} * 1000,
                 'SENT', ${first.id}, '${first.kind}', '${first.mime}', ${first.size}, ${first.width},
-                ${first.height}, ${first.durationMs ?: "NULL"}, ${if (first.hasPreview) 1 else 0}, '$json')
+                ${first.height}, ${first.durationMs ?: "NULL"}, ${if (first.hasPreview) 1 else 0}, '$json', 1)
             """.trimIndent(),
         )
     }

@@ -74,9 +74,10 @@ struct StickerPanel: View {
                 Button {
                     onPick(item)
                 } label: {
-                    // Frame zero: a panel of two hundred moving pictures is
-                    // noise, and the sticker moves once it is in the chat.
-                    StickerImage(attachmentID: item.attachmentID, animates: false)
+                    // Moving, as everywhere a sticker is drawn (#96) — only
+                    // the cells on screen run, and none under Reduce Motion
+                    // (StickerImage).
+                    StickerImage(attachmentID: item.attachmentID)
                         .frame(maxWidth: .infinity)
                         .aspectRatio(1, contentMode: .fit)
                         .contentShape(Rectangle())

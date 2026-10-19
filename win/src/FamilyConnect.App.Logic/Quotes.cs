@@ -123,10 +123,20 @@ public static class Quotes
     /// The server's excerpt, except that a quoted VIDEO MESSAGE — which has no words, so an empty excerpt — says "Video
     /// message" (S5.7) when this device holds it and can tell. One it does not hold stays as the server cut it.
     /// </summary>
-    private static string Shown(long messageId, string excerpt, ChatStore chats, IStringCatalog say) =>
-        excerpt.Length == 0 && chats.Message(messageId) is { RoundVideo: not null }
-            ? say.Get("Video message")
-            : excerpt;
+    private static string Shown(long messageId, string excerpt, ChatStore chats, IStringCatalog say)
+    {
+        if (excerpt.Length > 0)
+        {
+            return excerpt;
+        }
+        return chats.Message(messageId) switch
+        {
+            { RoundVideo: not null } => say.Get("Video message"),
+            // A caption-less ANIMATION says "GIF" where a video would say nothing (docs/protocol.md, "Animations").
+            { AnimationVideo: not null } => say.Get("GIF"),
+            _ => excerpt,
+        };
+    }
 
     private static bool Hides(long senderId, ChatStore chats) =>
         senderId != chats.Reader && chats.IsBlocked(senderId);

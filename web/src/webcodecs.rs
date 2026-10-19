@@ -131,6 +131,22 @@ extern "C" {
     #[wasm_bindgen(method, catch, js_name = copyTo)]
     pub fn copy_to(this: &EncodedVideoChunk, destination: &Uint8Array) -> Result<(), JsValue>;
 
+    /// The browser's own decoder for a picture — an animated GIF, WebP or
+    /// PNG among them — which hands back each frame COMPOSITED, as a viewer
+    /// shows it, as a `VideoFrame` (issue #96).
+    pub type ImageDecoder;
+    #[wasm_bindgen(constructor, catch)]
+    pub fn new(init: &Object) -> Result<ImageDecoder, JsValue>;
+    #[wasm_bindgen(method, catch)]
+    pub fn decode(this: &ImageDecoder, options: &Object) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(method, catch)]
+    pub fn close(this: &ImageDecoder) -> Result<(), JsValue>;
+    /// Settles once every byte has been read — when the frame count is final.
+    #[wasm_bindgen(method, getter, catch)]
+    pub fn completed(this: &ImageDecoder) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(method, getter, catch)]
+    pub fn tracks(this: &ImageDecoder) -> Result<JsValue, JsValue>;
+
     /// A canvas's 2D context, for the one call web-sys has no overload of:
     /// drawing a decoded `VideoFrame`.
     pub type FrameCanvas;
@@ -198,6 +214,36 @@ pub async fn supported(name: &str, config: &Object) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+/// Whether this browser decodes pictures of type `mime` with an
+/// `ImageDecoder` — `ImageDecoder.isTypeSupported(mime)`, as a plain yes or
+/// no in the same way as [`supported`]: the class missing, the call
+/// throwing or the promise rejecting are all "no".
+pub async fn decodes_image(mime: &str) -> bool {
+    let Ok(class) = Reflect::get(&js_sys::global(), &JsValue::from_str("ImageDecoder")) else {
+        return false;
+    };
+    if !class.is_function() {
+        return false;
+    }
+    let Some(check) = Reflect::get(&class, &JsValue::from_str("isTypeSupported"))
+        .ok()
+        .and_then(|check| check.dyn_into::<Function>().ok())
+    else {
+        return false;
+    };
+    let Ok(promise) = check.call1(&class, &JsValue::from_str(mime)) else {
+        return false;
+    };
+    let Ok(promise) = promise.dyn_into::<Promise>() else {
+        return false;
+    };
+    JsFuture::from(promise)
+        .await
+        .ok()
+        .and_then(|answer| answer.as_bool())
+        .unwrap_or(false)
 }
 
 /// AAC-LC — `mp4a.40.2` — at `sample_rate` with `channels`, at `bitrate`.

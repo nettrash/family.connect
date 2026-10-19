@@ -247,6 +247,26 @@ pub fn route(browser_mime: &str, name: &str, head: &[u8]) -> Route {
     Route::File
 }
 
+/// Whether a picked file MAY be an animation (docs/protocol.md, "What
+/// becomes one"): a picture by the type it was given, whose BYTES are a GIF,
+/// a WebP or a PNG — the three that can move. Whether it does move is the
+/// picture's own statement, read further in ([`crate::pack::is_animated`],
+/// with a GIF read whole); one that does not goes by [`route`] as before. A
+/// file that is not a picture at all, whatever its bytes, is never asked.
+///
+/// The type the decoder is told is the BYTES' type, never the name's: a
+/// `.gif` that is really a PNG is a PNG.
+pub fn animation_candidate(
+    browser_mime: &str,
+    name: &str,
+    head: &[u8],
+) -> Option<crate::animation_source::Format> {
+    if !declared_type(browser_mime, name).starts_with("image/") {
+        return None;
+    }
+    crate::animation_source::Format::of(head)
+}
+
 /// The server's check, byte for byte: the declared type must match what
 /// the bytes are (server `handlers_attachment.rs::matches_magic`).
 pub fn matches_magic(mime: &str, head: &[u8]) -> bool {
@@ -702,6 +722,50 @@ mod tests {
             Route::File
         );
         assert_eq!(route("", "notes", b"hello"), Route::File);
+    }
+
+    /// Which picked files are looked into for an animation (#96): a picture
+    /// whose bytes are a GIF, a WebP or a PNG — told by the BYTES, so the
+    /// decoder is told what they are and not what the name claims — and
+    /// nothing that is not a picture by its type.
+    #[test]
+    fn a_gif_webp_or_png_picture_may_be_an_animation() {
+        use crate::animation_source::Format;
+        const WEBP: &[u8] = b"RIFF\x10\0\0\0WEBPVP8X";
+        assert_eq!(
+            animation_candidate("image/gif", "a.gif", b"GIF89a\x01\0"),
+            Some(Format::Gif)
+        );
+        assert_eq!(
+            animation_candidate("image/webp", "a.webp", WEBP),
+            Some(Format::Webp)
+        );
+        assert_eq!(
+            animation_candidate("image/png", "a.png", PNG),
+            Some(Format::Png)
+        );
+        assert_eq!(
+            animation_candidate("", "dance.gif", b"GIF87a"),
+            Some(Format::Gif),
+            "no type: the name's"
+        );
+        assert_eq!(
+            animation_candidate("image/gif", "lies.gif", PNG),
+            Some(Format::Png),
+            "the bytes decide which"
+        );
+        assert_eq!(animation_candidate("image/jpeg", "a.jpg", JPEG), None);
+        assert_eq!(animation_candidate("image/bmp", "a.bmp", b"BM"), None);
+        assert_eq!(
+            animation_candidate("application/octet-stream", "blob.bin", b"GIF89a"),
+            None,
+            "not a picture by its type"
+        );
+        assert_eq!(animation_candidate("video/mp4", "clip.mp4", MP4), None);
+        // And what route() does with them, unchanged: a still GIF or WebP
+        // goes as the file it is, a still PNG as a photo.
+        assert_eq!(route("image/gif", "a.gif", b"GIF89a"), Route::File);
+        assert_eq!(route("image/png", "a.png", PNG), Route::Photo);
     }
 
     #[test]

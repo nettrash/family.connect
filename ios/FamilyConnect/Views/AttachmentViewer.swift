@@ -154,7 +154,11 @@ struct AttachmentViewer: View {
 
     @ViewBuilder
     private func page(_ item: AttachmentDTO) -> some View {
-        if item.isVideo {
+        if item.isAnimation {
+            // An animation (#96): larger, playing, muted and looping, with
+            // no player controls — and only on the page that is up.
+            AnimationViewerPlayer(attachment: item, isCurrent: position == item.id)
+        } else if item.isVideo {
             // Plays only while it is the page that is up: a lazy stack
             // materialises the neighbours early, and a clip that started
             // playing off-screen would be heard before it was seen.

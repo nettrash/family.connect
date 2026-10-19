@@ -23,7 +23,25 @@ public sealed record StagedMedia(
     /// recording itself (<see cref="VoiceWaveform"/>) and sent with the upload; null for everything else and for a note
     /// whose sound could not be read.
     /// </summary>
-    string? Waveform = null);
+    string? Waveform = null,
+    /// <summary>
+    /// An ANIMATION (docs/protocol.md, "Animations"): an animated picture this device made into the protocol's silent looping
+    /// MP4. Not on the upload — that is an ordinary <c>kind=video</c> — but on the message, which says <c>animation: true</c>
+    /// when this is the one thing it carries (<see cref="AnimationSend"/>). Held in memory only: the outbox row carries the
+    /// flag from the moment the message is queued.
+    /// </summary>
+    bool Animation = false);
+
+/// <summary>Whether a send of staged media is an ANIMATION — and so says <c>animation: true</c>.</summary>
+public static class AnimationSend
+{
+    /// <summary>
+    /// The server's own condition (docs/protocol.md, "What the server checks"): exactly ONE attachment, and it is an
+    /// animation this device made. An animation staged beside other things goes as the ordinary video it also is — it
+    /// still plays, in its viewer — because a message is one of the shapes, never two.
+    /// </summary>
+    public static bool Is(IReadOnlyList<StagedMedia> items) => items is [{ Kind: "video", Animation: true }];
+}
 
 /// <summary>
 /// Where a send's bytes wait while it is being sent. The seam exists because WHERE that is, is a

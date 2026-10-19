@@ -313,6 +313,24 @@ public sealed class StickerShelf<TPicture>(
     public long Started(long id, long now) =>
         kept.TryGetValue(id, out var entry) ? entry.Started ??= now : now;
 
+    /// <summary>
+    /// Forget one picture — a pack item that was removed: its bytes no longer say anything. Let go unless an image still
+    /// draws it, in which case the collector takes it once that image goes. Answers whether it was here.
+    /// </summary>
+    public bool Remove(long id)
+    {
+        if (!kept.Remove(id, out var entry))
+        {
+            return false;
+        }
+        Held -= entry.Cost;
+        if (entry.Picture is { } gone && !Showing(gone))
+        {
+            letGo?.Invoke(gone);
+        }
+        return true;
+    }
+
     /// <summary>The view is going: everything is let go, shown or not.</summary>
     public void Clear()
     {

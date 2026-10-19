@@ -236,9 +236,11 @@ public sealed class ConversationModel
         IReadOnlyList<string>? pollOptions = null,
         IReadOnlyList<MentionDto>? mentions = null,
         bool sticker = false,
-        bool round = false) =>
+        bool round = false,
+        bool animation = false) =>
         sending.Enqueue(
-            ChatId, NewLineKeys.ForWire(body), replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker, round);
+            ChatId, NewLineKeys.ForWire(body), replyToMessageId, attachmentIds, pendingFiles, pollOptions, mentions, sticker, round,
+            animation);
 
     /// <summary>
     /// Send a sticker: ONE staged file, no words, and the flag — a message like any other from

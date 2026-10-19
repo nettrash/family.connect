@@ -38,7 +38,7 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(8, Database.SchemaVersion);
+        Assert.Equal(9, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
              "pack_gone", "pack_items", "pack_recents", "played_rounds", "played_voice", "transcripts"],
@@ -313,6 +313,42 @@ public class DatabaseTests : IDisposable
         Assert.True(new PlayedVoiceStore(migrated).Played(34));
         Assert.True(Assert.Single(new OutboxStore(migrated).All()).Round);
         Assert.Equal([22, 21], chats.FlagRepairCandidates(25).Select(message => message.Id));
+    }
+
+    /// <summary>
+    /// Version 8 → 9 adds the outbox's animation bit (issue #96): every send already queued is what it always was — not an
+    /// animation, and a circle still a circle — and nothing held is touched.
+    /// </summary>
+    [Fact]
+    public void AVersionEightCacheGainsAnimationsAndLosesNothing()
+    {
+        var path = Path_("eight.db");
+        using (var eight = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            eight.Open();
+            foreach (var statement in Migrations.All.Take(8).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced, attachments_know_flags) VALUES (20, 42, 9, 'hi', 0, 1, 1)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at, round) VALUES ('r', 42, '', 1, 1)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 2)")
+                         .Append("PRAGMA user_version = 8"))
+            {
+                using var command = eight.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        Assert.Contains(migrated.Columns("outbox"), column => column.StartsWith("animation", StringComparison.Ordinal));
+        Assert.Equal("hi", Assert.Single(new ChatStore(migrated).Messages(42)).Body);
+        var queued = new OutboxStore(migrated).All();
+        Assert.Equal(2, queued.Count);
+        Assert.All(queued, row => Assert.False(row.Animation));
+        Assert.True(queued[0].Round);
+        Assert.False(queued[1].Round);
     }
 
     /// <summary>

@@ -199,7 +199,11 @@
     <string name="e_nothing_to_paste">Нема шта да се налепи.</string>
     <string name="e_open_chat_failed">Разговор не може да се отвори</string>
     <string name="e_password_too_short">Најмање 8 знакова</string>
-    <string name="e_paste_truncated">Порука може имати највише %1$d знакова. Остатак није налепљен.</string>
+    <plurals name="e_paste_truncated">
+        <item quantity="one">Порука може имати највише %1$d знак. Остатак није налепљен.</item>
+        <item quantity="few">Порука може имати највише %1$d знака. Остатак није налепљен.</item>
+        <item quantity="other">Порука може имати највише %1$d знакова. Остатак није налепљен.</item>
+    </plurals>
     <string name="e_prepare_failed">Та ставка није припремљена.</string>
     <string name="e_read_file_failed">Та датотека не може да се прочита.</string>
     <string name="e_rotate_failed">Промена кода није успела</string>
@@ -289,10 +293,18 @@
     <string name="s_flip_camera">Промени камеру</string>
     <string name="e_camera_permission">Family треба дозволу за коришћење камере.</string>
     <string name="s_video_calls_are_off_on_this_server">Видео позиви су искључени на овом серверу</string>
-    <string name="e_attachment_limit">Порука може да носи највише %1$d прилога.</string>
+    <plurals name="e_attachment_limit">
+        <item quantity="one">Порука може да носи највише %1$d прилог.</item>
+        <item quantity="few">Порука може да носи највише %1$d прилога.</item>
+        <item quantity="other">Порука може да носи највише %1$d прилога.</item>
+    </plurals>
     <string name="s_share_choose_chat">Подели у…</string>
     <string name="s_shared_with_family">Подељено са Family</string>
-    <string name="e_share_too_many">Задржано је само првих %1$d ставки.</string>
+    <plurals name="e_share_too_many">
+        <item quantity="one">Задржана је само прва %1$d ставка.</item>
+        <item quantity="few">Задржане су само прве %1$d ставке.</item>
+        <item quantity="other">Задржано је само првих %1$d ставки.</item>
+    </plurals>
     <string name="e_share_unavailable">Прво се придружи породици, па подели овде.</string>
     <string name="e_share_failed">Оно што је подељено није могло да се прочита.</string>
     <string name="s_no_connection">Нема везе</string>
@@ -396,9 +408,21 @@
     <string name="s_member_limit">Ограничење чланова</string>
     <string name="s_limit_members">Ограничи чланове</string>
     <string name="s_most_members">Највише чланова</string>
-    <string name="s_member_limit_none">Немате сопствено ограничење. Овај сервер дозвољава највише %1$d чланова у породици.</string>
-    <string name="s_member_limit_frozen">Тренутно има %1$d чланова. Нико нов не може да се придружи док неко не оде; нико се не уклања.</string>
-    <string name="s_member_limit_room">Заузето %1$d од %2$d места.</string>
+    <plurals name="s_member_limit_none">
+        <item quantity="one">Немате сопствено ограничење. Овај сервер дозвољава највише %1$d члана у породици.</item>
+        <item quantity="few">Немате сопствено ограничење. Овај сервер дозвољава највише %1$d члана у породици.</item>
+        <item quantity="other">Немате сопствено ограничење. Овај сервер дозвољава највише %1$d чланова у породици.</item>
+    </plurals>
+    <plurals name="s_member_limit_frozen">
+        <item quantity="one">Тренутно има %1$d члан. Нико нов не може да се придружи док неко не оде; нико се не уклања.</item>
+        <item quantity="few">Тренутно има %1$d члана. Нико нов не може да се придружи док неко не оде; нико се не уклања.</item>
+        <item quantity="other">Тренутно има %1$d чланова. Нико нов не може да се придружи док неко не оде; нико се не уклања.</item>
+    </plurals>
+    <plurals name="s_member_limit_room">
+        <item quantity="one">Заузето %1$d од %2$d места.</item>
+        <item quantity="few">Заузето %1$d од %2$d места.</item>
+        <item quantity="other">Заузето %1$d од %2$d места.</item>
+    </plurals>
     <string name="s_decrease">Смањи</string>
     <string name="s_increase">Повећај</string>
     <string name="e_member_limit_failed">Није успело мењање ограничења чланова. Покушајте поново.</string>
@@ -525,7 +549,11 @@
     </plurals>
     <string name="s_mentions_you">Помиње те</string>
     <string name="s_mention_member">Помени %1$s</string>
-    <string name="s_note_characters_left">Још %1$d карактера</string>
+    <plurals name="s_note_characters_left">
+        <item quantity="one">Још %1$d карактер</item>
+        <item quantity="few">Још %1$d карактера</item>
+        <item quantity="other">Још %1$d карактера</item>
+    </plurals>
     <string name="s_your_note">Твоја белешка</string>
     <string name="s_note_preview">Преглед</string>
     <string name="s_font">Фонт</string>
@@ -538,12 +566,23 @@
     <string name="s_rsvp_going">Долазим</string>
     <string name="s_rsvp_maybe">Можда</string>
     <string name="s_rsvp_no">Не могу</string>
-    <string name="s_rsvp_going_count">Долази: %1$d</string>
-    <string name="s_rsvp_maybe_count">Можда: %1$d</string>
-    <string name="s_rsvp_going_maybe_count">Долази: %1$d, можда: %2$d</string>
+    <plurals name="s_rsvp_going_count">
+        <item quantity="one">Долази: %1$d</item>
+        <item quantity="few">Долази: %1$d</item>
+        <item quantity="other">Долази: %1$d</item>
+    </plurals>
+    <plurals name="s_rsvp_maybe_count">
+        <item quantity="one">Можда: %1$d</item>
+        <item quantity="few">Можда: %1$d</item>
+        <item quantity="other">Можда: %1$d</item>
+    </plurals>
+    <plurals name="s_rsvp_going_maybe_count">
+        <item quantity="one">Долази: %1$d, можда: %2$d</item>
+        <item quantity="few">Долази: %1$d, можда: %2$d</item>
+        <item quantity="other">Долази: %1$d, можда: %2$d</item>
+    </plurals>
     <string name="s_add_event">Додај догађај</string>
     <string name="s_event_when">Када</string>
-    <string name="s_event_where">Где</string>
     <string name="s_event_place">Место</string>
     <string name="s_event_has_end">Има крај</string>
     <string name="s_event_starts">Почиње</string>
@@ -553,14 +592,16 @@
     <string name="s_event">Догађај</string>
     <string name="s_list">Списак</string>
     <string name="s_new_list">Нови списак</string>
-    <string name="s_add_list">Додај списак</string>
     <string name="s_add_task_list">Додај списак задатака</string>
     <string name="s_things_to_do">Ствари за урадити</string>
     <string name="s_thing_to_do">Ствар за урадити</string>
     <string name="s_add_a_thing">Додај ствар</string>
     <string name="s_nothing_on_this_list">На овом списку још нема ничега.</string>
-    <string name="s_your_list">Ваш списак</string>
-    <string name="s_tasks_done_of">%1$d од %2$d завршено</string>
+    <plurals name="s_tasks_done_of">
+        <item quantity="one">%1$d од %2$d завршено</item>
+        <item quantity="few">%1$d од %2$d завршено</item>
+        <item quantity="other">%1$d од %2$d завршено</item>
+    </plurals>
     <string name="s_done">Готово</string>
     <plurals name="s_more_things">
         <item quantity="one">+%1$d још</item>
@@ -618,7 +659,11 @@
     <string name="s_sticker_add_failed">Стикер није додат. Покушај поново.</string>
     <string name="s_sticker_unreadable">Та слика не може да се прочита.</string>
     <string name="s_sticker_animated_must_be_webp">Анимирани стикери морају бити WebP. Овај се не може додати.</string>
-    <string name="s_sticker_label_too_long">Опис може имати највише %1$d знакова.</string>
+    <plurals name="s_sticker_label_too_long">
+        <item quantity="one">Опис може имати највише %1$d знак.</item>
+        <item quantity="few">Опис може имати највише %1$d знака.</item>
+        <item quantity="other">Опис може имати највише %1$d знакова.</item>
+    </plurals>
     <string name="s_sticker_remove_not_allowed">Стикер може да уклони само онај ко га је додао или власник породице.</string>
     <string name="s_sticker_remove_failed">Стикер није уклоњен. Покушај поново.</string>
     <string name="s_sticker_not_available_offline">Тај стикер још није на овом телефону. Покушај поново кад будеш на мрежи.</string>

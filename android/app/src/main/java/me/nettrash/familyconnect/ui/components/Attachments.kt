@@ -93,6 +93,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.ui.chat.drawsHairline
 import kotlin.math.sin
+import androidx.core.net.toUri
 
 val LocalAttachments = staticCompositionLocalOf<AttachmentRepository?> { null }
 
@@ -214,6 +215,10 @@ fun AttachmentGroup(
 ) {
     val media = AttachmentAlbum.media(attachments)
     val rows = AttachmentAlbum.rows(attachments)
+    // An ANIMATION is one test on the whole message (#96): exactly one
+    // attachment, a video, carrying the flag. Anything else is the ordinary
+    // message it otherwise is.
+    val animation = attachments.singleOrNull()?.takeIf { it.isAnimation }
     Column(
         modifier = modifier.widthIn(max = attachmentMaxWidth()),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -238,8 +243,10 @@ fun AttachmentGroup(
                     onDoubleTap = onDoubleTap,
                     showMapPreviews = showMapPreviews,
                     onBalloon = onBalloon,
+                    asAnimation = animation != null,
                 )
-                if (media[0].isVideo) recordingFooter(media[0], null)
+                // No "Show text" under an animation: it has no sound to read.
+                if (media[0].isVideo && animation == null) recordingFooter(media[0], null)
             }
         }
         rows.forEach { item ->
@@ -489,6 +496,8 @@ fun AttachmentBlock(
     isMine: Boolean = false,
     /** The server has the message; before that a voice message is the sender's own on its way up. */
     acked: Boolean = true,
+    /** The message is an ANIMATION (#96) — the caller's test, made on the whole message. */
+    asAnimation: Boolean = false,
 ) {
     if (attachment.isLocation) {
         // A location has no bytes at all, so none of the download machinery
@@ -519,6 +528,15 @@ fun AttachmentBlock(
             onLongPress = onLongPress,
             onDoubleTap = onDoubleTap,
             modifier = modifier,
+        )
+    } else if (asAnimation) {
+        AnimationTile(
+            attachment = attachment,
+            onOpen = onOpen,
+            onLongPress = onLongPress,
+            onDoubleTap = onDoubleTap,
+            modifier = modifier,
+            onBalloon = onBalloon,
         )
     } else {
         MediaThumbnail(
@@ -697,7 +715,7 @@ private fun LocationMap(latitude: Double, longitude: Double) {
 private fun openInMaps(context: Context, latitude: Double, longitude: Double, label: String) {
     val point = "${String.format(Locale.ROOT, "%.6f", latitude)}," +
         String.format(Locale.ROOT, "%.6f", longitude)
-    val uri = Uri.parse("geo:$point?q=$point(${Uri.encode(label)})")
+    val uri = "geo:$point?q=$point(${Uri.encode(label)})".toUri()
     val intent = Intent(Intent.ACTION_VIEW, uri)
     // No map app installed is a real state on a stripped device; failing
     // silently beats an ActivityNotFoundException taking the app down.
@@ -945,6 +963,6 @@ private val BADGE_SCRIM = Color.Black.copy(alpha = 0.45f)
  * Shape limits for the reserved box. A panorama or a very tall crop would
  * otherwise be a sliver or a column taller than the screen.
  */
-private const val MIN_RATIO = 0.6f
-private const val MAX_RATIO = 1.9f
+internal const val MIN_RATIO = 0.6f
+internal const val MAX_RATIO = 1.9f
 

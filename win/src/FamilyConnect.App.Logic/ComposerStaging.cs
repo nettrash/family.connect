@@ -235,6 +235,7 @@ public sealed class ComposerStaging
     public static string Label(StagedMedia item, IStringCatalog say, CultureInfo? culture = null) => item.Kind switch
     {
         "photo" => say.Get("Photo"),
+        "video" when item.Animation => say.Get("GIF"),
         "video" => say.Get("Video"),
         "audio" when VoiceNotes.IsRecorded(item) =>
             say.Format("Voice message · %@", MediaText.TimeLabel((item.DurationMs ?? 0) / 1000.0)),

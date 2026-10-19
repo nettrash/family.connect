@@ -458,6 +458,18 @@ class MessageRepository @Inject constructor(
          * square JPEG is what every reader's circle draws until it plays.
          */
         round: Boolean = false,
+        /**
+         * Send the ONE item as an ANIMATION (docs/protocol.md, "Animations";
+         * #96): the silent looping MP4 an animated GIF, WebP or PNG was made
+         * into, with `animation: true` on the send. The round flag's pattern
+         * — the flag rides on the row's own attachment
+         * (`AttachmentDto.animation`), so the bubble draws it as a moving
+         * picture from the first frame and a retry after a process death
+         * still sends an animation. It keeps its poster, and MAY carry a
+         * caption. Its bytes are seeded under the placeholder id, as a
+         * sticker's are, so the sender's own tile plays without a download.
+         */
+        animation: Boolean = false,
     ): String? {
         val named = mentions?.takeIf { it.isNotEmpty() }
         if (prepared.isEmpty()) return null
@@ -470,6 +482,9 @@ class MessageRepository @Inject constructor(
         if (round && !RoundSend.accepts(prepared, caption, sticker, settings.state.first().roundVideoLimits?.maxBytes)) {
             return null
         }
+        // An animation likewise: ONE `video/mp4` the server would take, never
+        // beside the other two flags (`validation`, `invalid_attachment`).
+        if (animation && !AnimationSend.accepts(prepared, sticker, round)) return null
         val me = settings.state.first().myUserId ?: return null
         val clientMsgId = UUID.randomUUID().toString()
 
@@ -506,7 +521,9 @@ class MessageRepository @Inject constructor(
         // poll plays with its option ids. Without it the sender watches an
         // empty bubble for the length of the upload.
         val items = pendingAttachmentDao.itemsFor(clientMsgId)
-        val placeholders = items.map { it.placeholderDto().asSticker(sticker).asRound(round) }
+        val placeholders = items.map {
+            it.placeholderDto().asSticker(sticker).asRound(round).asAnimation(animation)
+        }
         val body = caption.trim()
         val now = clock.now()
         val first = placeholders.first()
@@ -518,7 +535,7 @@ class MessageRepository @Inject constructor(
         // row that reached the screen ahead of its bytes would stay a grey
         // square until the upload landed — which, with no network, is not
         // soon.
-        if (sticker) {
+        if (sticker || animation) {
             items.forEach { item ->
                 item.localPath?.let { path -> posterCache.seedOriginal(item.placeholderId, File(path)) }
             }
@@ -595,9 +612,10 @@ class MessageRepository @Inject constructor(
             // survived the process death this whole path exists for.
             val sticker = row.isPendingSticker
             val round = row.isPendingRound
+            val animation = row.isPendingAnimation
 
             for (item in items.filter { it.attachmentId == null }) {
-                if (!uploadItem(clientMsgId, item, sticker)) return
+                if (!uploadItem(clientMsgId, item, sticker, keepsOriginal = animation)) return
             }
 
             // Everything landed: write the real set onto the row and hand
@@ -605,7 +623,9 @@ class MessageRepository @Inject constructor(
             // this message from a text one.
             val done = pendingAttachmentDao.itemsFor(clientMsgId)
             if (done.any { it.attachmentId == null }) return
-            val attachments = done.mapNotNull { it.uploadedDto()?.asSticker(sticker)?.asRound(round) }
+            val attachments = done.mapNotNull {
+                it.uploadedDto()?.asSticker(sticker)?.asRound(round)?.asAnimation(animation)
+            }
             messageDao.applyOwnAttachments(
                 clientMsgId,
                 attachments.first().id,
@@ -621,6 +641,7 @@ class MessageRepository @Inject constructor(
                 sticker = sticker,
                 // The flag on the wire only while the keys are still here (sendsRound).
                 round = round && settings.state.first().roundVideoLimits != null,
+                animation = animation,
             )
         } finally {
             mediaUploads.remove(clientMsgId)
@@ -633,6 +654,12 @@ class MessageRepository @Inject constructor(
         item: PendingAttachmentEntity,
         /** The send is a sticker: no preview goes up, and the bytes are kept under the real id. */
         sticker: Boolean = false,
+        /**
+         * The bytes are kept under the real id too, preview or not: an
+         * animation's tile plays its own file (#96), and the sender's device
+         * should not download back what it sent a moment ago.
+         */
+        keepsOriginal: Boolean = false,
     ): Boolean {
         val uploaded = if (item.kind == AttachmentDto.KIND_LOCATION) {
             attachmentApi.uploadLocation(
@@ -679,7 +706,7 @@ class MessageRepository @Inject constructor(
         } else {
             item.previewPath?.let { path -> runCatching { File(path).readBytes() }.getOrNull() }
         }
-        if (sticker) {
+        if (sticker || keepsOriginal) {
             // Under the server's id too, so the bubble does not download
             // back the bytes this device sent a moment ago when its
             // placeholder id is swapped for the real one.
@@ -805,6 +832,7 @@ class MessageRepository @Inject constructor(
             pendingMentionsOf(row),
             row.isPendingSticker,
             row.sendsRound(),
+            row.isPendingAnimation,
         )
     }
 
@@ -857,6 +885,18 @@ class MessageRepository @Inject constructor(
     /** Stamp — or leave alone — the flag a video message's attachment carries. */
     private fun AttachmentDto.asRound(round: Boolean): AttachmentDto =
         if (round) copy(round = true) else this
+
+    /**
+     * Whether a not-yet-acked row is an animation send (#96) — off the row,
+     * for the sticker's and the circle's reason: a retry after a process
+     * death must still carry `animation: true`.
+     */
+    private val MessageEntity.isPendingAnimation: Boolean
+        get() = serverId == null && attachmentList.singleOrNull()?.isAnimation == true
+
+    /** Stamp — or leave alone — the flag an animation's attachment carries. */
+    private fun AttachmentDto.asAnimation(animation: Boolean): AttachmentDto =
+        if (animation) copy(animation = true) else this
 
     private fun pendingMentionsOf(row: MessageEntity): List<MentionDto>? {
         if (row.serverId != null) return null
@@ -925,6 +965,7 @@ class MessageRepository @Inject constructor(
                     pendingMentionsOf(row),
                     row.isPendingSticker,
                     row.sendsRound(),
+                    row.isPendingAnimation,
                 )
             }
         }
@@ -956,6 +997,11 @@ class MessageRepository @Inject constructor(
          * frame or the request and is omitted otherwise, as [sticker] is.
          */
         round: Boolean = false,
+        /**
+         * The send is an ANIMATION (#96). Becomes `animation: true` on the
+         * frame or the request and is omitted otherwise, as [sticker] is.
+         */
+        animation: Boolean = false,
     ) {
         if (attachmentIds?.any { it < 0 } == true) {
             scope.launch { uploadPending(clientMsgId) }
@@ -963,10 +1009,12 @@ class MessageRepository @Inject constructor(
         }
         val stickerFlag = if (sticker) true else null
         val roundFlag = if (round) true else null
+        val animationFlag = if (animation) true else null
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
                 ClientFrame.Send(
                     chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                    animationFlag,
                 ),
             )
         if (overSocket) {
@@ -977,12 +1025,14 @@ class MessageRepository @Inject constructor(
                 // REST with the same client_msg_id is safe either way.
                 restFallback(
                     clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                    animationFlag,
                 )
             }
         } else {
             scope.launch {
                 restFallback(
                     clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll, mentions, stickerFlag, roundFlag,
+                    animationFlag,
                 )
             }
         }
@@ -998,11 +1048,12 @@ class MessageRepository @Inject constructor(
         mentions: List<MentionDto>? = null,
         sticker: Boolean? = null,
         round: Boolean? = null,
+        animation: Boolean? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
         val result = chatApi.postMessage(
-            chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker, round,
+            chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions, sticker, round, animation,
         )
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message, chainLive = true)
@@ -1051,10 +1102,13 @@ class MessageRepository @Inject constructor(
                 // message as a circle, not as a square video.
                 val sticker = row.isPendingSticker
                 val round = row.isPendingRound
+                val animation = row.isPendingAnimation
                 messageDao.applyOwnAttachments(
                     clientMsgId,
                     items.first().placeholderId,
-                    AttachmentsCodec.encode(items.map { it.placeholderDto().asSticker(sticker).asRound(round) }),
+                    AttachmentsCodec.encode(
+                        items.map { it.placeholderDto().asSticker(sticker).asRound(round).asAnimation(animation) },
+                    ),
                 )
                 scope.launch { uploadPending(clientMsgId) }
                 return
@@ -1929,18 +1983,33 @@ class MessageRepository @Inject constructor(
      *   or the same dead network. The rest wait for the next resync. (A
      *   429 ends the pass on iOS too, as `throttled`.)
      */
-    suspend fun repairUnknownRoundFlags() {
-        val unknown = messageDao.roundFlagUnknown(REPAIR_BATCH)
+    suspend fun repairUnknownRoundFlags() =
+        repairUnknownFlags(messageDao.roundFlagUnknown(REPAIR_BATCH), messageDao::markRoundFlagKnown)
+
+    /**
+     * The same repair for the ANIMATION flag (#96; docs/protocol.md,
+     * "Animations"): a cached video another client sent as an animation
+     * before this build knew the key draws as an ordinary video for good
+     * otherwise. The rows are [MessageDao.animationFlagUnknown]'s — any
+     * video on the server, captioned or not — and the rules are
+     * [repairUnknownRoundFlags]' exactly; the server's copy written back
+     * settles both questions at once.
+     */
+    suspend fun repairUnknownAnimationFlags() =
+        repairUnknownFlags(messageDao.animationFlagUnknown(REPAIR_BATCH), messageDao::markAnimationFlagKnown)
+
+    /** Read [unknown] again, one message each — see [repairUnknownRoundFlags] for the rules. */
+    private suspend fun repairUnknownFlags(unknown: List<MessageEntity>, markKnown: suspend (String) -> Unit) {
         for (row in unknown) {
             val serverId = row.serverId
             if (serverId == null || row.attachmentList.size != 1) {
-                messageDao.markRoundFlagKnown(row.clientMsgId)
+                markKnown(row.clientMsgId)
                 continue
             }
             val page = when (val result = chatApi.messages(row.chatId, beforeId = serverId + 1, limit = 1)) {
                 is ApiResult.Ok -> result.value.messages
                 is ApiResult.NetworkError -> if (result.isUndecodable) {
-                    messageDao.markRoundFlagKnown(row.clientMsgId)
+                    markKnown(row.clientMsgId)
                     continue
                 } else {
                     return
@@ -1948,7 +2017,7 @@ class MessageRepository @Inject constructor(
                 is ApiResult.HttpError -> when (result.status) {
                     HTTP_UNAUTHORIZED, HTTP_TOO_MANY_REQUESTS -> return
                     in HTTP_CLIENT_ERRORS -> {
-                        messageDao.markRoundFlagKnown(row.clientMsgId)
+                        markKnown(row.clientMsgId)
                         continue
                     }
                     else -> continue
@@ -1957,7 +2026,7 @@ class MessageRepository @Inject constructor(
             val dto = page.firstOrNull { it.id == serverId }
             val set = dto?.resolvedAttachments.orEmpty()
             if (dto == null || set.isEmpty()) {
-                messageDao.markRoundFlagKnown(row.clientMsgId)
+                markKnown(row.clientMsgId)
                 continue
             }
             val first = set.first()
@@ -2022,6 +2091,12 @@ class MessageRepository @Inject constructor(
             val location: String = "Location",
             val file: String = "File",
             val photo: String = "Photo",
+            /**
+             * A message sent as an animation (docs/protocol.md, "Animations";
+             * #96): "GIF", the word every messenger uses, the same in every
+             * language.
+             */
+            val gif: String = "GIF",
             /** A message sent as a sticker (docs/protocol.md, "Sticker pack"). */
             val sticker: String = "Sticker",
             /** A message sent as a video message (#79, S5.7). */
@@ -2047,6 +2122,7 @@ class MessageRepository @Inject constructor(
                         location = r.getString(R.string.s_location),
                         file = r.getString(R.string.s_file),
                         photo = r.getString(R.string.s_photo),
+                        gif = r.getString(R.string.s_gif),
                         sticker = r.getString(R.string.s_sticker),
                         videoMessage = r.getString(R.string.s_video_message),
                         videos = { r.getQuantityString(R.plurals.p_videos, it, it) },
@@ -2109,6 +2185,10 @@ class MessageRepository @Inject constructor(
                 // BEFORE "Video" (#79, S5.7): a video message is a video in
                 // every other respect, so the order is the rule.
                 attachment.isRound -> labels.videoMessage
+                // Likewise BEFORE "Video" (#96): "a chat-list row … says GIF
+                // where a video's says Video". Only ever one attachment here,
+                // which is the protocol's test for drawing one.
+                attachment.isAnimation -> labels.gif
                 attachment.isVideo -> labels.video
                 attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.audio
                 attachment.isLocation ->

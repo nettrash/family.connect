@@ -99,6 +99,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -448,9 +449,10 @@ internal fun NoteEventBlock(note: NoteEntity, modifier: Modifier = Modifier) {
         if (going > 0 || maybe > 0) {
             Text(
                 text = when {
-                    maybe == 0 -> stringResource(R.string.s_rsvp_going_count, going)
-                    going == 0 -> stringResource(R.string.s_rsvp_maybe_count, maybe)
-                    else -> stringResource(R.string.s_rsvp_going_maybe_count, going, maybe)
+                    maybe == 0 -> pluralStringResource(R.plurals.s_rsvp_going_count, going, going)
+                    going == 0 -> pluralStringResource(R.plurals.s_rsvp_maybe_count, maybe, maybe)
+                    // The going count picks the form: no language here inflects "maybe".
+                    else -> pluralStringResource(R.plurals.s_rsvp_going_maybe_count, going, going, maybe)
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.Black.copy(alpha = 0.55f),
@@ -2036,7 +2038,7 @@ internal fun NoteDialog(
             },
         )
     }
-    var nextLineKey by remember(draft.noteId) { mutableStateOf(draft.items.size.toLong() + 1) }
+    var nextLineKey by remember(draft.noteId) { mutableLongStateOf(draft.items.size.toLong() + 1) }
     // Ticks on their way: the line and the state being sent, so a box
     // answers the tap at once and goes back to the note's own truth when
     // the answer — or the refusal — lands.
@@ -2381,12 +2383,13 @@ internal fun NoteDialog(
                         }
                     }
                     if (draft.items.isNotEmpty()) {
+                        val doneCount = draft.items.count { item -> ticking[item.id] ?: item.done }
                         Text(
-                            text = stringResource(
-                                R.string.s_tasks_done_of,
-                                draft.items.count { item ->
-                                    ticking[item.id] ?: item.done
-                                },
+                            // The done count picks the form: the participle agrees with it.
+                            text = pluralStringResource(
+                                R.plurals.s_tasks_done_of,
+                                doneCount,
+                                doneCount,
                                 draft.items.size,
                             ),
                             style = MaterialTheme.typography.bodySmall,
@@ -2437,10 +2440,9 @@ internal fun NoteDialog(
                         supportingText = if (NoteText.shouldShowCounter(text.text)) {
                             {
                                 Text(
-                                    stringResource(
-                                        R.string.s_note_characters_left,
-                                        NoteText.remaining(text.text),
-                                    ),
+                                    NoteText.remaining(text.text).let { left ->
+                                        pluralStringResource(R.plurals.s_note_characters_left, left, left)
+                                    },
                                 )
                             }
                         } else {

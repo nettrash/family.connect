@@ -44,6 +44,14 @@ pub enum Variant {
     /// preview"). Its own variant because it needs its own bound: a panel
     /// draws the whole pack at once, and `ORIGINAL_CAP` is sixteen.
     Sticker,
+    /// An ANIMATION's video, downloaded by its TILE to play by itself
+    /// (docs/protocol.md, "Animations") — the one exception to "a tile
+    /// never downloads a video", bounded at 8 MiB each by
+    /// `fc_text::animation_source::plays_in_tile`. The same bytes `Original`
+    /// would fetch; its own variant because it needs its own bound: a chat
+    /// scrolled through a run of them must not push out the handful of
+    /// originals just opened, nor they the tiles on screen.
+    Animation,
 }
 
 impl Variant {
@@ -54,6 +62,17 @@ impl Variant {
             Variant::Original => 1,
             Variant::Avatar(_) => 2,
             Variant::Sticker => 3,
+            Variant::Animation => 4,
+        }
+    }
+
+    /// The variant that is the very same bytes under another bound, if any:
+    /// an animation's tile and its viewer (or Save) share one download.
+    fn same_bytes(self) -> Option<Variant> {
+        match self {
+            Variant::Original => Some(Variant::Animation),
+            Variant::Animation => Some(Variant::Original),
+            _ => None,
         }
     }
 
@@ -61,7 +80,7 @@ impl Variant {
     fn staged(self, bytes: &crate::staged::StagedBytes) -> Option<Blob> {
         match self {
             Variant::Preview => bytes.preview.clone(),
-            Variant::Original | Variant::Sticker => bytes.file.clone(),
+            Variant::Original | Variant::Sticker | Variant::Animation => bytes.file.clone(),
             // A profile picture is never an outbox attachment.
             Variant::Avatar(_) => None,
         }
@@ -75,6 +94,11 @@ pub const PREVIEW_CAP: usize = 400;
 /// How many originals are held. An original may be a hundred-megabyte
 /// video, so only the handful just looked at.
 pub const ORIGINAL_CAP: usize = 16;
+
+/// How many animations' videos are held for their tiles: more than one
+/// screen of them, each at most 8 MiB and in practice a few hundred
+/// kilobytes.
+pub const ANIMATION_CAP: usize = 24;
 
 /// How many profile pictures are held: a family's faces, many times over.
 pub const AVATAR_CAP: usize = 200;
@@ -164,6 +188,7 @@ impl Cache {
             Variant::Original => ORIGINAL_CAP,
             Variant::Avatar(_) => AVATAR_CAP,
             Variant::Sticker => self.sticker_cap.max(STICKER_CAP),
+            Variant::Animation => ANIMATION_CAP,
         };
         let kind = key.1.kind();
         while self
@@ -247,6 +272,18 @@ impl MediaLoader {
         self.fresh();
         if let Some(url) = self.cache.borrow_mut().touch((id, variant)) {
             return Some(url);
+        }
+        // The same bytes, already here under the other bound: a URL of its
+        // own, and no second download.
+        let twin = variant.same_bytes().and_then(|twin| {
+            self.cache
+                .borrow()
+                .entries
+                .get(&(id, twin))
+                .map(|entry| entry.blob.clone())
+        });
+        if let Some(blob) = twin {
+            return self.cache.borrow_mut().insert((id, variant), blob);
         }
         // A profile picture's id is a USER's: nothing below — an upload's
         // alias, an outbox id — is about one.
@@ -616,6 +653,46 @@ mod tests {
         );
     }
 
+    /// AN ANIMATION'S VIDEO, downloaded by its tile, is bounded on its own
+    /// — a run of them scrolled past pushes out neither the originals just
+    /// opened nor the stickers — and the viewer (or Save) of the same
+    /// animation draws from the bytes the tile already has, under a URL of
+    /// its own, with no second download.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn an_animations_video_has_its_own_bound_and_one_download() {
+        let loader = loader();
+        loader
+            .cache
+            .borrow_mut()
+            .insert((7, Variant::Original), blob("opened"));
+        for id in 100..(100 + ANIMATION_CAP as i64 + 5) {
+            loader
+                .cache
+                .borrow_mut()
+                .insert((id, Variant::Animation), blob("moving"));
+        }
+        {
+            let cache = loader.cache.borrow();
+            let count = |variant| cache.entries.keys().filter(|key| key.1 == variant).count();
+            assert_eq!(count(Variant::Animation), ANIMATION_CAP);
+            assert_eq!(count(Variant::Original), 1, "the original stayed");
+        }
+        let tile = loader.get(120, Variant::Animation).expect("held");
+        let viewer = loader
+            .get(120, Variant::Original)
+            .expect("the same bytes, already here");
+        assert_ne!(tile, viewer, "a URL of its own");
+        assert_eq!(
+            loader
+                .get(7, Variant::Animation)
+                .as_deref()
+                .map(|url| url.starts_with("blob:")),
+            Some(true),
+            "and the other way round"
+        );
+        assert_eq!(loader.get(999, Variant::Animation), None);
+    }
+
     /// THE BOUND FOLLOWS THE PACK: an operator may allow more stickers
     /// than the default, and a panel of that whole pack must not evict its
     /// own cells — each eviction revokes a URL a cell may still be drawing
@@ -681,13 +758,23 @@ mod tests {
     /// sent they go with its row, and an item not yet drawn is fetched
     /// under the id the server gave it.
     #[wasm_bindgen_test::wasm_bindgen_test]
-    fn a_sent_items_provisional_id_is_fetched_by_its_real_one() {
+    async fn a_sent_items_provisional_id_is_fetched_by_its_real_one() {
         let loader = loader();
         let session = loader.live.session();
         loader.live.update(session, |state| {
             state.store.aliases.insert(501, -1);
         });
-        loader.load(-1, Variant::Original, Callback::noop());
+        let (heard, done) = futures::channel::oneshot::channel::<()>();
+        let heard = RefCell::new(Some(heard));
+        loader.load(
+            -1,
+            Variant::Original,
+            Callback::from(move |_: Option<String>| {
+                if let Some(heard) = heard.borrow_mut().take() {
+                    let _ = heard.send(());
+                }
+            }),
+        );
         assert!(
             loader
                 .cache
@@ -706,6 +793,11 @@ mod tests {
                 .any(|key| key.0 == -2 || key.0 == 0),
             "nothing on the wire for an id with no server id"
         );
+        // The fetch is let finish HERE, wherever it ends: left in flight it
+        // lands in whatever fake server the next test has put up, and fails
+        // a test that never asked for it.
+        let _ =
+            futures::future::select(done, gloo_timers::future::TimeoutFuture::new(10_000)).await;
     }
 
     /// A picture the server said it does not have is settled for the tab:

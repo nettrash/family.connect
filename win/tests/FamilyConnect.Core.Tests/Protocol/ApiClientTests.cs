@@ -735,6 +735,30 @@ public class ApiClientTests
         Assert.DoesNotContain("sticker", handler.Bodies[0], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ARestSendSaysAnimationOnlyWhenItIsOne()
+    {
+        const string Answer =
+            """
+            {"message": {"id": 1342, "chat_id": 42, "sender_id": 7, "client_msg_id": "k", "body": "",
+             "created_at": "2026-10-19T10:00:00Z",
+             "attachments": [{"id": 93, "kind": "video", "mime": "video/mp4", "size": 182330, "width": 480,
+                              "height": 270, "duration_ms": 2100, "has_preview": true, "animation": true}]}}
+            """;
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Answer)
+            .Then(HttpStatusCode.Created, Answer));
+
+        var sent = await client.SendMessage(42, "k", "", attachmentIds: [93], animation: true);
+        await client.SendMessage(42, "k2", "", attachmentIds: [93]);
+
+        Assert.True(sent.Value!.Message.Media[0].Animation);
+        Assert.Equal(93, sent.Value.Message.AnimationVideo!.Id);
+        Assert.Equal("""{"client_msg_id":"k","body":"","attachment_ids":[93],"animation":true}""", handler.Bodies[0]);
+        // Absent otherwise — never false — so a server that predates animations reads what it always read.
+        Assert.DoesNotContain("animation", handler.Bodies[1], StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// The family's own document: the pack's mark, omitted while the pack is untouched, and its
     /// two ceilings — whose ABSENCE is how a client knows the server predates packs.

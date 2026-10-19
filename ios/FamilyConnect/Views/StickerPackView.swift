@@ -190,7 +190,9 @@ struct StickerPackView: View {
             addedBy: item.addedBy,
             currentUserID: coordinator.currentUserID,
             isOwner: session.isOwner)
-        return StickerImage(attachmentID: item.attachmentID, animates: false)
+        // Moving, as everywhere a sticker is drawn (#96); StickerImage holds
+        // the cells off screen, and all of them under Reduce Motion, still.
+        return StickerImage(attachmentID: item.attachmentID)
             .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
             .accessibilityElement(children: .ignore)

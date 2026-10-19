@@ -170,9 +170,9 @@ internal fun RecordSendButton(
      * TalkBack's action on the microphone — only when S1.2's **round
      * available** holds; null offers neither. Dimmed rows say why.
      */
-    onRecordVideo: (() -> Unit)? = null,
     focusRequester: FocusRequester,
     modifier: Modifier = Modifier,
+    onRecordVideo: (() -> Unit)? = null,
     /**
      * Asked the moment a press goes DOWN on the slot — a finger, a stylus or
      * a mouse; Enter or Space — with the slot it went down on: true when it

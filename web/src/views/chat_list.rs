@@ -62,6 +62,10 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
         // A video message says so — checked before "Video", from the flag
         // `last_message` carries for exactly this (the plan for #79, S5.7).
         Some("video") if message.round_video().is_some() => t("Video message").to_string(),
+        // An animation says "GIF" where a video's row says "Video"
+        // (docs/protocol.md, "Animations"), from the flag `last_message`
+        // carries; with a caption, the caption, as any message's.
+        Some("video") if message.animation().is_some() => t("GIF").to_string(),
         Some("video") => t("Video").to_string(),
         Some("audio") => t("Voice message").to_string(),
         Some("location") => t("Location").to_string(),
@@ -256,6 +260,32 @@ mod tests {
             ..Default::default()
         }]);
         assert_eq!(preview(&voice, 7, &HashSet::new()), "Voice message");
+    }
+
+    /// An animation's row says "GIF" where a video's says "Video"
+    /// (docs/protocol.md, "Animations"); with a caption, the caption; two
+    /// flagged videos are not one.
+    #[wasm_bindgen_test]
+    fn an_animations_row_says_gif() {
+        let video = |animation: bool| Attachment {
+            id: 93,
+            kind: "video".into(),
+            mime: Some("video/mp4".into()),
+            animation,
+            ..Default::default()
+        };
+        let mut sent = message(9, "");
+        sent.attachments = Some(vec![video(true)]);
+        assert_eq!(preview(&sent, 7, &HashSet::new()), "GIF");
+        let mut captioned = message(9, "look at him go");
+        captioned.attachments = Some(vec![video(true)]);
+        assert_eq!(preview(&captioned, 7, &HashSet::new()), "look at him go");
+        let mut plain = message(9, "");
+        plain.attachments = Some(vec![video(false)]);
+        assert_eq!(preview(&plain, 7, &HashSet::new()), "Video");
+        let mut pair = message(9, "");
+        pair.attachments = Some(vec![video(true), video(true)]);
+        assert_eq!(preview(&pair, 7, &HashSet::new()), "Video");
     }
 
     /// A call record's body is an English placeholder the list never shows.

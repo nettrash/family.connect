@@ -243,6 +243,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 quote_revealed={props.revealed_quotes.contains(&(message.id, 0))}
                                 parent_revealed={props.revealed_quotes.contains(&(message.id, 1))}
                                 quote_round={crate::views::conversation::quotes_round(message, &props.messages)}
+                                quote_animation={crate::views::conversation::quotes_animation(message, &props.messages)}
                                 {hidden}
                                 shows_sender={props.is_family_chat && message.sender_id != props.my_user_id && !hidden}
                                 sender_avatar_version={props.members.iter().find(|member| member.id == message.sender_id).map_or(0, |member| member.avatar_version)}

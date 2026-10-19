@@ -199,7 +199,11 @@ struct ThreadView: View {
         // A reply quoting a video message says "Video message" (#79, S5.7).
         let plain = rows.map { MessageSnapshot($0) }
         let roundIDs = MessagePresentation.roundMessageIDs(plain)
-        return plain.map { MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs) }
+        // ...and one quoting an animation with no caption says "GIF" (#96).
+        let animationIDs = MessagePresentation.animationMessageIDs(plain)
+        return plain.map {
+            MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs, animationIDs: animationIDs)
+        }
     }
 
     private var sections: [DaySection] {

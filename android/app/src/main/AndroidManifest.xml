@@ -18,6 +18,13 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17+ (the app targets API 37): reaching an address on the
+         phone's own Wi-Fi or Ethernet network — a family server on the home
+         network, or the other end of a call on the same Wi-Fi — is a
+         runtime permission of its own, asked only when one of those is in
+         play (data/net/LocalNetworkAccess.kt). Unknown to, and ignored by,
+         older Android, where INTERNET covers it. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <!-- ConnectivityObserver — short-circuits the reconnect backoff the
          moment a network comes back instead of waiting out the delay. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -139,6 +146,13 @@
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${mapsApiKey}" />
+        <!-- Maps SDK 20 dropped this from its own manifest, and a phone whose
+             Play services (older than 25.50.34) still draws with the legacy
+             renderer then crashes with NoClassDefFoundError drawing the map.
+             Google's fix, verbatim: the app asks for it, optionally. -->
+        <uses-library
+            android:name="org.apache.http.legacy"
+            android:required="false" />
 
         <!-- WorkManager's own initializer is removed: our upload worker is
              built by Hilt, so the Application supplies the configuration

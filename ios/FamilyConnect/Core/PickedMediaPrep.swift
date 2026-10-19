@@ -57,8 +57,15 @@ nonisolated enum PickedMediaPrep {
     /// the photo path keeps frame zero, and a GIF that arrives as a still is
     /// not what anybody picked (PR #87 review). Except where `keepsAnimated`
     /// is false: the assistant's chat, whose model is shown a photo.
+    ///
+    /// And where `animates` (a family or direct chat, #96), an animated GIF,
+    /// WebP or PNG becomes an ANIMATION — the silent looping MP4 of
+    /// `MediaPrep.prepareAnimation` — before either of those is asked. An
+    /// animated PNG used to be flattened by the photo path without a word.
+    /// When the video cannot be made (rule C) the item goes the way it went
+    /// before this: a GIF or a WebP as a file, a PNG as a photo.
     static func prepare(
-        _ item: PhotosPickerItem, limit: Int, keepsAnimated: Bool = true
+        _ item: PhotosPickerItem, limit: Int, keepsAnimated: Bool = true, animates: Bool = false
     ) async throws -> MediaPrep.Prepared {
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
         if isVideo {
@@ -78,6 +85,10 @@ nonisolated enum PickedMediaPrep {
         }
         guard let data = try await item.loadTransferable(type: Data.self) else {
             throw Failure.unreadableItem
+        }
+        if keepsAnimated, animates,
+           let animation = try await MediaPrep.prepareAnimation(from: data, limit: limit) {
+            return animation
         }
         if let animated = keptAsFile(item.supportedContentTypes, keepsAnimated: keepsAnimated) {
             return try await MediaPrep.prepare(data: data, type: animated, limit: limit)

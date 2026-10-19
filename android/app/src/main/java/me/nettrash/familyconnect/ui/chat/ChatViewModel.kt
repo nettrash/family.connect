@@ -116,6 +116,7 @@ import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.Waveform
 import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.LocationProvider
+import me.nettrash.familyconnect.data.repo.AnimationSend
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.MessageRepository
@@ -1462,7 +1463,15 @@ class ChatViewModel @Inject constructor(
         appScope.launch {
             items.forEachIndexed { index, (uri, isVideo) ->
                 val prepared = try {
-                    if (isVideo) mediaPrep.prepareVideo(uri) else mediaPrep.preparePhoto(uri)
+                    when {
+                        isVideo -> mediaPrep.prepareVideo(uri)
+                        // The assistant is shown a photograph (#96): its
+                        // chat keeps the picker's photo path, frame zero.
+                        inAssistantChat -> mediaPrep.preparePhoto(uri)
+                        // An animated GIF, WebP or PNG becomes an animation,
+                        // a still GIF or WebP a file — never a flattened JPEG.
+                        else -> mediaPrep.preparePickedPicture(uri)
+                    }
                 } catch (_: MediaPrep.TooLargeAfterCompression) {
                     // The one failure the user can act on, so it says what
                     // would help rather than just refusing. What was
@@ -1575,8 +1584,17 @@ class ChatViewModel @Inject constructor(
         // App scope, not viewModelScope: the staging and the first upload
         // must not be cancelled by navigating away.
         appScope.launch {
-            val queued =
-                messageRepository.sendMedia(prepared, caption, chatId, quote, resolvedMentions(caption))
+            // An animation goes AS one only alone (#96: the flag is refused on
+            // more than one attachment). Beside other items it travels in the
+            // member's set as the ordinary video it is — the set is never split.
+            val queued = messageRepository.sendMedia(
+                prepared,
+                caption,
+                chatId,
+                quote,
+                resolvedMentions(caption),
+                animation = AnimationSend.sendsAsAnimation(prepared),
+            )
             if (queued == null) {
                 // Only when not one item could be staged — a full disk, or
                 // a file that vanished between picking and sending.
@@ -1592,6 +1610,9 @@ class ChatViewModel @Inject constructor(
             }
         }
     }
+
+    /** Whether this is the assistant's chat, whose model is shown photographs, not animations (#96). */
+    private val inAssistantChat: Boolean get() = chat.value?.kind == "ai"
 
     /**
      * Hold prepared media in the composer until the user presses Send.
@@ -1629,8 +1650,9 @@ class ChatViewModel @Inject constructor(
             if (current.size >= AttachmentDto.MAX_PER_MESSAGE) {
                 if (!keepRefused) prepared.file.delete()
                 _mediaState.value = MediaSendState.Failed(
-                    appContext.getString(
-                        R.string.e_attachment_limit,
+                    appContext.resources.getQuantityString(
+                        R.plurals.e_attachment_limit,
+                        AttachmentDto.MAX_PER_MESSAGE,
                         AttachmentDto.MAX_PER_MESSAGE,
                     ),
                 )
@@ -2183,7 +2205,6 @@ class ChatViewModel @Inject constructor(
         // scope is already cancelled; the writes go out on the app's.
         covers.uncover(coveredChat)
         leave(duringCall = false)
-        super.onCleared()
     }
 
     /** Send a "Voice message not sent" — with ITS reply and caption, and nothing else (S2.8). */
@@ -2997,6 +3018,11 @@ class ChatViewModel @Inject constructor(
             uris.forEachIndexed { index, uri ->
                 val declared = providerType(uri).orEmpty()
                 val prepared = try {
+                    // An animated GIF, WebP or PNG becomes an animation (#96),
+                    // outside the assistant's chat; null for everything else —
+                    // and for one that cannot be made — which goes exactly as
+                    // it did.
+                    (if (inAssistantChat) null else mediaPrep.prepareIfAnimated(uri)) ?:
                     // Audio the server's magic check knows gets a player rather
                     // than a document row, and so does audio the audio rules
                     // re-encode into a type it knows (FLAC); anything else it
@@ -3149,7 +3175,19 @@ class ChatViewModel @Inject constructor(
             try {
                 targets.forEachIndexed { index, target ->
                     val prepared = try {
-                        when (target.kind) {
+                        // An animated picture becomes an animation (#96)
+                        // outside the assistant's chat. Null for everything
+                        // else — and for one that cannot be made (rule C) —
+                        // which goes exactly as it did: a GIF a file, a PNG
+                        // a photo.
+                        val animated = if (!inAssistantChat &&
+                            (target.kind == AttachmentDto.KIND_PHOTO || target.kind == AttachmentDto.KIND_FILE)
+                        ) {
+                            mediaPrep.prepareIfAnimated(target.uri)
+                        } else {
+                            null
+                        }
+                        animated ?: when (target.kind) {
                             // The SAME preparation the picker uses — the
                             // downscaled photo, the poster frame, the
                             // duration. A second path would be a second set
@@ -3341,7 +3379,11 @@ class ChatViewModel @Inject constructor(
      */
     fun reportPasteTruncated() {
         _mediaState.value = MediaSendState.Failed(
-            appContext.getString(R.string.e_paste_truncated, MessageBody.MAX_CHARS),
+            appContext.resources.getQuantityString(
+                R.plurals.e_paste_truncated,
+                MessageBody.MAX_CHARS,
+                MessageBody.MAX_CHARS,
+            ),
         )
     }
 

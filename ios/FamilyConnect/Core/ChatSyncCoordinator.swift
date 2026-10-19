@@ -2786,6 +2786,13 @@ final class ChatSyncCoordinator {
         round: Bool = false
     ) -> String? {
         guard !prepared.isEmpty else { return nil }
+        // An ANIMATION is one attachment carrying the flag — the server's
+        // own test, and a refusal (`invalid_attachment`) for anything else
+        // (docs/protocol.md, "Animations", #96). So the flag is the SET's:
+        // an animation staged beside other items goes as the ordinary video
+        // it also is, and plays like one.
+        let animation = !sticker && !round && prepared.count == 1 && prepared[0].animation
+            && prepared[0].kind == AttachmentDTO.Kind.video
         guard let localID = enqueue(
             body: caption, in: chatID, replyTo: replyTo, allowEmpty: true, mentions: mentions)
         else { return nil }
@@ -2820,6 +2827,7 @@ final class ChatSyncCoordinator {
                 name: item.name,
                 sticker: sticker,
                 isRound: round,
+                animation: animation,
                 // Audio only: the server refuses a waveform on anything
                 // else (docs/protocol.md, "A voice note's waveform").
                 waveform: item.kind == AttachmentDTO.Kind.audio ? item.waveform : nil))
@@ -2872,6 +2880,12 @@ final class ChatSyncCoordinator {
                   let jpeg = try? Data(contentsOf: url)
             else { continue }
             attachmentStore?.seed(jpeg, id: item.provisionalAttachmentID, preview: true)
+            // An animation's tile plays its own video (#96): the staged
+            // MP4 is it.
+            if item.animation, let fileName = item.fileName,
+               let full = PendingMediaStaging.url(for: fileName) {
+                attachmentStore?.seedAnimation(copying: full, id: item.provisionalAttachmentID)
+            }
             if item.kind == AttachmentDTO.Kind.photo,
                let fileName = item.fileName,
                let full = PendingMediaStaging.url(for: fileName),
@@ -3042,6 +3056,10 @@ final class ChatSyncCoordinator {
            let url = PendingMediaStaging.url(for: fileName),
            let full = try? Data(contentsOf: url) {
             attachmentStore?.seed(full, id: attachment.id, preview: false)
+        }
+        if item.animation, let fileName = item.fileName,
+           let url = PendingMediaStaging.url(for: fileName) {
+            attachmentStore?.seedAnimation(copying: url, id: attachment.id)
         }
 
         // The id and the count move in ONE save. Writing the count without
@@ -3375,6 +3393,9 @@ final class ChatSyncCoordinator {
         // past the plural arm and the caption: S5.1's test is one
         // attachment and no body, and both are already settled.
         if attachment.isVideo, attachment.isRound { return String(localized: "Video message") }
+        // An animation says "GIF" where a video says "Video" — the word
+        // every messenger uses, and the server's in its push (#96).
+        if attachment.isAnimation { return String(localized: "GIF") }
         if attachment.isVideo { return String(localized: "Video") }
         if attachment.isAudio {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
@@ -3556,6 +3577,16 @@ final class ChatSyncCoordinator {
             else { return nil }
             return only.id
         }()
+        // An animation, read off the row for the same reason (#96): a retry
+        // must still say `animation: true`, or the clip arrives as an
+        // ordinary video. One video carrying the flag — the server's test.
+        let animationID: Int64? = {
+            let list = row.attachmentList
+            guard stickerID == nil, roundID == nil, list.count == 1, let only = list.first,
+                  only.isAnimation
+            else { return nil }
+            return only.id
+        }()
         row.state = .pending
         saveContext()
 
@@ -3574,6 +3605,14 @@ final class ChatSyncCoordinator {
                     clientMsgID: clientMsgID,
                     replyToMessageID: replyToMessageID,
                     attachmentID: roundID))
+            } else if let animationID {
+                try await socket.send(.sendAnimation(
+                    chatID: chatID,
+                    clientMsgID: clientMsgID,
+                    body: body,
+                    replyToMessageID: replyToMessageID,
+                    attachmentID: animationID,
+                    mentions: mentions))
             } else {
                 try await socket.send(.send(
                     chatID: chatID,
@@ -3604,7 +3643,8 @@ final class ChatSyncCoordinator {
                 pollOptions: pollOptions,
                 mentions: mentions,
                 sticker: stickerID != nil,
-                round: roundID != nil)
+                round: roundID != nil,
+                animation: animationID != nil)
             _ = upsert(dto, bumpUnread: false, live: true)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()

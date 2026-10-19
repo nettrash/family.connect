@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod attach;
 pub mod attachments;
 pub mod avatar;

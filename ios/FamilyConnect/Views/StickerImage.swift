@@ -22,6 +22,13 @@
 //  call fails and the still frame simply stays, which is the protocol's
 //  "frame zero where it cannot": the same sticker, holding still.
 //
+//  WHEN it moves (*amended 2026-10-19, #96*): everywhere a sticker is drawn
+//  — the chat, the panel, the family's pack, the enlarged view — but only
+//  while it is ON SCREEN (by geometry: the thread is a non-lazy window of
+//  rows, so appearing says nothing about being seen), and never while the
+//  system asks for less motion, when it is frame zero. `StickerMotion` is
+//  that rule.
+//
 
 import ImageIO
 import SwiftUI
@@ -67,17 +74,31 @@ final class StickerPlayer {
     }
 }
 
+/// Whether a sticker moves right now (docs/protocol.md, "Sticker pack" ›
+/// "How it is drawn", amended for #96). Pure, so it is tested without a view.
+nonisolated enum StickerMotion {
+    static func animates(requested: Bool, reduceMotion: Bool, onScreen: Bool) -> Bool {
+        requested && !reduceMotion && onScreen
+    }
+}
+
 struct StickerImage: View {
     /// The attachment whose bytes are the sticker — a message's own copy,
     /// a pack item's picture, or a pending send's provisional id.
     let attachmentID: Int64
-    /// False where a moving picture would be noise rather than the point:
-    /// the panel's grid and the pack on the Family screen show two hundred
-    /// of these at once. Frame zero is a correct drawing of any sticker.
+    /// False only where a caller wants frame zero for its own reasons.
+    /// Every place a sticker is drawn animates it since #96 — the panel's
+    /// grid and the Family screen's pack included, which used to hold
+    /// still; what keeps two hundred of them from all running is that only
+    /// the ones on screen do.
     var animates = true
 
     @Environment(AttachmentStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var player = StickerPlayer()
+    /// On screen, by geometry. False until the first measurement, so a
+    /// sticker starts still and moves the moment it is known to be seen.
+    @State private var onScreen = false
 
     var body: some View {
         // Reading `generation` is what redraws this when the fetch lands —
@@ -88,8 +109,10 @@ struct StickerImage: View {
         // off the main actor, which is what `stickerImage` is for: this
         // body runs once per cell of a panel of two hundred.
         let still = store.stickerImage(id: attachmentID)
+        let moving = StickerMotion.animates(
+            requested: animates, reduceMotion: reduceMotion, onScreen: onScreen)
         ZStack {
-            if let frame = player.frame {
+            if moving, let frame = player.frame {
                 Image(decorative: frame, scale: 1)
                     .resizable()
                     .interpolation(.high)
@@ -112,13 +135,30 @@ struct StickerImage: View {
         // The bytes are read — and asked whether they move at all — off the
         // main actor; only a sticker that does comes back, so a still one
         // costs this view nothing but its header.
-        .task(id: still != nil) {
-            guard animates, still != nil,
-                  let data = await StickerPack.animatedBytes(
+        //
+        // And on whether it should move at all: off screen or under Reduce
+        // Motion the run is stopped and frame zero — the store's still — is
+        // what is drawn.
+        .task(id: [still != nil, moving]) {
+            guard moving, still != nil else {
+                player.stop()
+                return
+            }
+            guard let data = await StickerPack.animatedBytes(
                       fileAt: store.originalURL(id: attachmentID)),
                   !Task.isCancelled
             else { return }
             player.play(data)
+        }
+        .onGeometryChange(for: Bool.self) { geometry in
+            // Outside a scroll view (the enlarged view) it is on screen when
+            // it is drawn at all.
+            guard let viewport = geometry.bounds(of: .scrollView) else { return true }
+            let frame = geometry.frame(in: .scrollView)
+            return frame.maxY >= 0 && frame.minY <= viewport.height
+                && frame.maxX >= 0 && frame.minX <= viewport.width
+        } action: { visible in
+            onScreen = visible
         }
         .onDisappear { player.stop() }
     }

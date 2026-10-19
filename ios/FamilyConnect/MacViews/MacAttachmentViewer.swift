@@ -124,7 +124,13 @@ struct MacAttachmentViewer: View {
     @ViewBuilder
     private var content: some View {
         let _ = store.generation
-        if attachment.isVideo {
+        if attachment.isAnimation {
+            // An animation (#96): larger, playing, muted and looping, with
+            // no player controls. Keyed by its attachment, as the video
+            // player is, so paging away stops it.
+            AnimationViewerPlayer(attachment: attachment)
+                .id(attachment.id)
+        } else if attachment.isVideo {
             MacVideoPlayer(attachment: attachment)
         } else if let image = store.image(id: attachment.id, preview: false)
             ?? store.image(id: attachment.id, preview: true) {

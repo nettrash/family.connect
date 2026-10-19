@@ -14,7 +14,10 @@
 //
 //  Videos are NOT cached here: they stream straight from the server through
 //  AVPlayer, which does its own buffering and would gain nothing from a
-//  second copy on the phone.
+//  second copy on the phone. The ONE exception is an ANIMATION (#96,
+//  docs/protocol.md "How it is drawn"): a tile plays it by itself, on a
+//  loop, so it downloads the video once — at most 8 MiB, the protocol's
+//  bound — and keeps it like a photo (see "Animations").
 //
 //  A VIDEO'S POSTER IS THE ONE THING HERE THE SERVER MIGHT NOT HAVE.
 //  Everything else in this cache is a copy of bytes the server already
@@ -65,6 +68,9 @@ final class AttachmentStore {
     /// Small hot cache in front of the disk, so a visible bubble does not
     /// re-read and re-decode on every scroll frame.
     @ObservationIgnored private var hot: [String: Image] = [:]
+    /// Animations being downloaded, and those the server has none of.
+    @ObservationIgnored private var animationsInFlight: Set<Int64> = []
+    @ObservationIgnored private var animationsMissing: Set<Int64> = []
     @ObservationIgnored private var hotOrder: [String] = []
 
     private static let hotLimit = 40
@@ -244,8 +250,69 @@ final class AttachmentStore {
     /// a genuinely absent preview costs one request that 404s again, and
     /// keeping two sets apart to save it is not worth the divergence.
     func retryAfterReconnect() {
-        guard !missing.isEmpty else { return }
+        guard !missing.isEmpty || !animationsMissing.isEmpty else { return }
         missing.removeAll()
+        animationsMissing.removeAll()
+        generation &+= 1
+    }
+
+    // MARK: - Animations: the video, downloaded
+
+    /// Where an animation's video is kept, whether or not it is there yet.
+    /// `.mp4`, unlike everything else here: AVFoundation reads the
+    /// extension.
+    func animationFileURL(id: Int64) -> URL {
+        directory.appendingPathComponent("\(id)-animation").appendingPathExtension("mp4")
+    }
+
+    /// An animation's video on this device, or nil — and then the download
+    /// is started, and `generation` moves when it lands. Safe to call from
+    /// a view body, like `image`.
+    ///
+    /// The tile's caller decides WHETHER to ask: not above the protocol's
+    /// 8 MiB, and not while the system asks for less motion. A provisional
+    /// (negative) id is never asked for — the server has never heard of
+    /// it; a pending send's own file is `seedAnimation`'s.
+    func animationURL(id: Int64) -> URL? {
+        let url = animationFileURL(id: id)
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        guard id > 0, !animationsInFlight.contains(id), !animationsMissing.contains(id) else {
+            return nil
+        }
+        animationsInFlight.insert(id)
+        Task { [weak self] in
+            guard let self else { return }
+            let scratch = url.deletingPathExtension().appendingPathExtension("part")
+            do {
+                try await api.downloadAttachment(id: id, to: scratch)
+                try? FileManager.default.removeItem(at: url)
+                try FileManager.default.moveItem(at: scratch, to: url)
+                animationsInFlight.remove(id)
+                generation &+= 1
+            } catch APIError.notFound(_) {
+                try? FileManager.default.removeItem(at: scratch)
+                animationsInFlight.remove(id)
+                animationsMissing.insert(id)
+                // Settled, like a photo's 404: the tile keeps its poster.
+                generation &+= 1
+            } catch {
+                // Says nothing about whether the video exists — `fetch`'s
+                // rule: no bump, so no tight loop; the next draw asks again.
+                try? FileManager.default.removeItem(at: scratch)
+                animationsInFlight.remove(id)
+            }
+        }
+        return nil
+    }
+
+    /// Put an animation this device already holds — its own send — where
+    /// the tile looks for it, so the sender's bubble moves without
+    /// fetching back what it just made.
+    func seedAnimation(copying source: URL, id: Int64) {
+        let url = animationFileURL(id: id)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        guard (try? FileManager.default.copyItem(at: source, to: url)) != nil else { return }
+        animationsMissing.remove(id)
         generation &+= 1
     }
 
@@ -594,6 +661,9 @@ final class AttachmentStore {
             // to be re-sent must go too — the repair pass would otherwise
             // find a marker with nothing behind it.
             try? FileManager.default.removeItem(at: posterMarkerURL(id))
+            // An animation's video goes with its message, like its poster.
+            try? FileManager.default.removeItem(at: animationFileURL(id: id))
+            animationsMissing.remove(id)
         }
         // A kept transcript is about one of these attachments too, and the
         // words in it are the last thing that should outlive the chat.
@@ -607,6 +677,7 @@ final class AttachmentStore {
         hot.removeAll()
         hotOrder.removeAll()
         missing.removeAll()
+        animationsMissing.removeAll()
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // The kept transcripts were inside that directory; this empties

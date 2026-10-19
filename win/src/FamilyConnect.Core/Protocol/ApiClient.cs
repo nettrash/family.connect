@@ -165,6 +165,7 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         IReadOnlyList<MentionDto>? mentions = null,
         bool sticker = false,
         bool round = false,
+        bool animation = false,
         CancellationToken ct = default) =>
         Send<MessageResponse>(HttpMethod.Post, $"/chats/{chatId}/messages", new SendRequest(
             clientMsgId, body, replyToMessageId,
@@ -174,7 +175,9 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
             // Present only when true: absent is an ordinary message, to every server there is.
             sticker ? true : null,
             // The same for a video message: absent unless it is one.
-            round ? true : null), ct: ct);
+            round ? true : null,
+            // And for an animation.
+            animation ? true : null), ct: ct);
 
     /// <summary>
     /// The reconnect catch-up: strictly newer, OLDEST FIRST — the opposite direction to a history

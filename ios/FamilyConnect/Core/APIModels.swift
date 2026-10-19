@@ -826,6 +826,13 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     /// `isRound`, with the coding key `round`, so nothing here shadows
     /// Swift's own `round(_:)`.
     let isRound: Bool
+    /// True when (and only when) the message that carries this was sent as
+    /// an ANIMATION (docs/protocol.md, "Animations", #96): an animated
+    /// picture the sender made into a silent looping MP4 — still a
+    /// `kind=video` in every other respect, drawn as a picture that moves.
+    /// Absent on the wire when false — never `false` — and never beside
+    /// `sticker` or `round`. Drawn only through `isAnimation`.
+    let animation: Bool
     /// A voice note's shape (docs/protocol.md, "A voice note's waveform",
     /// #79): exactly 48 lowercase hex digits, levels 0–15 in time order,
     /// computed by the sender from its meter. Audio only, and only when the
@@ -850,6 +857,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case accuracyM = "accuracy_m"
         case sticker
         case isRound = "round"
+        case animation
         case waveform
     }
 
@@ -868,6 +876,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         accuracyM: Int?,
         sticker: Bool = false,
         isRound: Bool = false,
+        animation: Bool = false,
         waveform: String? = nil
     ) {
         self.id = id
@@ -884,6 +893,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         self.accuracyM = accuracyM
         self.sticker = sticker
         self.isRound = isRound
+        self.animation = animation
         self.waveform = waveform
     }
 
@@ -908,6 +918,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         accuracyM = try container.decodeIfPresent(Int.self, forKey: .accuracyM)
         sticker = try container.decodeIfPresent(Bool.self, forKey: .sticker) ?? false
         isRound = try container.decodeIfPresent(Bool.self, forKey: .isRound) ?? false
+        animation = try container.decodeIfPresent(Bool.self, forKey: .animation) ?? false
         // `try?`: a malformed value (a number, an object) must not cost the
         // whole message — it draws as the placeholder, like an unparseable
         // string does.
@@ -933,10 +944,17 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(accuracyM, forKey: .accuracyM)
         if sticker { try container.encode(true, forKey: .sticker) }
         if isRound { try container.encode(true, forKey: .isRound) }
+        if animation { try container.encode(true, forKey: .animation) }
         try container.encodeIfPresent(waveform, forKey: .waveform)
     }
 
     var isVideo: Bool { kind == Kind.video }
+    /// Drawn as an ANIMATION (docs/protocol.md, "How it is drawn"): a video
+    /// carrying the flag. The flag on anything else draws as what it is.
+    /// The protocol's test is a MESSAGE's — exactly one attachment — and
+    /// the server refuses the flag on any other send, so the attachment's
+    /// own answer is the message's.
+    var isAnimation: Bool { animation && isVideo }
     var isFile: Bool { kind == Kind.file }
     var isAudio: Bool { kind == Kind.audio }
     var isLocation: Bool { kind == Kind.location }
@@ -976,6 +994,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
             accuracyM: accuracyM,
             sticker: sticker,
             isRound: isRound,
+            animation: animation,
             waveform: waveform)
     }
 

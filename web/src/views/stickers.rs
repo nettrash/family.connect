@@ -16,11 +16,14 @@
 //! None of them ever asks for a preview: a preview is a JPEG, and a sticker
 //! drawn from one would be a still picture on a white square.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use fc_text::i18n::{t, t1, t2};
 use fc_text::pack as rules;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, Url};
 use yew::prelude::*;
 
 use crate::actions::Action;
@@ -60,6 +63,62 @@ pub fn label_refusal(raw: &str) -> Option<&'static str> {
         .then(|| t("A description is at most 64 characters."))
 }
 
+/// The URL a sticker is DRAWN from: its own bytes, moving — or, when the
+/// system asks for less motion, frame zero of them (docs/protocol.md,
+/// "Sticker pack" → "How it is drawn", amended for #96), in the chat, the
+/// panel, the pack and the enlarged view alike. `moving` is the bytes' own
+/// URL, from `use_media`. Nothing is drawn while frame zero is being made —
+/// a moving first frame flashing past is the motion asked to be left out —
+/// and a picture that does not move, or whose frame zero this browser could
+/// not draw, is drawn as it is.
+#[hook]
+pub fn use_sticker_picture(id: i64, moving: Option<String>) -> Option<String> {
+    let loader = use_context::<MediaLoader>();
+    let reduced = crate::views::animation::reduced_motion();
+    // The still made for which bytes: (their URL, frame zero's URL or None).
+    let still = use_state(|| Option::<(String, Option<String>)>::None);
+    {
+        let still = still.clone();
+        use_effect_with((moving.clone(), reduced), move |(moving, reduced)| {
+            let made: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+            let alive = Rc::new(Cell::new(true));
+            if let (true, Some(moving), Some(loader)) = (*reduced, moving.clone(), loader) {
+                if let Some(picture) = loader.held(id, Variant::Sticker) {
+                    let made = made.clone();
+                    let alive = alive.clone();
+                    spawn_local(async move {
+                        let frame = crate::prep::first_frame_if_animated(&picture).await;
+                        if !alive.get() {
+                            return;
+                        }
+                        let url =
+                            frame.and_then(|frame| Url::create_object_url_with_blob(&frame).ok());
+                        *made.borrow_mut() = url.clone();
+                        still.set(Some((moving, url)));
+                    });
+                } else {
+                    still.set(Some((moving, None)));
+                }
+            }
+            move || {
+                alive.set(false);
+                if let Some(url) = made.borrow_mut().take() {
+                    let _ = Url::revoke_object_url(&url);
+                }
+            }
+        });
+    }
+    if !reduced {
+        return moving;
+    }
+    match (&*still, &moving) {
+        (Some((made_for, frame)), Some(moving)) if made_for == moving => {
+            Some(frame.clone().unwrap_or_else(|| moving.clone()))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct TileProps {
     pub attachment: Attachment,
@@ -78,6 +137,7 @@ pub fn sticker_tile(props: &TileProps) -> Html {
     // The ORIGINAL, whatever `has_preview` says: it can be true by
     // inheritance, and a preview is a JPEG.
     let url = use_media(attachment.id, Variant::Sticker, true);
+    let url = use_sticker_picture(attachment.id, url);
     let open = {
         let on_open = props.on_open.clone();
         let attachment = attachment.clone();
@@ -219,6 +279,7 @@ fn panel_cell(props: &CellProps) -> Html {
         return Html::default();
     };
     let url = use_media(picture.id, Variant::Sticker, true);
+    let url = use_sticker_picture(picture.id, url);
     let id = props.item.id;
     let send = props.on_pick.reform(move |_: MouseEvent| id);
     let name = spoken(props.item.label.as_deref());
@@ -257,6 +318,7 @@ pub fn sticker_view(props: &ViewProps) -> Html {
     let loader = use_context::<MediaLoader>();
     let attachment = &props.attachment;
     let url = use_media(attachment.id, Variant::Sticker, true);
+    let shown = use_sticker_picture(attachment.id, url.clone());
     // None while the bytes are being compared: nothing is offered, and
     // nothing is claimed, until it is known either way.
     let in_pack = use_state(|| Option::<bool>::None);
@@ -335,7 +397,7 @@ pub fn sticker_view(props: &ViewProps) -> Html {
     html! {
         <Modal title={t("Sticker")} class="chat-sticker-view" on_cancel={close.clone()} busy={*asked}>
             <div class="chat-sticker-stage">
-                if let Some(url) = url {
+                if let Some(url) = shown {
                     <img src={url} alt={t("Sticker")} draggable="false" />
                 } else {
                     <p class="footnote">{ t("Loading…") }</p>
@@ -588,6 +650,7 @@ fn pack_picture(props: &PictureProps) -> Html {
         return Html::default();
     };
     let url = use_media(picture.id, Variant::Sticker, true);
+    let url = use_sticker_picture(picture.id, url);
     let name = spoken(props.item.label.as_deref());
     html! {
         <span class={classes!("pack-cell", url.is_none().then_some("is-loading"))} title={name.clone()}>
@@ -601,9 +664,6 @@ fn pack_picture(props: &PictureProps) -> Html {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     use wasm_bindgen_test::*;
     use web_sys::{Blob, Element, HtmlElement};
 
@@ -716,6 +776,89 @@ mod tests {
 
     fn text(root: &Element) -> String {
         root.text_content().unwrap_or_default()
+    }
+
+    /// A browser that asks for less motion, for the length of a test:
+    /// `matchMedia` answering every query "matches".
+    fn less_motion() -> crate::webcodecs::testing::Stand {
+        let answer = js_sys::Function::new_with_args(
+            "query",
+            "return {matches: true, media: query, addEventListener() {}, removeEventListener() {}};",
+        );
+        crate::webcodecs::testing::Stand::in_for("matchMedia", &answer)
+    }
+
+    fn src(root: &Element, selector: &str) -> Option<String> {
+        root.query_selector(selector)
+            .unwrap()
+            .and_then(|img| img.get_attribute("src"))
+    }
+
+    /// A STICKER THAT MOVES IS FRAME ZERO when the system asks for less
+    /// motion (docs/protocol.md, "Sticker pack", amended for #96): drawn
+    /// from a still of its own bytes, in the chat and in the pack alike —
+    /// and from the bytes themselves, moving, otherwise, or when it is
+    /// still to begin with.
+    #[wasm_bindgen_test]
+    async fn a_moving_sticker_is_frame_zero_for_less_motion() {
+        use crate::encode::animation::testing::animated_gif;
+        let blob = |bytes: Vec<u8>| {
+            let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+            Blob::new_with_u8_array_sequence(&parts).unwrap()
+        };
+        let loader = loader();
+        loader.seed(90, Variant::Sticker, blob(animated_gif(64, 48, &[10, 10])));
+        loader.seed(91, Variant::Sticker, blob(animated_gif(64, 48, &[10])));
+        let moving = loader.get(90, Variant::Sticker).unwrap();
+        let still_one = loader.get(91, Variant::Sticker).unwrap();
+        let drawn = |id: i64| {
+            html! {
+                <StickerTile attachment={Attachment { sticker: true, ..picture(id, 11) }}
+                             on_open={Callback::noop()} />
+            }
+        };
+
+        let (root, handle) = render(&loader, drawn(90)).await;
+        assert_eq!(
+            src(&root, ".chat-sticker img"),
+            Some(moving.clone()),
+            "moving"
+        );
+        handle.destroy();
+        root.remove();
+
+        let _less = less_motion();
+        let (root, handle) = render(&loader, drawn(90)).await;
+        let mut frame = None;
+        for _ in 0..50 {
+            frame = src(&root, ".chat-sticker img");
+            if frame.is_some() {
+                break;
+            }
+            settle().await;
+        }
+        let frame = frame.expect("frame zero is drawn");
+        assert!(
+            frame.starts_with("blob:") && frame != moving,
+            "a still of its own"
+        );
+        handle.destroy();
+        root.remove();
+
+        let (root, handle) = render(&loader, drawn(91)).await;
+        for _ in 0..50 {
+            if src(&root, ".chat-sticker img").is_some() {
+                break;
+            }
+            settle().await;
+        }
+        assert_eq!(
+            src(&root, ".chat-sticker img"),
+            Some(still_one),
+            "a still picture is drawn as it is"
+        );
+        handle.destroy();
+        root.remove();
     }
 
     /// The panel is the pack as a grid, and ONE click sends: no caption, no

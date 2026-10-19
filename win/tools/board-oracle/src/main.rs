@@ -48,6 +48,12 @@ fn main() {
         emoji_typing_vectors();
         return;
     }
+    // `animation-plan` prints fc_text::animation — an animated picture sent as a silent looping video (issue #96):
+    // the frame timing, size and bitrate every port's encoder follows; copied likewise.
+    if std::env::args().nth(1).as_deref() == Some("animation-plan") {
+        animation_plan_vectors();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("markdown") {
         markdown_vectors(std::env::args().nth(2).expect("the corpus path"));
         return;
@@ -2975,4 +2981,80 @@ fn emoji_typing_vectors() {
         "{}",
         serde_json::to_string_pretty(&json!({"emoticons": emoticons, "typing": typing})).unwrap()
     );
+}
+
+/// fc_text::animation's vectors (issue #96): the constants, each format's delay, the shortest-frame rule and every
+/// plan in `PLAN_CASES`, as one JSON array of `{name, function, input, expected}` like the waveform vectors.
+fn animation_plan_vectors() {
+    use fc_text::animation as a;
+    use serde_json::json;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    let mut case =
+        |name: &str, function: &str, input: serde_json::Value, expected: serde_json::Value| {
+            cases.push(
+                json!({"name": name, "function": function, "input": input, "expected": expected}),
+            );
+        };
+
+    case(
+        "the constants",
+        "constants",
+        json!({}),
+        json!({
+            "ticks_per_second": a::TICKS_PER_SECOND,
+            "shortest_frame_ms": a::SHORTEST_FRAME_MS,
+            "default_frame_ms": a::DEFAULT_FRAME_MS,
+            "background_rgb": a::BACKGROUND_RGB,
+        }),
+    );
+    for &centiseconds in a::GIF_DELAY_CASES {
+        case(
+            &format!("gif delay {centiseconds} cs"),
+            "gif_delay_ms",
+            json!({"centiseconds": centiseconds}),
+            json!({"ms": a::gif_delay_ms(centiseconds)}),
+        );
+    }
+    for &(num, den) in a::APNG_DELAY_CASES {
+        case(
+            &format!("apng delay {num}/{den}"),
+            "apng_delay_ms",
+            json!({"num": num, "den": den}),
+            json!({"ms": a::apng_delay_ms(num, den)}),
+        );
+    }
+    for stated in [0, 1, 9, 10, 11, 20, 100, 65_535_000] {
+        case(
+            &format!("frame duration {stated} ms"),
+            "frame_duration_ms",
+            json!({"stated_ms": stated}),
+            json!({"ms": a::frame_duration_ms(stated)}),
+        );
+    }
+    for (index, &(width, height, stated)) in a::PLAN_CASES.iter().enumerate() {
+        let expected = match a::plan(width, height, stated) {
+            Some(plan) => json!({
+                "width": plan.width,
+                "height": plan.height,
+                "samples": plan.samples.iter().map(|s| json!([s.frame, s.ticks])).collect::<Vec<_>>(),
+                "total_ticks": plan.total_ticks,
+                "duration_ms": plan.duration_ms,
+                "video_bitrate": plan.video_bitrate,
+            }),
+            None => serde_json::Value::Null,
+        };
+        case(
+            &format!("plan {index}: {width}x{height}, {} frames", stated.len()),
+            "plan",
+            json!({"width": width, "height": height, "stated_ms": stated}),
+            expected,
+        );
+    }
+
+    let lines: Vec<String> = cases
+        .iter()
+        .map(|case| serde_json::to_string(case).unwrap())
+        .collect();
+    println!("[\n  {}\n]", lines.join(",\n  "));
 }

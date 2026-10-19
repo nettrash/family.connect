@@ -928,6 +928,17 @@ pub struct Attachment {
     /// that is not a video (0052's two CHECKs).
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub round: bool,
+    /// True when (and only when) the message carrying this video was sent
+    /// as an ANIMATION (docs/protocol.md, "Animations"; issue #96) — an
+    /// animated GIF, WebP or PNG the sender turned into a silent looping
+    /// H.264 MP4, drawn as a picture that moves. Absent on the wire
+    /// otherwise, exactly as `sticker` and `round` are: an ordinary video
+    /// never carries `"animation": false`, and a client that does not know
+    /// the flag plays the video it still is. Never true on anything that is
+    /// not a video, never beside `sticker`, never beside `round` (0055's
+    /// three CHECKs).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub animation: bool,
     /// Audio only, and only when the uploader sent one: the recording's
     /// shape as 48 levels of 0..15, one lowercase hex digit each
     /// (docs/protocol.md, "A voice note's waveform"). The sender computes
@@ -1044,6 +1055,40 @@ impl Attachment {
             && self.size as u64 <= max_bytes as u64
     }
 
+    /// An animation's one media type (docs/protocol.md, "Animations";
+    /// issue #96): the profile's container, which every client plays the
+    /// same way.
+    pub const ANIMATION_MIME: &'static str = "video/mp4";
+    /// The largest SHORT side an animation may DECLARE: the media profile's
+    /// own ceiling, to which the sender scales the picture's canvas. Unlike
+    /// a video message's, the long side is free — an animation keeps its
+    /// picture's shape.
+    pub const ANIMATION_MAX_SHORT_SIDE: i32 = 720;
+
+    /// Whether this CLAIMED upload may be sent as an animation
+    /// (docs/protocol.md, "Animations", check 4): a `kind=video` of
+    /// `video/mp4`; a declared width and height of at least 1, the shorter
+    /// of them at most 720; a declared length of at least 1 ms. All of it is
+    /// the sender's DECLARATION — this server never decodes a video — and
+    /// anything missing is a no, because a tile is laid out at its shape
+    /// before a byte arrives.
+    ///
+    /// No byte ceiling here, on purpose: an animation is held only to
+    /// `max_attachment_bytes`, which the upload already enforced, so there
+    /// is nothing left for the send to ask about its size.
+    pub fn fits_animation(&self) -> bool {
+        let shape_ok = match (self.width, self.height) {
+            (Some(width), Some(height)) => {
+                width >= 1 && height >= 1 && width.min(height) <= Self::ANIMATION_MAX_SHORT_SIDE
+            }
+            _ => false,
+        };
+        self.kind == Self::KIND_VIDEO
+            && self.mime == Self::ANIMATION_MIME
+            && shape_ok
+            && self.duration_ms.is_some_and(|ms| ms >= 1)
+    }
+
     pub fn kind_for(mime: &str) -> Option<&'static str> {
         Self::ACCEPTED
             .iter()
@@ -1105,6 +1150,9 @@ impl Attachment {
             // has no business with it — a note's picture, a pack item's —
             // reads false rather than failing.
             round: row.try_get("round").unwrap_or_default(),
+            // And for the animation's flag (0055), the same way and for the
+            // same reason (issue #96).
+            animation: row.try_get("animation").unwrap_or_default(),
             // And for the waveform (0053): only audio has one, and a SELECT
             // that never asked for it — a note's picture, a pack item's, the
             // assistant's history — reads "none" rather than failing.
@@ -2008,6 +2056,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            animation: false,
             waveform: None,
         };
         let json = serde_json::to_value(&photo).expect("serializes");
@@ -2057,6 +2106,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            animation: false,
             waveform: None,
         };
         let json = serde_json::to_value(&note).expect("serializes");
@@ -2124,6 +2174,7 @@ mod tests {
             accuracy_m: None,
             sticker: false,
             round: false,
+            animation: false,
             waveform: None,
         }
     }
@@ -2225,5 +2276,141 @@ mod tests {
         // The bytes.
         assert!(!with(&|a| a.size = CEILING as i64 + 1));
         assert!(!with(&|a| a.size = -1));
+    }
+
+    /// An animation as protocol.md draws it: a 480 x 270 MP4 of 2.1 s.
+    fn animation_video() -> Attachment {
+        Attachment {
+            id: 93,
+            kind: "video".to_string(),
+            mime: "video/mp4".to_string(),
+            size: 182_330,
+            width: Some(480),
+            height: Some(270),
+            duration_ms: Some(2_100),
+            has_preview: true,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            sticker: false,
+            round: false,
+            animation: false,
+            waveform: None,
+        }
+    }
+
+    /// `animation` is on the wire when — and only when — it is true, the
+    /// sticker's and the video message's rule: an ordinary video never
+    /// carries `"animation": false`, and every attachment a shipped server
+    /// ever sent, which has no key, reads as an ordinary video
+    /// (protocol.md, "Animations"; issue #96).
+    #[test]
+    fn the_animation_flag_is_absent_unless_true() {
+        let video = animation_video();
+        let json = serde_json::to_value(&video).expect("serializes");
+        assert!(json.get("animation").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses without the key");
+        assert!(!back.animation);
+
+        let moving = Attachment {
+            animation: true,
+            ..video
+        };
+        let json = serde_json::to_value(&moving).expect("serializes");
+        assert_eq!(json["animation"], true);
+        assert!(json.get("sticker").is_none(), "{json}");
+        assert!(json.get("round").is_none(), "{json}");
+        let back: Attachment = serde_json::from_value(json).expect("parses");
+        assert_eq!(back, moving);
+    }
+
+    /// Check 4 of "Animations" — "What the server checks", as a pure
+    /// question about a claimed row: the kind, the type, a declared shape
+    /// of at least 1 x 1 whose SHORT side is at most 720 (the long side is
+    /// free), a declared length of at least 1 ms — and no byte ceiling of
+    /// its own, since the upload already held it to `max_attachment_bytes`.
+    #[test]
+    fn what_may_be_sent_as_an_animation() {
+        assert_eq!(Attachment::ANIMATION_MAX_SHORT_SIDE, 720);
+        assert_eq!(Attachment::ANIMATION_MIME, "video/mp4");
+        assert!(animation_video().fits_animation());
+
+        let with = |change: &dyn Fn(&mut Attachment)| {
+            let mut attachment = animation_video();
+            change(&mut attachment);
+            attachment.fits_animation()
+        };
+        // The edges that ARE allowed: the smallest picture, a short side of
+        // exactly 720 either way round, a long side far past it, a square,
+        // the shortest length and a long one, and any size.
+        assert!(with(&|a| {
+            a.width = Some(1);
+            a.height = Some(1);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(1280);
+            a.height = Some(720);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(720);
+            a.height = Some(1280);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(720);
+            a.height = Some(720);
+        }));
+        assert!(with(&|a| {
+            a.width = Some(4000);
+            a.height = Some(2);
+        }));
+        assert!(with(&|a| a.duration_ms = Some(1)));
+        assert!(with(&|a| a.duration_ms = Some(600_000)));
+        assert!(with(&|a| a.size = 0));
+        assert!(with(&|a| a.size = 1 << 40));
+
+        // Not a video, or not an MP4.
+        for (kind, mime) in [
+            ("photo", "image/gif"),
+            ("photo", "image/webp"),
+            ("audio", "audio/mp4"),
+            ("file", "video/mp4"),
+            ("location", Attachment::LOCATION_MIME),
+            ("video", "video/quicktime"),
+        ] {
+            assert!(
+                !with(&|a| {
+                    a.kind = kind.to_string();
+                    a.mime = mime.to_string();
+                }),
+                "{kind} {mime}"
+            );
+        }
+        // The shape: missing, below 1, or a short side over 720.
+        assert!(!with(&|a| a.width = None));
+        assert!(!with(&|a| a.height = None));
+        assert!(!with(&|a| {
+            a.width = None;
+            a.height = None;
+        }));
+        assert!(!with(&|a| a.width = Some(0)));
+        assert!(!with(&|a| a.height = Some(0)));
+        assert!(!with(&|a| a.width = Some(-480)));
+        assert!(!with(&|a| {
+            a.width = Some(1280);
+            a.height = Some(721);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(721);
+            a.height = Some(1280);
+        }));
+        assert!(!with(&|a| {
+            a.width = Some(721);
+            a.height = Some(721);
+        }));
+        // The length: missing or nothing.
+        assert!(!with(&|a| a.duration_ms = None));
+        assert!(!with(&|a| a.duration_ms = Some(0)));
+        assert!(!with(&|a| a.duration_ms = Some(-1)));
     }
 }

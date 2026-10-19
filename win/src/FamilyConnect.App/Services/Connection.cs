@@ -39,24 +39,26 @@ internal sealed class Connection : IAsyncDisposable
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));
         // A sticker on its way out is bytes this device already holds: kept under the id the server just gave them, so
         // the message it becomes is drawn at once rather than downloaded back. A video message too — its square video
-        // and the poster this device made, so the reader's own circle is drawn and opened without asking (S5.6).
+        // and the poster this device made, so the reader's own circle is drawn and opened without asking (S5.6). And an
+        // animation (#96): its video and poster, so the sender's own tile plays at once instead of downloading what it made.
         Media.Landed += (row, attachment, staged) =>
         {
-            if (!row.Sticker && !row.Round)
+            if (!row.Sticker && !row.Round && !row.Animation)
             {
                 return;
             }
             try
             {
                 Attachments.Remember(attachment, staged.Bytes);
-                if (row.Round && staged.Preview is { IsEmpty: false } poster)
+                if ((row.Round || row.Animation) && staged.Preview is { IsEmpty: false } poster)
                 {
                     Attachments.RememberPreview(attachment, poster);
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                Diagnostics.Write($"keeping a sent {(row.Round ? "video message" : "sticker")}'s bytes: {e.GetType().Name}");
+                var what = row.Round ? "video message" : row.Animation ? "animation" : "sticker";
+                Diagnostics.Write($"keeping a sent {what}'s bytes: {e.GetType().Name}");
             }
         };
         Avatars = new AvatarCache(Api, new FileBlobStore(AppFolders.BlobsPath));

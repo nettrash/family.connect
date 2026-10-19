@@ -76,16 +76,20 @@ public sealed partial class ChatsView : UserControl
     /// handle for one still on its way.
     /// </summary>
     /// <remarks>
-    /// The conversation's are the only ones that MOVE, so they are the only ones with frames to account for: they sit
-    /// on a <see cref="StickerShelf{TPicture}"/>, which holds them to one budget between them, remembers a sticker
-    /// nothing here decodes, and keeps each one's clock across a redraw. The other two are still pictures at a cell's
-    /// size; a null in either is the same remembered "nothing here decodes it".
+    /// The conversation's and the panel's MOVE (the panel's since #96: "Sticker pack", amended 2026-10-19), so they are the
+    /// ones with frames to account for: they sit on ONE <see cref="StickerShelf{TPicture}"/>, which holds them to one budget
+    /// between them, remembers a sticker nothing here decodes, and keeps each one's clock across a redraw. A panel cell is
+    /// kept under its pack item's id COMPLEMENTED (<see cref="PanelKey"/>) — negative, where every attachment id is positive —
+    /// since the same picture is decoded at another size for a cell. The staged ones are still pictures; a null is the same
+    /// remembered "nothing here decodes it".
     /// </remarks>
     private readonly PackModel pack;
     private readonly StickerAnimator stickers;
     private readonly StickerShelf<StickerPicture> stickerPictures;
-    private readonly Dictionary<long, StickerPicture?> stickerThumbs = [];
     private readonly Dictionary<string, StickerPicture?> stagedStickers = new(StringComparer.Ordinal);
+
+    /// <summary>A panel cell's key on the shelf: its pack item's id, complemented, so it can never meet an attachment's.</summary>
+    private static long PanelKey(long itemId) => ~itemId;
 
     /// <summary>
     /// One sticker is decoded at a time. Frames are decoded BEFORE the shelf can make room for them, so ten decodes
@@ -707,7 +711,7 @@ public sealed partial class ChatsView : UserControl
             }
             if (item.Deleted)
             {
-                stickerThumbs.Remove(item.Id);
+                stickerPictures.Remove(PanelKey(item.Id));
             }
             ShowStickerButton();
         });
@@ -759,8 +763,8 @@ public sealed partial class ChatsView : UserControl
         // After the stop, so nothing is "showing" and every frame is given back rather than left to a finalizer.
         ForgetViewerSticker();
         stickerPictures.Clear();
-        stickerThumbs.Clear();
         stagedStickers.Clear();
+        ReleaseAnimations();
         connection.Session.Changed -= onSession;
         connection.Router.PackChanged -= onPack;
         connection.Router.Arrived -= onArrived;
@@ -1448,6 +1452,11 @@ public sealed partial class ChatsView : UserControl
         {
             // The same rule for a circle: its poster — all a visible one fetches — is fetched and drawn nowhere.
             _ = FetchHiddenPosterAsync(unseenRound);
+        }
+        if (!bubble.Reads && message.AnimationVideo is { } unseenAnimation)
+        {
+            // And for an animation (#96): its poster, and its video where a visible tile would play it.
+            _ = FetchHiddenAnimationAsync(unseenAnimation);
         }
         // One to four emoji and nothing else: drawn large and bare — the apps' ladder, scaled to this window's 14-pixel body.
         var emojiSize = !awaited && bubble.Reads && message.Call is null && message.Poll is null && message.Media.Count == 0 && message.ReplyTo is null
@@ -2555,6 +2564,14 @@ public sealed partial class ChatsView : UserControl
     private FrameworkElement MediaElement(MessageDto message, bool mine, string? chatKind)
     {
         var panel = new StackPanel { Spacing = 4 };
+        if (message.AnimationVideo is { } animation)
+        {
+            // An ANIMATION (docs/protocol.md, "Animations"): one flagged video, drawn as a picture that moves in a photo's box —
+            // no play button, no length, and no text under it, since it has no sound to transcribe.
+            var (tileWidth, tileHeight) = MediaText.TileSize(animation.Width, animation.Height);
+            panel.Children.Add(AnimationElement(animation, tileWidth, tileHeight));
+            return panel;
+        }
         var looked = message.Media.Where(attachment => MediaText.IsMedia(attachment.Kind)).ToList();
         if (looked.Count == 1)
         {
@@ -2893,6 +2910,8 @@ public sealed partial class ChatsView : UserControl
                 // Not by itself under a running microphone, and not at all until it stops (S1.7).
                 ViewerVideo.AutoPlay = recorder is null;
                 ViewerVideo.Source = Windows.Media.Core.MediaSource.CreateFromStream(stream, item.Mime ?? "video/mp4");
+                // An animation plays larger here as it does in its tile: muted, looping, no controls (docs/protocol.md, "Animations").
+                PlayViewerAs(viewing is { IsAnimation: true });
                 QuietViewerVideo();
                 ViewerLoading.IsActive = false;
                 if (viewerRound)
@@ -3133,7 +3152,7 @@ public sealed partial class ChatsView : UserControl
         }
         var recording = recorder is not null;
         // A circle has its own bar under it, which the same rule dims.
-        ViewerVideo.AreTransportControlsEnabled = !recording && !viewerRound;
+        ViewerVideo.AreTransportControlsEnabled = !recording && !viewerRound && viewing is not { IsAnimation: true };
         ViewerRoundPlay.IsEnabled = !recording;
         ViewerRoundSeek.IsEnabled = !recording;
         try
@@ -7494,7 +7513,9 @@ public sealed partial class ChatsView : UserControl
             });
             chat.Send(
                 body, replyToMessageId: replyTo, pendingFiles: handles,
-                mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
+                mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)),
+                // One animation alone is sent AS one (docs/protocol.md, "Animations"); beside anything else it is the video it is.
+                animation: AnimationSend.Is(items));
             drafts.Sent(chat.ChatId);
             Queued();
         }
@@ -8817,7 +8838,7 @@ public sealed partial class ChatsView : UserControl
         ViewerRoundRetry.Visibility = Visibility.Collapsed;
         ViewerRoundBar.Visibility = Visibility.Collapsed;
         ViewerRoundFrame.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        ViewerVideo.AreTransportControlsEnabled = !on && recorder is null;
+        ViewerVideo.AreTransportControlsEnabled = !on && recorder is null && viewing is not { IsAnimation: true };
         if (on)
         {
             viewerBackdrop ??= ViewerOverlay.Background;
@@ -9563,14 +9584,18 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
-    /// A pack item in a panel cell: the item's ORIGINAL bytes, fetched once and kept under its attachment id. The cell's
-    /// word goes only when there is a picture to put in its place.
+    /// A pack item in a panel cell: the item's ORIGINAL bytes, fetched once and kept on the shelf under its
+    /// <see cref="PanelKey"/>. ANIMATED where this machine can and Windows' animation effects are on (docs/protocol.md,
+    /// "Sticker pack", amended 2026-10-19, #96) — and only while the cell is on screen (<see cref="StickerAnimator"/>) — within
+    /// the shelf's one budget, which makes the least recently drawn still. The cell's word goes only when there is a picture
+    /// to put in its place.
     /// </summary>
     private async Task ShowStickerThumbAsync(Image image, TextBlock word, PackItemDto item)
     {
+        var key = PanelKey(item.Id);
         try
         {
-            if (!stickerThumbs.TryGetValue(item.Id, out var decoded))
+            if (!stickerPictures.TryGet(key, out var decoded))
             {
                 var (bytes, error) = await pack.BytesAsync(item);
                 if (gone)
@@ -9585,19 +9610,38 @@ public sealed partial class ChatsView : UserControl
                     }
                     return;
                 }
-                decoded = await StickerImaging.DecodeAsync(bytes, StickerLook.PanelCell, RasterScale(), animate: false);
-                if (gone)
+                // One decode at a time, as the conversation's: frames are decoded before the shelf can make room for them.
+                await stickerDecoding.WaitAsync();
+                try
                 {
-                    return;
+                    if (gone)
+                    {
+                        return;
+                    }
+                    if (!stickerPictures.TryGet(key, out decoded))
+                    {
+                        decoded = await StickerImaging.DecodeAsync(
+                            bytes, StickerLook.PanelCell, RasterScale(), StickerImaging.AnimationsWanted());
+                        if (gone)
+                        {
+                            decoded?.Release();
+                            return;
+                        }
+                        // A null is kept: the panel is opened again and again, and a codec that is not there is still not there.
+                        stickerPictures.Put(key, decoded, decoded?.Bytes ?? 0);
+                    }
                 }
-                // A null is kept: the panel is opened again and again, and a codec that is not there is still not there.
-                stickerThumbs[item.Id] = decoded;
+                finally
+                {
+                    stickerDecoding.Release();
+                }
             }
             if (decoded is null)
             {
                 return;
             }
-            stickers.Show(image, decoded);
+            // The cell's clock is the sticker's: reopening the panel joins the animation where it was.
+            stickers.Show(image, decoded, stickerPictures.Started(key, stickers.Now));
             word.Visibility = Visibility.Collapsed;
         }
         catch (Exception e)
@@ -10074,7 +10118,10 @@ public sealed partial class ChatsView : UserControl
         try
         {
             // The strip is marked as preparing before its first await, so the bar can be drawn from it straight away.
-            var ingest = strip.IngestAsync(files, MediaPreparing.PrepareAsync, () => !gone, services.Say);
+            // An animated picture becomes an animation in a chat — not in the assistant's, whose model is shown a photograph.
+            var animations = Kind(chat) != "ai";
+            var ingest = strip.IngestAsync(
+                files, (file, token) => MediaPreparing.PrepareAsync(file, token, animations), () => !gone, services.Say);
             ShowPreparing();
             said = await ingest;
         }

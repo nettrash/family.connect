@@ -781,7 +781,8 @@ struct MacConversationView: View {
                     continue
                 }
                 do {
-                    let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
+                    let prepared = try await MediaPrep.prepare(
+                        fileAt: url, limit: MediaPrep.sizeLimit, animates: !isAssistantChat)
                     // `prepare` may hand back the source itself (a video
                     // that goes as it is — within the profile, or after a
                     // transcode that failed or did not help); only delete
@@ -814,8 +815,13 @@ struct MacConversationView: View {
         // the quote naming: a reply to a video message says so (#79, S5.7).
         let snapshots = visibleMessages.map { MessageSnapshot($0) }
         let roundIDs = MessagePresentation.roundMessageIDs(snapshots)
+        // ...and one quoting an animation with no caption says "GIF" (#96).
+        let animationIDs = MessagePresentation.animationMessageIDs(snapshots)
         return MessagePresentation.daySections(
-            snapshots.map { MessagePresentation.namingRoundQuotes($0, roundIDs: roundIDs) },
+            snapshots.map {
+                MessagePresentation.namingRoundQuotes(
+                    $0, roundIDs: roundIDs, animationIDs: animationIDs)
+            },
             firstUnreadID: unreadDividerServerID)
     }
 
@@ -823,10 +829,13 @@ struct MacConversationView: View {
     /// phone's rule.
     private func quoteWord(_ quote: ReplyToDTO) -> String {
         guard quote.excerpt.isEmpty,
-              let quoted = messages.first(where: { $0.serverID == quote.messageID }),
-              MessagePresentation.isRoundVideo(MessageSnapshot(quoted))
+              let quoted = messages.first(where: { $0.serverID == quote.messageID })
         else { return quote.excerpt }
-        return String(localized: "Video message")
+        let snapshot = MessageSnapshot(quoted)
+        if MessagePresentation.isRoundVideo(snapshot) { return String(localized: "Video message") }
+        // An animation with no caption says "GIF" (#96).
+        if MessagePresentation.isAnimation(snapshot) { return String(localized: "GIF") }
+        return quote.excerpt
     }
 
     /// Did this open deliberately land the reader in history? Read by
@@ -1926,7 +1935,10 @@ struct MacConversationView: View {
                 isPresented: $showPhotoPicker,
                 selection: $pickedMedia,
                 maxSelectionCount: StagedAttachment.maxPerMessage,
-                matching: .any(of: [.images, .videos]))
+                matching: .any(of: [.images, .videos]),
+                // The library's own bytes, so a GIF arrives as a GIF and
+                // can become an animation (#96) — the phone's reason.
+                preferredItemEncoding: .current)
             .onChange(of: pickedMedia) { _, items in
                 guard !items.isEmpty else { return }
                 stagePickedMedia(items)
@@ -2574,7 +2586,10 @@ struct MacConversationView: View {
                 guard !Task.isCancelled else { break }
                 let prepared: MediaPrep.Prepared
                 do {
-                    prepared = try await PickedMediaPrep.prepare(item, limit: limit)
+                    // An animated picture becomes an animation (#96),
+                    // except in the assistant's chat.
+                    prepared = try await PickedMediaPrep.prepare(
+                        item, limit: limit, animates: !isAssistantChat)
                 } catch PickedMediaPrep.Failure.unreadableVideo {
                     preparationFailed(String(localized: "Couldn't read that video."))
                     continue
@@ -2619,7 +2634,8 @@ struct MacConversationView: View {
                     // the last one landed. (A cancelled one did not, which
                     // ends the batch the same way.)
                     guard stageIfWanted(
-                        try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit),
+                        try await MediaPrep.prepare(
+                            fileAt: url, limit: MediaPrep.sizeLimit, animates: !isAssistantChat),
                         moreToCome: index < urls.count - 1)
                     else { break }
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
@@ -2848,7 +2864,8 @@ struct MacConversationView: View {
     private func pasteAttachment() {
         prepare {
             do {
-                stageIfWanted(try await ClipboardAttachment.prepare(limit: MediaPrep.sizeLimit))
+                stageIfWanted(try await ClipboardAttachment.prepare(
+                    limit: MediaPrep.sizeLimit, animates: !isAssistantChat))
             } catch ClipboardAttachment.Failure.nothingToPaste {
                 preparationFailed(String(localized: "There's nothing to paste."))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {

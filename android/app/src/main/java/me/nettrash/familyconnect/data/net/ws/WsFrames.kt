@@ -95,6 +95,12 @@ sealed interface ClientFrame {
          * way; never `false`, never beside [sticker].
          */
         val round: Boolean? = null,
+        /**
+         * Optional: `true` sends the one `kind=video` attachment as an
+         * ANIMATION (protocol.md, "Animations"; #96). Omitted the same way;
+         * never `false`, never beside [sticker] or [round].
+         */
+        val animation: Boolean? = null,
     ) : ClientFrame
 
     @Serializable

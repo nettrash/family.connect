@@ -78,6 +78,12 @@ pub struct PostMessageRequest {
     /// and `false` are the same statement: an ordinary message.
     #[serde(default)]
     pub round: Option<bool>,
+    /// Optional: `true` sends the message's ONE attachment as an ANIMATION
+    /// — a silent looping video drawn as a picture that moves (protocol.md,
+    /// "Animations"; issue #96). Absent and `false` are the same statement:
+    /// an ordinary message.
+    #[serde(default)]
+    pub animation: Option<bool>,
 }
 
 /// At most this many members on one message (protocol.md, "Mentioning a
@@ -333,7 +339,8 @@ pub async fn attach_attachments(
     let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
     let rows = sqlx::query(
         "SELECT message_id, id, kind, mime, size_bytes, width, height, duration_ms,
-                has_preview, name, latitude, longitude, accuracy_m, sticker, round, waveform
+                has_preview, name, latitude, longitude, accuracy_m, sticker, round, animation,
+                waveform
          FROM attachments
          WHERE message_id = ANY($1)
          ORDER BY message_id, position, id",
@@ -547,7 +554,7 @@ fn model_surface(chat_kind: &str, body: &str) -> Option<ModelSurface> {
 /// Returns `(message, created)`: `created == false` means the
 /// `(chat, sender, client_msg_id)` triple already existed and the original
 /// message is returned — the caller must not fan out again.
-// Twelve arguments, five over clippy's threshold. Grouping them into a struct
+// Thirteen arguments, six over clippy's threshold. Grouping them into a struct
 // would be a parameter object nothing else ever constructs — the call sites
 // are two, both in this crate, and each argument is a distinct thing the
 // caller genuinely has.
@@ -579,6 +586,11 @@ pub async fn create_message(
     // (protocol.md, "Video messages") — the sticker's pattern: the claim
     // stamps the flag, and every read carries it from then on.
     round: bool,
+    // True when the message's one attachment is sent as an ANIMATION
+    // (protocol.md, "Animations"; issue #96) — the same pattern a third
+    // time: the claim stamps the flag onto a video, and every read carries
+    // it from then on.
+    animation: bool,
     // Which language to answer an assistant question in, from the sending
     // device (docs/protocol.md, "The assistant"). None outside an assistant
     // chat, and harmless there too.
@@ -646,6 +658,14 @@ pub async fn create_message(
                 "a message is a poll or a video message, not both",
             ));
         }
+        // And for an animation, check 1 of "Animations" — "What the server
+        // checks" (issue #96), in `round`'s place and for its reason.
+        if animation {
+            return Err(ApiError::bad_request(
+                codes::INVALID_POLL,
+                "a message is a poll or an animation, not both",
+            ));
+        }
     }
 
     // Check 2: one presentation per message. Asked before the sticker's own
@@ -656,6 +676,17 @@ pub async fn create_message(
     if round && sticker {
         return Err(ApiError::validation(
             "a message is a sticker or a video message, not both",
+        ));
+    }
+    // And an animation is the third presentation, check 2 of "Animations"
+    // (issue #96): beside either of the other two it is `validation`, asked
+    // here for the same two reasons — one answer to "both", whatever else
+    // is wrong, and no id read yet, so neither of 0055's
+    // `attachments_animation_not_sticker` nor `attachments_animation_not_round`
+    // can ever fire inside a request.
+    if animation && (sticker || round) {
+        return Err(ApiError::validation(
+            "a message is one of a sticker, a video message or an animation, not two",
         ));
     }
 
@@ -694,6 +725,20 @@ pub async fn create_message(
                 "a video message is sent without a body — a circle has no caption",
             ));
         }
+    }
+
+    // AN ANIMATION IS ONE PICTURE (protocol.md, "Animations", check 3;
+    // issue #96): exactly one video, for the sticker's and the video
+    // message's reason — the flag says how ONE attachment is drawn. Unlike
+    // either, it MAY carry a caption: an animation is drawn where a
+    // photograph would be, balloon and all, so the body is held only to the
+    // body's own rules below. What the video itself must be is checked at
+    // the claim.
+    if animation && attachment_ids.len() != 1 {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "an animation is a message's one and only attachment",
+        ));
     }
 
     // Who the message names, checked before the insert and refused as
@@ -878,6 +923,7 @@ pub async fn create_message(
                         position as i16,
                         sticker,
                         round,
+                        animation,
                     )
                     .await?,
                 ));
@@ -950,6 +996,33 @@ pub async fn create_message(
                         Attachment::ROUND_VIDEO_MAX_SIDE,
                         Attachment::ROUND_VIDEO_MAX_MS,
                         state.cfg.limits.round_video_bytes()
+                    ),
+                ));
+            }
+            // WHAT AN ANIMATION MAY BE (protocol.md, "Animations", check 4;
+            // issue #96), after the claim for the video message's reason,
+            // and testing the REQUEST's flag for it too: the claim flagged
+            // the row only if it is a video, so a photo — a GIF that was
+            // never turned into a video, say — comes back unflagged and
+            // would otherwise sail through as an ordinary photo. Returning
+            // drops the transaction: no message, the upload unclaimed and
+            // unflagged, and a 400 the outbox treats as terminal.
+            //
+            // No byte ceiling: an animation is held to `max_attachment_bytes`
+            // only, which the upload already enforced. The shape and the
+            // length are the sender's DECLARATION; this server decodes
+            // nothing.
+            if animation
+                && let Some(video) = claimed.first()
+                && !video.fits_animation()
+            {
+                return Err(ApiError::bad_request(
+                    codes::INVALID_ATTACHMENT,
+                    format!(
+                        "an animation is a video/mp4 with a declared width and height of at \
+                         least 1, a short side of at most {} pixels, and a declared length of \
+                         at least 1 ms",
+                        Attachment::ANIMATION_MAX_SHORT_SIDE,
                     ),
                 ));
             }
@@ -1148,6 +1221,11 @@ pub async fn apply_edit(
     if is_round {
         return Err(ApiError::validation("a video message cannot be edited"));
     }
+    // An ANIMATION is deliberately NOT refused here (protocol.md,
+    // "Animations"; issue #96): it is drawn where a photograph would be,
+    // balloon and caption included, so its caption is the author's to
+    // rewrite like any other. Only the body changes below — the flag lives
+    // on the attachment, which no edit touches.
 
     let current_body: String = locked.get("body");
     let changed = current_body != body;
@@ -1267,6 +1345,11 @@ pub fn merge_attachment_ids(
 /// protocol's error rather than silence.
 /// Runs inside the caller's transaction so that a refusal takes the
 /// message and every sibling claim with it — see the note at the insert.
+// Eight arguments, one over clippy's threshold since the animation's flag
+// (issue #96). The three flags are the send's three presentations, each
+// stamped in the one UPDATE; folding them into a struct would be a type
+// with one caller.
+#[allow(clippy::too_many_arguments)]
 async fn claim_attachment(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     attachment_id: i64,
@@ -1283,14 +1366,21 @@ async fn claim_attachment(
     // a video message is claimed unflagged and refused by the caller's
     // check, as `invalid_attachment`, with the transaction dropped.
     round: bool,
+    // The animation's flag, stamped by the same rule and for the same
+    // reason (protocol.md, "Animations"; issue #96): `animation = ($7 AND
+    // kind = 'video')`, so 0055's `attachments_animation_is_video` can
+    // never fire here, and a photo sent as an animation is claimed
+    // unflagged and refused by the caller's check.
+    animation: bool,
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
         "UPDATE attachments
-         SET message_id = $3, position = $4, sticker = $5, round = ($6 AND kind = 'video')
+         SET message_id = $3, position = $4, sticker = $5, round = ($6 AND kind = 'video'),
+             animation = ($7 AND kind = 'video')
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
            AND pack_item_id IS NULL
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
-                   latitude, longitude, accuracy_m, sticker, round, waveform",
+                   latitude, longitude, accuracy_m, sticker, round, animation, waveform",
     )
     .bind(attachment_id)
     .bind(uploader_id)
@@ -1298,6 +1388,7 @@ async fn claim_attachment(
     .bind(position)
     .bind(sticker)
     .bind(round)
+    .bind(animation)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
@@ -1629,7 +1720,8 @@ pub async fn list_chats(
     let mut preview_attachments: HashMap<i64, Vec<Attachment>> = HashMap::new();
     if !preview_ids.is_empty() {
         let attachment_rows = sqlx::query(
-            "SELECT message_id, id, kind, mime, size_bytes, has_preview, name, sticker, round
+            "SELECT message_id, id, kind, mime, size_bytes, has_preview, name, sticker, round,
+                    animation
              FROM attachments
              WHERE message_id = ANY($1)
              ORDER BY message_id, position, id",
@@ -1661,6 +1753,9 @@ pub async fn list_chats(
                     // And this one, so a row can say "Video message" where
                     // it would say "Video" (protocol.md, "Video messages").
                     round: row.get("round"),
+                    // And this one, so a row can say "GIF" where it would
+                    // say "Video" (protocol.md, "Animations"; issue #96).
+                    animation: row.get("animation"),
                     // Not this: a row draws no bubble, so it needs the
                     // shape of a voice note no more than its duration
                     // (protocol.md, "A voice note's waveform").
@@ -1936,6 +2031,7 @@ pub async fn post_message(
         req.mentions.as_deref().unwrap_or(&[]),
         req.sticker.unwrap_or(false),
         req.round.unwrap_or(false),
+        req.animation.unwrap_or(false),
         language.as_deref(),
     )
     .await?;

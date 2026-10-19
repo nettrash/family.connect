@@ -243,4 +243,31 @@ public class OutboxStoreTests : IDisposable
         Assert.True(landed.Round);
         Assert.Equal([91L], landed.AttachmentIds!);
     }
+
+    /// <summary>
+    /// AN ANIMATION QUEUED OFFLINE IS STILL ONE TOMORROW (docs/protocol.md, "Animations") — the circle's rule, one column
+    /// over: the flag is written down with the row and survives what the row goes through on its way out.
+    /// </summary>
+    [Fact]
+    public void AQueuedAnimationStaysOneAcrossARelaunch()
+    {
+        Store().Queue(new OutboxRow(
+            "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a03", 42, "ha",
+            PendingFiles: ["0123456789abcdef0123456789abcdef"], QueuedAt: Now, Animation: true));
+        Store().Queue(new OutboxRow("round", 42, string.Empty, QueuedAt: Now.AddSeconds(1), Round: true));
+
+        var rows = Store().All();
+        Assert.True(rows[0].Animation);
+        Assert.False(rows[0].Round);
+        Assert.False(rows[0].Sticker);
+        Assert.False(rows[1].Animation);
+        Assert.True(rows[1].Round);
+
+        Store().Uploaded(rows[0].ClientMsgId, 93, "0123456789abcdef0123456789abcdef");
+        Store().Failed(rows[0].ClientMsgId, ApiError.Transport("down"), Now, Ceilings());
+        Store().Retry(rows[0].ClientMsgId);
+        var landed = Store().Find(rows[0].ClientMsgId)!;
+        Assert.True(landed.Animation);
+        Assert.Equal([93L], landed.AttachmentIds!);
+    }
 }
