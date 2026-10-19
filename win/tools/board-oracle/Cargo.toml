@@ -29,6 +29,12 @@
 # and as bars (issue #79). Every port is held to all of it; copy it to the same two places, and CI
 # compares all three.
 #
+#     cd win/tools/board-oracle && cargo run --quiet -- emoji-typing > ../../tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json
+#
+# The sixth prints fc_text::emoji_typing — emoji as you type (issue #101): the emoticon table and
+# keys typed into a field with what it then holds. Every port is held to all of it; copy it to the
+# same two places, and CI compares all three.
+#
 # and the C# suite (OracleTests) will fail on anything the port no longer matches. Its own
 # workspace on purpose: joining web/'s would put a native binary in the wasm crate's tree.
 [package]

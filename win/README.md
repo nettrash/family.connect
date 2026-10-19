@@ -827,6 +827,20 @@ cp win/tests/FamilyConnect.Core.Tests/Fixtures/waveform-vectors.json android/app
 JSON has no NaN or infinity, so a peak that is one is written as the string `"NaN"`, `"Infinity"`
 or `"-Infinity"`; every other number is the shortest decimal that round-trips.
 
+A sixth, `emoji-typing-vectors.json`, is `fc_text::emoji_typing` — emoji as you type (issue #101,
+docs/emoji-as-you-type-2026-10-18.md): the emoticon table, and keys typed into a field with what the
+field then holds (`⌫` is a Backspace, `→` drops the live swap). Every port implements all of it — on
+Windows in App.Logic, whose test project links the file from Core.Tests' fixtures — and it travels
+like the three above:
+
+```bash
+cd win/tools/board-oracle
+cargo run --quiet -- emoji-typing > ../../tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json
+cd ../../..
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json ios/FamilyConnectTests/Fixtures/
+cp win/tests/FamilyConnect.Core.Tests/Fixtures/emoji-typing-vectors.json android/app/src/test/resources/
+```
+
 Four implementations of one rule need an oracle, not four readings. This repo has been bitten by a
 byte-versus-character split that panicked on Cyrillic, and the portfolio by four ports that agreed
 with each other and were all wrong about `pow(10, n)`.

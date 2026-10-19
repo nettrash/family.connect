@@ -1,9 +1,10 @@
 namespace FamilyConnect.App.Logic.Tests;
 
 /// <summary>
-/// A prose field's capital letters as a TextBox drives them (issue #97; <see cref="CapitalField"/>): a fake box that raises the
-/// same calls in the same order the window makes them — the key, the change before it lands, the turn that applies the capital,
-/// the Backspace — so the wiring the Mac cannot run is held to its sequence here.
+/// A prose field's capital letters as a TextBox drives them (issue #97; <see cref="CapitalField"/>): a fake box
+/// (<see cref="TypingBox"/>) that raises the same calls in the same order the window makes them — the key, the change before it
+/// lands, the turn that applies the capital, the Backspace — so the wiring the Mac cannot run is held to its sequence here. The
+/// same field's emoji (#101) are <see cref="EmojiTypingTests"/>'.
 /// </summary>
 public sealed class CapitalFieldTests
 {
@@ -13,89 +14,10 @@ public sealed class CapitalFieldTests
     private const int VkV = 0x56;
     private const int VkLeft = 0x25;
 
-    /// <summary>A TextBox with an undo count: what the window's handlers read and write.</summary>
-    private sealed class Box
-    {
-        public string Text = string.Empty;
-        public int Start;
-        public int Length;
-        public int UndoUnits;
-        public readonly CapitalField Field = new();
-        private CapitalPlan? pending;
-
-        /// <summary>A key typed on a hardware keyboard: PreviewKeyDown, then the change it makes, then the high-priority turn.</summary>
-        public void Type(string typed, int key = VkA, bool control = false, bool alt = false)
-        {
-            Field.Key(CapitalField.Classify(key, control, alt));
-            Change(Text[..Start] + typed + Text[(Start + Length)..], Start + typed.Length);
-            Turn();
-        }
-
-        /// <summary>The control's own edit: BeforeTextChanging with the old text and selection, then the new text.</summary>
-        public void Change(string newText, int caret)
-        {
-            pending = Field.BeforeChange(Text, Start, Length, newText) ?? pending;
-            Text = newText;
-            Start = caret;
-            Length = 0;
-            UndoUnits++;
-        }
-
-        /// <summary>The high-priority turn after a change: the capital through the selection — one more undo unit.</summary>
-        public void Turn()
-        {
-            if (pending is not { } plan)
-            {
-                return;
-            }
-            pending = null;
-            if (!Field.StillApplies(plan, Text, Start, Length))
-            {
-                return;
-            }
-            Field.Applying = true;
-            Text = Text[..plan.At] + plan.Capital + Text[(plan.At + plan.Typed.Length)..];
-            Start = plan.Edit.Caret;
-            UndoUnits++;
-            Field.Applying = false;
-            Field.Applied(plan);
-        }
-
-        /// <summary>Backspace: the take-back, or the control's own deletion.</summary>
-        public void Backspace()
-        {
-            if (Field.Backspace(Text, Start, Length) is { } restore)
-            {
-                Field.Applying = true;
-                Text = Text[..restore.At] + restore.Replacement + Text[(restore.At + restore.Length)..];
-                Start = restore.Caret;
-                Field.Applying = false;
-                return;
-            }
-            Field.Key(CapitalField.Classify(VkBack, false, false));
-            if (Length > 0)
-            {
-                Change(Text[..Start] + Text[(Start + Length)..], Start);
-            }
-            else if (Start > 0)
-            {
-                Change(Text[..(Start - 1)] + Text[Start..], Start - 1);
-            }
-        }
-
-        public void TypeAll(string text)
-        {
-            foreach (var c in text)
-            {
-                Type(c.ToString());
-            }
-        }
-    }
-
     [Fact]
     public void ASentenceStartsWithACapital()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.TypeAll("hi. how are you? fine");
         Assert.Equal("Hi. How are you? Fine", box.Text);
         Assert.Equal(box.Text.Length, box.Start);
@@ -105,7 +27,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void TheCapitalIsItsOwnUndoStep()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Type("h");
         Assert.Equal("H", box.Text);
         Assert.Equal(2, box.UndoUnits);
@@ -114,7 +36,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void BackspaceStraightAfterTakesItBack()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Type("h");
         box.Backspace();
         Assert.Equal("h", box.Text);
@@ -127,7 +49,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void AnythingElseForgetsTheTakeBack()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Type("h");
         box.Type("i");
         box.Backspace();
@@ -135,19 +57,19 @@ public sealed class CapitalFieldTests
         Assert.Equal(string.Empty, box.Text);
 
         // An arrow.
-        box = new Box();
+        box = new TypingBox();
         box.Type("h");
         box.Field.Key(CapitalField.Classify(VkLeft, false, false));
         Assert.Null(box.Field.Backspace(box.Text, box.Start, box.Length));
 
         // A click elsewhere.
-        box = new Box();
+        box = new TypingBox();
         box.Type("h");
         box.Field.SelectionMoved(0, 0);
         Assert.Null(box.Field.TakeBack);
 
         // Losing the focus.
-        box = new Box();
+        box = new TypingBox();
         box.Type("h");
         box.Field.FocusLost();
         Assert.Null(box.Field.TakeBack);
@@ -157,7 +79,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void AModifierForgetsNothing()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Type("h");
         box.Field.Key(CapitalField.Classify(VkShift, false, false));
         box.Field.SelectionMoved(1, 0);
@@ -169,7 +91,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void OnlyTypingIsJudged()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Change("h", 1);
         box.Turn();
         Assert.Equal("h", box.Text);
@@ -178,7 +100,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void APasteIsNotTyping()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Field.Key(CapitalField.Classify(VkV, control: true, alt: false));
         box.Field.Pasting();
         box.Change("h", 1);
@@ -190,7 +112,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void AltGrTypes()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Type("ą", VkA, control: true, alt: true);
         Assert.Equal("Ą", box.Text);
         Assert.Equal(CapitalKey.Chord, CapitalField.Classify(VkV, control: true, alt: false));
@@ -207,7 +129,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void AKeyThatTypesNothingTypesNothing()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Field.Key(CapitalField.Classify(0x09, false, false));
         box.Change("h", 1);
         box.Turn();
@@ -217,7 +139,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void ACompositionIsLeftAlone()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Field.CompositionStarted();
         box.Type("k");
         Assert.Equal("k", box.Text);
@@ -232,7 +154,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void AStaleCapitalIsNotApplied()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.Field.Key(CapitalKey.Typing);
         var plan = box.Field.BeforeChange(string.Empty, 0, 0, "h");
         Assert.NotNull(plan);
@@ -246,7 +168,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void TypingOverASelection()
     {
-        var box = new Box { Text = "Ok. word", Start = 4, Length = 4 };
+        var box = new TypingBox { Text = "Ok. word", Start = 4, Length = 4 };
         box.Type("n");
         Assert.Equal("Ok. N", box.Text);
     }
@@ -255,7 +177,7 @@ public sealed class CapitalFieldTests
     [Fact]
     public void ANewLineStartsASentence()
     {
-        var box = new Box();
+        var box = new TypingBox();
         box.TypeAll("ok");
         box.Type("\r", key: 0x0D);
         box.Type("n");

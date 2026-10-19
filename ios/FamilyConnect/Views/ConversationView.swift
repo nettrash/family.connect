@@ -111,6 +111,8 @@ struct ConversationView: View {
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
     @State private var model = ConversationModel()
+    /// The composer's emoji as you type (#101): its live swap.
+    @State private var emojiTyping = EmojiTypingField()
     /// The open-polls surface, reached from this chat's toolbar.
     @State private var showsOpenPolls = false
     /// The chain open on its own sheet (docs/protocol.md, "Threads").
@@ -1972,14 +1974,17 @@ struct ConversationView: View {
     /// change lifts the slot's activation guard (S1.1: "ok" typed and sent at
     /// once is never slowed, while a double tap on Send still cannot open
     /// the microphone it turned into).
+    ///
+    /// Emoji as you type (#101) wrap it: `:)` typed at the end becomes 😊
+    /// (EmojiTypingField), written through this same setter.
     private var typedDraft: Binding<String> {
-        Binding(
+        emojiTyping.binding(Binding(
             get: { model.draft },
             set: { newValue in
                 guard newValue != model.draft else { return }
                 model.draft = newValue
                 voice.otherAction()
-            })
+            }))
     }
 
     /// ⌘V from a hardware keyboard, for the pastes a text field will not

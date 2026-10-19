@@ -46,6 +46,8 @@
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.ui.components.ProseKeyboard
+import me.nettrash.familyconnect.ui.components.EmojiTypingInput
+import me.nettrash.familyconnect.ui.components.proseValue
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.onClick as onSemanticsClick
 import me.nettrash.familyconnect.ui.components.VoiceBubbleRules
@@ -133,6 +135,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.then
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import me.nettrash.familyconnect.util.MemberMention
@@ -4162,9 +4165,11 @@ private fun PollComposerSheet(
                 text = stringResource(R.string.s_new_poll),
                 style = MaterialTheme.typography.titleLarge,
             )
+            // Emoji as you type (#101), like every prose field.
+            val (questionValue, onQuestionValue) = proseValue(draft.question, onQuestionChange)
             OutlinedTextField(
-                value = draft.question,
-                onValueChange = onQuestionChange,
+                value = questionValue,
+                onValueChange = onQuestionValue,
                 label = { Text(stringResource(R.string.s_question)) },
                 singleLine = false,
                 keyboardOptions = ProseKeyboard.Sentences,
@@ -4175,9 +4180,10 @@ private fun PollComposerSheet(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
+                    val (optionValue, onOptionValue) = proseValue(option) { onOptionChange(index, it) }
                     OutlinedTextField(
-                        value = option,
-                        onValueChange = { onOptionChange(index, it) },
+                        value = optionValue,
+                        onValueChange = onOptionValue,
                         placeholder = { Text(stringResource(R.string.s_option)) },
                         singleLine = true,
                         keyboardOptions = ProseKeyboard.Sentences,
@@ -6726,6 +6732,9 @@ internal fun InputBar(
                 // stops in silence. See BodyLengthLimit.
                 val truncated by rememberUpdatedState(onPasteTruncated)
                 val bodyLimit = remember { BodyLengthLimit { truncated() } }
+                // Emoji as you type (#101) runs first, so the length limit
+                // has the last word on what the field holds.
+                val proseInput = remember(bodyLimit) { EmojiTypingInput().then(bodyLimit) }
                 // The row a voice recording takes the field's place with
                 // (S2.4). The field stays composed UNDER it — invisible,
                 // hidden from TalkBack — so words typed before a recording
@@ -6748,7 +6757,7 @@ internal fun InputBar(
                 Box(modifier = Modifier.weight(1f)) {
                     TextField(
                         state = state,
-                        inputTransformation = bodyLimit,
+                        inputTransformation = proseInput,
                         // Sentence capitals (#97): the keyboard capitalises
                         // only a field that asks. Edit reuses this field.
                         keyboardOptions = ProseKeyboard.Sentences,

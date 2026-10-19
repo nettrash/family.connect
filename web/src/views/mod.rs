@@ -12,6 +12,7 @@ pub mod composer;
 pub mod consent;
 pub mod conversation;
 pub mod dialog;
+pub mod emoji_typing;
 pub mod family;
 pub mod gate;
 pub mod login;

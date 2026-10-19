@@ -192,8 +192,12 @@ public static class Capitals
             && pieces.Split('.').All(piece => piece.Length is 1 or 2 && piece.All(char.IsAsciiLetter));
     }
 
-    /// <summary>Rule 4: inside a fence (an odd number of lines start with three backticks) or a code span (an odd number of backticks on the caret's line).</summary>
-    private static bool InCode(string before)
+    /// <summary>
+    /// Rule 4: inside a fence (an odd number of lines start with three backticks) or a code span (an odd number of backticks on
+    /// the caret's line). Emoji as you type (#101, <see cref="EmojiTyping"/>) skips code by the same test, as the web's
+    /// <c>fc_text::emoji_typing</c> reuses <c>composer::in_code</c>.
+    /// </summary>
+    internal static bool InCode(string before)
     {
         var fences = before.Split(LineBreaks).Count(line => line.StartsWith("```", StringComparison.Ordinal));
         if (fences % 2 == 1)

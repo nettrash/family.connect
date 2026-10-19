@@ -24,6 +24,8 @@ internal static class PollComposer
             // The body's limit is 4000 characters; UTF-16 units never count fewer, so this never lets one over.
             MaxLength = 4000,
         };
+        // Prose on one line: emoji as you type (issue #101), and no capitals (#97 is multi-line only).
+        CapitalLetters.AttachEmoji(question);
         var rows = new StackPanel { Spacing = 6 };
         var add = new HyperlinkButton { Content = say.Get("Add option") };
         var form = Dialogs.Column(
@@ -51,6 +53,7 @@ internal static class PollComposer
                 var at = index;
                 var box = new TextBox { Text = draft.Options[at], PlaceholderText = say.Get("Option") };
                 AutomationProperties.SetName(box, say.Get("Option"));
+                CapitalLetters.AttachEmoji(box);
                 box.TextChanged += (_, _) =>
                 {
                     draft.Set(at, box.Text);

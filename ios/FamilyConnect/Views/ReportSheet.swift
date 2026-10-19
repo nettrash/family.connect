@@ -195,6 +195,8 @@ struct AssistantReportSheet: View {
 
     @State private var reason: ReportReason = .inappropriate
     @State private var note: String = ""
+    /// The note's emoji as you type (#101).
+    @State private var emojiTyping = EmojiTypingField()
 
     /// The server's cap, enforced here so nobody types past it and is
     /// refused (`POST /reports/assistant`).
@@ -224,7 +226,7 @@ struct AssistantReportSheet: View {
                     TextField(
                         String(localized: "Say something about it (optional)",
                                comment: "Assistant report sheet: the note field"),
-                        text: $note, axis: .vertical)
+                        text: emojiTyping.binding($note), axis: .vertical)
                         .proseTextEntry()
                         .lineLimit(3...6)
                         .onChange(of: note) { _, typed in

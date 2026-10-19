@@ -1905,10 +1905,12 @@ fn note_sheet(props: &SheetProps) -> Html {
     };
     let redraw = use_force_update();
     let field = use_node_ref();
-    // The note's words — a note, a caption, a list's or an event's title —
-    // capitalised at a sentence's start on a computer (#97).
-    capitals::use_capitals(field.clone());
     let dialog = use_node_ref();
+    // The note's words — a note, a caption, a list's or an event's title —
+    // capitalised at a sentence's start on a computer (#97); those and a
+    // list's lines, every prose field in the sheet, get emoji as they are
+    // typed (#101).
+    capitals::use_capitals(dialog.clone());
     let editable = props.mine && !props.gone;
 
     // Focus INTO the sheet as it opens — the words, for the author, and the
@@ -4952,6 +4954,61 @@ mod tests {
         );
         handle.destroy();
         root.remove();
+    }
+
+    /// #101: every prose field in the sheet makes emoji as it is typed —
+    /// the title and a list's line alike — and what is saved is what the
+    /// fields show. "Where" is not prose, and keeps its `:)`.
+    #[wasm_bindgen_test]
+    async fn a_lists_title_and_lines_make_emoji_as_they_are_typed() {
+        use crate::views::capitals::tests::as_computer;
+        use crate::views::emoji_typing::tests::type_keys;
+        as_computer(Some(false));
+        let log = Log::default();
+        let (root, handle) = render(props(Vec::new(), &[], &log)).await;
+        click(&all(&root, ".board-actions button")[2]);
+        TimeoutFuture::new(30).await;
+        let title = one(&root, ".note-sheet textarea");
+        title.focus().unwrap();
+        type_keys(&title, "Party :party:");
+        TimeoutFuture::new(20).await;
+        let line = all(&root, ".note-sheet .task-line").remove(0);
+        line.focus().unwrap();
+        type_keys(&line, "Cake <3 :fire:⌫");
+        TimeoutFuture::new(20).await;
+        click(&one(&root, ".note-sheet .dialog-actions .primary"));
+        TimeoutFuture::new(30).await;
+        let created: Vec<NewNote> = log
+            .borrow()
+            .iter()
+            .filter_map(|action| match action {
+                Action::CreateNote { note, .. } => Some(note.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].text, "Party 🥳");
+        let items = created[0].items.clone().expect("a list sends its lines");
+        assert_eq!(items[0].text, "Cake ❤️ :fire:");
+        handle.destroy();
+        root.remove();
+
+        // An event's "Where" is not a prose field.
+        let log = Log::default();
+        let (root, handle) = render(props(Vec::new(), &[], &log)).await;
+        click(&all(&root, ".board-actions button")[1]);
+        TimeoutFuture::new(30).await;
+        let place = all(&root, ".note-sheet input[type=text]")
+            .into_iter()
+            .find(|input| !input.class_list().contains("task-line"))
+            .expect("the event's Where");
+        place.focus().unwrap();
+        type_keys(&place, "Home :)");
+        TimeoutFuture::new(20).await;
+        assert_eq!(place.unchecked_ref::<HtmlInputElement>().value(), "Home :)");
+        handle.destroy();
+        root.remove();
+        as_computer(None);
     }
 
     /// A rewrite sends the ids it keeps, which is what carries a tick

@@ -26,6 +26,8 @@
 package me.nettrash.familyconnect.ui.board
 
 import me.nettrash.familyconnect.ui.components.ProseKeyboard
+import me.nettrash.familyconnect.ui.components.EmojiTypingField
+import me.nettrash.familyconnect.ui.components.proseValue
 import androidx.annotation.StringRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
@@ -95,6 +97,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -343,9 +346,12 @@ internal fun EventDialog(
         title = { Text(stringResource(R.string.s_add_event)) },
         text = {
             Column {
+                // Emoji as you type (#101), like every prose field — but not
+                // the place below, which is a name.
+                val (titleValue, onTitleValue) = proseValue(title) { title = NoteText.capped(it) }
                 OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = NoteText.capped(it) },
+                    value = titleValue,
+                    onValueChange = onTitleValue,
                     label = { Text(stringResource(R.string.s_event)) },
                     singleLine = true,
                     keyboardOptions = ProseKeyboard.Sentences,
@@ -2014,6 +2020,8 @@ internal fun NoteDialog(
     var text by remember(draft.noteId) {
         mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length)))
     }
+    // Emoji as you type (#101): the live replacement a Backspace takes back.
+    val noteEmoji = remember(draft.noteId) { EmojiTypingField() }
     var color by remember(draft.noteId) { mutableStateOf(draft.color) }
     // The lines as the author is writing them. A new list opens with one
     // empty row, so the first thing to do is one tap away rather than two.
@@ -2323,9 +2331,11 @@ internal fun NoteDialog(
                                 },
                             )
                             if (canEdit) {
-                                OutlinedTextField(
-                                    value = line.text,
-                                    onValueChange = { value ->
+                                // Emoji as you type (#101). Keyed by the
+                                // line, so removing one above does not hand
+                                // this field another line's caret.
+                                val (lineValue, onLineValue) = key(line.key) {
+                                    proseValue(line.text) { value ->
                                         lines = lines.toMutableList().also {
                                             it[at] = line.copy(
                                                 text = NoteText.cappedTo(
@@ -2333,7 +2343,11 @@ internal fun NoteDialog(
                                                 ),
                                             )
                                         }
-                                    },
+                                    }
+                                }
+                                OutlinedTextField(
+                                    value = lineValue,
+                                    onValueChange = onLineValue,
                                     label = { Text(stringResource(R.string.s_thing_to_do)) },
                                     singleLine = true,
                                     keyboardOptions = ProseKeyboard.Sentences,
@@ -2403,7 +2417,10 @@ internal fun NoteDialog(
                         // server would refuse never becomes a save that
                         // fails, which on this screen used to fail SILENTLY
                         // (docs/protocol.md, "Board").
-                        onValueChange = { value ->
+                        onValueChange = { typed ->
+                            // Emoji as you type (#101) first; the cap has
+                            // the last word.
+                            val value = noteEmoji.onValueChange(text, typed)
                             val capped = NoteText.capped(value.text)
                             // A cut moves the end, so the caret is put
                             // there rather than left past it.

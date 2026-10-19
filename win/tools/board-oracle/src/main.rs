@@ -42,6 +42,12 @@ fn main() {
         waveform_vectors();
         return;
     }
+    // `emoji-typing` prints fc_text::emoji_typing — emoji as you type (issue #101) — which every port implements
+    // whole; copied likewise.
+    if std::env::args().nth(1).as_deref() == Some("emoji-typing") {
+        emoji_typing_vectors();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("markdown") {
         markdown_vectors(std::env::args().nth(2).expect("the corpus path"));
         return;
@@ -2918,4 +2924,55 @@ fn waveform_vectors() {
         .map(|case| serde_json::to_string(case).unwrap())
         .collect();
     println!("[\n  {}\n]", lines.join(",\n  "));
+}
+
+/// The vectors for `fc_text::emoji_typing` (docs/emoji-as-you-type-2026-10-18.md): the emoticon
+/// table itself, and keys typed into an empty field with what the field then holds — the design
+/// table, every emoticon behind every kind of character the guards tell apart (and taken back),
+/// and a spread of the shortcode table, so a port that reads the names file differently shows up.
+/// The keys use the module's own notation: `⌫` is a Backspace, `→` drops the live swap.
+fn emoji_typing_vectors() {
+    use fc_text::emoji_typing as e;
+    use serde_json::json;
+
+    let emoticons: Vec<serde_json::Value> =
+        e::EMOTICONS.iter().map(|(text, emoji)| json!({"text": text, "emoji": emoji})).collect();
+
+    let mut typing: Vec<serde_json::Value> = Vec::new();
+    let mut add = |keys: String| {
+        let text = e::typing(&keys);
+        typing.push(json!({"keys": keys, "text": text}));
+    };
+    for (keys, _) in e::TYPING_TABLE {
+        add(keys.to_string());
+    }
+    // Behind each kind of character the guards and the code rule tell apart.
+    let prefixes = ["", " ", "a", "Z", "7", "Я", "(", ":", ";", "}", "`", "``", "\n", "x ", "😊"];
+    for (text, _) in e::EMOTICONS {
+        for prefix in prefixes {
+            add(format!("{prefix}{text}"));
+            add(format!("{prefix}{text}⌫"));
+        }
+        // Growing, and a face after a face.
+        add(format!("{text}("));
+        add(format!("{text}{text}"));
+    }
+    // Every 97th name, and every name with anything but lower-case ASCII, digits and `_` in it.
+    let names = include_str!("../../../../web/text/data/emoji-names.tsv");
+    for (index, name) in names
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('\t').map(|(name, _)| name))
+        .enumerate()
+    {
+        if index % 97 == 0 || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+            add(format!(":{name}:"));
+            add(format!("x :{name}:⌫"));
+        }
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({"emoticons": emoticons, "typing": typing})).unwrap()
+    );
 }

@@ -48,6 +48,8 @@ struct ThreadView: View {
     @State private var isLoading = true
     @State private var loadFailed = false
     @State private var draft = ""
+    /// The reply field's emoji as you type (#101).
+    @State private var emojiTyping = EmojiTypingField()
     /// Rows this reader has peeked at — per row, per surface, never stored
     /// (protocol.md, "Blocking a member").
     @State private var revealed: Set<String> = []
@@ -451,7 +453,7 @@ struct ThreadView: View {
                     sendSticker(item)
                 }
             }
-            TextField("Reply in thread", text: $draft, axis: .vertical)
+            TextField("Reply in thread", text: emojiTyping.binding($draft), axis: .vertical)
                 .proseTextEntry()
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
