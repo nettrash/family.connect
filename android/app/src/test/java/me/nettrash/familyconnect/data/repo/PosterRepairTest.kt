@@ -161,7 +161,9 @@ class PosterRepairTest {
         stageFailedUpload(repo, 71)
 
         connectivity.onAvailable.emit(Unit)
-        awaitReal { previewUploads().isNotEmpty() }
+        // The marker goes AFTER the upload, on its own IO hop: waiting for
+        // the upload alone let CI read the marker before it was deleted.
+        awaitReal { previewUploads().isNotEmpty() && !repo.isPosterUnsent(71) }
 
         assertThat(previewUploads()).containsExactly(71L to poster.size)
         assertThat(repo.isPosterUnsent(71)).isFalse()
