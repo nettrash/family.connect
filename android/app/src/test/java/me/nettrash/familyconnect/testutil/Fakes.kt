@@ -96,6 +96,7 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.data.settings.TokenStore
 import java.io.File
+import java.util.Collections
 
 class FakeTokenStore(initial: String? = null) : TokenStore {
     var token: String? = initial
@@ -1495,8 +1496,12 @@ class FakeAttachmentApi : AttachmentApi {
     }
     var previewHandler: (Long, ByteArray) -> ApiResult<Unit> = { _, _ -> ApiResult.Ok(Unit) }
 
-    /** Every call this fake saw, in order: "upload", "preview", "download". */
-    val calls = mutableListOf<String>()
+    /**
+     * Every call this fake saw, in order: "upload", "preview", "download".
+     * Synchronized, as [downloads] is: the repository downloads on
+     * Dispatchers.IO, two at once for an album.
+     */
+    val calls: MutableList<String> = Collections.synchronizedList(mutableListOf())
     val uploadedFiles = mutableListOf<File>()
     val uploadedMetadata = mutableListOf<Triple<String, Int?, Int?>>()
     /** Every name a file upload carried, in order. */
@@ -1563,8 +1568,12 @@ class FakeAttachmentApi : AttachmentApi {
      * The preview half is the point: a video's poster and its bytes are
      * two different requests, and what a test about posters needs to know
      * is how many times the poster was asked for.
+     *
+     * Synchronized: the repository downloads on Dispatchers.IO, and an
+     * album's photos at the same time — two `+=` on a plain list lost one
+     * (AttachmentPreviewGateTest saw `[(46, true)]` for 45 and 46).
      */
-    val downloads = mutableListOf<Pair<Long, Boolean>>()
+    val downloads: MutableList<Pair<Long, Boolean>> = Collections.synchronizedList(mutableListOf())
 
     /**
      * What `download` answers, and — on success — what it writes.

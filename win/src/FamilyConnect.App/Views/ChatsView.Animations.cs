@@ -20,9 +20,10 @@ namespace FamilyConnect.App.Views;
 // still, when Windows' animation effects are off or the video is over 8 MiB (AnimationPrep.PlaysInTile); a click opens it
 // larger, in the viewer, playing, muted and looping, with no controls.
 //
-// ONE PLAYER PER ANIMATION, NOT PER TILE. The conversation is rebuilt on every change, so its tiles come and go constantly; a
-// player kept under the attachment's id is handed to whichever of its tiles is on screen (MediaPlayerElement.SetMediaPlayer),
-// so a redraw neither restarts it nor flashes its poster. It is made only when one of its tiles is in view, and let go —
+// ONE PLAYER PER ANIMATION, NOT PER TILE. The conversation keeps a row whose message did not change, but a redraw asked for
+// outright still builds them all, and the thread panel draws the same animation again; a player kept under the attachment's id
+// is handed to whichever of its tiles is on screen (MediaPlayerElement.SetMediaPlayer), so a redraw neither restarts it nor
+// flashes its poster. It is made only when one of its tiles is in view, and let go —
 // stopped and disposed — once none is, on the turn after, so a redraw that puts a new tile up first keeps it.
 
 public sealed partial class ChatsView
@@ -47,6 +48,9 @@ public sealed partial class ChatsView
 
     /// <summary>The animations whose video is being fetched for a player.</summary>
     private readonly HashSet<long> animationsLoading = [];
+
+    /// <summary>Which tile each playing animation's player was last handed to — and still is, while that tile stays loaded.</summary>
+    private readonly Dictionary<long, AnimationCopy> animationShownOn = [];
 
     /// <summary>
     /// An animation's tile: its poster, the "GIF" label, and — while it is on screen and may move — its video, playing muted
@@ -94,8 +98,15 @@ public sealed partial class ChatsView
         if (video.HasPreview)
         {
             _ = ShowPictureAsync(poster, video, preview: true);
+            SettlesWhen(() => poster.Source is not null);
         }
         var copy = new AnimationCopy(video, surface);
+        // A tile on screen that should be playing and has no player, with none on its way, is one whose video did not come:
+        // the next redraw builds it again, and its Loaded asks again — the retry every redraw used to give it.
+        SettlesWhen(() => !(copy.Loaded && copy.InView)
+            || animationPlayers.ContainsKey(video.Id)
+            || animationsLoading.Contains(video.Id)
+            || !AnimationPrep.PlaysInTile(StickerImaging.AnimationsWanted(), video.Size));
         frame.Loaded += (_, _) =>
         {
             if (gone)
@@ -110,6 +121,11 @@ public sealed partial class ChatsView
         {
             copy.Loaded = false;
             copy.InView = false;
+            // Back in the window, it is handed its player again rather than trusted to still draw it.
+            if (animationShownOn.TryGetValue(video.Id, out var on) && ReferenceEquals(on, copy))
+            {
+                animationShownOn.Remove(video.Id);
+            }
             animationCopies.Remove(video.Id, copy);
             DrawAnimation(video.Id);
         };
@@ -172,11 +188,20 @@ public sealed partial class ChatsView
         _ = StartAnimationAsync(showing.Video);
     }
 
-    private static void Attach(AnimationCopy copy, MediaPlayer player)
+    private void Attach(AnimationCopy copy, MediaPlayer player)
     {
         try
         {
-            copy.Surface.SetMediaPlayer(player);
+            // Handed over only when this very tile is not the one it was last handed to: a kept tile is attached again by
+            // every viewport change and every redraw that looks at it, and SetMediaPlayer sets the surface up again — a flash
+            // and a stall for a picture that never stopped. Asked of the tile and not of the surface's MediaPlayer, because a
+            // player handed to another tile meanwhile may still be named by this one without drawing on it.
+            if (!animationShownOn.TryGetValue(copy.Video.Id, out var on) || !ReferenceEquals(on, copy)
+                || !ReferenceEquals(copy.Surface.MediaPlayer, player))
+            {
+                copy.Surface.SetMediaPlayer(player);
+                animationShownOn[copy.Video.Id] = copy;
+            }
             copy.Surface.Visibility = Visibility.Visible;
             player.Play();
         }
@@ -256,6 +281,7 @@ public sealed partial class ChatsView
     /// <summary>An animation no tile shows any more: its player stopped and given back.</summary>
     private void ReleaseAnimation(long id)
     {
+        animationShownOn.Remove(id);
         if (!animationPlayers.Remove(id, out var player))
         {
             return;
@@ -286,6 +312,7 @@ public sealed partial class ChatsView
             ReleaseAnimation(id);
         }
         animationCopies.Clear();
+        animationShownOn.Clear();
     }
 
     /// <summary>

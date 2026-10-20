@@ -132,14 +132,12 @@ struct NoteBackdrop: View {
 
     @Environment(AttachmentStore.self) private var store
 
-    /// Reading `store.generation` here is load-bearing for the same reason
-    /// it is in NotePicture (issue #69): the caches are
-    /// `@ObservationIgnored`, so a view that never touches it never redraws
-    /// when its fetch lands — and a REDRAWN backdrop arrives as a new
-    /// attachment id, so this is also what makes "draw another" visible.
+    /// The lookup registers this view on its own key, as in NotePicture
+    /// (issue #69) — a view that registers nothing never redraws when its
+    /// fetch lands. A REDRAWN backdrop arrives as a new attachment id, which
+    /// is a new key, so this is also what makes "draw another" visible.
     private var image: Image? {
-        _ = store.generation
-        return store.previewOrPhoto(id: attachmentID)
+        store.previewOrPhoto(id: attachmentID)
     }
 
     var body: some View {
@@ -208,19 +206,18 @@ struct NotePicture: View {
         return min(84, max(24, room))
     }
 
-    /// READING `store.generation` HERE IS LOAD-BEARING, exactly as it is in
-    /// AttachmentView: the store's caches are `@ObservationIgnored`, so
-    /// `generation` is the only thing a view can depend on, and a view that
-    /// never touches it never redraws when its fetch lands. That is issue
-    /// #69: every picture pinned on another device — and the pinner's own,
-    /// on a Mac board window left open — stayed a spinner for good.
+    /// The LOOKUP IS THE DEPENDENCY, exactly as in AttachmentView: the
+    /// store's caches are `@ObservationIgnored`, and each lookup registers
+    /// the calling view on its own key — a view that registered nothing
+    /// would never redraw when its fetch lands. That was issue #69: every
+    /// picture pinned on another device — and the pinner's own, on a Mac
+    /// board window left open — stayed a spinner for good.
     ///
     /// The preview first, the photo itself once the server has said there is
     /// no preview (`AttachmentStore.previewOrPhoto`) — a pin whose preview
     /// upload was lost still has its picture.
     private var image: Image? {
-        _ = store.generation
-        return store.previewOrPhoto(id: attachmentID)
+        store.previewOrPhoto(id: attachmentID)
     }
 
     /// FITTED, never filled (docs/protocol.md, "Board"): the whole

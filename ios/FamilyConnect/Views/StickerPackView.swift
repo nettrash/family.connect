@@ -361,7 +361,7 @@ struct StickerDraft: Identifiable {
     let id = UUID()
     let made: StickerPack.Made
     /// Frame zero, decoded ONCE where the sticker was made, for the label
-    /// sheet to show until (and unless) the player has a frame. Decoding it
+    /// sheet to show until (and unless) its frames are decoded. Decoding it
     /// in the sheet's body meant decoding it again on every keystroke in
     /// the field beside it.
     let still: CGImage?
@@ -377,7 +377,10 @@ struct StickerAddSheet: View {
     let onCancel: () -> Void
 
     @State private var label = ""
-    @State private var player = StickerPlayer()
+    /// The draft's frames, decoded once off the main actor and played by
+    /// Core Animation — the chat's own player (StickerImage). nil for a
+    /// still sticker, and until the decode lands.
+    @State private var frames: StickerFrames?
 
     /// Over the server's 64, counted as the server counts — trimmed, in
     /// Unicode scalars (`StickerPack.label`).
@@ -391,13 +394,12 @@ struct StickerAddSheet: View {
         NavigationStack {
             VStack(spacing: 16) {
                 Group {
-                    if let frame = player.frame {
-                        Image(decorative: frame, scale: 1).resizable()
+                    if let frames {
+                        StickerAnimationSurface(frames: frames)
                     } else if let still {
-                        still.resizable()
+                        still.resizable().aspectRatio(contentMode: .fit)
                     }
                 }
-                .aspectRatio(contentMode: .fit)
                 .frame(width: 160, height: 160)
                 .accessibilityHidden(true)
 
@@ -439,7 +441,12 @@ struct StickerAddSheet: View {
         #else
         .presentationDetents([.medium])
         #endif
-        .task { player.play(draft.made.data) }
-        .onDisappear { player.stop() }
+        .task {
+            // The box is 160 points; three pixels a point is the most any
+            // screen this runs on has.
+            frames = await StickerFrames.decode(
+                data: draft.made.data,
+                maxEdge: StickerFrames.requestedEdge(points: 160, scale: 3))
+        }
     }
 }

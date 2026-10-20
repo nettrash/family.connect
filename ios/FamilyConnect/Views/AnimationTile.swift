@@ -8,7 +8,8 @@
 //  tile — its box, its poster, its gestures — and lay these over it:
 //
 //    - `AnimationSurface`, the video itself, muted and looping, over the
-//      tile's poster — only while the tile is ON SCREEN, never when the
+//      tile's poster — playing only while the tile is ON SCREEN (paused,
+//      not rebuilt, for a few seconds after it leaves), never when the
 //      system asks for less motion, and never above 8 MiB (then the poster
 //      stays and a tap plays it in the viewer). Below that the tile
 //      DOWNLOADS the video to draw itself (`AttachmentStore.animationURL`),
@@ -49,6 +50,20 @@ nonisolated enum AnimationPlayback {
     static func playsInTile(size: Int64, reduceMotion: Bool) -> Bool {
         !reduceMotion && size <= tileCeilingBytes
     }
+
+    /// How long a tile that has left the viewport keeps its (paused) player
+    /// before releasing it. Long enough that scrolling a tile off the edge
+    /// and back — the ordinary motion of reading — never rebuilds anything;
+    /// short enough that a thread scrolled through end to end does not keep
+    /// a decoder alive for every animation it passed.
+    static let offscreenGrace: Duration = .seconds(5)
+
+    /// Whether a tile holds a player at all: it may play, and it is on
+    /// screen or left it less than `offscreenGrace` ago. Pure, so it is
+    /// tested without a view.
+    static func keepsPlayer(mayPlay: Bool, visible: Bool, withinGrace: Bool) -> Bool {
+        mayPlay && (visible || withinGrace)
+    }
 }
 
 // MARK: - The label
@@ -74,19 +89,38 @@ struct AnimationBadge: View {
 
 /// An `AVQueuePlayer` looping one item through `AVPlayerLooper`, muted.
 /// One per surface, torn down with it.
+///
+/// PAUSED, NOT REBUILT, across a visibility flip. A tile used to tear its
+/// player down the moment it scrolled out of the viewport and build a new
+/// asset, item, queue player and looper the moment it scrolled back —
+/// several main-thread allocations plus a fresh decoder session and a
+/// poster flash for every tile, every time the reader's thumb moved a row
+/// across an edge. Now the surface keeps the player for as long as the row
+/// is in the window and only PAUSES it off screen (`show(_:playing:)`),
+/// releasing it after a grace period off screen (`AnimationPlayback`) so a
+/// long thread does not hold a decoder per animation it ever showed.
 @MainActor
 @Observable
 final class LoopingVideo {
     /// The player a surface shows, or nil while there is none.
     private(set) var player: AVQueuePlayer?
     @ObservationIgnored private var looper: AVPlayerLooper?
-    /// What is playing, so asking again for the same thing is a no-op.
+    /// What is loaded, so asking again for the same thing is a no-op.
     @ObservationIgnored private var source: URL?
 
-    /// Play `url` (a local file, or a stream with `headers`) on a loop —
-    /// or, for nil, stop.
+    /// Load `url` (a local file, or a stream with `headers`) on a loop and
+    /// play it — or, for nil, stop.
     func show(_ url: URL?, headers: [String: String] = [:]) {
-        guard url != source else { return }
+        show(url, headers: headers, playing: true)
+    }
+
+    /// Load `url` on a loop, playing or paused — or, for nil, stop. The same
+    /// URL again only plays or pauses what is loaded: it never rebuilds.
+    func show(_ url: URL?, headers: [String: String] = [:], playing: Bool) {
+        guard url != source else {
+            setPlaying(playing)
+            return
+        }
         stop()
         guard let url else { return }
         source = url
@@ -105,7 +139,17 @@ final class LoopingVideo {
         #endif
         looper = AVPlayerLooper(player: player, templateItem: item)
         self.player = player
-        player.play()
+        if playing { player.play() }
+    }
+
+    /// Play or pause what is loaded; nothing when nothing is.
+    private func setPlaying(_ playing: Bool) {
+        guard let player else { return }
+        if playing {
+            if player.rate == 0 { player.play() }
+        } else if player.rate != 0 {
+            player.pause()
+        }
     }
 
     /// Stop and release. Idempotent.
@@ -218,16 +262,19 @@ struct AnimationSurface: View {
     /// On screen, by geometry: the thread is a non-lazy window of rows, so
     /// `onAppear` says nothing about whether the reader can see this one.
     @State private var isVisible = false
+    /// True while off screen for less than `AnimationPlayback.offscreenGrace`
+    /// — the hysteresis that keeps a paused player instead of rebuilding.
+    @State private var withinGrace = false
     @State private var video = LoopingVideo()
 
     var body: some View {
-        // `generation` is what redraws this when the download lands — the
-        // store's caches are ObservationIgnored (AttachmentView explains).
-        let _ = store.generation
-        let plays = isVisible
-            && AnimationPlayback.playsInTile(size: attachment.size, reduceMotion: reduceMotion)
-        // Asked only when it would play: that is what starts the download.
-        let url = plays ? store.animationURL(id: attachment.id) : nil
+        let mayPlay = AnimationPlayback.playsInTile(size: attachment.size, reduceMotion: reduceMotion)
+        let keeps = AnimationPlayback.keepsPlayer(
+            mayPlay: mayPlay, visible: isVisible, withinGrace: withinGrace)
+        // Asked only while a player is kept: being asked while on screen is
+        // what starts the download, and the lookup registers this view on
+        // the video's own key, so the download landing redraws this tile.
+        let url = keeps ? store.animationURL(id: attachment.id) : nil
         ZStack {
             if let player = video.player {
                 AnimationPlayerSurface(player: player, cornerRadius: cornerRadius)
@@ -245,10 +292,30 @@ struct AnimationSurface: View {
         } action: { visible in
             isVisible = visible
         }
-        .onChange(of: url, initial: true) { _, url in
-            video.show(url)
+        // Built once per URL, then only played and paused with visibility.
+        .onChange(of: SurfaceState(url: url, playing: isVisible && mayPlay), initial: true) { _, state in
+            video.show(state.url, playing: state.playing)
+        }
+        // The grace period: leaving the viewport arms it, coming back
+        // cancels it (the task is keyed on visibility), and running out
+        // lets the player go.
+        .task(id: isVisible) {
+            guard !isVisible else {
+                withinGrace = true
+                return
+            }
+            try? await Task.sleep(for: AnimationPlayback.offscreenGrace)
+            guard !Task.isCancelled else { return }
+            withinGrace = false
         }
         .onDisappear { video.stop() }
+    }
+
+    /// What the player should be doing, as one value so one change hook
+    /// sees both halves move together.
+    private struct SurfaceState: Equatable {
+        let url: URL?
+        let playing: Bool
     }
 }
 
@@ -269,7 +336,6 @@ struct AnimationViewerPlayer: View {
     @State private var video = LoopingVideo()
 
     var body: some View {
-        let _ = store.generation
         let local = isCurrent && attachment.size <= AnimationPlayback.tileCeilingBytes
             ? store.animationURL(id: attachment.id) : nil
         ZStack {

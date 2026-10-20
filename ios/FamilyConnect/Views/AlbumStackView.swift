@@ -50,9 +50,9 @@ struct AlbumStackView: View {
     }
 
     var body: some View {
-        // Reading `store.generation` is what makes this redraw when a
-        // fetch lands — the LOAD-BEARING rule AttachmentView explains.
-        let _ = store.generation
+        // Each card's lookup registers this view on that card's own key,
+        // so a fetch landing redraws the pile it belongs to and nothing else
+        // (AttachmentView has the rule).
         ZStack(alignment: .bottom) {
             if album.items.count >= 3 {
                 layer(album.items[2], .third)

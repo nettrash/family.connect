@@ -57,6 +57,37 @@ public sealed class Database : IDisposable
         return new Held(serial);
     }
 
+    /// <summary>
+    /// How many times the roster or the block list may have changed — the members and blocked tables. Read and bumped under
+    /// <see cref="Hold"/> only.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>WHAT LETS A STORE KEEP THEM IN MEMORY.</b> A conversation asks "is this sender blocked?" and "who is this?" for
+    /// every bubble it draws, and each of those was a query under the one lock this file has — hundreds of them per redraw,
+    /// on the window's thread, while the socket's thread waited to write. They are tiny tables that change a few times a
+    /// day, so <see cref="ChatStore"/> keeps them in memory and asks this number whether what it keeps is still the table.
+    /// </para>
+    /// <para>
+    /// <b>ON THE DATABASE, NOT THE STORE</b>, because every writer has to bump it and more than one store can sit on one
+    /// file (the tests make several): a counter in each store would let one store's write leave another's copy stale. And
+    /// <see cref="WipeAll"/> bumps it too, which no store sees happen.
+    /// </para>
+    /// </remarks>
+    internal long RosterGeneration { get; private set; }
+
+    /// <summary>The members or the blocked table is about to change: every copy kept of them is stale. Under <see cref="Hold"/>.</summary>
+    internal void RosterChanged() => RosterGeneration++;
+
+    /// <summary>
+    /// The same for the chats table's rows — what <see cref="ChatStore.Kind"/> keeps. Bumped by every write of a chat's
+    /// list row and by <see cref="WipeAll"/>; under <see cref="Hold"/> only.
+    /// </summary>
+    internal long ChatsGeneration { get; private set; }
+
+    /// <summary>A chat's list row is about to be written. Under <see cref="Hold"/>.</summary>
+    internal void ChatsChanged() => ChatsGeneration++;
+
     /// <summary>The cache, held. Disposing it lets the next operation in.</summary>
     public readonly struct Held : IDisposable
     {
@@ -198,6 +229,9 @@ public sealed class Database : IDisposable
     public void WipeAll()
     {
         using var serialised = Hold();
+        // Whatever a store keeps in memory of these tables goes with them.
+        RosterChanged();
+        ChatsChanged();
         using var transaction = connection.BeginTransaction();
         foreach (var table in Tables())
         {

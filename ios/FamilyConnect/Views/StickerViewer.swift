@@ -75,7 +75,9 @@ struct StickerViewer: View {
         #endif
         // Re-asked when a fetch lands: the answer needs the bytes, and the
         // first pass may be the one that started fetching them.
-        .task(id: store.generation) { await decide() }
+        // Re-asked when THIS sticker's bytes land — the store's per-key
+        // version, not a counter every fetch in the app moves.
+        .task(id: store.version(id: attachment.id)) { await decide() }
     }
 
     @ViewBuilder
@@ -129,7 +131,7 @@ struct StickerViewer: View {
             size: attachment.size > 0 ? attachment.size : nil,
             items: Array(files.keys),
             fileOf: { files[$0] ?? URL(fileURLWithPath: "/dev/null") })
-        // nil: the bytes have not arrived. The next `generation` asks again.
+        // nil: the bytes have not arrived. Their landing asks again.
         guard let held, offer == .unknown else { return }
         offer = held ? .held : .offered
     }

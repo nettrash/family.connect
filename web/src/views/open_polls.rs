@@ -44,6 +44,9 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
     };
     let mut messages = props.messages.clone();
     messages.sort_by_key(|message| message.id);
+    let names = std::rc::Rc::new(props.names.clone());
+    let blocked = std::rc::Rc::new(props.blocked.clone());
+    let member_ids = std::rc::Rc::new(props.member_ids.clone());
     html! {
         <aside class="thread-panel open-polls-panel" aria-label={t("Open polls")} onkeydown={on_key}>
             <header class="thread-bar">
@@ -64,8 +67,8 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
                             <Bubble
                                 message={message.clone()}
                                 my_user_id={props.my_user_id}
-                                names={props.names.clone()}
-                                blocked={props.blocked.clone()}
+                                names={names.clone()}
+                                blocked={blocked.clone()}
                                 {hidden}
                                 shows_sender={message.sender_id != props.my_user_id && !hidden}
                                 run_end={true}
@@ -79,7 +82,7 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
                                 in_thread={true}
                                 can_reply={false}
                                 member_count={props.member_count}
-                                member_ids={props.member_ids.clone()}
+                                member_ids={member_ids.clone()}
                                 on_action={props.on_action.clone()}
                                 on_reply={Callback::from(|_: i64| {})}
                                 on_edit={Callback::from(|_: i64| {})}

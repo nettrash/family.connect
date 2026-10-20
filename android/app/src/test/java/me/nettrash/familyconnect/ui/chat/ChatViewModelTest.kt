@@ -238,6 +238,8 @@ class ChatViewModelTest {
             clock = Clock { NOON },
             pendingAttachmentDao = db.pendingAttachmentDao(),
             staging = MediaStaging(RuntimeEnvironment.getApplication()),
+            // Pages commit as one transaction, as in the app (DbTransactions).
+            transactions = me.nettrash.familyconnect.data.db.DbTransactions.of(db),
         )
         runCurrent()
         // Chat row must exist for read reporting / unread rules.
@@ -271,6 +273,9 @@ class ChatViewModelTest {
             clock = Clock { NOON },
             memberDao = db.memberDao(),
             connectivity = FakeConnectivityObserver(),
+            // The row builder runs on the test's own scheduler, so every
+            // assertion on `items` sees a finished build.
+            computeDispatcher = dispatcher,
             // Real instance over a client that is never called: these
             // tests never render a bubble, so nothing requests a preview.
             linkPreviewRepository = LinkPreviewRepository(
@@ -1045,6 +1050,39 @@ class ChatViewModelTest {
         // ...and nothing draws a divider.
         assertThat(viewModel.items.value.filterIsInstance<ChatListItem.NewMessagesDivider>())
             .isEmpty()
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The rows are built off the main thread and the unchanged ones come
+     * back as the instances already drawn (reuseUnchangedItems): a reaction
+     * on one message must leave every other row the very object it was, so
+     * its bubble skips recomposition.
+     */
+    @Test
+    fun aRowThatDidNotChangeKeepsItsInstanceWhenAnotherOneDoes() = runTest(dispatcher) {
+        seed(
+            entity("m12", 12, PEER, NOON + MINUTE),
+            entity("m11", 11, PEER, NOON),
+        )
+        val viewModel = newViewModel(unreadCount = 0, myLastReadId = 12)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+        val before = viewModel.items.value.filterIsInstance<ChatListItem.MessageItem>().associateBy { it.key }
+        assertThat(before.keys).containsExactly("m12", "m11")
+
+        launch {
+            db.messageDao().applyReactionState(
+                serverId = 12,
+                json = ReactionsCodec.encode(listOf(ReactionDto(userId = PEER, emoji = "👍"))),
+                seq = 1,
+            )
+        }
+        runCurrent()
+
+        val after = viewModel.items.value.filterIsInstance<ChatListItem.MessageItem>().associateBy { it.key }
+        assertThat(after.getValue("m12").reactionChips.map { it.emoji }).containsExactly("👍")
+        assertThat(after.getValue("m11")).isSameInstanceAs(before.getValue("m11"))
         itemsSubscription.cancel()
     }
 

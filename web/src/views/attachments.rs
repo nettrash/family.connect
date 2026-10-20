@@ -166,10 +166,18 @@ pub(crate) fn tile_source(attachment: &Attachment) -> Option<Variant> {
 fn tile(props: &TileProps) -> Html {
     let attachment = &props.attachment;
     let source = tile_source(attachment);
+    let frame = use_node_ref();
+    // Fetched as it comes within a screen of being seen, or at once when this
+    // tab holds it (stickers::use_fetch_ahead).
+    let near = crate::views::stickers::use_fetch_ahead(
+        frame.clone(),
+        attachment.id,
+        source.unwrap_or(Variant::Preview),
+    );
     let url = use_media(
         attachment.id,
         source.unwrap_or(Variant::Preview),
-        source.is_some(),
+        source.is_some() && near,
     );
     let (width, height) = media::tile_size(attachment.width, attachment.height);
     let video = attachment.kind == "video";
@@ -181,6 +189,7 @@ fn tile(props: &TileProps) -> Html {
     let loading = url.is_none() && source.is_some() && attachment.id > 0;
     html! {
         <button
+            ref={frame}
             class={classes!("tile", props.mine.then_some("on-tint"), loading.then_some("is-loading"))}
             // Its own shape at up to 320 wide, and narrower where the pane
             // is — a thread panel, a phone — without losing the shape.

@@ -18,9 +18,9 @@ use crate::model::{AiFailure, Assistant, ChatListItem, Family, Member, Message, 
 use crate::pack::Gate;
 use crate::prep;
 use crate::staged::Prepared;
-use crate::store::{Draft, NotSent};
+use crate::store::{Draft, Messages, NotSent};
 use crate::time;
-use crate::timeline::{self, Context};
+use crate::timeline::{self, Context, Window};
 use crate::views::attach::{
     drag_carries_something, dropped_files, dropped_links, read_clipboard, AttachMenu, Clip,
     NotSentRow, RecordingRow, StagingStrip, PLAY_AFTER,
@@ -43,7 +43,10 @@ use fc_text::assistant_pictures::{self, Candidate};
 #[derive(Properties, PartialEq)]
 pub struct ConversationProps {
     pub item: ChatListItem,
-    pub messages: Vec<Message>,
+    /// The chat's messages, oldest first — the store's own list, shared
+    /// (`store::Messages`): handing it over copies nothing, and a draw of
+    /// the app that changed nothing here is told so by the pointer.
+    pub messages: Messages,
     pub my_user_id: i64,
     /// userId → the name to draw. A sender who is not in the roster reads
     /// as "Someone" rather than as a number.
@@ -116,7 +119,11 @@ pub struct ConversationProps {
     #[prop_or_default]
     pub transcripts: fc_text::transcript::Transcripts,
     pub on_action: Callback<Action>,
-    /// Wall-clock now, for the day pills.
+    /// Wall-clock now, for the day pills — to the MINUTE (main.rs floors
+    /// it). A day starts on a minute, so the pills read exactly what they
+    /// would at the millisecond; and a prop that changed on every draw of
+    /// the app was a pane, and every bubble in it, drawn again on every
+    /// draw of the app.
     pub now_ms: f64,
     /// How long and how big a video message may be on this server — None on
     /// a server without video messages, which is offered no video entry at
@@ -157,6 +164,10 @@ pub fn row_key(message: &Message, my_user_id: i64) -> String {
 /// says "Video message", having no words of its own to show (the plan for
 /// #79, S5.7). A quoted message this client does not hold says what the
 /// server's excerpt says.
+///
+/// The rule as written, one reply at a time: what `QuotedKinds` — which a
+/// draw asks instead, once for every row — is held to.
+#[cfg(test)]
 pub fn quotes_round(message: &Message, held: &[Message]) -> bool {
     message.reply_to.as_ref().is_some_and(|quote| {
         held.iter().any(|other| {
@@ -169,12 +180,98 @@ pub fn quotes_round(message: &Message, held: &[Message]) -> bool {
 /// says "GIF" where it has no words of its own (docs/protocol.md,
 /// "Animations"). A quoted message this client does not hold says what the
 /// server's excerpt says.
+///
+/// Held to like `quotes_round`.
+#[cfg(test)]
 pub fn quotes_animation(message: &Message, held: &[Message]) -> bool {
     message.reply_to.as_ref().is_some_and(|quote| {
         held.iter().any(|other| {
             other.id == quote.message_id && other.id != 0 && other.animation().is_some()
         })
     })
+}
+
+/// Which of the messages held are video messages and which are animations,
+/// by id — `quotes_round` and `quotes_animation` for every row of a draw,
+/// from ONE pass over the messages instead of one per reply.
+#[derive(Debug, Default, PartialEq)]
+pub struct QuotedKinds {
+    rounds: HashSet<i64>,
+    animations: HashSet<i64>,
+}
+
+impl QuotedKinds {
+    pub fn of(held: &[Message]) -> Self {
+        let mut kinds = QuotedKinds::default();
+        for message in held.iter().filter(|message| message.id != 0) {
+            if message.round_video().is_some() {
+                kinds.rounds.insert(message.id);
+            }
+            if message.animation().is_some() {
+                kinds.animations.insert(message.id);
+            }
+        }
+        kinds
+    }
+
+    /// `quotes_round(message, held)`.
+    pub fn round(&self, message: &Message) -> bool {
+        message
+            .reply_to
+            .as_ref()
+            .is_some_and(|quote| self.rounds.contains(&quote.message_id))
+    }
+
+    /// `quotes_animation(message, held)`.
+    pub fn animation(&self, message: &Message) -> bool {
+        message
+            .reply_to
+            .as_ref()
+            .is_some_and(|quote| self.animations.contains(&quote.message_id))
+    }
+}
+
+/// The names a chat's bubbles are drawn with: the roster's — and in the
+/// assistant's own chat, anything not mine is the assistant's, drawn with
+/// the chat's own name rather than looked up in a roster it is not in.
+/// `senders` are the chat's senders other than me, which is all the
+/// messages have to say about it.
+pub fn drawn_names(
+    names: &HashMap<i64, String>,
+    ai_title: Option<&str>,
+    senders: &[i64],
+) -> HashMap<i64, String> {
+    let mut names = names.clone();
+    if let Some(title) = ai_title {
+        for sender in senders {
+            names.insert(*sender, title.to_string());
+        }
+    }
+    names
+}
+
+/// The oldest numbered row drawn from `start` on.
+fn drawn_oldest(messages: &[Message], start: usize) -> Option<i64> {
+    messages
+        .get(start..)?
+        .iter()
+        .map(|message| message.id)
+        .find(|id| *id != 0)
+}
+
+/// The bubble of message `id`, if it is drawn.
+fn drawn_row(id: i64) -> Option<Element> {
+    web_sys::window()?
+        .document()?
+        .get_element_by_id(&format!("m-{id}"))
+}
+
+/// Scroll a drawn bubble into view and tint it for a moment.
+fn show_highlighted(target: &Element, id: i64, highlight: &UseStateHandle<Option<i64>>) {
+    target.scroll_into_view();
+    highlight.set(Some(id));
+    let highlight = highlight.clone();
+    gloo_timers::callback::Timeout::new(HIGHLIGHT_MS, move || highlight.set(None)).forget();
 }
 
 #[function_component(Conversation)]
@@ -325,19 +422,52 @@ pub fn conversation(props: &ConversationProps) -> Html {
         });
     }
 
+    // THE WINDOW: which rows are drawn (timeline::Window) — the newest
+    // `WINDOW` while the reader follows along, more as they scroll up, and
+    // from the divider down when the chat opens at one. Taken here, in the
+    // draw, because what it says is what this draw puts in the DOM.
+    let window = use_mut_ref(Window::default);
+    // The messages as of the latest draw, for the callbacks below — made
+    // once and handed to every bubble, so they cannot hold the draw's own.
+    let held_now = use_mut_ref(Messages::default);
+    *held_now.borrow_mut() = props.messages.clone();
+    // Whether the opening's anchor has been taken into the window: once,
+    // in the draw that first knows it, so the divider the opening scrolls
+    // to is there to scroll to.
+    let anchored = use_mut_ref(|| false);
+    let redraw = use_force_update();
+    // What the list was before rows were added above — the oldest row
+    // drawn and the list's height — for the effect below.
+    let before = use_mut_ref(|| (None::<i64>, 0));
+    let start = {
+        let mut window = window.borrow_mut();
+        let mut start = window.start(&props.messages, *pinned.borrow());
+        if let Some((id, _)) = anchor.filter(|_| !*anchored.borrow()) {
+            *anchored.borrow_mut() = true;
+            if let Some(index) = props.messages.iter().position(|message| message.id == id) {
+                window.include(&props.messages, index);
+                start = window.held_start(&props.messages);
+                // The opening puts the reader at the divider itself: the
+                // rows drawn above it are not rows to hold the reader
+                // still against.
+                *before.borrow_mut() = (None, 0);
+            }
+        }
+        start
+    };
+
     // EARLIER MESSAGES land above the reader, and what they were reading
     // stays where it was on the screen: the scroll moves down by exactly
     // what was added above. Done here rather than left to the browser's
-    // scroll anchoring, which Safari does not do (styles.css).
+    // scroll anchoring, which Safari does not do (styles.css). The same for
+    // rows the window draws above as the reader scrolls up to them — which
+    // is why this follows the oldest row DRAWN, the oldest held whenever the
+    // window reaches the top.
     {
         let list = list.clone();
         let pinned = pinned.clone();
-        let before = use_mut_ref(|| (None::<i64>, 0));
-        let oldest = props
-            .messages
-            .iter()
-            .map(|message| message.id)
-            .find(|id| *id != 0);
+        let before = before.clone();
+        let oldest = drawn_oldest(&props.messages, start);
         use_effect_with((props.messages.len(), oldest), move |(_, oldest)| {
             let Some(element) = list.cast::<Element>() else {
                 return;
@@ -358,6 +488,10 @@ pub fn conversation(props: &ConversationProps) -> Html {
         let pinned = pinned.clone();
         let at_newest = at_newest.clone();
         let on_action = props.on_action.clone();
+        let window = window.clone();
+        let held_now = held_now.clone();
+        let before = before.clone();
+        let redraw = redraw.clone();
         // Until the opening is decided the scroll is the loading rows being
         // followed, not a reader arriving anywhere.
         let decided = opened.is_some();
@@ -369,6 +503,16 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     at_newest.set(bottom);
                     if decided {
                         on_action.emit(Action::AtNewest(bottom));
+                    }
+                }
+                // Within a screen of the top of the window, with rows held
+                // above it: draw some of them, before the reader gets there.
+                if !bottom && element.scroll_top() < element.client_height() {
+                    let held = held_now.borrow();
+                    let oldest = drawn_oldest(&held, window.borrow().held_start(&held));
+                    if window.borrow_mut().grow(&held) {
+                        *before.borrow_mut() = (oldest, element.scroll_height());
+                        redraw.force_update();
                     }
                 }
             }
@@ -387,24 +531,53 @@ pub fn conversation(props: &ConversationProps) -> Html {
     };
 
     // A quote's click: show the quoted message, tinted for a moment — if it
-    // is here at all.
+    // is here at all. Held but above the window, it is drawn first (the
+    // window taken up to it) and shown once it is: `jump` carries it to the
+    // effect after that draw. One callback for the pane's life, handed to
+    // every bubble: a new one each draw was every bubble drawn again.
+    let jump = use_state(|| Option::<i64>::None);
     let on_jump = {
         let highlight = highlight.clone();
         let pinned = pinned.clone();
-        Callback::from(move |id: i64| {
-            let Some(target) = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id(&format!("m-{id}")))
+        let window = window.clone();
+        let held_now = held_now.clone();
+        let before = before.clone();
+        let list = list.clone();
+        let jump = jump.clone();
+        use_callback((), move |id: i64, _| {
+            if let Some(target) = drawn_row(id) {
+                *pinned.borrow_mut() = false;
+                show_highlighted(&target, id, &highlight);
+                return;
+            }
+            let held = held_now.borrow();
+            let Some(index) = held
+                .iter()
+                .position(|message| message.id == id && message.id != 0)
             else {
                 return;
             };
             *pinned.borrow_mut() = false;
-            target.scroll_into_view();
-            highlight.set(Some(id));
-            let highlight = highlight.clone();
-            gloo_timers::callback::Timeout::new(HIGHLIGHT_MS, move || highlight.set(None)).forget();
+            let oldest = drawn_oldest(&held, window.borrow().held_start(&held));
+            window.borrow_mut().include(&held, index);
+            if let Some(element) = list.cast::<Element>() {
+                *before.borrow_mut() = (oldest, element.scroll_height());
+            }
+            jump.set(Some(id));
         })
     };
+    {
+        let highlight = highlight.clone();
+        let jump = jump.clone();
+        use_effect_with(*jump, move |target| {
+            if let Some(id) = *target {
+                if let Some(target) = drawn_row(id) {
+                    show_highlighted(&target, id, &highlight);
+                }
+                jump.set(None);
+            }
+        });
+    }
 
     let is_family = props.item.chat.is_family();
     let is_ai = props.item.chat.is_ai();
@@ -427,24 +600,48 @@ pub fn conversation(props: &ConversationProps) -> Html {
         first_unread_id: anchor.map(|(id, _)| id),
         peer_read_up_to: props.peer_read,
     };
-    let rows = timeline::rows(&props.messages, &context);
-    // In the assistant's own chat, anything not mine is the assistant's —
-    // drawn with the chat's own name, not looked up in a roster it is not in.
-    let mut names = props.names.clone();
-    if is_ai {
-        if let Some(title) = props.item.chat.title.clone() {
-            for message in &props.messages {
-                if message.sender_id != props.my_user_id {
-                    names.insert(message.sender_id, title.clone());
-                }
-            }
+    let rows = timeline::rows_from(&props.messages, start, &context);
+
+    // WHAT EVERY BUBBLE IS HANDED, made once and kept while it holds: a
+    // bubble is drawn again only when something of ITS changed. Handed a
+    // fresh copy of the roster's names, a fresh set and fresh callbacks on
+    // every draw — every typing frame, every catch-up page — every bubble in
+    // the chat was drawn again, its markdown parsed and its links found
+    // anew, to say exactly what it said before.
+    let ai_title = props.item.chat.title.clone().filter(|_| is_ai);
+    let ai_senders: Vec<i64> = match ai_title {
+        Some(_) => {
+            let mut senders: Vec<i64> = props
+                .messages
+                .iter()
+                .map(|message| message.sender_id)
+                .filter(|sender| *sender != props.my_user_id)
+                .collect();
+            senders.sort_unstable();
+            senders.dedup();
+            senders
         }
-    }
+        None => Vec::new(),
+    };
+    let names = use_memo(
+        (props.names.clone(), ai_title, ai_senders),
+        |(names, ai_title, senders)| drawn_names(names, ai_title.as_deref(), senders),
+    );
+    let blocked = use_memo(props.blocked.clone(), |blocked| blocked.clone());
+    let member_ids = use_memo(
+        props
+            .members
+            .iter()
+            .map(|member| member.id)
+            .collect::<Vec<i64>>(),
+        |ids| ids.iter().copied().collect::<HashSet<i64>>(),
+    );
+    let quoted = use_memo(props.messages.clone(), |messages| QuotedKinds::of(messages));
 
     let on_reply = {
         let replying = replying.clone();
         let editing = editing.clone();
-        Callback::from(move |id: i64| {
+        use_callback((), move |id: i64, _| {
             editing.set(None);
             replying.set(Some(id));
         })
@@ -452,29 +649,33 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let on_edit = {
         let replying = replying.clone();
         let editing = editing.clone();
-        Callback::from(move |id: i64| {
+        use_callback((), move |id: i64, _| {
             replying.set(None);
             editing.set(Some(id));
         })
     };
     let on_report = {
         let report = report.clone();
-        let names = names.clone();
-        Callback::from(move |(user_id, message_id): (i64, Option<i64>)| {
-            report.set(Some(ReportTarget {
-                user_id,
-                name: names
-                    .get(&user_id)
-                    .cloned()
-                    .unwrap_or_else(|| t("Someone").to_string()),
-                message_id,
-            }));
-        })
+        use_callback(
+            names.clone(),
+            move |(user_id, message_id): (i64, Option<i64>), names| {
+                report.set(Some(ReportTarget {
+                    user_id,
+                    name: names
+                        .get(&user_id)
+                        .cloned()
+                        .unwrap_or_else(|| t("Someone").to_string()),
+                    message_id,
+                }));
+            },
+        )
     };
 
     let on_report_assistant = {
         let assistant_report = assistant_report.clone();
-        Callback::from(move |message_id: i64| assistant_report.set(Some(message_id)))
+        use_callback((), move |message_id: i64, _| {
+            assistant_report.set(Some(message_id))
+        })
     };
 
     let replying_to = replying.and_then(|id| {
@@ -1292,11 +1493,24 @@ pub fn conversation(props: &ConversationProps) -> Html {
 
     // "Show text" under a recording, which raises this chat's consent
     // screen when this member has not agreed yet.
-    let transcription =
-        crate::views::bubble::Transcription::of(props.assistant.as_ref(), props.family.as_ref(), {
-            let consent_open = consent_open.clone();
-            Callback::from(move |()| consent_open.set(true))
-        });
+    let transcription = {
+        let consent_open = consent_open.clone();
+        let on_review_consent = use_callback((), move |(), _| consent_open.set(true));
+        use_memo(
+            (
+                props.assistant.clone(),
+                props.family.clone(),
+                on_review_consent,
+            ),
+            |(assistant, family, on_review_consent)| {
+                crate::views::bubble::Transcription::of(
+                    assistant.as_ref(),
+                    family.as_ref(),
+                    on_review_consent.clone(),
+                )
+            },
+        )
+    };
     let consent_dialog = consent_open
         .then(|| {
             props
@@ -1609,7 +1823,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 }
             </header>
             <div class="messages" ref={list} onscroll={on_scroll}>
-                if props.can_load_more {
+                // At the top of what is HELD only: with rows held above the
+                // window, scrolling up draws those first.
+                if props.can_load_more && start == 0 {
                     <button class="load-more" onclick={
                         let on_action = props.on_action.clone();
                         Callback::from(move |_: MouseEvent| on_action.emit(Action::LoadMore { chat_id }))
@@ -1647,11 +1863,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     message={message.clone()}
                                     my_user_id={props.my_user_id}
                                     names={names.clone()}
-                                    blocked={props.blocked.clone()}
+                                    blocked={blocked.clone()}
                                     {quote_revealed}
                                     {parent_revealed}
-                                    quote_round={quotes_round(message, &props.messages)}
-                                    quote_animation={quotes_animation(message, &props.messages)}
+                                    quote_round={quoted.round(message)}
+                                    quote_animation={quoted.animation(message)}
                                     hidden={row.hidden && !revealed}
                                     shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
                                     sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}
@@ -1667,14 +1883,14 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     {assistant_user_id}
                                     in_thread={false}
                                     {member_count}
-                                    member_ids={props.members.iter().map(|member| member.id).collect::<HashSet<i64>>()}
+                                    member_ids={member_ids.clone()}
                                     on_action={props.on_action.clone()}
                                     on_reply={on_reply.clone()}
                                     on_edit={on_edit.clone()}
                                     on_report={on_report.clone()}
                                     on_report_assistant={on_report_assistant.clone()}
                                     on_jump={on_jump.clone()}
-                                    transcription={transcription.clone()}
+                                    transcription={(*transcription).clone()}
                                     transcripts={props.transcripts.of(message.attachments().iter().map(|attachment| attachment.id))}
                                 />
                             </div>
@@ -1843,6 +2059,86 @@ pub fn typing_line(names: &[String]) -> String {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    fn message(id: i64, sender_id: i64) -> Message {
+        Message {
+            id,
+            chat_id: 42,
+            sender_id,
+            created_at: "2026-08-19T17:03:12Z".into(),
+            ..Message::default()
+        }
+    }
+
+    fn carrying(id: i64, round: bool, animation: bool) -> Message {
+        Message {
+            attachments: Some(vec![crate::model::Attachment {
+                id: id * 10,
+                kind: "video".into(),
+                round,
+                animation,
+                ..crate::model::Attachment::default()
+            }]),
+            ..message(id, 9)
+        }
+    }
+
+    fn quoting(id: i64, quoted: i64) -> Message {
+        Message {
+            reply_to: Some(crate::model::ReplyTo {
+                message_id: quoted,
+                sender_id: 9,
+                excerpt: String::new(),
+                parent: None,
+            }),
+            ..message(id, 7)
+        }
+    }
+
+    /// One pass for a whole draw says, for every reply, what a pass per
+    /// reply said: a video message's quote, an animation's, and neither for
+    /// a plain video, a message not held, or a pending row.
+    #[wasm_bindgen_test]
+    fn the_quoted_kinds_of_a_draw_are_the_rule_for_every_reply() {
+        let mut pending_round = carrying(0, true, false);
+        pending_round.client_msg_id = Some("c".into());
+        let held = vec![
+            carrying(1, true, false),
+            carrying(2, false, true),
+            carrying(3, false, false),
+            message(4, 9),
+            pending_round,
+        ];
+        let kinds = QuotedKinds::of(&held);
+        for quoted in [0, 1, 2, 3, 4, 99] {
+            let reply = quoting(100 + quoted, quoted);
+            assert_eq!(
+                kinds.round(&reply),
+                quotes_round(&reply, &held),
+                "quoting {quoted}"
+            );
+            assert_eq!(
+                kinds.animation(&reply),
+                quotes_animation(&reply, &held),
+                "quoting {quoted}"
+            );
+        }
+        assert!(kinds.round(&quoting(200, 1)));
+        assert!(kinds.animation(&quoting(201, 2)));
+        assert!(!kinds.round(&message(5, 7)), "not a reply at all");
+    }
+
+    /// In the assistant's own chat every sender but me is drawn with the
+    /// chat's name; anywhere else the roster's names are the names.
+    #[wasm_bindgen_test]
+    fn the_assistants_chat_names_every_other_sender_after_itself() {
+        let roster = HashMap::from([(7, "Me".to_string()), (9, "Anna".to_string())]);
+        assert_eq!(drawn_names(&roster, None, &[9, 2]), roster);
+        let drawn = drawn_names(&roster, Some("Assistant"), &[2, 9]);
+        assert_eq!(drawn.get(&2).map(String::as_str), Some("Assistant"));
+        assert_eq!(drawn.get(&9).map(String::as_str), Some("Assistant"));
+        assert_eq!(drawn.get(&7).map(String::as_str), Some("Me"));
+    }
 
     #[wasm_bindgen_test]
     fn the_typing_line_names_one_or_two_and_counts_the_rest() {

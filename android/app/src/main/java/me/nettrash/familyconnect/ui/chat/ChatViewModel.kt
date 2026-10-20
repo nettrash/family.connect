@@ -62,6 +62,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
+import me.nettrash.familyconnect.di.ComputeDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +73,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
@@ -176,6 +180,18 @@ class ChatViewModel @Inject constructor(
     @param:AppScope private val appScope: CoroutineScope,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
+    /**
+     * Where the thread's rows are BUILT ([items]): off the main thread.
+     *
+     * Every Room emission rebuilds the whole window — grouping, day pills,
+     * reactions, polls — and a chat opened after a long absence takes
+     * hundreds of them in a row while the catch-up lands. On the main
+     * thread that was work competing with the very scroll it was feeding.
+     * Injected rather than named here so the tests can hand in their own
+     * scheduler: a real background thread would make every assertion on
+     * [items] a race. Not defaulted, so a test cannot forget it.
+     */
+    @param:ComputeDispatcher private val computeDispatcher: CoroutineDispatcher,
     /**
      * Defaulted so the tests can build the ViewModel by hand; Dagger
      * ignores the default and injects CallManager (the same trick
@@ -441,6 +457,16 @@ class ChatViewModel @Inject constructor(
      */
     val openAnchor: StateFlow<OpenAnchor?> = _openAnchor
 
+    /**
+     * What [items] last published, for [reuseUnchangedItems]. Touched only
+     * on the builder's flow. Declared ABOVE [items] so it is initialised
+     * before anything could collect it.
+     */
+    @Volatile private var lastItems: List<ChatListItem> = emptyList()
+
+    /** The bubble-body pre-render in flight; a newer window replaces it. */
+    private var prewarm: Job? = null
+
     val items: StateFlow<List<ChatListItem>> = combine(
         visibleLimit.flatMapLatest { messageRepository.observeMessages(chatId, it) },
         chat,
@@ -468,7 +494,28 @@ class ChatViewModel @Inject constructor(
             blockedUserIds = settingsState.blockedUserIds,
         )
     }
-        .onEach { _initialLoadSettled.value = true }
+        // The rows that did not change come back as the instances the list
+        // already drew, so their bubbles skip (reuseUnchangedItems says
+        // why identity is what Compose compares here). Still on the
+        // builder's thread: comparing a window of rows is not main-thread
+        // work either.
+        .map { built -> reuseUnchangedItems(lastItems, built).also { lastItems = it } }
+        // Built off the main thread (see [computeDispatcher]), and only the
+        // NEWEST answer is kept: while a catch-up writes page after page,
+        // a build that finishes after a newer one has started is not worth
+        // drawing — the list only ever shows the latest state anyway, which
+        // is all the StateFlow below would keep of it.
+        .conflate()
+        .flowOn(computeDispatcher)
+        .onEach { built ->
+            _initialLoadSettled.value = true
+            // Pre-render the bodies the bubbles are about to ask for, on
+            // the same background thread, so a row scrolling in finds its
+            // markdown and links done (BubbleBodies). Launched, not
+            // awaited: the list does not wait for it.
+            prewarm?.cancel()
+            prewarm = viewModelScope.launch(computeDispatcher) { BubbleBodies.prewarm(built) }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**

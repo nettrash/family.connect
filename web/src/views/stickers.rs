@@ -74,7 +74,7 @@ pub fn label_refusal(raw: &str) -> Option<&'static str> {
 #[hook]
 pub fn use_sticker_picture(id: i64, moving: Option<String>) -> Option<String> {
     let loader = use_context::<MediaLoader>();
-    let reduced = crate::views::animation::reduced_motion();
+    let reduced = crate::views::animation::use_reduced_motion();
     // The still made for which bytes: (their URL, frame zero's URL or None).
     let still = use_state(|| Option::<(String, Option<String>)>::None);
     {
@@ -119,6 +119,27 @@ pub fn use_sticker_picture(id: i64, moving: Option<String>) -> Option<String> {
     }
 }
 
+/// Whether a picture in a chat should be fetched yet: once its tile has come
+/// within `FETCH_AHEAD_PX` of being seen — and from then on, so a picture
+/// that was fetched stays drawn when it scrolls away — or at once when this
+/// tab already holds it, which costs nothing to draw.
+///
+/// A chat used to fetch every picture of every row it drew, the moment it
+/// opened: a long chat's worth of stickers and photos, most of them far
+/// above anything the reader was looking at, all asked for at once.
+#[hook]
+pub fn use_fetch_ahead(node: NodeRef, id: i64, variant: Variant) -> bool {
+    let loader = use_context::<MediaLoader>();
+    let near =
+        crate::views::animation::use_near_screen(node, crate::views::animation::FETCH_AHEAD_PX);
+    let came_near = use_mut_ref(|| false);
+    if near || loader.is_some_and(|loader| loader.get(id, variant).is_some()) {
+        *came_near.borrow_mut() = true;
+    }
+    let wanted = *came_near.borrow();
+    wanted
+}
+
 #[derive(Properties, PartialEq)]
 pub struct TileProps {
     pub attachment: Attachment,
@@ -134,9 +155,12 @@ pub struct TileProps {
 #[function_component(StickerTile)]
 pub fn sticker_tile(props: &TileProps) -> Html {
     let attachment = &props.attachment;
+    let frame = use_node_ref();
     // The ORIGINAL, whatever `has_preview` says: it can be true by
-    // inheritance, and a preview is a JPEG.
-    let url = use_media(attachment.id, Variant::Sticker, true);
+    // inheritance, and a preview is a JPEG — fetched once the sticker comes
+    // within a screen of being seen, or at once when this tab holds it.
+    let wanted = use_fetch_ahead(frame.clone(), attachment.id, Variant::Sticker);
+    let url = use_media(attachment.id, Variant::Sticker, wanted);
     let url = use_sticker_picture(attachment.id, url);
     let open = {
         let on_open = props.on_open.clone();
@@ -153,6 +177,7 @@ pub fn sticker_tile(props: &TileProps) -> Html {
     let label = t("Sticker");
     html! {
         <button
+            ref={frame}
             class={classes!("chat-sticker", loading.then_some("is-loading"))}
             style={format!("width:{0:.0}px;height:{0:.0}px", rules::BOX)}
             onclick={open}

@@ -195,7 +195,6 @@ struct MacMessageRow: View {
     private func armRemoteFetches() {
         _ = linkPreview
         if let attachmentStore {
-            _ = attachmentStore.generation
             for attachment in message.attachments where !attachment.isFile {
                 // The store directly: `AttachmentView` is iOS-only.
                 // `preview: true` — a hidden row fetches nothing a visible
@@ -1470,10 +1469,9 @@ private struct MacAttachmentBlock: View {
     @Environment(AttachmentStore.self) private var store
 
     var body: some View {
-        // Reading `generation` is what makes this redraw when the fetch
-        // lands — the store's caches are ObservationIgnored. Same rule as
-        // the iOS bubble, and the same bug if it is left out.
-        let _ = store.generation
+        // The lookups below register this view on their own keys, which is
+        // what redraws it when the fetch lands — the store's caches are
+        // ObservationIgnored. Same rule as the iOS bubble.
         if attachment.isAudio {
             // Nothing to look at — a player, not a tile or a row.
             AudioPlayerView(attachment: attachment, isMine: isMine)
@@ -1629,9 +1627,8 @@ private struct MacAlbumStack: View {
     }
 
     var body: some View {
-        // Reading `generation` is what makes this redraw when a fetch
-        // lands — the iOS bubble's rule, and the same bug if left out.
-        let _ = store.generation
+        // Each card's lookup registers this view on its own key — the iOS
+        // bubble's rule.
         ZStack(alignment: .bottom) {
             if album.items.count >= 3 {
                 layer(album.items[2], .third)

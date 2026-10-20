@@ -36,7 +36,11 @@ internal sealed class AvatarFaces(Connection connection)
     /// </summary>
     private readonly Dictionary<string, Task<BitmapImage?>> pictures = [];
 
-    public FrameworkElement Face(string title, bool family, long? userId, int version, double size)
+    /// <param name="settles">
+    /// Told, when a picture is asked for, how to ask whether it came — a conversation builds a row again while it has not,
+    /// which is how a face that failed is asked for again (see <c>ChatsView.SettlesWhen</c>).
+    /// </param>
+    public FrameworkElement Face(string title, bool family, long? userId, int version, double size, Action<Func<bool>>? settles = null)
     {
         var resources = Application.Current.Resources;
         var ink = (Brush)resources["AccentTextFillColorPrimaryBrush"];
@@ -69,6 +73,7 @@ internal sealed class AvatarFaces(Connection connection)
                 var picture = new Ellipse();
                 root.Children.Add(picture);
                 _ = ShowAsync(picture, id, version);
+                settles?.Invoke(() => picture.Fill is not null);
             }
         }
         AutomationProperties.SetAccessibilityView(root, AccessibilityView.Raw);

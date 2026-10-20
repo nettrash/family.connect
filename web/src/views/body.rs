@@ -303,23 +303,53 @@ pub fn body(props: &BodyProps) -> Html {
         }
     };
 
-    let blocks = markdown::blocks(&props.text);
+    // Parsed once per text and its mentions, not once per draw: the roster
+    // changing, or a bubble drawn again for a reaction, leaves the words
+    // exactly as they were.
+    let laid = use_memo(
+        (props.text.clone(), props.mentions.clone()),
+        |(text, mentions)| lay_out(text, mentions),
+    );
     html! {
         <div class="md" ondblclick={cancel}>
-            { for blocks.iter().enumerate().map(|(index, block)| match block {
-                Block::Text(text) => {
-                    let draw_source = (index == 0).then_some(props.text.as_str());
-                    html! {
-                        <p>{ for pieces(text, draw_source, &props.mentions).iter().map(draw_piece) }</p>
-                    }
-                }
-                Block::Table(table) => table_html(table),
+            { for laid.iter().map(|block| match block {
+                Laid::Text(pieces) => html! {
+                    <p>{ for pieces.iter().map(draw_piece) }</p>
+                },
+                Laid::Table(table) => table_html(table),
                 // Issue #97: drawn by fc-rich.js (views/rich.rs); what was
                 // typed, in the code face, until then.
-                Block::Rich(rich) => html! { <RichBlock rich={rich.clone()} /> },
+                Laid::Rich(rich) => html! { <RichBlock rich={rich.clone()} /> },
             }) }
         </div>
     }
+}
+
+/// A body's blocks, with each text block already cut into its pieces —
+/// everything about drawing it that depends on its words and nothing else.
+#[derive(Debug, PartialEq)]
+pub enum Laid {
+    Text(Vec<Piece>),
+    Table(Table),
+    Rich(markdown::Rich),
+}
+
+/// `text` laid out: markdown's blocks (`markdown::blocks`), and over each
+/// text block the links, the assistant's tokens and the mentions
+/// (`pieces`) — `/draw` looked for in the first block only.
+pub fn lay_out(text: &str, mentions: &[Mention]) -> Vec<Laid> {
+    markdown::blocks(text)
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| match block {
+            Block::Text(inline) => {
+                let draw_source = (index == 0).then_some(text);
+                Laid::Text(pieces(&inline, draw_source, mentions))
+            }
+            Block::Table(table) => Laid::Table(table),
+            Block::Rich(rich) => Laid::Rich(rich),
+        })
+        .collect()
 }
 
 /// A cell: its runs' styles and nothing else — no links, no marks.
@@ -782,6 +812,61 @@ mod tests {
             list.scroll_height()
         );
         list.remove();
+    }
+
+    /// The layout is kept per text AND its mentions: the same words with a
+    /// mention added draw it — and a draw that changes neither (the roster's
+    /// ids, a new callback) keeps the words as they were drawn.
+    #[wasm_bindgen_test]
+    async fn the_kept_layout_follows_the_words_and_their_mentions() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let props = |mentions: Vec<Mention>, member_ids: HashSet<i64>| BodyProps {
+            text: "Dinner with @Anna at 8".into(),
+            mentions,
+            my_user_id: 7,
+            member_ids,
+            on_open_direct: Callback::noop(),
+        };
+        let mut handle = yew::Renderer::<Body>::with_root_and_props(
+            root.clone(),
+            props(Vec::new(), HashSet::new()),
+        )
+        .render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(root.query_selector(".mention").unwrap().is_none());
+
+        let anna = Mention {
+            user_id: 9,
+            name: "Anna".into(),
+        };
+        handle.update(props(vec![anna.clone()], HashSet::new()));
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let mention = root
+            .query_selector(".mention")
+            .unwrap()
+            .expect("the mention is drawn once it is named");
+        assert_eq!(mention.tag_name(), "SPAN", "not a member: not tappable");
+
+        // The same words and mentions, a roster that now holds her: the
+        // kept layout is drawn again, tappable.
+        handle.update(props(vec![anna], HashSet::from([9])));
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(
+            root.query_selector(".mention")
+                .unwrap()
+                .map(|mention| mention.tag_name())
+                .as_deref(),
+            Some("BUTTON")
+        );
+        assert_eq!(
+            lay_out("Dinner with @Anna at 8", &[]),
+            lay_out("Dinner with @Anna at 8", &[]),
+            "the same words lay out the same"
+        );
+        handle.destroy();
+        root.remove();
     }
 
     /// A daily greeting that used the weather ends with the server's credit

@@ -123,7 +123,6 @@ struct MacAttachmentViewer: View {
 
     @ViewBuilder
     private var content: some View {
-        let _ = store.generation
         if attachment.isAnimation {
             // An animation (#96): larger, playing, muted and looping, with
             // no player controls. Keyed by its attachment, as the video

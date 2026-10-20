@@ -366,19 +366,26 @@ fun buildChatItems(
         val serverId = message.serverId ?: return@forEach
         quotedMediaOf(message)?.let { quotable[serverId] = it }
     }
+    // Each row's day and its HH:mm, worked out ONCE. The run rules below
+    // compare every row with both of its neighbours, so asking TimeFormat
+    // inside them converted every timestamp three or four times over — on
+    // each Room emission, for the whole window. The same comparisons over
+    // the same values; only the repetition is gone.
+    val days = Array(messagesNewestFirst.size) { TimeFormat.toLocalDate(messagesNewestFirst[it].createdAt, zone) }
+    val minutes = Array(messagesNewestFirst.size) { TimeFormat.bubbleTime(messagesNewestFirst[it].createdAt, zone) }
     messagesNewestFirst.forEachIndexed { index, message ->
         val newer = messagesNewestFirst.getOrNull(index - 1)
         val older = messagesNewestFirst.getOrNull(index + 1)
 
         val startsRun = older == null ||
             older.senderId != message.senderId ||
-            !TimeFormat.sameDay(older.createdAt, message.createdAt, zone)
+            days[index + 1] != days[index]
         val endsRun = newer == null ||
             newer.senderId != message.senderId ||
-            !TimeFormat.sameDay(newer.createdAt, message.createdAt, zone)
+            days[index - 1] != days[index]
         val endsMinuteRun = newer == null ||
             newer.senderId != message.senderId ||
-            TimeFormat.bubbleTime(newer.createdAt, zone) != TimeFormat.bubbleTime(message.createdAt, zone)
+            minutes[index - 1] != minutes[index]
 
         // The run boundaries above are computed over the UNFILTERED
         // sequence, and deliberately: run GROUPING is unchanged by hiding,
@@ -438,13 +445,13 @@ fun buildChatItems(
             )
         }
 
-        val dayEnds = older == null ||
-            !TimeFormat.sameDay(older.createdAt, message.createdAt, zone)
+        val dayEnds = older == null || days[index + 1] != days[index]
         if (dayEnds) {
             val label = TimeFormat.dateSeparator(message.createdAt, nowMillis, zone)
             items += ChatListItem.DateSeparator(
                 label = label,
-                key = "sep-${TimeFormat.dayKey(message.createdAt, zone)}-${message.clientMsgId}",
+                // TimeFormat.dayKey is this same day's ISO text.
+                key = "sep-${days[index]}-${message.clientMsgId}",
             )
         }
     }
@@ -644,4 +651,36 @@ fun quotesRound(items: List<ChatListItem>, messageId: Long): Boolean =
  */
 fun quotedMedia(items: List<ChatListItem>, messageId: Long): QuotedMedia? = items.firstNotNullOfOrNull { item ->
     (item as? ChatListItem.MessageItem)?.entity?.takeIf { it.serverId == messageId }?.let(::quotedMediaOf)
+}
+
+/**
+ * [next], with every item that is EQUAL to the item [previous] held under
+ * the same key replaced by that previous instance — and [previous] itself
+ * when nothing at all changed.
+ *
+ * Why identity matters: the rows the list draws are unstable to Compose
+ * (they carry lists), and an unstable argument is compared by INSTANCE. The
+ * builder makes a brand-new item for every row on every emission, so one
+ * reaction landing — or one message of a catch-up page — used to recompose
+ * every bubble on screen, each of them redoing its own work, while the
+ * thread was trying to scroll. Handing the unchanged rows back as the very
+ * objects the list already drew lets each of them skip; only the rows that
+ * actually differ (by data-class equality, the whole row) recompose.
+ *
+ * Pure, and changes nothing about WHAT is drawn: an item is only ever
+ * swapped for one equal to it.
+ */
+fun reuseUnchangedItems(previous: List<ChatListItem>, next: List<ChatListItem>): List<ChatListItem> {
+    if (previous.isEmpty() || next.isEmpty()) return next
+    val byKey = HashMap<String, ChatListItem>(previous.size * 2)
+    for (item in previous) byKey[item.key] = item
+    var unchanged = previous.size == next.size
+    val out = ArrayList<ChatListItem>(next.size)
+    next.forEachIndexed { index, item ->
+        val held = byKey[item.key]
+        val kept = if (held != null && held == item) held else item
+        if (unchanged && kept !== previous[index]) unchanged = false
+        out += kept
+    }
+    return if (unchanged) previous else out
 }

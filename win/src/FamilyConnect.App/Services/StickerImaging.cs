@@ -320,17 +320,60 @@ internal static class StickerImaging
     /// Whether Windows is set to show animations at all. Somebody who switched them off has asked
     /// for a still screen, and gets frame zero — which is a correct drawing of a sticker.
     /// </summary>
+    /// <remarks>
+    /// <b>ASKED OF ONE KEPT <c>UISettings</c>, NOT A NEW ONE PER CALL.</b> This is asked by every sticker decode, every
+    /// animation tile's viewport change and every recording's frame, and each new <c>UISettings</c> is a WinRT object made
+    /// and thrown away on the window's thread. The answer is kept for a second at most — and dropped at once when Windows
+    /// says the setting changed — so switching animations off still reaches the next thing drawn.
+    /// </remarks>
     public static bool AnimationsWanted()
     {
+        var now = Environment.TickCount64;
+        var answer = Volatile.Read(ref animationsAnswer);
+        if (answer != 0 && now - Volatile.Read(ref animationsAskedAt) < AnimationsKeptMs)
+        {
+            return answer == 1;
+        }
         try
         {
-            return new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+            var settings = animationSettings ??= Watched(new Windows.UI.ViewManagement.UISettings());
+            var on = settings.AnimationsEnabled;
+            Volatile.Write(ref animationsAskedAt, now);
+            Volatile.Write(ref animationsAnswer, on ? 1 : 2);
+            return on;
         }
         catch (Exception e)
         {
             Diagnostics.Write($"reading the animation setting: {e.GetType().Name}");
+            animationSettings = null;
+            Volatile.Write(ref animationsAnswer, 0);
             return true;
         }
+    }
+
+    /// <summary>How long one reading of the animation setting is trusted, in milliseconds.</summary>
+    private const long AnimationsKeptMs = 1000;
+
+    /// <summary>The kept settings object: an event source nobody holds is collected and tells nobody.</summary>
+    private static Windows.UI.ViewManagement.UISettings? animationSettings;
+
+    /// <summary>0 while nothing is kept, 1 for animations on, 2 for off.</summary>
+    private static int animationsAnswer;
+    private static long animationsAskedAt;
+
+    /// <summary>The setting changed (on whatever thread Windows says so): the kept answer goes, and the next call reads it.</summary>
+    private static Windows.UI.ViewManagement.UISettings Watched(Windows.UI.ViewManagement.UISettings settings)
+    {
+        try
+        {
+            settings.AnimationsEnabledChanged += (_, _) => Volatile.Write(ref animationsAnswer, 0);
+        }
+        catch (Exception e)
+        {
+            // Without the event the answer is still only a second old.
+            Diagnostics.Write($"watching the animation setting: {e.GetType().Name}");
+        }
+        return settings;
     }
 
     private static async Task<InMemoryRandomAccessStream> StreamAsync(byte[] bytes)

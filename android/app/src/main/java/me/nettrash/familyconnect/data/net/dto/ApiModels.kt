@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.data.net.dto
 
 import kotlinx.serialization.SerialName
 import me.nettrash.familyconnect.util.PollVoteState
+import me.nettrash.familyconnect.util.LruMemo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -425,6 +426,14 @@ data class MentionDto(
 )
 
 /**
+ * How many parsed values each stored-JSON codec below keeps (util/LruMemo.kt).
+ * Several screens' worth of a chat's window — the window starts at 100 rows
+ * and grows by pages — and small enough that the strings it pins are
+ * nothing next to the rows Room already holds.
+ */
+private const val MEMO_CAPACITY = 512
+
+/**
  * Local persistence codec: the messages table stores the mention list
  * verbatim in its WIRE shape (`mentionsJson` — null = names nobody).
  */
@@ -434,8 +443,16 @@ object MentionsCodec {
     fun encode(mentions: List<MentionDto>): String = json.encodeToString(mentions)
 
     fun decode(raw: String?): List<MentionDto> =
-        raw?.let { runCatching { json.decodeFromString<List<MentionDto>>(it) }.getOrNull() }
-            .orEmpty()
+        raw?.let { text ->
+            memo.getOrCompute(text) { runCatching { json.decodeFromString<List<MentionDto>>(text) }.getOrNull() }
+        }.orEmpty()
+
+    /**
+     * Parsed lists by their stored text. A bubble decodes this on its first
+     * composition, every time it scrolls back in — the same few strings over
+     * and over. See util/LruMemo.kt for why this is the same answer, earlier.
+     */
+    private val memo = LruMemo<String, List<MentionDto>>(MEMO_CAPACITY)
 }
 
 @Serializable
@@ -798,8 +815,16 @@ object ReactionsCodec {
     fun encode(reactions: List<ReactionDto>): String = json.encodeToString(reactions)
 
     fun decode(raw: String?): List<ReactionDto> =
-        raw?.let { runCatching { json.decodeFromString<List<ReactionDto>>(it) }.getOrNull() }
-            .orEmpty()
+        raw?.let { text ->
+            memo.getOrCompute(text) { runCatching { json.decodeFromString<List<ReactionDto>>(text) }.getOrNull() }
+        }.orEmpty()
+
+    /**
+     * Parsed lists by their stored text: the chat's item builder decodes
+     * every row of its window on every emission, and nearly all of them are
+     * the rows it decoded the time before (util/LruMemo.kt).
+     */
+    private val memo = LruMemo<String, List<ReactionDto>>(MEMO_CAPACITY)
 }
 
 /**
@@ -820,7 +845,10 @@ object PollCodec {
 
     /** Null for a message that is not a poll, or for a row we cannot read. */
     fun decode(raw: String?): PollDto? =
-        raw?.let { runCatching { json.decodeFromString<PollDto>(it) }.getOrNull() }
+        raw?.let { text -> memo.getOrCompute(text) { runCatching { json.decodeFromString<PollDto>(text) }.getOrNull() } }
+
+    /** Parsed polls by their stored text, for the reason [ReactionsCodec] keeps its own. */
+    private val memo = LruMemo<String, PollDto>(MEMO_CAPACITY)
 }
 
 /**
@@ -879,7 +907,19 @@ object AttachmentsCodec {
     /** Null when the column is null or unreadable — the caller then falls
      *  back to the flat columns a pre-plurality row still carries. */
     fun decode(raw: String?): List<AttachmentDto>? =
-        raw?.let { runCatching { json.decodeFromString<List<AttachmentDto>>(it) }.getOrNull() }
+        raw?.let { text ->
+            memo.getOrCompute(text) { runCatching { json.decodeFromString<List<AttachmentDto>>(text) }.getOrNull() }
+        }
+
+    /**
+     * Parsed sets by their stored text. The heaviest of the four memos'
+     * customers: `MessageEntity.attachmentList` is a GETTER over this, and
+     * one bubble asks it whether the message is media-only, a sticker, a
+     * video message and an animation before it draws anything — each of
+     * which used to be a fresh parse, on the main thread, for every row
+     * that scrolled in (util/LruMemo.kt).
+     */
+    private val memo = LruMemo<String, List<AttachmentDto>>(MEMO_CAPACITY)
 }
 
 // -- Request bodies ----------------------------------------------------------

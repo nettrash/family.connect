@@ -67,7 +67,12 @@ public sealed partial class ChatsView : UserControl
     private readonly Dictionary<string, BitmapImage?> previewPictures = new(StringComparer.Ordinal);
     private readonly AvatarFaces faces;
 
-    private readonly Dictionary<string, BitmapImage> pictures = [];
+    /// <summary>
+    /// Photos, posters and tiles decoded once, so a redraw reuses them — the most recently drawn few hundred: kept without a
+    /// ceiling, every picture any chat ever drew stayed decoded for as long as the window lived. Far above what one screen
+    /// draws, so a redraw that builds every row never has to decode again what it has just drawn.
+    /// </summary>
+    private readonly RecentPictures<BitmapImage> pictures = new(512);
 
     /// <summary>
     /// The family's CHAT stickers (docs/protocol.md, "Sticker pack") — not the board's cards, which this code also calls
@@ -77,15 +82,22 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     /// <remarks>
     /// The conversation's and the panel's MOVE (the panel's since #96: "Sticker pack", amended 2026-10-19), so they are the
-    /// ones with frames to account for: they sit on ONE <see cref="StickerShelf{TPicture}"/>, which holds them to one budget
-    /// between them, remembers a sticker nothing here decodes, and keeps each one's clock across a redraw. A panel cell is
-    /// kept under its pack item's id COMPLEMENTED (<see cref="PanelKey"/>) — negative, where every attachment id is positive —
-    /// since the same picture is decoded at another size for a cell. The staged ones are still pictures; a null is the same
-    /// remembered "nothing here decodes it".
+    /// ones with frames to account for: each sits on a <see cref="StickerShelf{TPicture}"/>, which holds it to a budget,
+    /// remembers a sticker nothing here decodes, and keeps each one's clock across a redraw. A panel cell is kept under its
+    /// pack item's id COMPLEMENTED (<see cref="PanelKey"/>) — negative, where every attachment id is positive — since the same
+    /// picture is decoded at another size for a cell. The staged ones are still pictures; a null is the same remembered
+    /// "nothing here decodes it".
+    /// <para>
+    /// <b>TWO SHELVES, NOT ONE.</b> They shared one until the panel turned out to empty it: a pack bigger than the shelf's
+    /// count, opened once, pushed every sticker of the conversation that was not moving out — the still ones are never
+    /// "showing" to the shelf — and the next redraw that built the rows decoded them all again. A panel cell holds a fifth
+    /// of the pixels a conversation's sticker does, so its own budget holds far more than a pack decodes to.
+    /// </para>
     /// </remarks>
     private readonly PackModel pack;
     private readonly StickerAnimator stickers;
     private readonly StickerShelf<StickerPicture> stickerPictures;
+    private readonly StickerShelf<StickerPicture> panelStickerPictures;
     private readonly Dictionary<string, StickerPicture?> stagedStickers = new(StringComparer.Ordinal);
 
     /// <summary>A panel cell's key on the shelf: its pack item's id, complemented, so it can never meet an attachment's.</summary>
@@ -352,6 +364,57 @@ public sealed partial class ChatsView : UserControl
     private readonly List<string> rowsDrawn = [];
     private string conversationDrawn = string.Empty;
 
+    /// <summary>
+    /// One row of the open conversation as it is on screen: what it was drawn from (<see cref="ConversationRows"/>), its
+    /// elements in the stack — the day pill and the divider above it, then the bubble — and what was registered while it was
+    /// built, so a redraw can keep it, and forget what pointed at it once it goes.
+    /// </summary>
+    /// <remarks>
+    /// WHY ROWS ARE KEPT. The conversation used to be cleared and built whole on every change it noticed — a peer's read
+    /// marker, a link's card landing, each chunk of an assistant answer, each page of a catch-up — and then laid out by force:
+    /// every sticker, animation player, picture and face of a long chat made again for one tick. Now a row is built only when
+    /// something it is drawn from changed; anything that is not one row's (<see cref="DrawnAround"/>) still rebuilds them all.
+    /// </remarks>
+    private sealed class DrawnRow(string key, string signature)
+    {
+        public string Key { get; } = key;
+
+        public string Signature { get; } = signature;
+
+        public List<UIElement> Elements { get; } = [];
+
+        /// <summary>The "N new messages" line above it, where the open chat scrolls to.</summary>
+        public FrameworkElement? Divider { get; set; }
+
+        public long? MessageId { get; set; }
+
+        /// <summary>The balloon a click on a quote scrolls to, as <see cref="balloons"/> had it when this row was built.</summary>
+        public (Border Balloon, Brush Flash)? Balloon { get; set; }
+
+        public List<HyperlinkButton> CallBackLinks { get; } = [];
+
+        /// <summary>What its drawing still waited for when it was built (<see cref="SettlesWhen"/>).</summary>
+        public List<Func<bool>> Settles { get; } = [];
+
+        /// <summary>Built again on every redraw whatever its signature says — a send on its way, a hidden row that fetches.</summary>
+        public bool Volatile { get; set; }
+
+        /// <summary>Whether it may be kept: nothing it was waiting for is still missing.</summary>
+        public bool Settled => !Volatile && Settles.TrueForAll(settled => settled());
+    }
+
+    /// <summary>The open conversation's rows as drawn, the stack's children as this view put them there, and what they were drawn around.</summary>
+    private readonly List<DrawnRow> drawnRows = [];
+    private readonly List<UIElement> stackShown = [];
+    private ConversationModel? drawnFor;
+    private string drawnAround = string.Empty;
+
+    /// <summary>The row being built, which its pictures and stickers report what they wait for to.</summary>
+    private DrawnRow? building;
+
+    /// <summary>The next outright redraw keeps the rows it can: a send changes the rows on their way and nothing above them.</summary>
+    private bool keepRowsOnce;
+
     /// <summary>Where the open chat opens — its first unread message — decided once per open, and what the divider counts.</summary>
     private long? anchor;
     private bool anchorDecided;
@@ -374,6 +437,9 @@ public sealed partial class ChatsView : UserControl
         pack = connection.Stickers;
         stickers = new StickerAnimator(DispatcherQueue);
         stickerPictures = new StickerShelf<StickerPicture>(
+            StickerAnimation.MaxHeldBytes, StickerAnimation.MaxKept,
+            stickers.IsShowing, stickers.MakeStill, stickers.Release);
+        panelStickerPictures = new StickerShelf<StickerPicture>(
             StickerAnimation.MaxHeldBytes, StickerAnimation.MaxKept,
             stickers.IsShowing, stickers.MakeStill, stickers.Release);
         var say = services.Say;
@@ -711,7 +777,7 @@ public sealed partial class ChatsView : UserControl
             }
             if (item.Deleted)
             {
-                stickerPictures.Remove(PanelKey(item.Id));
+                panelStickerPictures.Remove(PanelKey(item.Id));
             }
             ShowStickerButton();
         });
@@ -763,6 +829,7 @@ public sealed partial class ChatsView : UserControl
         // After the stop, so nothing is "showing" and every frame is given back rather than left to a finalizer.
         ForgetViewerSticker();
         stickerPictures.Clear();
+        panelStickerPictures.Clear();
         stagedStickers.Clear();
         ReleaseAnimations();
         connection.Session.Changed -= onSession;
@@ -911,7 +978,7 @@ public sealed partial class ChatsView : UserControl
     /// <summary>The composer's assistant doors, for this chat, this server's assistant, and whether an edit is open.</summary>
     private void ShowAssistantButtons()
     {
-        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
         var (ask, picture) = AssistantButtons.Offered(kind, connection.Session.State.Assistant, editing is not null);
         AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
         AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
@@ -926,7 +993,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private void DrawPictureHint()
     {
-        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
         var shown = PictureHint.ForComposer(kind, ComposerBox.Text, connection.Session.State.Assistant, editing is not null);
         var appearing = shown && PictureHintText.Visibility != Visibility.Visible;
         PictureHintText.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
@@ -959,7 +1026,7 @@ public sealed partial class ChatsView : UserControl
     /// </remarks>
     private void ShowStickerButton()
     {
-        var kind = open is { } chat ? connection.Chats.Chat(chat.ChatId)?.Chat.Kind : null;
+        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
         var offered = PackSending.Offered(kind, editing is not null, pack.Offered);
         StickerButton.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
         // The thread's composer is enabled exactly when there is a root to answer (DrawThread).
@@ -1211,7 +1278,7 @@ public sealed partial class ChatsView : UserControl
         lastReadAtOpen = held?.LastReadMessageId ?? 0;
         DecideAnchor(chat);
         // Polls are the family chat's alone: anywhere else the server answers invalid_poll.
-        var family = connection.Chats.Chat(chatId)?.Chat.Kind == "family";
+        var family = connection.Chats.Kind(chatId) == "family";
         openPolls = family ? new OpenPollsModel(chatId, connection.Chats, connection.Api) : null;
         OpenPollsButton.Visibility = family ? Visibility.Visible : Visibility.Collapsed;
         ShowPollsBadge();
@@ -1244,6 +1311,8 @@ public sealed partial class ChatsView : UserControl
             MessageStack.Children.Clear();
             callBackLinks.Clear();
             conversationDrawn = string.Empty;
+            keepRowsOnce = false;
+            ForgetDrawnRows();
             return;
         }
         var bubbles = chat.Bubbles();
@@ -1267,41 +1336,149 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        // An EMPTY signature is a redraw asked for outright — a new chat, a reveal, a vote, a block — because something the
+        // rows are drawn from changed where no signature looks: every row is built again, as every redraw used to be. Only
+        // a send keeps what it can (it changes the rows on their way and nothing above them).
+        var whole = conversationDrawn.Length == 0 && !keepRowsOnce;
+        keepRowsOnce = false;
         conversationDrawn = drawn;
-        MessageStack.Children.Clear();
-        balloons.Clear();
-        callBackLinks.Clear();
+        var kind = connection.Chats.Kind(chat.ChatId);
+        // Names over bubbles only where there is more than one other person to tell apart.
+        var family = kind == "family";
+        var around = DrawnAround(chat, kind);
+        whole = whole || !ReferenceEquals(drawnFor, chat) || !string.Equals(around, drawnAround, StringComparison.Ordinal);
+
+        // What each row is drawn from, and so whether the one on screen is still it.
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var peerRead = connection.PeerReads.UpTo(chat.ChatId);
+        var lines = Timeline.Rows(bubbles, family, Reader, anchor, TimeZoneInfo.Local);
+        var wanted = new List<RowMark>(lines.Count + pending.Count + 1);
         if (bubbles.Count == 0 && pending.Count == 0)
         {
-            MessageStack.Children.Add(new TextBlock
+            wanted.Add(new RowMark(ConversationRows.EmptyKey, string.Empty));
+        }
+        foreach (var line in lines)
+        {
+            wanted.Add(new RowMark(
+                ConversationRows.MessageKey(line.Bubble.Message.Id),
+                ConversationRows.Signature(line, RowDrawnWith(line, family, peerRead))));
+        }
+        foreach (var row in pending)
+        {
+            // A send on its way is drawn again on every redraw, as it always was: there are few, and what they show moves.
+            wanted.Add(new RowMark(ConversationRows.PendingKey(row.ClientMsgId), string.Empty));
+        }
+        var plan = whole
+            ? null
+            : ConversationRows.Plan([.. drawnRows.Select(row => new RowMark(row.Key, row.Signature))], wanted, index => drawnRows[index].Settled);
+        if (whole)
+        {
+            balloons.Clear();
+            callBackLinks.Clear();
+        }
+
+        var rows = new List<DrawnRow>(wanted.Count);
+        var at = 0;
+        if (bubbles.Count == 0 && pending.Count == 0)
+        {
+            rows.Add(Kept(at) ?? Built(wanted[at], row => row.Elements.Add(new TextBlock
             {
                 Text = services.Say.Get("Say something to get started."),
                 Opacity = 0.7,
                 Margin = new Thickness(0, 12, 0, 0),
-            });
+            })));
+            at++;
         }
-        // Names over bubbles only where there is more than one other person to tell apart.
-        var family = connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "family";
-        var today = DateOnly.FromDateTime(DateTime.Now);
-        FrameworkElement? divider = null;
-        foreach (var line in Timeline.Rows(bubbles, family, Reader, anchor, TimeZoneInfo.Local))
+        foreach (var line in lines)
         {
-            if (line.DayAbove is { } day)
+            var message = line.Bubble.Message;
+            rows.Add(Kept(at) ?? Built(wanted[at], row =>
             {
-                MessageStack.Children.Add(DayPill(Timeline.DayLabel(day, today, services.Culture, services.Say)));
-            }
-            if (line.UnreadDividerAbove)
-            {
-                divider = Divider(Timeline.DividerText(unreadAtOpen, services.Say));
-                MessageStack.Children.Add(divider);
-            }
-            MessageStack.Children.Add(BubbleElement(chat, line));
+                row.MessageId = message.Id;
+                // A hidden row fetches what a visible one would and keeps none of it on screen: built again on every redraw,
+                // so it asks again on the same schedule a visible row's retry does.
+                row.Volatile = !line.Bubble.Reads && message.Media.Count > 0;
+                if (line.DayAbove is { } day)
+                {
+                    row.Elements.Add(DayPill(Timeline.DayLabel(day, today, services.Culture, services.Say)));
+                }
+                if (line.UnreadDividerAbove)
+                {
+                    row.Divider = Divider(Timeline.DividerText(unreadAtOpen, services.Say));
+                    row.Elements.Add(row.Divider);
+                }
+                row.Elements.Add(BubbleElement(chat, line));
+                if (balloons.TryGetValue(message.Id, out var balloon))
+                {
+                    row.Balloon = balloon;
+                }
+            }));
+            at++;
         }
-        foreach (var row in pending)
+        foreach (var pendingRow in pending)
         {
-            MessageStack.Children.Add(PendingElement(chat, row));
+            rows.Add(Built(wanted[at], row =>
+            {
+                row.Volatile = true;
+                row.Elements.Add(PendingElement(chat, pendingRow));
+            }));
+            at++;
         }
-        MessageScroller.UpdateLayout();
+
+        // What left the screen leaves what points at it: the balloon a quote scrolls to, and the "Call back" a call toggles.
+        if (!whole)
+        {
+            var kept = new HashSet<DrawnRow>(rows, ReferenceEqualityComparer.Instance);
+            foreach (var gone in drawnRows.Where(row => !kept.Contains(row)))
+            {
+                if (gone.MessageId is { } id && gone.Balloon is { } was
+                    && balloons.TryGetValue(id, out var now) && ReferenceEquals(now.Balloon, was.Balloon))
+                {
+                    balloons.Remove(id);
+                }
+                foreach (var link in gone.CallBackLinks)
+                {
+                    callBackLinks.Remove(link);
+                }
+            }
+        }
+        drawnRows.Clear();
+        drawnRows.AddRange(rows);
+        drawnFor = chat;
+        drawnAround = around;
+
+        var elements = rows.SelectMany(row => row.Elements).ToList();
+        if (!whole && MergeStack(elements) < 0)
+        {
+            // Not in place after all (MergeStack says why). Built again WHOLE rather than the kept elements put back: an
+            // element taken out and put back in one turn may hear Unloaded after Loaded, and its sticker, animation, circle
+            // or recording would let go of the very element on screen.
+            Diagnostics.Write("the conversation could not be updated in place: drawn whole");
+            MessageStack.Children.Clear();
+            balloons.Clear();
+            callBackLinks.Clear();
+            ForgetDrawnRows();
+            conversationDrawn = string.Empty;
+            DrawConversation(keepFromBottom);
+            return;
+        }
+        if (whole)
+        {
+            MessageStack.Children.Clear();
+            stackShown.Clear();
+            foreach (var element in elements)
+            {
+                MessageStack.Children.Add(element);
+                stackShown.Add(element);
+            }
+        }
+        var divider = rows.FirstOrDefault(row => row.Divider is not null)?.Divider;
+        // Layout is forced only where a scroll below is about to read it. A reader up the history is not moved, and what
+        // changed is laid out with the next frame like anything else.
+        if (keepFromBottom is not null || scrollToAnchor || atNewest)
+        {
+            MessageScroller.UpdateLayout();
+        }
         if (keepFromBottom is { } distance)
         {
             // Paging back must not move what the reader is looking at: the page lands ABOVE it.
@@ -1329,7 +1506,133 @@ public sealed partial class ChatsView : UserControl
             MessageScroller.ChangeView(null, MessageScroller.ScrollableHeight, null, disableAnimation: true);
         }
         ShowJump();
+
+        DrawnRow? Kept(int index) => plan is not null && plan[index] >= 0 ? drawnRows[plan[index]] : null;
     }
+
+    /// <summary>
+    /// Build one row of the conversation, noting as it goes what its drawing still waits for and which "Call back" links it
+    /// drew — so a later redraw can tell whether to keep it, and what to forget when it goes.
+    /// </summary>
+    private DrawnRow Built(RowMark mark, Action<DrawnRow> build)
+    {
+        var row = new DrawnRow(mark.Key, mark.Signature);
+        var linksBefore = callBackLinks.Count;
+        var outer = building;
+        building = row;
+        try
+        {
+            build(row);
+        }
+        finally
+        {
+            building = outer;
+        }
+        if (callBackLinks.Count > linksBefore)
+        {
+            row.CallBackLinks.AddRange(callBackLinks.GetRange(linksBefore, callBackLinks.Count - linksBefore));
+        }
+        return row;
+    }
+
+    /// <summary>
+    /// Turn the stack into these elements by inserting and removing only what changed (<see cref="ConversationRows.Merge"/>).
+    /// Answers how many changes that took, or -1 when the stack has to be built whole instead — the copy kept of it no longer
+    /// matches it, the kept elements would have to move, or the window refused a change half-way.
+    /// </summary>
+    private int MergeStack(IReadOnlyList<UIElement> elements)
+    {
+        var children = MessageStack.Children;
+        if (children.Count != stackShown.Count)
+        {
+            return -1;
+        }
+        try
+        {
+            return ConversationRows.Merge(stackShown, elements, children.RemoveAt, children.Insert);
+        }
+        catch (Exception e)
+        {
+            // The stack is in some state between the two: the caller clears it and draws the conversation whole.
+            Diagnostics.Write($"updating the conversation in place: {e.GetType().Name}");
+            return -1;
+        }
+    }
+
+    /// <summary>The open chat is gone: nothing drawn for it is kept.</summary>
+    private void ForgetDrawnRows()
+    {
+        drawnRows.Clear();
+        stackShown.Clear();
+        drawnFor = null;
+        drawnAround = string.Empty;
+    }
+
+    /// <summary>
+    /// What every row of the conversation is drawn from that is not any one row's: the chat, the reader's block list and the
+    /// roster (names, faces, voters), the call switches, the card and map settings, today, the theme, the language, the
+    /// family's and the assistant's documents and whether formulas can be drawn. A change to any of it builds every row again
+    /// — what every redraw used to do.
+    /// </summary>
+    private string DrawnAround(ConversationModel chat, string? kind)
+    {
+        var state = connection.Session.State;
+        return string.Join(
+            Field,
+            chat.ChatId,
+            kind,
+            string.Join(',', connection.Chats.Blocked()),
+            Wire.Encode(connection.Chats.Members()),
+            callBusy,
+            state.CallsEnabled,
+            state.VideoCallsEnabled,
+            LinkPreviewSetting.Enabled,
+            MapPreviewSetting.Enabled,
+            previewPicturesRefused,
+            DateOnly.FromDateTime(DateTime.Now),
+            ActualTheme,
+            services.Culture.Name,
+            unreadAtOpen,
+            Wire.Encode(state.Assistant),
+            Wire.Encode(state.Family),
+            // Formulas and diagrams are drawn by it, and typed out without it.
+            services.Rich is not null);
+    }
+
+    /// <summary>
+    /// What one message's row is drawn from beyond the message itself and its place (<see cref="ConversationRows.Signature"/>):
+    /// the words an answer has streamed so far and whether it stopped, the state of its link's card, its ticks, and whether
+    /// the text of each recording it carries is already held — the things <see cref="BubbleElement"/> reads per bubble.
+    /// </summary>
+    private string RowDrawnWith(TimelineRow line, bool familyChat, long peerRead)
+    {
+        var bubble = line.Bubble;
+        var message = bubble.Message;
+        var body = connection.Answers.BodyOf(message);
+        var writing = connection.Answers.IsWriting(message) ? body : string.Empty;
+        var failure = connection.Answers.FailureSentence(message, services.Say) ?? string.Empty;
+        var card = LinkPreviewSetting.Enabled
+            && message.Call is null
+            && PreviewLinkOf(message, body, emojiOnly: false) is { } link
+            && connection.Previews.State(link) is { } state
+                ? (int)state.Status
+                : -1;
+        // Only where the row draws its time — the tick is beside it — so a peer reading a burst rebuilds its last row alone.
+        var seen = (line.RunEnd || message.EditedAt is not null || !bubble.Reads)
+            && BubbleRules.ShowsTick(message, Reader, familyChat)
+            && BubbleRules.Seen(message, Reader, familyChat, peerRead);
+        var texts = string.Concat(message.Media
+            .Where(attachment => attachment.Kind is "audio" or "video")
+            .Select(attachment => connection.Transcripts.Holds(attachment.Id) ? '1' : '0'));
+        return string.Join(Field, writing, failure, card, seen ? 1 : 0, texts);
+    }
+
+    /// <summary>
+    /// Something a row's drawing is still waiting for — a picture, a sticker's frames, a map tile, a face — as a question that
+    /// answers whether it came. A row with an unanswered one is built again by the next redraw, which is how the redraw that
+    /// rebuilt everything used to retry it. Asked only while a conversation row is being built; the thread panel's are not.
+    /// </summary>
+    private void SettlesWhen(Func<bool> settled) => building?.Settles.Add(settled);
 
     /// <summary>Decide where the open chat opens, from what it holds now.</summary>
     private void DecideAnchor(ConversationModel chat)
@@ -1425,7 +1728,7 @@ public sealed partial class ChatsView : UserControl
         var secondary = (Brush)resources["TextFillColorSecondaryBrush"];
         var message = bubble.Message;
         var mine = bubble.Mine;
-        var kind = connection.Chats.Chat(chat.ChatId)?.Chat.Kind;
+        var kind = connection.Chats.Kind(chat.ChatId);
         var assistantChat = kind == "ai";
         var familyChat = kind == "family";
         var assistantId = connection.Session.State.Assistant?.UserId;
@@ -1476,7 +1779,7 @@ public sealed partial class ChatsView : UserControl
             // The run's head: a face beside a tinted name — the one place a family thread tells its speakers apart at a glance.
             var name = BubbleText.Sender(bubble, connection.Chats, say);
             var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(4, 0, 0, 0) };
-            head.Children.Add(faces.Face(name, false, message.SenderId, connection.Chats.Member(message.SenderId)?.AvatarVersion ?? 0, 18));
+            head.Children.Add(faces.Face(name, false, message.SenderId, connection.Chats.Member(message.SenderId)?.AvatarVersion ?? 0, 18, SettlesWhen));
             head.Children.Add(new TextBlock
             {
                 Text = name,
@@ -2683,6 +2986,8 @@ public sealed partial class ChatsView : UserControl
         if (source != AttachmentFiles.TileSource.None)
         {
             _ = ShowPictureAsync(image, attachment, preview: source == AttachmentFiles.TileSource.Preview);
+            // Until the picture is in, the next redraw builds this tile again — and so asks for it again.
+            SettlesWhen(() => image.Source is not null);
         }
         frame.Tapped += (_, _) => OpenViewer(album, index);
         return frame;
@@ -2702,7 +3007,12 @@ public sealed partial class ChatsView : UserControl
                 }
                 return;
             }
-            if (await DecodeAsync(bytes) is not { } decoded)
+            // A photo's own bytes — it has no small copy — decoded near the tile's size rather than the camera's
+            // (PictureDecode). Never a sticker, whose frames a smaller decode is not asked to keep moving.
+            var tileWidth = !(preview && attachment.HasPreview) && attachment.Kind == "photo" && !attachment.Sticker
+                ? PictureDecode.TileWidth(attachment.Width, attachment.Height, RasterScale())
+                : null;
+            if (await DecodeAsync(bytes, tileWidth) is not { } decoded)
             {
                 return;
             }
@@ -2711,7 +3021,8 @@ public sealed partial class ChatsView : UserControl
         image.Source = picture;
     }
 
-    private static async Task<BitmapImage?> DecodeAsync(byte[] bytes)
+    /// <param name="width">The width to decode at, in effective pixels — null for the picture's own size.</param>
+    private static async Task<BitmapImage?> DecodeAsync(byte[] bytes, int? width = null)
     {
         try
         {
@@ -2725,6 +3036,12 @@ public sealed partial class ChatsView : UserControl
             }
             stream.Seek(0);
             var picture = new BitmapImage();
+            if (width is { } wide)
+            {
+                // Set BEFORE the source, or the whole picture is decoded first. One side only: the other follows the shape.
+                picture.DecodePixelType = DecodePixelType.Logical;
+                picture.DecodePixelWidth = wide;
+            }
             await picture.SetSourceAsync(stream);
             return picture;
         }
@@ -3427,7 +3744,7 @@ public sealed partial class ChatsView : UserControl
         // What is held is drawn; what could not be fetched is said, rather than passed off as the whole chain.
         ThreadNotice.Text = say.Get("Couldn't load the whole thread.");
         ThreadNotice.Visibility = bubbles.Count > 0 && chain.Failure is not null ? Visibility.Visible : Visibility.Collapsed;
-        var family = connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "family";
+        var family = connection.Chats.Kind(chat.ChatId) == "family";
         var today = DateOnly.FromDateTime(DateTime.Now);
         foreach (var line in Timeline.Rows(bubbles, family, Reader, null, TimeZoneInfo.Local))
         {
@@ -6534,6 +6851,7 @@ public sealed partial class ChatsView : UserControl
             Canvas.SetTop(image, tile.Top);
             canvas.Children.Add(image);
             _ = ShowTileAsync(image, tile);
+            SettlesWhen(() => image.Source is not null);
         }
         // The place: a red dot where the pin stands, ringed in white so it reads on any colour of map.
         var ring = new Microsoft.UI.Xaml.Shapes.Ellipse
@@ -6870,14 +7188,14 @@ public sealed partial class ChatsView : UserControl
 
     // ---- mentioning a member ---------------------------------------------------------------------
 
-    private bool IsFamily(ConversationModel chat) => connection.Chats.Chat(chat.ChatId)?.Chat.Kind == "family";
+    private bool IsFamily(ConversationModel chat) => connection.Chats.Kind(chat.ChatId) == "family";
 
     /// <summary>
     /// What KIND of chat this is, in the protocol's own words — "family", "direct", "ai" — or
     /// null while the list has not caught up with it. The assistant's rules are written against
     /// it (docs/protocol.md, "Consenting to the assistant").
     /// </summary>
-    private string? Kind(ConversationModel chat) => connection.Chats.Chat(chat.ChatId)?.Chat.Kind;
+    private string? Kind(ConversationModel chat) => connection.Chats.Kind(chat.ChatId);
 
     /// <summary>
     /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone. The arrows walk
@@ -7204,7 +7522,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private string? PreviewLinkOf(MessageDto message, string body, bool emojiOnly)
     {
-        var assistantChat = connection.Chats.Chat(message.ChatId)?.Chat.Kind == "ai";
+        var assistantChat = connection.Chats.Kind(message.ChatId) == "ai";
         return Lookups.MayPreview(
             message, body, Reader, assistantChat, connection.Session.State.Assistant?.UserId, connection.Answers.IsWriting(message))
             ? BubbleBody.PreviewLink(body, emojiOnly)
@@ -7545,6 +7863,8 @@ public sealed partial class ChatsView : UserControl
     {
         atNewest = true;
         conversationDrawn = string.Empty;
+        // Drawn now, and at the newest — but the messages above the new send did not change, and are kept.
+        keepRowsOnce = true;
         DrawConversation(keepFromBottom: null);
         _ = connection.Live.FlushAsync(SendRules.FlushTrigger.Queued);
     }
@@ -8210,6 +8530,7 @@ public sealed partial class ChatsView : UserControl
         };
         DrawRoundCopy(copy);
         _ = ShowPosterAsync(copy);
+        SettlesWhen(() => !video.HasPreview || copy.Poster is not null);
         return column;
     }
 
@@ -9278,6 +9599,9 @@ public sealed partial class ChatsView : UserControl
         frame.Children.Add(image);
         AutomationProperties.SetName(frame, say.Get("Sticker"));
         _ = ShowStickerAsync(image, word, picture);
+        // Drawn, or known to be undrawable here: either way a redraw has nothing to try again. Bytes that did not come are
+        // not remembered (ShowStickerAsync), and the next redraw builds it again to ask.
+        SettlesWhen(() => word.Visibility == Visibility.Collapsed || stickerPictures.Holds(picture.Id));
         IReadOnlyList<AttachmentDto> album = [picture];
         frame.Tapped += (_, _) => OpenViewer(album, 0);
         return frame;
@@ -9587,7 +9911,7 @@ public sealed partial class ChatsView : UserControl
     /// A pack item in a panel cell: the item's ORIGINAL bytes, fetched once and kept on the shelf under its
     /// <see cref="PanelKey"/>. ANIMATED where this machine can and Windows' animation effects are on (docs/protocol.md,
     /// "Sticker pack", amended 2026-10-19, #96) — and only while the cell is on screen (<see cref="StickerAnimator"/>) — within
-    /// the shelf's one budget, which makes the least recently drawn still. The cell's word goes only when there is a picture
+    /// the panel's shelf's budget, which makes the least recently drawn still. The cell's word goes only when there is a picture
     /// to put in its place.
     /// </summary>
     private async Task ShowStickerThumbAsync(Image image, TextBlock word, PackItemDto item)
@@ -9595,7 +9919,7 @@ public sealed partial class ChatsView : UserControl
         var key = PanelKey(item.Id);
         try
         {
-            if (!stickerPictures.TryGet(key, out var decoded))
+            if (!panelStickerPictures.TryGet(key, out var decoded))
             {
                 var (bytes, error) = await pack.BytesAsync(item);
                 if (gone)
@@ -9618,7 +9942,7 @@ public sealed partial class ChatsView : UserControl
                     {
                         return;
                     }
-                    if (!stickerPictures.TryGet(key, out decoded))
+                    if (!panelStickerPictures.TryGet(key, out decoded))
                     {
                         decoded = await StickerImaging.DecodeAsync(
                             bytes, StickerLook.PanelCell, RasterScale(), StickerImaging.AnimationsWanted());
@@ -9628,7 +9952,7 @@ public sealed partial class ChatsView : UserControl
                             return;
                         }
                         // A null is kept: the panel is opened again and again, and a codec that is not there is still not there.
-                        stickerPictures.Put(key, decoded, decoded?.Bytes ?? 0);
+                        panelStickerPictures.Put(key, decoded, decoded?.Bytes ?? 0);
                     }
                 }
                 finally
@@ -9641,7 +9965,7 @@ public sealed partial class ChatsView : UserControl
                 return;
             }
             // The cell's clock is the sticker's: reopening the panel joins the animation where it was.
-            stickers.Show(image, decoded, stickerPictures.Started(key, stickers.Now));
+            stickers.Show(image, decoded, panelStickerPictures.Started(key, stickers.Now));
             word.Visibility = Visibility.Collapsed;
         }
         catch (Exception e)
@@ -9900,7 +10224,7 @@ public sealed partial class ChatsView : UserControl
         if (open is { } chat)
         {
             var state = connection.Session.State;
-            var kind = connection.Chats.Chat(chat.ChatId)?.Chat.Kind;
+            var kind = connection.Chats.Kind(chat.ChatId);
             var serverCanSee = state.Assistant?.Vision == true;
             var familyAllows = state.Family?.AiVision == true;
             // What travels of a photo staged here is the photo as prepared.

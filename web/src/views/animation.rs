@@ -4,12 +4,15 @@
 //! In the box a photograph of its shape would take, with no play button, no
 //! duration, no sound control and no scrubber — only a small "GIF" in a
 //! corner. It plays by itself, muted, and loops for ever while it is on
-//! screen; scrolled away, its `<video>` is taken out altogether, which stops
-//! it and lets go of its decoder. It shows its poster instead, still, when
-//! the system asks for less motion (`prefers-reduced-motion: reduce`) and
-//! when it is above 8 MiB — the bound on the one exception to "a tile never
-//! downloads a video" (docs/protocol.md, "A browser is a client too"). A
-//! click opens it larger, playing, muted and looping, without controls.
+//! screen; scrolled just off it, it is paused where it is — scrolling back
+//! and forth across the edge does not take the video down and fetch and
+//! decode it again each time — and scrolled further away its `<video>` is
+//! taken out altogether, which lets go of its decoder. It shows its poster
+//! instead, still, when the system asks for less motion
+//! (`prefers-reduced-motion: reduce`) and when it is above 8 MiB — the bound
+//! on the one exception to "a tile never downloads a video"
+//! (docs/protocol.md, "A browser is a client too"). A click opens it larger,
+//! playing, muted and looping, without controls.
 //!
 //! Its bytes come as every attachment's do — fetched with the session's
 //! bearer header into an object URL, never a URL with a token in it — under
@@ -28,24 +31,87 @@ use yew::prelude::*;
 use crate::media::{use_media, Variant};
 use crate::model::Attachment;
 
-/// Whether the system asks for less motion — read each time it is drawn, so
-/// a change to the setting is honoured from the next draw.
-pub fn reduced_motion() -> bool {
-    web_sys::window()
-        .and_then(|window| {
-            window
-                .match_media("(prefers-reduced-motion: reduce)")
-                .ok()
-                .flatten()
-        })
-        .is_some_and(|query| query.matches())
+/// The system's "less motion" setting, as a query this page can ask and
+/// listen to.
+fn motion_query() -> Option<web_sys::MediaQueryList> {
+    web_sys::window()?
+        .match_media("(prefers-reduced-motion: reduce)")
+        .ok()
+        .flatten()
 }
+
+/// Whether the system asks for less motion, right now.
+pub fn reduced_motion() -> bool {
+    motion_query().is_some_and(|query| query.matches())
+}
+
+/// Whether the system asks for less motion — read once as the component
+/// is first drawn, and drawn again when the setting changes.
+///
+/// It used to be read on every draw, which honoured a change "from the next
+/// draw" only because every bubble was drawn again whenever anything at all
+/// changed. Now that a bubble is drawn again only when something of its own
+/// changes, the next draw could be a long way off; the query's own `change`
+/// is what says the setting moved, and honours it at once.
+#[hook]
+pub fn use_reduced_motion() -> bool {
+    let reduced = use_state(reduced_motion);
+    {
+        let reduced = reduced.clone();
+        use_effect_with((), move |_| {
+            let query = motion_query();
+            let heard = query.as_ref().map(|query| {
+                let asked = query.clone();
+                let heard = Closure::<dyn Fn()>::new(move || reduced.set(asked.matches()));
+                let _ = query
+                    .add_event_listener_with_callback("change", heard.as_ref().unchecked_ref());
+                heard
+            });
+            move || {
+                if let (Some(query), Some(heard)) = (query, heard) {
+                    let _ = query.remove_event_listener_with_callback(
+                        "change",
+                        heard.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+        });
+    }
+    *reduced
+}
+
+/// How far below or above the list a tile may be and still fetch its
+/// picture — about a screen, so a reader scrolling at an ordinary pace
+/// meets pictures that are already there.
+pub const FETCH_AHEAD_PX: u32 = 800;
+
+/// How far off the list an animation may be and keep its `<video>`, paused:
+/// a reader scrolling back finds it where it stopped, without a fetch and a
+/// decode; further away it is taken out and lets go of its decoder.
+pub const KEEP_PLAYER_PX: u32 = 300;
 
 /// Whether the element behind `node` is on screen, as an
 /// `IntersectionObserver` sees it — false until it has said, so nothing is
 /// fetched for a tile that was never looked at.
 #[hook]
 pub fn use_on_screen(node: NodeRef) -> bool {
+    use_within(node, None)
+}
+
+/// Whether the element behind `node` is within `margin_px` of being on
+/// screen — of the list it scrolls in (`.messages`, `.thread-messages`), or
+/// of the window where it is in neither.
+///
+/// The LIST, where there is one, because the margin is the observer's root
+/// margin: with the window as the root, the list scrolling inside it clips
+/// a row by its own edges and the margin never reaches past them.
+#[hook]
+pub fn use_near_screen(node: NodeRef, margin_px: u32) -> bool {
+    use_within(node, Some(margin_px))
+}
+
+#[hook]
+fn use_within(node: NodeRef, margin_px: Option<u32>) -> bool {
     let visible = use_state(|| false);
     {
         let visible = visible.clone();
@@ -60,12 +126,28 @@ pub fn use_on_screen(node: NodeRef) -> bool {
                     visible.set(entry.is_intersecting());
                 }
             });
-            let observer = web_sys::IntersectionObserver::new(seen.as_ref().unchecked_ref())
-                .ok()
-                .and_then(|observer| {
-                    observer.observe(&node.cast::<web_sys::Element>()?);
-                    Some(observer)
-                });
+            let element = node.cast::<web_sys::Element>();
+            let observer = match margin_px {
+                None => web_sys::IntersectionObserver::new(seen.as_ref().unchecked_ref()),
+                Some(margin) => {
+                    let options = web_sys::IntersectionObserverInit::new();
+                    let list = element
+                        .as_ref()
+                        .and_then(|element| element.closest(".messages, .thread-messages").ok())
+                        .flatten();
+                    options.set_root(list.as_ref());
+                    options.set_root_margin(&format!("{margin}px 0px"));
+                    web_sys::IntersectionObserver::new_with_options(
+                        seen.as_ref().unchecked_ref(),
+                        &options,
+                    )
+                }
+            }
+            .ok()
+            .and_then(|observer| {
+                observer.observe(element.as_ref()?);
+                Some(observer)
+            });
             move || {
                 if let Some(observer) = observer {
                     observer.disconnect();
@@ -78,16 +160,21 @@ pub fn use_on_screen(node: NodeRef) -> bool {
 }
 
 /// Muted for certain — the property, which a browser's autoplay rules go by,
-/// and not only the attribute — and playing. A refused play (a browser that
-/// will not, a tab in the background) is not an error: the picture simply
-/// waits, still, on its first frame.
-fn play_muted(player: &NodeRef) {
+/// and not only the attribute — and playing while `on_screen`, paused where
+/// it is otherwise. A refused play (a browser that will not, a tab in the
+/// background) is not an error: the picture simply waits, still, on its
+/// first frame.
+fn play_muted(player: &NodeRef, on_screen: bool) {
     let Some(video) = player.cast::<HtmlVideoElement>() else {
         return;
     };
     video.set_muted(true);
     video.set_default_muted(true);
     video.set_loop(true);
+    if !on_screen {
+        let _ = video.pause();
+        return;
+    }
     if let Ok(promise) = video.play() {
         wasm_bindgen_futures::spawn_local(async move {
             let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
@@ -110,15 +197,18 @@ pub fn animation_tile(props: &TileProps) -> Html {
     let frame = use_node_ref();
     let player = use_node_ref();
     let on_screen = use_on_screen(frame.clone());
-    let plays = plays_in_tile(attachment.size, reduced_motion());
+    // On screen or just off it: the video is kept — playing on screen,
+    // paused off it (`play_muted`).
+    let kept = use_near_screen(frame.clone(), KEEP_PLAYER_PX) || on_screen;
+    let plays = plays_in_tile(attachment.size, use_reduced_motion());
     let poster = use_media(attachment.id, Variant::Preview, attachment.has_preview);
-    let moving = use_media(attachment.id, Variant::Animation, plays && on_screen);
-    let moving = moving.filter(|_| plays && on_screen);
+    let moving = use_media(attachment.id, Variant::Animation, plays && kept);
+    let moving = moving.filter(|_| plays && kept);
     {
         let player = player.clone();
-        use_effect_with(moving.clone(), move |moving| {
+        use_effect_with((moving.clone(), on_screen), move |(moving, on_screen)| {
             if moving.is_some() {
-                play_muted(&player);
+                play_muted(&player, *on_screen);
             }
         });
     }
@@ -128,7 +218,7 @@ pub fn animation_tile(props: &TileProps) -> Html {
     let loading = moving.is_none()
         && poster.is_none()
         && attachment.id > 0
-        && (attachment.has_preview || (plays && on_screen));
+        && (attachment.has_preview || (plays && kept));
     html! {
         <button
             ref={frame}
@@ -177,7 +267,7 @@ pub fn animation_view(props: &ViewProps) -> Html {
         let player = player.clone();
         use_effect_with(full.clone(), move |full| {
             if full.is_some() {
-                play_muted(&player);
+                play_muted(&player, true);
             }
         });
     }

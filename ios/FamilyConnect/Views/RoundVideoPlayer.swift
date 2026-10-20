@@ -576,8 +576,8 @@ struct RoundVideoTile: View {
     /// downloads a VIDEO to draw itself". A video poster may arrive late,
     /// so the store re-asks a bounded number of times.
     private var poster: Image? {
-        _ = store.generation
-        return store.image(id: attachment.id, preview: true, mayArriveLate: true)
+        // The lookup registers this view on the poster's own key.
+        store.image(id: attachment.id, preview: true, mayArriveLate: true)
     }
 
     private var durationSeconds: TimeInterval { Double(attachment.durationMS ?? 0) / 1000 }

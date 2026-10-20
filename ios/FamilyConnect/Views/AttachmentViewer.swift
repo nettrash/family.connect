@@ -193,10 +193,9 @@ private struct ZoomablePhoto: View {
 
     var body: some View {
         GeometryReader { geometry in
-            // Reading `store.generation` inside the body is what makes the
-            // view re-render when the fetch lands (the store is the only
-            // thing that knows), the same trick AttachmentView uses.
-            let _ = store.generation
+            // Each lookup registers this view on its own key, which is what
+            // re-renders it when the fetch lands (AttachmentView has the
+            // rule).
             if let image = store.image(id: attachment.id, preview: false) {
                 image
                     .resizable()

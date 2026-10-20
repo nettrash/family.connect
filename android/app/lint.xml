@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+        The wrapper stays on Gradle 9.7.1 on purpose (2026-10-19). From 9.8
+        Gradle deprecates Configuration.setVisible, and AGP 9.4.1 — the newest
+        stable — calls it while applying itself (BasePlugin
+        .createAndroidJdkImageConfiguration), so every build printed
+        "Deprecated Gradle features were used". Move to 9.8+ together with an
+        AGP that no longer calls it, and delete this.
+    -->
+    <issue id="AndroidGradlePluginVersion">
+        <ignore path="**/gradle/wrapper/gradle-wrapper.properties" />
+    </issue>
+</lint>

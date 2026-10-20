@@ -473,25 +473,6 @@ struct ConversationView: View {
         threadTarget = ThreadTarget(chatID: chatID, rootID: threadRootID ?? serverID)
     }
 
-    /// How many open polls in this chat this reader still has to answer —
-    /// the badge on the toolbar entry point (OpenPollsBadge, shared with the
-    /// Mac and mirrored on Android).
-    ///
-    /// Computed from what this device already holds rather than from the
-    /// endpoint: the badge must be right the moment the chat opens, and a
-    /// request per open would be a request per open. The polls it has are
-    /// the polls the chat has synced, which is what the reader is looking at.
-    private var openPollsToAnswer: Int {
-        // A poll by somebody this reader has blocked is a hidden row on the
-        // surface and counts toward nothing: a badge is a claim that there
-        // is something for them to answer, and a question they chose not to
-        // see is not one (protocol.md, "Finding the open ones").
-        let me = currentUserID
-        let blocked = coordinator.blockedUserIDs
-        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
-        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
-    }
-
     /// How many of the locally cached messages are RENDERED. The thread
     /// deliberately renders a bounded window (grown by the top sentinel —
     /// locally first, then over the network): an unbounded lazy stack over
@@ -1082,30 +1063,9 @@ struct ConversationView: View {
             // anything within a day.
             if chat?.kind == "family" {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showsOpenPolls = true
-                    } label: {
-                        // The count is drawn BY HAND. `.badge` on a toolbar
-                        // item renders only on iOS 26 / macOS 26, and this
-                        // app deploys to iOS 17 — on every earlier OS it is
-                        // silently nothing, and the whole OpenPollsBadge
-                        // apparatus would have computed a number nobody saw.
-                        // The capsule is the chat list's own unread badge.
-                        Image(systemName: "chart.bar.doc.horizontal")
-                            .overlay(alignment: .topTrailing) {
-                                if openPollsToAnswer > 0 {
-                                    Text("\(openPollsToAnswer)")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(.tint, in: Capsule())
-                                        .offset(x: 9, y: -8)
-                                }
-                            }
-                    }
-                    .accessibilityLabel("Open polls")
-                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                    // Counts from its own narrow query, once per pass of its
+                    // own body (OpenPollsToolbarButton says why).
+                    OpenPollsToolbarButton(chatID: chatID) { showsOpenPolls = true }
                 }
             }
         }
@@ -1234,162 +1194,240 @@ struct ConversationView: View {
         }
     }
 
+    /// What every row of one pass looks up, computed ONCE per pass.
+    ///
+    /// Each of these used to be a computed property read from inside the
+    /// row builder — so for a window of N rows, every pass of the body
+    /// rebuilt the name and picture dictionaries N times over, scanned the
+    /// roster linearly for each sender, and read the current user and the
+    /// assistant's id out of UserDefaults per row. Over a window widened
+    /// across a few hundred unread rows that was the bulk of a pass. The
+    /// answers cannot differ between two rows of the same pass, so they are
+    /// taken once, here, and handed down.
+    private struct RowLookups {
+        let currentUserID: Int64
+        /// The coordinator's idea of the reader, which the assistant-chat
+        /// naming rule has always compared against.
+        let coordinatorUserID: Int64
+        /// userID → display name and → picture version, first row wins —
+        /// the same answer `members.first(where:)` gave.
+        let names: [Int64: String]
+        let avatarVersions: [Int64: Int64]
+        let memberCount: Int
+        let blocked: Set<Int64>
+        let isFamilyChat: Bool
+        let isAssistantChat: Bool
+        let assistantChatTitle: String?
+        let assistantID: Int64?
+        let assistantName: String?
+        let othersReadUpTo: Int64
+        let canCall: Bool
+
+        /// `ConversationView.displayName(for:)`, from the precomputed table.
+        func displayName(for userID: Int64) -> String? {
+            if isAssistantChat, userID != coordinatorUserID {
+                return assistantChatTitle
+            }
+            if let assistantID, userID == assistantID {
+                return assistantName
+            }
+            return names[userID]
+        }
+    }
+
+    private var rowLookups: RowLookups {
+        RowLookups(
+            currentUserID: currentUserID,
+            coordinatorUserID: coordinator.currentUserID,
+            names: memberNames,
+            avatarVersions: avatarVersions,
+            memberCount: familyMemberCount,
+            blocked: coordinator.blockedUserIDs,
+            isFamilyChat: isFamilyChat,
+            isAssistantChat: isAssistantChat,
+            assistantChatTitle: chat?.title,
+            assistantID: AppSettings.assistantUserID,
+            assistantName: AppSettings.assistantName,
+            othersReadUpTo: chat?.othersReadUpTo ?? 0,
+            canCall: canCall)
+    }
+
     /// The message rows — split out so the scroll container above stays
     /// type-checkable at a glance.
     @ViewBuilder
     private func bubbleRows(proxy: ScrollViewProxy) -> some View {
-                    ForEach(sections) { section in
-                        DayPill(day: section.day)
-                            .padding(.vertical, 6)
-                        ForEach(Array(section.messages.enumerated()), id: \.element.id) { index, message in
-                            // "N new messages", above the oldest message
-                            // this reader has not seen. Which row that is
-                            // comes from the section (one shared builder
-                            // for both Apple threads); the count is the
-                            // one captured at open.
-                            if section.unreadDividerAbove == message.localID,
-                                let unreadDividerCount {
-                                UnreadDivider(count: unreadDividerCount)
-                                    .id(UnreadDivider.scrollID)
-                            }
-                            MessageBubbleView(
-                                message: message,
-                                isMine: message.senderID == currentUserID,
-                                isStreaming: coordinator.isAwaitingAssistant(
-                                    message, isAssistantChat: isAssistantChat),
-                                assistantFailure: message.serverID.flatMap {
-                                    coordinator.assistantFailure(messageID: $0)
-                                },
-                                showsSenderName: MessagePresentation.showsSenderName(
-                                    at: index,
-                                    in: section.messages,
-                                    isFamilyChat: isFamilyChat,
-                                    currentUserID: currentUserID,
-                                    blockedUserIDs: coordinator.blockedUserIDs),
-                                senderName: displayName(for: message.senderID),
-                                senderID: message.senderID,
-                                senderAvatarVersion: avatarVersion(for: message.senderID),
-                                // The Mac's run rule (MacConversationView.rows):
-                                // a run is one sender's consecutive messages
-                                // within the day section.
-                                isRunStart: index == 0
-                                    || section.messages[index - 1].senderID != message.senderID,
-                                isRunEnd: index == section.messages.count - 1
-                                    || section.messages[index + 1].senderID != message.senderID,
-                                isRead: MessagePresentation.isRead(
-                                    message,
-                                    othersReadUpTo: chat?.othersReadUpTo ?? 0,
-                                    isFamilyChat: isFamilyChat),
-                                reactionChips: MessagePresentation.reactionChips(
-                                    message.reactions,
-                                    currentUserID: currentUserID),
-                                reactionDetails: MessagePresentation.reactionDetails(
-                                    message.reactions,
-                                    names: memberNames,
-                                    currentUserID: currentUserID,
-                                    // The CHIPS above are deliberately not
-                                    // given this: their count must not move.
-                                    blockedUserIDs: coordinator.blockedUserIDs),
-                                avatarVersions: avatarVersions,
-                                memberNames: memberNames,
-                                currentUserID: currentUserID,
-                                onTapQuote: { jumpToMessage($0, proxy: proxy) },
-                                onTapMention: { openMember($0) },
-                                replyCount: message.replyCount,
-                                onOpenThread: {
-                                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
-                                },
-                                onOpenAttachment: { attachment in
-                                    if MessagePresentation.isSticker(message) {
-                                        viewingSticker = attachment
-                                    } else if MessagePresentation.isRoundVideo(message) {
-                                        // A tap plays a circle in place;
-                                        // this is its "Open Full Screen"
-                                        // (#79, S5.4).
-                                        openFullScreen(message)
-                                    } else if attachment.isFile {
-                                        openFile(attachment)
-                                    } else {
-                                        // The whole message's media, opened
-                                        // at the one that was tapped — the
-                                        // viewer pages through the rest.
-                                        let media = AttachmentAlbum.media(of: message.attachments)
-                                        let index = media.firstIndex { $0.id == attachment.id } ?? 0
-                                        viewingAlbum = AttachmentAlbum(items: media, index: index)
-                                    }
-                                },
-                                onVote: { optionID in
-                                    Task {
-                                        await coordinator.vote(
-                                            localID: message.localID, optionID: optionID)
-                                    }
-                                },
-                                onClosePoll: {
-                                    Task { await coordinator.closePoll(localID: message.localID) }
-                                },
-                                memberCount: familyMemberCount,
-                                onCallBack: canCall ? { startCall() } : nil,
-                                onRetry: { coordinator.retry(localID: message.localID) },
-                                onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
-                                onToggleReaction: { emoji in
-                                    toggleReaction(localID: message.localID, emoji: emoji)
-                                },
-                                onLongPress: {
-                                    // Nothing to offer on a pending bubble:
-                                    // no server id to react to, no failure
-                                    // to retry.
-                                    guard message.serverID != nil || message.state == .failed else { return }
-                                    // A hidden row opens nothing. One
-                                    // missing clause here is three leaks
-                                    // at once: the capsule floats over a
-                                    // placeholder, Copy puts the blocked
-                                    // body on the pasteboard, and Share
-                                    // hands the blocked attachment to the
-                                    // share sheet. Reveal is a TAP.
-                                    guard
-                                        !MessagePresentation.isHiddenByBlock(
-                                            message,
-                                            blockedUserIDs: coordinator.blockedUserIDs,
-                                            currentUserID: currentUserID)
-                                            || revealedMessageIDs.contains(message.localID)
-                                    else { return }
-                                    withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
-                                        reactionPickerID = message.localID
-                                    }
-                                },
-                                publishesAnchor: reactionPickerID == message.localID,
-                                blockedUserIDs: coordinator.blockedUserIDs,
-                                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
-                                    message,
-                                    blockedUserIDs: coordinator.blockedUserIDs,
-                                    currentUserID: currentUserID),
-                                isRevealed: revealedMessageIDs.contains(message.localID),
-                                // Never persisted, never sent, never
-                                // written to SwiftData: a peek is not a
-                                // fact anybody else may read.
-                                onReveal: { revealedMessageIDs.insert(message.localID) },
-                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
-                                    "\(message.localID)#reply"),
-                                isParentQuoteRevealed: revealedQuoteIDs.contains(
-                                    "\(message.localID)#parent"),
-                                onRevealQuote: { level in
-                                    revealedQuoteIDs.insert(
-                                        level == .reply
-                                            ? "\(message.localID)#reply"
-                                            : "\(message.localID)#parent")
-                                })
-                                .id(message.localID)
-                                // A jumped-to bubble is briefly tinted, so
-                                // the eye lands on the right one in a wall
-                                // of text.
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.accentColor.opacity(
-                                            highlightedMessageID == message.localID ? 0.14 : 0))
-                                        .padding(.horizontal, -4))
-                                .animation(.easeOut(duration: 0.25), value: highlightedMessageID)
-                        }
+        let lookups = rowLookups
+        ForEach(sections) { section in
+            DayPill(day: section.day)
+                .padding(.vertical, 6)
+            ForEach(Array(section.messages.enumerated()), id: \.element.id) { index, message in
+                // "N new messages", above the oldest message
+                // this reader has not seen. Which row that is
+                // comes from the section (one shared builder
+                // for both Apple threads); the count is the
+                // one captured at open.
+                if section.unreadDividerAbove == message.localID,
+                    let unreadDividerCount {
+                    UnreadDivider(count: unreadDividerCount)
+                        .id(UnreadDivider.scrollID)
+                }
+                bubbleRow(message, index: index, rows: section.messages, lookups: lookups, proxy: proxy)
+            }
+        }
+    }
+
+    /// One row: the bubble, its scroll id and the jump highlight.
+    ///
+    /// `.equatable()` is what lets SwiftUI SKIP a row whose inputs did not
+    /// change. Without it every bubble's body re-ran on every pass of the
+    /// thread — a message arriving, a reaction landing, the typing line —
+    /// because a bubble takes a dozen closures and SwiftUI cannot compare
+    /// closures, so it never knew a row was unchanged. `MessageBubbleView`'s
+    /// `==` compares every input that is not a closure, and the closures
+    /// built here read only the message (part of that comparison) and this
+    /// view's state through its storage, which is always current — so a
+    /// skipped row's closures do the same thing a rebuilt row's would.
+    private func bubbleRow(
+        _ message: MessageSnapshot, index: Int, rows: [MessageSnapshot],
+        lookups: RowLookups, proxy: ScrollViewProxy
+    ) -> some View {
+            MessageBubbleView(
+                message: message,
+                isMine: message.senderID == lookups.currentUserID,
+                isStreaming: coordinator.isAwaitingAssistant(
+                    message, isAssistantChat: lookups.isAssistantChat),
+                assistantFailure: message.serverID.flatMap {
+                    coordinator.assistantFailure(messageID: $0)
+                },
+                showsSenderName: MessagePresentation.showsSenderName(
+                    at: index,
+                    in: rows,
+                    isFamilyChat: lookups.isFamilyChat,
+                    currentUserID: lookups.currentUserID,
+                    blockedUserIDs: lookups.blocked),
+                senderName: lookups.displayName(for: message.senderID),
+                senderID: message.senderID,
+                senderAvatarVersion: lookups.avatarVersions[message.senderID] ?? 0,
+                // The Mac's run rule (MacConversationView.rows):
+                // a run is one sender's consecutive messages
+                // within the day section.
+                isRunStart: index == 0
+                    || rows[index - 1].senderID != message.senderID,
+                isRunEnd: index == rows.count - 1
+                    || rows[index + 1].senderID != message.senderID,
+                isRead: MessagePresentation.isRead(
+                    message,
+                    othersReadUpTo: lookups.othersReadUpTo,
+                    isFamilyChat: lookups.isFamilyChat),
+                reactionChips: MessagePresentation.reactionChips(
+                    message.reactions,
+                    currentUserID: lookups.currentUserID),
+                reactionDetails: MessagePresentation.reactionDetails(
+                    message.reactions,
+                    names: lookups.names,
+                    currentUserID: lookups.currentUserID,
+                    // The CHIPS above are deliberately not
+                    // given this: their count must not move.
+                    blockedUserIDs: lookups.blocked),
+                avatarVersions: lookups.avatarVersions,
+                memberNames: lookups.names,
+                currentUserID: lookups.currentUserID,
+                onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                onTapMention: { openMember($0) },
+                replyCount: message.replyCount,
+                onOpenThread: {
+                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
+                },
+                onOpenAttachment: { attachment in
+                    if MessagePresentation.isSticker(message) {
+                        viewingSticker = attachment
+                    } else if MessagePresentation.isRoundVideo(message) {
+                        // A tap plays a circle in place;
+                        // this is its "Open Full Screen"
+                        // (#79, S5.4).
+                        openFullScreen(message)
+                    } else if attachment.isFile {
+                        openFile(attachment)
+                    } else {
+                        // The whole message's media, opened
+                        // at the one that was tapped — the
+                        // viewer pages through the rest.
+                        let media = AttachmentAlbum.media(of: message.attachments)
+                        let index = media.firstIndex { $0.id == attachment.id } ?? 0
+                        viewingAlbum = AttachmentAlbum(items: media, index: index)
                     }
+                },
+                onVote: { optionID in
+                    Task {
+                        await coordinator.vote(
+                            localID: message.localID, optionID: optionID)
+                    }
+                },
+                onClosePoll: {
+                    Task { await coordinator.closePoll(localID: message.localID) }
+                },
+                memberCount: lookups.memberCount,
+                onCallBack: lookups.canCall ? { startCall() } : nil,
+                onRetry: { coordinator.retry(localID: message.localID) },
+                onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
+                onToggleReaction: { emoji in
+                    toggleReaction(localID: message.localID, emoji: emoji)
+                },
+                onLongPress: {
+                    // Nothing to offer on a pending bubble:
+                    // no server id to react to, no failure
+                    // to retry.
+                    guard message.serverID != nil || message.state == .failed else { return }
+                    // A hidden row opens nothing. One
+                    // missing clause here is three leaks
+                    // at once: the capsule floats over a
+                    // placeholder, Copy puts the blocked
+                    // body on the pasteboard, and Share
+                    // hands the blocked attachment to the
+                    // share sheet. Reveal is a TAP.
+                    guard
+                        !MessagePresentation.isHiddenByBlock(
+                            message,
+                            blockedUserIDs: lookups.blocked,
+                            currentUserID: lookups.currentUserID)
+                            || revealedMessageIDs.contains(message.localID)
+                    else { return }
+                    withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
+                        reactionPickerID = message.localID
+                    }
+                },
+                publishesAnchor: reactionPickerID == message.localID,
+                blockedUserIDs: lookups.blocked,
+                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
+                    message,
+                    blockedUserIDs: lookups.blocked,
+                    currentUserID: lookups.currentUserID),
+                isRevealed: revealedMessageIDs.contains(message.localID),
+                // Never persisted, never sent, never
+                // written to SwiftData: a peek is not a
+                // fact anybody else may read.
+                onReveal: { revealedMessageIDs.insert(message.localID) },
+                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                    "\(message.localID)#reply"),
+                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                    "\(message.localID)#parent"),
+                onRevealQuote: { level in
+                    revealedQuoteIDs.insert(
+                        level == .reply
+                            ? "\(message.localID)#reply"
+                            : "\(message.localID)#parent")
+                })
+            .equatable()
+            .id(message.localID)
+            // A jumped-to bubble is briefly tinted, so
+            // the eye lands on the right one in a wall
+            // of text.
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.accentColor.opacity(
+                        highlightedMessageID == message.localID ? 0.14 : 0))
+                    .padding(.horizontal, -4))
+            .animation(.easeOut(duration: 0.25), value: highlightedMessageID)
     }
 
     /// Open the chat: fetch a first page if there is nothing cached,
@@ -4280,14 +4318,9 @@ struct ConversationView: View {
         return members.first(where: { $0.userID == userID })?.resolvedDisplayName
     }
 
-    /// 0 when the sender has no picture — or has left the family, so the
-    /// roster no longer holds them.
-    private func avatarVersion(for userID: Int64) -> Int64 {
-        members.first(where: { $0.userID == userID })?.avatarVersion ?? 0
-    }
-
-    /// userID → picture version for every known member, feeding the
-    /// faces in the "who reacted" rows.
+    /// userID → picture version for every known member, feeding the faces
+    /// in the "who reacted" rows and each run's avatar (`RowLookups`) — 0,
+    /// by absence, when the sender has no picture or has left the family.
     private var avatarVersions: [Int64: Int64] {
         Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }

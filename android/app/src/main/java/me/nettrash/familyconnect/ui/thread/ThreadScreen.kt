@@ -56,6 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -78,6 +79,8 @@ import me.nettrash.familyconnect.ui.chat.AttachmentViewer
 import me.nettrash.familyconnect.ui.chat.ChatListItem
 import me.nettrash.familyconnect.ui.chat.DateSeparatorPill
 import me.nettrash.familyconnect.ui.chat.MessageBubble
+import me.nettrash.familyconnect.ui.chat.NoLinkPreviews
+import me.nettrash.familyconnect.ui.components.LocalMotionHold
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
 import me.nettrash.familyconnect.ui.chat.shareWithSystem
@@ -137,6 +140,11 @@ fun ThreadScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    // The chat's rule for moving pictures, here too: they hold still while
+    // the chain scrolls or a viewer is over it (ui/components/MotionHold.kt).
+    val motionHold = remember {
+        derivedStateOf { listState.isScrollInProgress || viewingAlbum != null || viewingSticker != null }
+    }
     val hasRoot = items.any { it is ChatListItem.MessageItem && it.entity.serverId == rootId }
 
     LaunchedEffect(chatId, rootId) { viewModel.start(chatId, rootId) }
@@ -260,59 +268,61 @@ fun ThreadScreen(
                     )
 
                 else -> Column(modifier = Modifier.fillMaxSize()) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        items(items, key = { it.key }) { item ->
-                            when (item) {
-                                is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
-                                is ChatListItem.NewMessagesDivider -> Unit
-                                is ChatListItem.MessageItem -> MessageBubble(
-                                item = item,
-                                chat = chat,
-                                isMine = item.entity.senderId == myUserId,
-                                blockedUserIds = blockedUserIds,
-                                revealedMessages = revealedMessages,
-                                isStreaming = false,
-                                answerFailure = null,
-                                myUserId = myUserId,
-                                memberNames = memberNames,
-                                memberAvatars = memberAvatars,
-                                // Link previews are the chat's fetch-and-
-                                // cache machinery; a chain does without.
-                                linkPreviews = emptyMap(),
-                                previewsEnabled = false,
-                                mapPreviewsEnabled = mapPreviewsEnabled,
-                                onRequestPreview = {},
-                                streamUrl = viewModel::attachmentStreamUrl,
-                                onFailedTap = {},
-                                onToggleReaction = viewModel::toggleReaction,
-                                onVote = viewModel::vote,
-                                onLongPress = { _, _ -> },
-                                onPositioned = { _, _ -> },
-                                onTapQuote = {},
-                                onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
-                                onOpenAttachment = { attachment ->
-                                    // Photos and videos open in the viewer,
-                                    // paged through the message's media as
-                                    // in the chat. A file has nothing to
-                                    // open here.
-                                    if (attachment.isSticker) {
-                                        // A sticker is shown larger, with
-                                        // "Add to family stickers" — as in
-                                        // the chat, not in the photo viewer.
-                                        viewingSticker = attachment
-                                    } else if (!attachment.isFile) {
-                                        viewingAlbum = AttachmentAlbum.opening(
-                                            item.entity.attachmentList,
-                                            attachment,
-                                        )
-                                    }
-                                },
-                                )
+                    CompositionLocalProvider(LocalMotionHold provides motionHold) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(items, key = { it.key }) { item ->
+                                when (item) {
+                                    is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
+                                    is ChatListItem.NewMessagesDivider -> Unit
+                                    is ChatListItem.MessageItem -> MessageBubble(
+                                    item = item,
+                                    chat = chat,
+                                    isMine = item.entity.senderId == myUserId,
+                                    blockedUserIds = blockedUserIds,
+                                    revealedMessages = revealedMessages,
+                                    isStreaming = false,
+                                    answerFailure = null,
+                                    myUserId = myUserId,
+                                    memberNames = memberNames,
+                                    memberAvatars = memberAvatars,
+                                    // Link previews are the chat's fetch-and-
+                                    // cache machinery; a chain does without.
+                                    linkPreviews = NoLinkPreviews,
+                                    previewsEnabled = false,
+                                    mapPreviewsEnabled = mapPreviewsEnabled,
+                                    onRequestPreview = {},
+                                    streamUrl = viewModel::attachmentStreamUrl,
+                                    onFailedTap = {},
+                                    onToggleReaction = viewModel::toggleReaction,
+                                    onVote = viewModel::vote,
+                                    onLongPress = { _, _ -> },
+                                    onPositioned = { _, _ -> },
+                                    onTapQuote = {},
+                                    onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
+                                    onOpenAttachment = { attachment ->
+                                        // Photos and videos open in the viewer,
+                                        // paged through the message's media as
+                                        // in the chat. A file has nothing to
+                                        // open here.
+                                        if (attachment.isSticker) {
+                                            // A sticker is shown larger, with
+                                            // "Add to family stickers" — as in
+                                            // the chat, not in the photo viewer.
+                                            viewingSticker = attachment
+                                        } else if (!attachment.isFile) {
+                                            viewingAlbum = AttachmentAlbum.opening(
+                                                item.entity.attachmentList,
+                                                attachment,
+                                            )
+                                        }
+                                    },
+                                    )
+                                }
                             }
                         }
                     }

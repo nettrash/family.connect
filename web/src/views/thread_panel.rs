@@ -11,14 +11,15 @@
 //! would from the chat, and is asked about first exactly as there.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{AiFailure, Assistant, Family, Member, Message, PackItem};
+use crate::model::{AiFailure, Assistant, Family, Member, PackItem};
 use crate::pack::Gate;
-use crate::store::Draft;
+use crate::store::{Draft, Messages};
 use crate::timeline;
 use crate::views::bubble::Bubble;
 use crate::views::composer::{Composer, Pictures};
@@ -32,7 +33,8 @@ pub struct ThreadPanelProps {
     pub chat_id: i64,
     pub root_id: i64,
     /// The chain as held, root first.
-    pub messages: Vec<Message>,
+    /// The thread's rows, shared with the store (`store::Messages`).
+    pub messages: Messages,
     pub my_user_id: i64,
     pub is_family_chat: bool,
     pub is_ai_chat: bool,
@@ -217,6 +219,13 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
         Callback::from(move |_: i64| focus.set(*focus + 1))
     };
     let replies = props.messages.len().saturating_sub(1);
+    // Once a draw, for every row (conversation::QuotedKinds), and the shared
+    // sets every bubble is handed.
+    let quoted = crate::views::conversation::QuotedKinds::of(&props.messages);
+    let names = Rc::new(props.names.clone());
+    let blocked = Rc::new(props.blocked.clone());
+    let member_ids: Rc<HashSet<i64>> =
+        Rc::new(props.members.iter().map(|member| member.id).collect());
     html! {
         <aside class="thread-panel" aria-label={t("Thread")} onkeydown={on_key}>
             <header class="thread-bar">
@@ -238,12 +247,12 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                             <Bubble
                                 message={message.clone()}
                                 my_user_id={props.my_user_id}
-                                names={props.names.clone()}
-                                blocked={props.blocked.clone()}
+                                names={names.clone()}
+                                blocked={blocked.clone()}
                                 quote_revealed={props.revealed_quotes.contains(&(message.id, 0))}
                                 parent_revealed={props.revealed_quotes.contains(&(message.id, 1))}
-                                quote_round={crate::views::conversation::quotes_round(message, &props.messages)}
-                                quote_animation={crate::views::conversation::quotes_animation(message, &props.messages)}
+                                quote_round={quoted.round(message)}
+                                quote_animation={quoted.animation(message)}
                                 {hidden}
                                 shows_sender={props.is_family_chat && message.sender_id != props.my_user_id && !hidden}
                                 sender_avatar_version={props.members.iter().find(|member| member.id == message.sender_id).map_or(0, |member| member.avatar_version)}
@@ -257,7 +266,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 {assistant_user_id}
                                 in_thread={true}
                                 member_count={props.members.len()}
-                                member_ids={props.members.iter().map(|member| member.id).collect::<HashSet<i64>>()}
+                                member_ids={member_ids.clone()}
                                 on_action={props.on_action.clone()}
                                 on_reply={on_reply.clone()}
                                 on_edit={Callback::from(|_: i64| {})}

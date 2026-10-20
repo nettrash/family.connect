@@ -242,7 +242,12 @@ object TimeFormat {
     // of builders only ever agree.
     private val dayAndMonthPatterns = ConcurrentHashMap<Locale, String>()
 
-    private fun toLocalDate(epochMillis: Long, zone: ZoneId): LocalDate =
+    /**
+     * The calendar day [epochMillis] falls on in [zone] — what [sameDay]
+     * compares. Internal so the chat's item builder can work it out ONCE
+     * per row rather than once per neighbour it compares the row with.
+     */
+    internal fun toLocalDate(epochMillis: Long, zone: ZoneId): LocalDate =
         Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate()
 
     private val HH_MM = DateTimeFormatter.ofPattern("HH:mm")

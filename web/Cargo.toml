@@ -130,6 +130,10 @@ web-sys = { version = "0.3", features = [
     "ResizeObserver",
     "IntersectionObserver",
     "IntersectionObserverEntry",
+    # A tile fetches its picture a screen before it is reached, and an
+    # animation keeps its player just off the list: an observer with the
+    # list as its root and a margin round it.
+    "IntersectionObserverInit",
     "HtmlIFrameElement",
     "CssStyleDeclaration",
     "DomTokenList",

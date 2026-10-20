@@ -80,6 +80,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void Replace(IReadOnlyList<ChatRowDto> rows)
     {
         using var serialised = database.Hold();
+        database.ChatsChanged();
         using var transaction = database.Connection.BeginTransaction();
         var keep = rows.Select(row => row.Chat.Id).ToHashSet();
         foreach (var id in Ids(transaction).Where(id => !keep.Contains(id)))
@@ -580,6 +581,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void Replace(IReadOnlyList<MemberDto> members, IReadOnlyList<MemberDto>? former = null)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var transaction = database.Connection.BeginTransaction();
         foreach (var member in members.Concat(former ?? []))
         {
@@ -615,6 +617,12 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public IReadOnlyList<MemberDto> Members()
     {
         using var serialised = database.Hold();
+        Fresh();
+        return roster ??= ReadMembers();
+    }
+
+    private IReadOnlyList<MemberDto> ReadMembers()
+    {
         var members = new List<MemberDto>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT * FROM members ORDER BY display_name, user_id";
@@ -635,14 +643,21 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                         Convert.ToInt32(reader["birthday_month"]),
                         Convert.ToInt32(reader["birthday_day"]))));
         }
-        return members;
+        // Read-only for real: one copy is handed to every caller until the table changes.
+        return members.AsReadOnly();
     }
 
     /// <summary>
     /// The member behind an id, or null when this device has never heard of them — which happens,
     /// and is the caller's to name ("Deleted account" is a CLIENT's word, not the server's).
     /// </summary>
-    public MemberDto? Member(long userId) => Members().FirstOrDefault(member => member.Id == userId);
+    public MemberDto? Member(long userId)
+    {
+        using var serialised = database.Hold();
+        Fresh();
+        rosterById ??= (roster ??= ReadMembers()).ToDictionary(member => member.Id);
+        return rosterById.GetValueOrDefault(userId);
+    }
 
     /// <summary>
     /// A member who JOINED, as the frame carries them — a <c>User</c>, so their role is
@@ -657,6 +672,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void Joined(UserDto user)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -687,6 +703,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void Left(long userId)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             "UPDATE members SET has_left = 1, role = NULL WHERE user_id = $id";
@@ -707,6 +724,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void Deleted(MemberDto tombstone)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -732,6 +750,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void SetOwner(long userId)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
@@ -759,6 +778,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void ReplaceBlocked(IReadOnlyList<long> userIds)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var transaction = database.Connection.BeginTransaction();
         using (var clear = database.Connection.CreateCommand())
         {
@@ -790,6 +810,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public void SetBlocked(long userId, bool blocked)
     {
         using var serialised = database.Hold();
+        database.RosterChanged();
         using var transaction = database.Connection.BeginTransaction();
         using (var command = database.Connection.CreateCommand())
         {
@@ -816,6 +837,12 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public IReadOnlyList<long> Blocked()
     {
         using var serialised = database.Hold();
+        Fresh();
+        return blocked ??= ReadBlocked();
+    }
+
+    private IReadOnlyList<long> ReadBlocked()
+    {
         var ids = new List<long>();
         using var command = database.Connection.CreateCommand();
         command.CommandText = "SELECT user_id FROM blocked ORDER BY user_id";
@@ -824,7 +851,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         {
             ids.Add(reader.GetInt64(0));
         }
-        return ids;
+        return ids.AsReadOnly();
     }
 
     /// <summary>
@@ -836,10 +863,73 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     public bool IsBlocked(long userId)
     {
         using var serialised = database.Hold();
+        Fresh();
+        blockedSet ??= [.. blocked ??= ReadBlocked()];
+        return blockedSet.Contains(userId);
+    }
+
+    // ---- what is kept in memory --------------------------------------------
+
+    // THE ROSTER, THE BLOCK LIST AND EACH CHAT'S KIND, kept rather than asked for. A conversation asks who wrote each bubble
+    // and whether they are blocked once per bubble, and a redraw of a long chat was hundreds of queries under the database's
+    // one lock on the window's thread — while the socket's thread waited behind them to write what had just arrived. These
+    // are small tables that change a few times a day, and every write to them goes through this class, which bumps the
+    // database's generation as it starts (Database.RosterGeneration / ChatsGeneration — on the DATABASE, so a second store
+    // on the same file, or a wipe, makes this copy stale too). Everything here is read and written under Hold(), so a
+    // reader can never keep a copy older than a write it raced: the write waits for the lock, and its bump lands before
+    // the next read can look.
+    private long rosterAt = -1;
+    private IReadOnlyList<MemberDto>? roster;
+    private Dictionary<long, MemberDto>? rosterById;
+    private IReadOnlyList<long>? blocked;
+    private HashSet<long>? blockedSet;
+    private long kindsAt = -1;
+    private readonly Dictionary<long, string> kinds = [];
+
+    /// <summary>Drop what is kept when a write has happened since it was read. Under Hold().</summary>
+    private void Fresh()
+    {
+        if (rosterAt != database.RosterGeneration)
+        {
+            rosterAt = database.RosterGeneration;
+            roster = null;
+            rosterById = null;
+            blocked = null;
+            blockedSet = null;
+        }
+        if (kindsAt != database.ChatsGeneration)
+        {
+            kindsAt = database.ChatsGeneration;
+            kinds.Clear();
+        }
+    }
+
+    /// <summary>
+    /// A chat's KIND — "family", "direct", "ai" — or null while this device holds no row for it. What
+    /// <c>Chat(chatId)?.Chat.Kind</c> answers, without reading the row and its newest message to get there: a
+    /// conversation asks it of every bubble it draws.
+    /// </summary>
+    /// <remarks>
+    /// An unknown chat is not remembered as unknown: the list read that brings its row is a write, and the next ask reads
+    /// it.
+    /// </remarks>
+    public string? Kind(long chatId)
+    {
+        using var serialised = database.Hold();
+        Fresh();
+        if (kinds.TryGetValue(chatId, out var known))
+        {
+            return known;
+        }
         using var command = database.Connection.CreateCommand();
-        command.CommandText = "SELECT 1 FROM blocked WHERE user_id = $id";
-        command.Parameters.AddWithValue("$id", userId);
-        return command.ExecuteScalar() is not null;
+        command.CommandText = "SELECT kind FROM chats WHERE chat_id = $id";
+        command.Parameters.AddWithValue("$id", chatId);
+        if (command.ExecuteScalar() is not string kind)
+        {
+            return null;
+        }
+        kinds[chatId] = kind;
+        return kind;
     }
 
     // ---- rows ------------------------------------------------------------

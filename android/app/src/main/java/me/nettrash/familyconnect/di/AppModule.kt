@@ -45,6 +45,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharedFlow
@@ -92,6 +93,7 @@ import me.nettrash.familyconnect.data.repo.PackRepository
 import me.nettrash.familyconnect.data.repo.ParkedRecordings
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MediaUploadScheduler
+import me.nettrash.familyconnect.data.db.DbTransactions
 import me.nettrash.familyconnect.data.repo.MediaUploadWorker
 import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
@@ -117,6 +119,16 @@ import javax.inject.Singleton
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class AppScope
+
+/**
+ * Where CPU work that must stay off the main thread runs — today the chat's
+ * row builder (ChatViewModel.items). A qualifier rather than a bare
+ * Dispatchers.Default at the use site so a test hands in its own scheduler
+ * and its assertions stay deterministic.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ComputeDispatcher
 
 /** ApiClient's "session is gone" broadcast, injectable without ApiClient. */
 @Qualifier
@@ -245,6 +257,16 @@ abstract class AppModule {
         @AppScope
         fun provideAppScope(): CoroutineScope =
             CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        @Provides
+        @ComputeDispatcher
+        fun provideComputeDispatcher(): CoroutineDispatcher = Dispatchers.Default
+
+        // A page of history or catch-up committed as ONE transaction
+        // (MessageRepository, DbTransactions says why).
+        @Provides
+        @Singleton
+        fun provideDbTransactions(database: AppDatabase): DbTransactions = DbTransactions.of(database)
 
         @Provides
         @Singleton

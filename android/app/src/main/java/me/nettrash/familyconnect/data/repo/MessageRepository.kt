@@ -40,6 +40,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.AnchorRow
 import me.nettrash.familyconnect.data.db.ChatDao
+import me.nettrash.familyconnect.data.db.DbTransactions
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import me.nettrash.familyconnect.data.db.MessageDao
 import java.io.File
 import me.nettrash.familyconnect.data.db.uploadedDto
@@ -101,6 +106,13 @@ class MessageRepository @Inject constructor(
      * sends media needs no WorkManager; Hilt binds the real one.
      */
     private val uploads: MediaUploadScheduler = MediaUploadScheduler.None,
+    /**
+     * How a page of history or catch-up is committed: as ONE transaction
+     * (see [inPage], and DbTransactions for why). Defaulted to no
+     * transaction so a unit test that builds this by hand behaves exactly
+     * as it always did; Hilt binds Room's.
+     */
+    private val transactions: DbTransactions = DbTransactions.Direct,
 ) {
     /** The device's words for the chat-list previews (see [PreviewLabels]). */
     private val previewLabels: PreviewLabels by lazy { PreviewLabels.from(appContext) }
@@ -737,7 +749,50 @@ class MessageRepository @Inject constructor(
         // Rows first, files second: a crash in between leaves directories
         // nothing names, which the orphan sweep collects. The other order
         // leaves rows naming files that are gone.
-        items.forEach { staging.remove(it.localPath) }
+        //
+        // Inside a page's transaction ([inPage]) "rows first" means rows
+        // COMMITTED first, so the files wait for the commit: removed now, a
+        // page that rolled back would bring the rows back naming files that
+        // are gone — the very order this rule exists to forbid.
+        val deferred = currentCoroutineContext()[DeferredStagingRemovals]
+        if (deferred != null) {
+            items.forEach { deferred.paths += it.localPath }
+        } else {
+            items.forEach { staging.remove(it.localPath) }
+        }
+    }
+
+    /**
+     * Apply one page — of history, catch-up, a thread, or reactions, edits
+     * or polls — as ONE transaction.
+     *
+     * The same writes in the same order as before; what changes is that
+     * they commit together. One commit instead of one per row, and one
+     * invalidation of the messages table instead of one per row: an open
+     * chat sees a page land as a single new window rather than rebuilding
+     * itself a row at a time while it is being scrolled (DbTransactions).
+     *
+     * Staged media files a page frees are removed only once it has
+     * committed (see [clearPendingMedia]); a page that fails part-way leaves
+     * nothing behind, and its caller has not advanced past it, so the next
+     * catch-up reads it again — as a page interrupted before always was.
+     */
+    private suspend fun inPage(block: suspend () -> Unit) {
+        val deferred = DeferredStagingRemovals()
+        withContext(deferred) { transactions.run(block) }
+        deferred.paths.forEach { staging.remove(it) }
+    }
+
+    /**
+     * Staged files whose rows a page deleted, held for removal until that
+     * page commits (see [inPage]). A coroutine-context element so the rule
+     * reaches [clearPendingMedia] through the apply path without a
+     * parameter threaded through every call between.
+     */
+    private class DeferredStagingRemovals : AbstractCoroutineContextElement(DeferredStagingRemovals) {
+        val paths = mutableListOf<String?>()
+
+        companion object : CoroutineContext.Key<DeferredStagingRemovals>
     }
 
     /**
@@ -1343,7 +1398,7 @@ class MessageRepository @Inject constructor(
                 is ApiResult.Ok -> result.value.messages
                 else -> return false
             }
-            page.forEach { applyServerMessage(it, live = false, detached = true) }
+            inPage { page.forEach { applyServerMessage(it, live = false, detached = true) } }
             if (page.size < limit) return true
             afterId = page.last().id
         }
@@ -1670,18 +1725,18 @@ class MessageRepository @Inject constructor(
         while (true) {
             val page = chatApi.getReactions(chatId, cursor, REACTION_PAGE)
                 .okOrNull()?.messageReactions ?: return
-            page.forEach { state ->
-                messageDao.applyReactionState(
-                    serverId = state.messageId,
-                    json = ReactionsCodec.encode(state.reactions),
-                    seq = state.reactionSeq,
-                )
-            }
             val pageMax = page.maxOfOrNull { it.reactionSeq }
-            if (pageMax != null) {
-                chatDao.advanceMaxReactionSeq(chatId, pageMax)
-                cursor = pageMax
+            inPage {
+                page.forEach { state ->
+                    messageDao.applyReactionState(
+                        serverId = state.messageId,
+                        json = ReactionsCodec.encode(state.reactions),
+                        seq = state.reactionSeq,
+                    )
+                }
+                if (pageMax != null) chatDao.advanceMaxReactionSeq(chatId, pageMax)
             }
+            if (pageMax != null) cursor = pageMax
             if (page.size < REACTION_PAGE) return
         }
     }
@@ -1696,12 +1751,12 @@ class MessageRepository @Inject constructor(
         var cursor = afterSeq
         while (true) {
             val page = chatApi.getEdits(chatId, cursor, EDIT_PAGE).okOrNull()?.messages ?: return
-            page.forEach { applyEdit(it) }
             val pageMax = page.mapNotNull { it.editSeq }.maxOrNull()
-            if (pageMax != null) {
-                chatDao.advanceMaxEditSeq(chatId, pageMax)
-                cursor = pageMax
+            inPage {
+                page.forEach { applyEdit(it) }
+                if (pageMax != null) chatDao.advanceMaxEditSeq(chatId, pageMax)
             }
+            if (pageMax != null) cursor = pageMax
             if (page.size < EDIT_PAGE) return
         }
     }
@@ -1861,18 +1916,18 @@ class MessageRepository @Inject constructor(
         var cursor = afterSeq
         while (true) {
             val page = chatApi.getPolls(chatId, cursor, POLL_PAGE).okOrNull()?.polls ?: return
-            page.forEach { state ->
-                messageDao.applyPollState(
-                    serverId = state.messageId,
-                    json = PollCodec.encode(state.poll),
-                    seq = state.poll.pollSeq,
-                )
-            }
             val pageMax = page.maxOfOrNull { it.poll.pollSeq }
-            if (pageMax != null) {
-                chatDao.advanceMaxPollSeq(chatId, pageMax)
-                cursor = pageMax
+            inPage {
+                page.forEach { state ->
+                    messageDao.applyPollState(
+                        serverId = state.messageId,
+                        json = PollCodec.encode(state.poll),
+                        seq = state.poll.pollSeq,
+                    )
+                }
+                if (pageMax != null) chatDao.advanceMaxPollSeq(chatId, pageMax)
             }
+            if (pageMax != null) cursor = pageMax
             if (page.size < POLL_PAGE) return
         }
     }
@@ -1909,7 +1964,7 @@ class MessageRepository @Inject constructor(
     suspend fun catchUp(chatId: Long, afterId: Long, limit: Int): CatchUpPage? {
         val result = chatApi.messages(chatId, afterId = afterId, limit = limit)
         val page = result.okOrNull()?.messages ?: return null
-        page.forEach { applyServerMessage(it, live = false, chainLive = true) }
+        inPage { page.forEach { applyServerMessage(it, live = false, chainLive = true) } }
         return CatchUpPage(size = page.size, maxServerId = page.maxOfOrNull { it.id })
     }
 
@@ -2062,7 +2117,7 @@ class MessageRepository @Inject constructor(
         val oldest = messageDao.oldestServerId(chatId)
         val result = chatApi.messages(chatId, beforeId = oldest, limit = HISTORY_PAGE)
         val page = result.okOrNull()?.messages ?: return false
-        page.forEach { applyServerMessage(it, live = false) }
+        inPage { page.forEach { applyServerMessage(it, live = false) } }
         return page.size < HISTORY_PAGE
     }
 

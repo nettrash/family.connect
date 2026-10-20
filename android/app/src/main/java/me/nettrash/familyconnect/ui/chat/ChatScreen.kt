@@ -68,6 +68,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.Animatable
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
@@ -243,6 +244,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
+import me.nettrash.familyconnect.ui.components.LocalMotionHold
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -276,6 +279,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -463,7 +467,11 @@ fun ChatScreen(
     // there is anything to settle on.
     val openAnchor by viewModel.openAnchor.collectAsStateWithLifecycle()
     val settled by viewModel.settled.collectAsStateWithLifecycle()
-    val linkPreviews by viewModel.linkPreviews.collectAsStateWithLifecycle()
+    // The State itself, not its value: each bubble looks up its own link in
+    // it (see MessageBubble's `linkPreviews`), so a preview landing for one
+    // message recomposes that message — not this whole screen and every
+    // bubble in the thread, which is what reading the map here did.
+    val linkPreviews = viewModel.linkPreviews.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val mapPreviewsEnabled by viewModel.mapPreviewsEnabled.collectAsStateWithLifecycle()
 
@@ -473,7 +481,12 @@ fun ChatScreen(
     // #79, Phase 0: today's recorder made safe. Nothing records during a
     // call; a recording something else stopped waits in its own "Voice
     // message not sent" row until it is sent or deleted (S2.8).
-    val isRecording = recordingMs != null
+    //
+    // Derived, so this screen's body reads a Boolean that changes twice per
+    // recording — not the elapsed time, which ticks for as long as one runs
+    // and used to recompose the whole screen (thread included) on every
+    // tick. The composer, which draws the time, reads it in its own scope.
+    val isRecording by remember { derivedStateOf { recordingMs != null } }
     val callLive by viewModel.callLive.collectAsStateWithLifecycle()
     val notSent by viewModel.notSent.collectAsStateWithLifecycle()
     val notSentInFlight by viewModel.notSentInFlight.collectAsStateWithLifecycle()
@@ -541,6 +554,13 @@ fun ChatScreen(
     val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
+    // Whether the thread's moving pictures hold still: while it scrolls,
+    // and while a full-screen viewer is over it (LocalMotionHold says why,
+    // and why this is a State handed down rather than a Boolean). Derived,
+    // so it changes only at the edges, never per scrolled pixel.
+    val motionHold = remember {
+        derivedStateOf { listState.isScrollInProgress || viewingAlbum != null || viewingSticker != null }
+    }
     // Set by tapping a quote, or by the opening anchor; cleared once the
     // target is found (or given up on). Held here rather than in the
     // ViewModel because it is purely a scroll intent — nothing about it
@@ -1463,184 +1483,217 @@ fun ChatScreen(
                 // window still scrolls the thread and the empty state's
                 // fillParentMaxSize still means the whole pane.
                 val columnInset = ((maxWidth - READABLE_COLUMN) / 2).coerceAtLeast(0.dp)
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    reverseLayout = true,
-                    contentPadding = PaddingValues(
-                        horizontal = 12.dp + columnInset,
-                        vertical = 8.dp,
-                    ),
+                // The width every row is laid out at, said once for all of
+                // them (LocalBubbleRowWidth says why): the list's width less
+                // its horizontal content padding, in whole pixels, each side
+                // rounded the way LazyColumn rounds its own padding — so it
+                // is the very number each row's BoxWithConstraints used to
+                // report.
+                val density = LocalDensity.current
+                val rowWidth = with(density) {
+                    val sidePx = (12.dp + columnInset).roundToPx()
+                    (constraints.maxWidth - 2 * sidePx).coerceAtLeast(0).toDp()
+                }
+                CompositionLocalProvider(
+                    LocalBubbleRowWidth provides rowWidth,
+                    LocalMotionHold provides motionHold,
                 ) {
-                    if (items.isEmpty() && initialLoadSettled) {
-                        item(key = "chat-empty") {
-                            Box(
-                                modifier = Modifier.fillParentMaxSize(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                EmptyState(
-                                    icon = Icons.Outlined.Forum,
-                                    title = stringResource(R.string.s_no_messages_yet),
-                                    // kind is "family" | "direct" (ChatEntity)
-                                    // — a 1:1 chat is not "your family chat".
-                                    subtitle = stringResource(
-                                        if (chat?.kind == "direct") {
-                                            R.string.s_say_hi_direct
-                                        } else {
-                                            R.string.s_say_hi_family
-                                        },
-                                    ),
-                                )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        reverseLayout = true,
+                        contentPadding = PaddingValues(
+                            horizontal = 12.dp + columnInset,
+                            vertical = 8.dp,
+                        ),
+                    ) {
+                        if (items.isEmpty() && initialLoadSettled) {
+                            item(key = "chat-empty") {
+                                Box(
+                                    modifier = Modifier.fillParentMaxSize(),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    EmptyState(
+                                        icon = Icons.Outlined.Forum,
+                                        title = stringResource(R.string.s_no_messages_yet),
+                                        // kind is "family" | "direct" (ChatEntity)
+                                        // — a 1:1 chat is not "your family chat".
+                                        subtitle = stringResource(
+                                            if (chat?.kind == "direct") {
+                                                R.string.s_say_hi_direct
+                                            } else {
+                                                R.string.s_say_hi_family
+                                            },
+                                        ),
+                                    )
+                                }
                             }
                         }
-                    }
-                    items(items, key = { it.key }) { item ->
-                        // A jumped-to bubble is briefly tinted, so the eye
-                        // lands on the right one in a wall of text.
-                        val jumped = item is ChatListItem.MessageItem &&
-                            item.entity.serverId != null &&
-                            item.entity.serverId == highlightedMessageId
-                        val highlight by animateColorAsState(
-                            targetValue = if (jumped) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            } else {
-                                Color.Transparent
-                            },
-                            animationSpec = tween(250),
-                            label = "jumpHighlight",
-                        )
-                        Box(
-                            modifier = Modifier
-                                .animateItem(
-                                    fadeInSpec = tween(200),
-                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                )
-                                .background(highlight, RoundedCornerShape(12.dp)),
-                        ) {
-                            when (item) {
-                                is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
-                                is ChatListItem.NewMessagesDivider ->
-                                    NewMessagesDividerRow(item.count)
-                                is ChatListItem.MessageItem -> MessageBubble(
-                                    blockedUserIds = blockedUserIds,
-                                    revealedMessages = revealedMessages,
-                                    item = item,
-                                    chat = chat,
-                                    isMine = item.entity.senderId == myUserId,
-                                    fromAssistant = assistantUserId != null &&
-                                        item.entity.senderId == assistantUserId,
-                                    // Asked of the ROW, not only of the
-                                    // live set: a picture answer produces
-                                    // no deltas to put an id in it, and a
-                                    // relaunch mid-answer starts with it
-                                    // empty (AssistantAnswer).
-                                    isStreaming = AssistantAnswer.isWorking(
-                                        entity = item.entity,
-                                        isAssistantChat = chat?.kind == "ai",
-                                        assistantUserId = assistantUserId,
-                                        myUserId = myUserId,
-                                        streamingIds = streamingIds,
-                                        failedIds = failedAssistantAnswers.keys,
-                                    ),
-                                    answerFailure = item.entity.serverId
-                                        ?.let { failedAssistantAnswers[it] },
-                                    myUserId = myUserId,
-                                    memberNames = memberNames,
-                                    memberAvatars = memberAvatars,
-                                    linkPreviews = linkPreviews,
-                                    previewsEnabled = linkPreviewsEnabled,
-                                    mapPreviewsEnabled = mapPreviewsEnabled,
-                                    onRequestPreview = viewModel::requestLinkPreview,
-                                    streamUrl = viewModel::attachmentStreamUrl,
-                                    onFailedTap = { failedActionTarget = it },
-                                    onToggleReaction = applyToggle,
-                                    onVote = { serverId, optionId ->
-                                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                                        viewModel.vote(serverId, optionId)
-                                    },
-                                    // Not while recording, like the toolbar's (#79, S1.7).
-                                    onCallBack = if (callsEnabled && chat?.kind == "direct" && !isRecording) {
-                                        startCall
-                                    } else {
-                                        null
-                                    },
-                                    onTapQuote = {
-                                        pendingJump = JumpRequest(serverId = it, anchor = false)
-                                    },
-                                    onOpenThread = { rootId -> chat?.id?.let { openOwnThread(it, rootId) } },
-                                    onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
-                                    onOpenAttachment = { attachment ->
-                                        if (attachment.isSticker) {
-                                            // Shown larger, with "Add to
-                                            // family stickers" — not the
-                                            // photo viewer, which zooms a
-                                            // photograph and would draw
-                                            // frame zero on black.
-                                            viewingSticker = attachment
-                                        } else if (attachment.isFile) {
-                                            openFile(attachment)
-                                        } else {
-                                            // Built here, the one place the
-                                            // whole message is in scope: the
-                                            // viewer pages through all of its
-                                            // media, starting on the tapped
-                                            // one, and the per-attachment
-                                            // callbacks below stay as they are.
-                                            viewingAlbum = AttachmentAlbum.opening(
-                                                item.entity.attachmentList,
-                                                attachment,
-                                            )
-                                        }
-                                    },
-                                    onLongPress = { pressed, bounds ->
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        pickerTarget = ReactionPickerTarget(pressed, bounds)
-                                    },
-                                    // While the capsule is open its anchor
-                                    // tracks the bubble's live bounds — the
-                                    // focusable popup closes the keyboard and
-                                    // the list shifts under it, so a one-shot
-                                    // snapshot would go stale. No-op (no
-                                    // state write) while no capsule is open.
-                                    onPositioned = { positioned, rect ->
-                                        val current = pickerTarget
-                                        if (current != null &&
-                                            current.item.key == positioned.key &&
-                                            current.anchorBounds != rect
-                                        ) {
-                                            pickerTarget = current.copy(anchorBounds = rect)
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    if (items.isNotEmpty()) {
-                        // Last index = the visually-top (oldest) end. The 32dp
-                        // box is always composed so the item's height truly
-                        // never changes; only the spinner inside fades, so
-                        // appearing never shifts the oldest messages and the
-                        // exit animation can actually play. Gated on a
-                        // non-empty list so this extra item never renders in
-                        // an empty chat; the chat-empty item is likewise
-                        // excluded from the nearOldEnd trigger by its
-                        // items.isNotEmpty() guard.
-                        item(key = "chat-older-loading") {
+                        items(
+                            items,
+                            key = { it.key },
+                            // Per row KIND, so a row scrolling in reuses the
+                            // slot of one of its own kind rather than whatever
+                            // left last — a day pill's slot is no start for a
+                            // bubble.
+                            contentType = { it.contentType },
+                        ) { item ->
+                            // A jumped-to bubble is briefly tinted, so the eye
+                            // lands on the right one in a wall of text.
+                            val jumped = item is ChatListItem.MessageItem &&
+                                item.entity.serverId != null &&
+                                item.entity.serverId == highlightedMessageId
+                            val highlight = jumpTint(
+                                jumped = jumped,
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            )
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(32.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                androidx.compose.animation.AnimatedVisibility(
-                                    visible = loadingOlder,
-                                    enter = fadeIn(tween(150)),
-                                    exit = fadeOut(tween(150)),
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
+                                    // Fading in and sliding are for a chat that
+                                    // is OPEN. While it is still opening (the
+                                    // anchor scroll, the first pages of a
+                                    // catch-up landing) every row would animate
+                                    // into a position the reader has not been
+                                    // shown yet — work for frames nobody sees.
+                                    .animateItem(
+                                        fadeInSpec = if (settled) tween(200) else null,
+                                        placementSpec = if (settled) {
+                                            spring(stiffness = Spring.StiffnessMediumLow)
+                                        } else {
+                                            null
+                                        },
                                     )
+                                    .background(highlight, RoundedCornerShape(12.dp)),
+                            ) {
+                                when (item) {
+                                    is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
+                                    is ChatListItem.NewMessagesDivider ->
+                                        NewMessagesDividerRow(item.count)
+                                    is ChatListItem.MessageItem -> MessageBubble(
+                                        blockedUserIds = blockedUserIds,
+                                        revealedMessages = revealedMessages,
+                                        item = item,
+                                        chat = chat,
+                                        isMine = item.entity.senderId == myUserId,
+                                        fromAssistant = assistantUserId != null &&
+                                            item.entity.senderId == assistantUserId,
+                                        // Asked of the ROW, not only of the
+                                        // live set: a picture answer produces
+                                        // no deltas to put an id in it, and a
+                                        // relaunch mid-answer starts with it
+                                        // empty (AssistantAnswer).
+                                        isStreaming = AssistantAnswer.isWorking(
+                                            entity = item.entity,
+                                            isAssistantChat = chat?.kind == "ai",
+                                            assistantUserId = assistantUserId,
+                                            myUserId = myUserId,
+                                            streamingIds = streamingIds,
+                                            failedIds = failedAssistantAnswers.keys,
+                                        ),
+                                        answerFailure = item.entity.serverId
+                                            ?.let { failedAssistantAnswers[it] },
+                                        myUserId = myUserId,
+                                        memberNames = memberNames,
+                                        memberAvatars = memberAvatars,
+                                        linkPreviews = linkPreviews,
+                                        previewsEnabled = linkPreviewsEnabled,
+                                        mapPreviewsEnabled = mapPreviewsEnabled,
+                                        onRequestPreview = viewModel::requestLinkPreview,
+                                        streamUrl = viewModel::attachmentStreamUrl,
+                                        onFailedTap = { failedActionTarget = it },
+                                        onToggleReaction = applyToggle,
+                                        onVote = { serverId, optionId ->
+                                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                            viewModel.vote(serverId, optionId)
+                                        },
+                                        // Not while recording, like the toolbar's (#79, S1.7).
+                                        onCallBack = if (callsEnabled && chat?.kind == "direct" && !isRecording) {
+                                            startCall
+                                        } else {
+                                            null
+                                        },
+                                        onTapQuote = {
+                                            pendingJump = JumpRequest(serverId = it, anchor = false)
+                                        },
+                                        onOpenThread = { rootId -> chat?.id?.let { openOwnThread(it, rootId) } },
+                                        onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
+                                        onOpenAttachment = { attachment ->
+                                            if (attachment.isSticker) {
+                                                // Shown larger, with "Add to
+                                                // family stickers" — not the
+                                                // photo viewer, which zooms a
+                                                // photograph and would draw
+                                                // frame zero on black.
+                                                viewingSticker = attachment
+                                            } else if (attachment.isFile) {
+                                                openFile(attachment)
+                                            } else {
+                                                // Built here, the one place the
+                                                // whole message is in scope: the
+                                                // viewer pages through all of its
+                                                // media, starting on the tapped
+                                                // one, and the per-attachment
+                                                // callbacks below stay as they are.
+                                                viewingAlbum = AttachmentAlbum.opening(
+                                                    item.entity.attachmentList,
+                                                    attachment,
+                                                )
+                                            }
+                                        },
+                                        onLongPress = { pressed, bounds ->
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            pickerTarget = ReactionPickerTarget(pressed, bounds)
+                                        },
+                                        // While the capsule is open its anchor
+                                        // tracks the bubble's live bounds — the
+                                        // focusable popup closes the keyboard and
+                                        // the list shifts under it, so a one-shot
+                                        // snapshot would go stale. No-op (no
+                                        // state write) while no capsule is open.
+                                        //
+                                        // The bounds are worked out only for
+                                        // that one bubble: every other row's
+                                        // placement costs a key comparison.
+                                        onPositioned = { positioned, coordinates ->
+                                            val current = pickerTarget
+                                            if (current != null && current.item.key == positioned.key) {
+                                                val rect = coordinates.boundsInWindow()
+                                                if (current.anchorBounds != rect) {
+                                                    pickerTarget = current.copy(anchorBounds = rect)
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        if (items.isNotEmpty()) {
+                            // Last index = the visually-top (oldest) end. The 32dp
+                            // box is always composed so the item's height truly
+                            // never changes; only the spinner inside fades, so
+                            // appearing never shifts the oldest messages and the
+                            // exit animation can actually play. Gated on a
+                            // non-empty list so this extra item never renders in
+                            // an empty chat; the chat-empty item is likewise
+                            // excluded from the nearOldEnd trigger by its
+                            // items.isNotEmpty() guard.
+                            item(key = "chat-older-loading") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(32.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = loadingOlder,
+                                        enter = fadeIn(tween(150)),
+                                        exit = fadeOut(tween(150)),
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2991,6 +3044,55 @@ private fun NewMessagesDividerRow(count: Int) {
     }
 }
 
+/**
+ * The width a bubble's ROW is laid out at, when the list that holds it
+ * already knows it — null where it does not, and the bubble then measures
+ * for itself.
+ *
+ * A bubble needs the row's width during COMPOSITION (its balloon is capped
+ * at 80% of it, and an inline formula at that less the inset), and finding
+ * it out there used to mean a BoxWithConstraints in every row: a
+ * subcomposition per bubble, the costliest layout there is to put in a
+ * LazyColumn, paid again by every row that scrolled in. The chat list
+ * knows the number already — it is its own width less its content padding —
+ * so it says it once, here, and works it out in pixels exactly the way the
+ * list's own measuring does, so the cap is the very value BoxWithConstraints
+ * reported.
+ */
+internal val LocalBubbleRowWidth = compositionLocalOf<Dp?> { null }
+
+/** No link previews, for a list that does without them (the thread screen). */
+internal val NoLinkPreviews: State<Map<String, LinkPreviewState>> = object : State<Map<String, LinkPreviewState>> {
+    override val value: Map<String, LinkPreviewState> get() = emptyMap()
+}
+
+/**
+ * The row's box: a plain one when [rowWidth] is known, a BoxWithConstraints
+ * that measures it otherwise (a list that does not provide
+ * [LocalBubbleRowWidth]). Either way [content] is handed the row's width.
+ */
+@Composable
+private fun BubbleRowBox(rowWidth: Dp?, content: @Composable (Dp) -> Unit) {
+    if (rowWidth != null) {
+        Box(modifier = Modifier.fillMaxWidth()) { content(rowWidth) }
+    } else {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) { content(maxWidth) }
+    }
+}
+
+/**
+ * Where a bubble was last placed, held WITHOUT snapshot state: nothing
+ * draws from it, so nothing should be invalidated when it moves — and it
+ * moves on every frame of a scroll. The window bounds are worked out on
+ * demand, from the live coordinates, which is the same rectangle the last
+ * placement would have reported.
+ */
+private class PlacedCoordinates {
+    var coordinates: LayoutCoordinates? = null
+
+    fun windowBounds(): Rect = coordinates?.takeIf { it.isAttached }?.boundsInWindow() ?: Rect.Zero
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun MessageBubble(
@@ -3015,7 +3117,13 @@ internal fun MessageBubble(
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
-    linkPreviews: Map<String, LinkPreviewState>,
+    /**
+     * Preview state for every link the app has looked at, keyed by URL — as
+     * the State that holds the map, so only a bubble whose own link changed
+     * redraws when a preview lands (BubbleContent reads its one entry
+     * through derivedStateOf).
+     */
+    linkPreviews: State<Map<String, LinkPreviewState>>,
     previewsEnabled: Boolean,
     /** Whether a shared location draws a map — the reader's own setting. */
     mapPreviewsEnabled: Boolean,
@@ -3026,7 +3134,12 @@ internal fun MessageBubble(
     /** (message server id, option id) — a tap on a poll option. */
     onVote: (Long, Long) -> Unit,
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
-    onPositioned: (ChatListItem.MessageItem, Rect) -> Unit,
+    /**
+     * Every placement of the balloon, with its coordinates rather than its
+     * bounds: the caller turns them into window bounds only for the one
+     * bubble an open capsule is anchored to (see [PlacedCoordinates]).
+     */
+    onPositioned: (ChatListItem.MessageItem, LayoutCoordinates) -> Unit,
     onTapQuote: (Long) -> Unit,
     onOpenAttachment: (AttachmentDto) -> Unit,
     /** Tapping a call record calls back; null where calling is not possible. */
@@ -3066,17 +3179,20 @@ internal fun MessageBubble(
         )
     }
     // Long-press opens the floating capsule — acked messages only: a
-    // pending row has no server id to react to yet. The bubble's window
-    // bounds are captured on every placement so the capsule anchors to
-    // where the bubble actually is (nothing reads the state during
-    // composition, so scroll churn does not recompose); each placement
-    // also forwards the bounds via onPositioned so an already-open
-    // capsule can re-anchor when the list shifts. clip keeps
+    // pending row has no server id to react to yet. The bubble's layout
+    // coordinates are kept on every placement so the capsule anchors to
+    // where the bubble actually is, and its window bounds are worked out
+    // from them only when somebody asks — the long-press, or an open
+    // capsule re-anchoring. They used to be computed, and written into a
+    // snapshot state, on every placement of every bubble: every frame of
+    // every scroll, for a value read once in a while. Each placement still
+    // forwards the coordinates via onPositioned so an already-open capsule
+    // can re-anchor when the list shifts. clip keeps
     // pressed content inside the bubble's rounded shape; indication is
     // null because the onClick is empty (kept only so combinedClickable
     // preserves the long-press semantics) — a casual tap should not
     // ripple, the capsule's spring-out is the long-press feedback.
-    var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
+    val bubbleCoordinates = remember { PlacedCoordinates() }
     // Detected links are resolved once here because two places need
     // them: BubbleContent draws and hit-tests them, and the bubble's
     // semantics below turns each into a custom action — the tap
@@ -3110,86 +3226,23 @@ internal fun MessageBubble(
     // of placeholder text in an ordinary balloon, whatever the message
     // underneath it turns out to be.
     val surfaceShape = if (bareMedia && !isHidden) RectangleShape else bubbleShape
-    // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
-    // characters (`**`, backticks, `](url)`), so detecting links over the
-    // raw body and drawing the rendered one would leave every link after
-    // the first markup token pointing at the wrong glyphs — silently, with
-    // nothing failing. Everything below indexes the block's own
-    // `rendered.text`.
-    //
-    // Almost always ONE block: only a table splits a body, and each block
-    // is then a whole offset space of its own — its links index its own
-    // string, and the hit test below gets one layout result per block. A
-    // span from one block resolved against another's layout would point at
-    // whatever glyphs happened to sit at those offsets.
-    //
-    // Emoji-only bodies branch around it: the ladder's whole subject is
-    // that the message is nothing but glyphs, so a markup pass could only
-    // take something away, and there is nothing in one to detect. Same rule
-    // as iOS and macOS.
+    // Markdown, then the links and member names inside each block —
+    // BubbleBodies says why the order is load-bearing, and why the answer
+    // is kept there rather than only here: a row that scrolls away and
+    // back used to redo the markdown pass and Linkify in the frame it
+    // reappeared in. Remembered here as well, so a recomposition of a row
+    // that stays on screen does not even ask.
     val bodyBlocks = remember(entity.body, entity.mentionsJson, emojiFontSize) {
-        if (emojiFontSize != null) {
-            listOf(BodyBlock(MessageMarkdown.Block.Text(MessageMarkdown.plain(entity.body))))
-        } else {
-            MessageMarkdown.blocks(entity.body).map { block ->
-                when (block) {
-                    // The markup's own links first, then whatever the
-                    // detector finds in the text NOT already covered by
-                    // one. Both index this block's rendered text, and both
-                    // feed one hit test.
-                    //
-                    // The overlap rule is not tidiness. `[https://www.paypal.com](https://evil.example)`
-                    // renders the label "https://www.paypal.com", which Linkify then
-                    // detects as a link to PayPal — two spans over the same glyphs,
-                    // one going somewhere else. Whichever the hit test picked, a tap
-                    // could open a destination the reader had every reason to think
-                    // was the one they could see. Dropping the detector's overlap
-                    // leaves exactly one answer: the destination the author wrote.
-                    is MessageMarkdown.Block.Text -> BodyBlock(
-                        block = block,
-                        // The members named ride the same list and the
-                        // same hit test as links, under the same overlap
-                        // rule — a link over a name is still the link.
-                        //
-                        // Neither may land on an inline formula: its
-                        // characters are covered by a drawing, and its
-                        // source is KaTeX's input, not words to tap
-                        // (MessageLinks.outside).
-                        links = MessageLinks.mergeSpans(
-                            MessageLinks.mergeSpans(
-                                block.rendered.links,
-                                MessageLinks.outside(
-                                    MessageLinks.linkSpans(block.rendered.text),
-                                    block.rendered.math,
-                                ),
-                            ),
-                            MessageLinks.outside(
-                                MessageLinks.memberMentionSpans(
-                                    block.rendered.text,
-                                    MentionsCodec.decode(entity.mentionsJson),
-                                ),
-                                block.rendered.math,
-                            ),
-                        ),
-                    )
-                    // A table's cells carry no links by construction
-                    // (MessageMarkdown.cell says why), so there is nothing
-                    // inside one to hit-test — and a rich block is a
-                    // drawing, with none either.
-                    is MessageMarkdown.Block.Table -> BodyBlock(block)
-                    is MessageMarkdown.Block.Rich -> BodyBlock(block)
-                }
-            }
-        }
+        BubbleBodies.blocks(entity.body, entity.mentionsJson, emojiOnly = emojiFontSize != null)
     }
     val uriHandler = LocalUriHandler.current
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val bubbleMaxWidth = maxWidth * 0.8f
+    BubbleRowBox(LocalBubbleRowWidth.current) { rowWidth ->
+        val bubbleMaxWidth = rowWidth * 0.8f
         val bubbleModifier = Modifier
             .widthIn(max = bubbleMaxWidth)
             .onGloballyPositioned {
-                bubbleBounds = it.boundsInWindow()
-                onPositioned(item, bubbleBounds)
+                bubbleCoordinates.coordinates = it
+                onPositioned(item, it)
             }
             .clip(surfaceShape)
             .then(
@@ -3243,7 +3296,7 @@ internal fun MessageBubble(
                                 onToggleReaction(entity.serverId, DOUBLE_TAP_REACTION)
                             }
                         },
-                        onLongClick = { onLongPress(item, bubbleBounds) },
+                        onLongClick = { onLongPress(item, bubbleCoordinates.windowBounds()) },
                     )
                 } else {
                     Modifier
@@ -3345,7 +3398,7 @@ internal fun MessageBubble(
                         onDoubleTap = {
                             entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
                         },
-                        onTextLongPress = { onLongPress(item, bubbleBounds) },
+                        onTextLongPress = { onLongPress(item, bubbleCoordinates.windowBounds()) },
                         onTapQuote = onTapQuote,
                         onOpenAttachment = onOpenAttachment,
                         onOpenThread = onOpenThread,
@@ -3419,6 +3472,38 @@ private const val ANCHOR_VIEWPORT_TIMEOUT_MS = 1_000L
 
 /** How long a jumped-to bubble stays tinted. Same as iOS. */
 private const val HIGHLIGHT_MS = 1_600L
+
+/** The list slot kind a row reuses — see the `contentType` at the call site. */
+private val ChatListItem.contentType: String
+    get() = when (this) {
+        is ChatListItem.MessageItem -> "message"
+        is ChatListItem.DateSeparator -> "date"
+        is ChatListItem.NewMessagesDivider -> "unread"
+    }
+
+/**
+ * The tint under a jumped-to row: [tint] while [jumped], fading in and out
+ * over 250ms — what `animateColorAsState(tween(250))` drew, made cheap for
+ * the rows that are NOT jumped to, which is all of them but one.
+ *
+ * animateColorAsState starts an effect in every row it is called in, and
+ * this was called in every row of the thread: one coroutine per row that
+ * scrolled in, each waiting for a highlight that almost never comes. Here a
+ * row holds only an idle Animatable, and the effect exists only while the
+ * colour is somewhere other than transparent or headed somewhere else —
+ * the jumped row, for its tint and its fade back out.
+ */
+@Composable
+private fun jumpTint(jumped: Boolean, tint: Color): Color {
+    val target = if (jumped) tint else Color.Transparent
+    // Starts AT the target, as animateColorAsState's does: a row composed
+    // while already jumped to shows its tint at once rather than fading in.
+    val colour = remember { Animatable(target) }
+    if (colour.targetValue != target || colour.value != Color.Transparent) {
+        LaunchedEffect(target) { colour.animateTo(target, tween(250)) }
+    }
+    return colour.value
+}
 
 @Composable
 private fun QuoteBlock(
@@ -3779,19 +3864,6 @@ private fun ReactionChipView(
         }
     }
 }
-
-/**
- * One block of a rendered body with the links that live INSIDE it.
- *
- * The pairing is the point: [links] index `block`'s own rendered string
- * and are meaningless against any other, so the two travel together from
- * the one place that resolves them down to the one layout result they are
- * hit-tested against. A table block carries none — its cells hold no links.
- */
-private data class BodyBlock(
-    val block: MessageMarkdown.Block,
-    val links: List<LinkSpan> = emptyList(),
-)
 
 /**
  * The line a call record draws: an outbound / inbound / missed glyph and
@@ -4284,8 +4356,8 @@ private fun BubbleContent(
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
     myUserId: Long?,
-    /** Preview state for every link the app has looked at, keyed by URL. */
-    linkPreviews: Map<String, LinkPreviewState>,
+    /** Preview state for every link the app has looked at, keyed by URL (see MessageBubble). */
+    linkPreviews: State<Map<String, LinkPreviewState>>,
     /** False = this device never requests a linked page (Settings). */
     previewsEnabled: Boolean,
     /** Whether a shared location draws a map — the reader's own setting. */
@@ -4487,7 +4559,10 @@ private fun BubbleContent(
         // The attachments sit above the caption, inside the balloon — one
         // exactly as before, an album as a stack of cards, files and audio
         // as rows (see AttachmentGroup).
-        val bubbleAttachments = entity.attachmentList
+        // Remembered with the row, like the sticker and circle decisions in
+        // MessageBubble: attachmentList is a getter over a JSON column, and
+        // this body recomposes far more often than the row's data changes.
+        val bubbleAttachments = remember(entity) { entity.attachmentList }
         if (round != null) {
             // Before the sticker's branch, and not an AttachmentGroup: a
             // video tile opens the viewer, and a circle plays where it is.
@@ -4701,7 +4776,12 @@ private fun BubbleContent(
         }
         if (previewUrl != null && previewsEnabled) {
             LaunchedEffect(previewUrl) { onRequestPreview(previewUrl) }
-            val state = linkPreviews[previewUrl]
+            // This link's entry alone: derived, so the bubble is invalidated
+            // only when THIS entry changes, not whenever any preview in the
+            // chat does.
+            val state = remember(previewUrl, linkPreviews) {
+                derivedStateOf { linkPreviews.value[previewUrl] }
+            }.value
             if (state is LinkPreviewState.Loaded) {
                 LinkPreviewCard(
                     preview = state.preview,

@@ -60,6 +60,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -220,8 +222,25 @@ internal fun BoxScope.GifLabel() {
 @Composable
 internal fun LoopingVideo(source: LoopSource, crop: Boolean, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val player = remember(source) { LoopingPlayer(context.applicationContext, source, crop) }
+    // Held still while the thread scrolls or a viewer is over it
+    // (LocalMotionHold) — read in an effect, so a scroll edge reaches the
+    // player without recomposing the tile. Never held in the viewer itself,
+    // which is not under the list's provider. The player is MADE knowing
+    // whether it is held, because its surface can arrive before the effect
+    // below has run, and a tile flung onto the screen must not open a
+    // player in that gap; read without observation, for the same reason
+    // the effect exists.
+    val hold = LocalMotionHold.current
+    val player = remember(source) {
+        LoopingPlayer(
+            context.applicationContext,
+            source,
+            crop,
+            initiallyHeld = Snapshot.withoutReadObservation { hold.value },
+        )
+    }
     DisposableEffect(player) { onDispose { player.release() } }
+    LaunchedEffect(player, hold) { snapshotFlow { hold.value }.collect { player.setHeld(it) } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, player) {
         val observer = LifecycleEventObserver { _, event ->
@@ -248,12 +267,20 @@ internal fun LoopingVideo(source: LoopSource, crop: Boolean, modifier: Modifier 
 
 /**
  * One looping, muted MediaPlayer on one TextureView. Made when the view's
- * surface arrives, let go when it goes or the composable leaves. Main thread.
+ * surface arrives, let go when it goes or the composable leaves. Main thread
+ * — except the letting go itself, which [PlayerReaper] does off it.
+ *
+ * Not made at all while the thread is being scrolled ([setHeld]): a fling
+ * through a chat full of GIFs used to create a player — a binder round trip
+ * to the media server, a decoder spun up — for every tile that flew past,
+ * and tear each down again a moment later. A tile that arrives during a
+ * scroll shows its poster, and starts when the scroll comes to rest.
  */
 private class LoopingPlayer(
     private val context: Context,
     private val source: LoopSource,
     private val crop: Boolean,
+    initiallyHeld: Boolean = false,
 ) : TextureView.SurfaceTextureListener {
 
     private var view: TextureView? = null
@@ -262,6 +289,9 @@ private class LoopingPlayer(
     private var prepared = false
     private var resumed = true
     private var released = false
+    private var held = initiallyHeld
+    /** The surface that arrived while held, waiting for the hold to lift. */
+    private var waiting: SurfaceTexture? = null
     private var videoWidth = 0
     private var videoHeight = 0
 
@@ -273,7 +303,26 @@ private class LoopingPlayer(
 
     fun resume() {
         resumed = true
-        if (prepared) runCatching { player?.start() }
+        if (prepared && !held) runCatching { player?.start() }
+    }
+
+    /**
+     * Hold still (pause, and make no player for a surface that arrives
+     * meanwhile), or carry on: open what arrived while held, or start the
+     * paused loop again — never past the activity's own pause.
+     */
+    fun setHeld(value: Boolean) {
+        if (held == value) return
+        held = value
+        if (value) {
+            runCatching { if (player?.isPlaying == true) player?.pause() }
+            return
+        }
+        waiting?.let { texture ->
+            waiting = null
+            open(texture)
+        }
+        if (prepared && resumed) runCatching { player?.start() }
     }
 
     fun pause() {
@@ -283,8 +332,13 @@ private class LoopingPlayer(
 
     fun release() {
         released = true
+        waiting = null
         close()
-        view?.surfaceTextureListener = null
+        // The listener STAYS: the view is detached after this, and its
+        // surface's destruction is what hands the texture to the reaper
+        // behind the player still drawing into it (see
+        // onSurfaceTextureDestroyed). With `released` set nothing else in
+        // it does anything.
         view = null
     }
 
@@ -293,14 +347,26 @@ private class LoopingPlayer(
     override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) = fit()
 
     override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+        if (waiting === texture) waiting = null
         close()
-        return true
+        // false = this listener releases the texture, not the view — and it
+        // does so on the reaper, AFTER the player that was drawing into it
+        // (close() queued that first, and the reaper is one thread, in
+        // order). Released here at once, as `true` asked the view to do, the
+        // player's last frames would land in a buffer queue that no longer
+        // exists while its own release is still in flight.
+        PlayerReaper.release(texture)
+        return false
     }
 
     override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
 
     private fun open(texture: SurfaceTexture) {
         if (released || player != null) return
+        if (held) {
+            waiting = texture
+            return
+        }
         val made = Surface(texture)
         surface = made
         player = runCatching {
@@ -313,14 +379,20 @@ private class LoopingPlayer(
                 isLooping = true
                 // Muted twice over: the file has no sound track, and the player says none.
                 setVolume(0f, 0f)
-                setOnVideoSizeChangedListener { _, width, height ->
+                // Both callbacks ask whether the player is still THIS
+                // owner's: one handed to the reaper can still deliver a late
+                // event before the media server has let it go, and it must
+                // not mark the owner's next player prepared, or start it.
+                setOnVideoSizeChangedListener { reporting, width, height ->
+                    if (reporting !== player) return@setOnVideoSizeChangedListener
                     this@LoopingPlayer.videoWidth = width
                     this@LoopingPlayer.videoHeight = height
                     fit()
                 }
                 setOnPreparedListener { ready ->
+                    if (ready !== player) return@setOnPreparedListener
                     prepared = true
-                    if (resumed) runCatching { ready.start() }
+                    if (resumed && !held) runCatching { ready.start() }
                 }
                 // A failure leaves the poster: nothing to say over a picture.
                 setOnErrorListener { _, _, _ -> true }
@@ -339,10 +411,42 @@ private class LoopingPlayer(
 
     private fun close() {
         prepared = false
-        runCatching { player?.release() }
+        // Handed to the reaper rather than released here: MediaPlayer.release()
+        // waits for the media server to tear the decoder down, and this runs
+        // on the main thread as a tile scrolls out — one stall per GIF that
+        // left the screen, in the middle of the scroll that moved it.
+        PlayerReaper.release(player, surface)
         player = null
-        runCatching { surface?.release() }
         surface = null
+    }
+}
+
+/**
+ * Where looping players are let go: ONE background thread, in the order
+ * things are handed to it — a player before its Surface, both before the
+ * SurfaceTexture they draw into — which is the order the main thread used to
+ * release them in, without the main thread waiting for the media server.
+ *
+ * A player handed here may still deliver a late event on the main thread
+ * before the media server has let it go; its owner has already forgotten it,
+ * and LoopingPlayer's listeners ignore any player that is not its current
+ * one.
+ */
+internal object PlayerReaper {
+    private val thread = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "fc-player-reaper").apply { isDaemon = true }
+    }
+
+    fun release(player: MediaPlayer?, surface: Surface?) {
+        if (player == null && surface == null) return
+        thread.execute {
+            runCatching { player?.release() }
+            runCatching { surface?.release() }
+        }
+    }
+
+    fun release(texture: SurfaceTexture) {
+        thread.execute { runCatching { texture.release() } }
     }
 }
 

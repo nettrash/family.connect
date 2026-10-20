@@ -2441,10 +2441,11 @@ impl Actions {
         self.live
             .update(session, |state| {
                 let me = state.store.my_user_id;
-                let held =
-                    state.store.threads.get_mut(&chat_id).and_then(|thread| {
-                        thread.messages.iter_mut().find(|m| m.id == message_id)
-                    })?;
+                let held = state
+                    .store
+                    .threads
+                    .get_mut(&chat_id)
+                    .and_then(|thread| thread.get_mut(message_id))?;
                 let before = (held.reactions.clone(), held.reaction_seq);
                 let mut reactions = held.reactions.clone().unwrap_or_default();
                 match emoji {
@@ -2477,7 +2478,7 @@ impl Actions {
                 .store
                 .threads
                 .get_mut(&chat_id)
-                .and_then(|thread| thread.messages.iter_mut().find(|m| m.id == message_id))
+                .and_then(|thread| thread.get_mut(message_id))
             {
                 if held.reaction_seq == seq {
                     held.reactions = reactions;

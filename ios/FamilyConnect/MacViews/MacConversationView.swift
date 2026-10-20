@@ -431,17 +431,6 @@ struct MacConversationView: View {
         }
     }
 
-    /// How many open polls in this chat this reader still has to answer.
-    /// Computed from what this window already holds rather than by asking the
-    /// server: the badge has to be right the moment the conversation opens.
-    private var openPollsToAnswer: Int {
-        // Hidden-by-block polls count toward nothing — see ConversationView.
-        let me = AppSettings.currentUserID ?? -1
-        let blocked = coordinator.blockedUserIDs
-        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
-        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
-    }
-
     /// Whether there is somebody to ring from here (docs/protocol.md,
     /// "Voice calls"): a direct chat, on a server that has calls on.
     private var canCall: Bool {
@@ -649,32 +638,10 @@ struct MacConversationView: View {
             // stops meaning anything within a day.
             if isFamilyChat {
                 ToolbarItem {
-                    Button {
-                        showsOpenPolls = true
-                    } label: {
-                        // Drawn by hand for the reason ConversationView
-                        // gives: `.badge` on a toolbar item is macOS 26+, and
-                        // this app deploys to 14.
-                        Label("Open polls", systemImage: "chart.bar.doc.horizontal")
-                            .overlay(alignment: .topTrailing) {
-                                if openPollsToAnswer > 0 {
-                                    Text("\(openPollsToAnswer)")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(.tint, in: Capsule())
-                                        .offset(x: 9, y: -8)
-                                }
-                            }
-                    }
-                    // ONE literal: a ternary of two string literals is inferred
-                    // as `String`, which `.help` takes verbatim and never
-                    // localizes — the count is on the capsule and, for
-                    // VoiceOver, in the value below.
-                    .help("Open polls")
-                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
-                    .disabled(recorderOpen)
+                    // The phone's button: its own narrow query, counted once
+                    // per pass of its own body (OpenPollsToolbarButton).
+                    OpenPollsToolbarButton(chatID: chatID) { showsOpenPolls = true }
+                        .disabled(recorderOpen)
                 }
             }
         }

@@ -2118,11 +2118,23 @@ final class ChatSyncCoordinator {
     ///   OUTSIDE the contiguous window — a root older than it, a reply
     ///   newer — and must not drag the history or catch-up cursor to them,
     ///   or the next page would skip everything in between, for good.
+    /// - `saves`: false for a caller applying a whole PAGE, which then saves
+    ///   once after the last row (`savePage`). A save is a store transaction
+    ///   plus the icon badge's fetch of every chat (`refreshUnreadBadge`),
+    ///   and paying both per message is what made a catch-up after a long
+    ///   absence — a hundred rows a page, several pages — hold the main
+    ///   actor for whole seconds while the reader watched the thread stutter
+    ///   its way down. The rows a page leaves unsaved are still found by the
+    ///   next row's dedup lookups (a fetch includes pending changes), and
+    ///   the cursors written alongside them are saved in the same
+    ///   transaction, so a crash mid-page loses the page AND its cursor
+    ///   together and the next catch-up simply asks again.
     func upsert(
         _ dto: MessageDTO,
         bumpUnread: Bool,
         live: Bool = false,
-        movesCursors: Bool = true
+        movesCursors: Bool = true,
+        saves: Bool = true
     ) -> MessageEntity {
         let entity: MessageEntity
         if let clientMsgID = dto.clientMsgID,
@@ -2182,6 +2194,7 @@ final class ChatSyncCoordinator {
                 attachments: dto.attachmentList,
                 call: dto.call)
             modelContext.insert(entity)
+            pageLookup?.noteInserted(entity)
             // First sight counts for the chain only when it is LIVE (see
             // `live` above): a history page or the thread read deliver
             // replies the root's own recomputed count already includes.
@@ -2205,7 +2218,7 @@ final class ChatSyncCoordinator {
             entity.pollJSON = Self.pollJSON(poll)
         }
         updateChat(after: dto, bumpUnread: bumpUnread, movesCursors: movesCursors)
-        saveContext()
+        if saves { saveContext() }
         return entity
     }
 
@@ -2369,13 +2382,18 @@ final class ChatSyncCoordinator {
     /// re-delivery and a no-op. Returns false when the message isn't held
     /// locally — the state is dropped silently (history paging
     /// re-delivers it embedded on the Message objects).
+    ///
+    /// `saves: false` is a catch-up page applying many, which saves once
+    /// after the last (`upsert` has why).
     @discardableResult
-    func applyReactionState(messageServerID: Int64, seq: Int64, reactions: [ReactionDTO]) -> Bool {
+    func applyReactionState(
+        messageServerID: Int64, seq: Int64, reactions: [ReactionDTO], saves: Bool = true
+    ) -> Bool {
         guard let row = fetchMessage(serverID: messageServerID) else { return false }
         if seq > row.reactionSeq {
             row.reactionSeq = seq
             row.reactionList = Self.reactionSnapshots(reactions)
-            saveContext()
+            if saves { saveContext() }
         }
         return true
     }
@@ -2466,13 +2484,16 @@ final class ChatSyncCoordinator {
     /// re-delivery and a no-op. Returns false when the message isn't held
     /// locally — the state is dropped silently, exactly as a reaction
     /// state is (history paging re-delivers it embedded on the Message).
+    ///
+    /// `saves: false` is a catch-up page applying many, which saves once
+    /// after the last (`upsert` has why).
     @discardableResult
-    func applyPollState(messageServerID: Int64, poll: PollDTO) -> Bool {
+    func applyPollState(messageServerID: Int64, poll: PollDTO, saves: Bool = true) -> Bool {
         guard let row = fetchMessage(serverID: messageServerID) else { return false }
         if poll.pollSeq > row.pollSeq {
             row.pollSeq = poll.pollSeq
             row.pollJSON = Self.pollJSON(poll)
-            saveContext()
+            if saves { saveContext() }
         }
         return true
     }
@@ -2641,11 +2662,14 @@ final class ChatSyncCoordinator {
         while true {
             guard let page = try? await api.polls(chatID: step.chatID, afterSeq: afterSeq, limit: limit)
             else { return }
+            // One save per page: the cursor's own save below carries every
+            // state applied above it.
             for state in page {
-                applyPollState(messageServerID: state.messageID, poll: state.poll)
+                applyPollState(messageServerID: state.messageID, poll: state.poll, saves: false)
             }
             if let last = page.last { afterSeq = max(afterSeq, last.poll.pollSeq) }
             advancePollCursor(chatID: step.chatID, seq: afterSeq)
+            savePage(page.count)
             if page.count < limit { return }
         }
     }
@@ -4140,10 +4164,15 @@ final class ChatSyncCoordinator {
         var afterID = step.afterID
         while true {
             guard let page = try? await api.messages(chatID: step.chatID, afterID: afterID, limit: limit) else { return }
-            for dto in page {
+            // One save per page, not per row — see `upsert`'s `saves` — and
+            // the page's dedup lookups answered from two queries rather than
+            // two per row (`applyPage`).
+            applyPage(page) { dto in
                 _ = upsert(dto, bumpUnread: false,
-                           live: Self.catchUpCounts(forRootOf: dto, heldThrough: heldThrough))
+                           live: Self.catchUpCounts(forRootOf: dto, heldThrough: heldThrough),
+                           saves: false)
             }
+            savePage(page.count)
             if let last = page.last { afterID = max(afterID, last.id) }
             if page.count < limit { return }
         }
@@ -4164,7 +4193,8 @@ final class ChatSyncCoordinator {
         var afterSeq = step.afterSeq
         while true {
             guard let page = try? await api.edits(chatID: step.chatID, afterSeq: afterSeq, limit: limit) else { return }
-            for dto in page { _ = upsert(dto, bumpUnread: false) }
+            // Saved once, below, with the cursor.
+            applyPage(page) { dto in _ = upsert(dto, bumpUnread: false, saves: false) }
             if let last = page.last, let seq = last.editSeq { afterSeq = max(afterSeq, seq) }
             if let chat = fetchChat(step.chatID), afterSeq > chat.maxEditSeq {
                 chat.maxEditSeq = afterSeq
@@ -4179,17 +4209,19 @@ final class ChatSyncCoordinator {
         var afterSeq = step.afterSeq
         while true {
             guard let page = try? await api.reactions(chatID: step.chatID, afterSeq: afterSeq, limit: limit) else { return }
+            // One save per page, with the cursor — see `upsert`'s `saves`.
             for state in page {
                 applyReactionState(
                     messageServerID: state.messageID,
                     seq: state.reactionSeq,
-                    reactions: state.reactions)
+                    reactions: state.reactions,
+                    saves: false)
             }
             if let last = page.last { afterSeq = max(afterSeq, last.reactionSeq) }
             if let chat = fetchChat(step.chatID), afterSeq > chat.maxReactionSeq {
                 chat.maxReactionSeq = afterSeq
-                saveContext()
             }
+            savePage(page.count)
             if page.count < limit { return }
         }
     }
@@ -4269,10 +4301,14 @@ final class ChatSyncCoordinator {
         do {
             // No cursor yet (fresh chat): fetch the newest page instead.
             let page = try await api.messages(chatID: chatID, beforeID: beforeID, limit: limit)
-            for dto in page { _ = upsert(dto, bumpUnread: false) }
+            // One save for the page — see `upsert`'s `saves`.
+            applyPage(page) { dto in _ = upsert(dto, bumpUnread: false, saves: false) }
             if page.count < limit {
+                // Even an EMPTY short page changed something: the flag.
                 chat.hasFullHistory = true
                 saveContext()
+            } else {
+                savePage(page.count)
             }
             return page.count
         } catch {
@@ -4293,7 +4329,14 @@ final class ChatSyncCoordinator {
             while true {
                 let page = try await api.thread(
                     chatID: chatID, messageID: rootID, afterID: afterID, limit: limit)
-                for dto in page { _ = upsert(dto, bumpUnread: false, movesCursors: false) }
+                // Saved PER PAGE, never once at the end: rows left unsaved
+                // slow every later lookup (each fetch has to merge them in),
+                // and across a long chain that cost grows with the square
+                // of the rows held back.
+                applyPage(page) { dto in
+                    _ = upsert(dto, bumpUnread: false, movesCursors: false, saves: false)
+                }
+                savePage(page.count)
                 guard page.count == limit, let last = page.last else { break }
                 afterID = last.id
             }
@@ -4975,6 +5018,11 @@ final class ChatSyncCoordinator {
     }
 
     func fetchMessage(localID: String) -> MessageEntity? {
+        // Inside `applyPage`, a key the page prefetched is answered from it
+        // — including "not held", which is as authoritative as the query.
+        if let page = pageLookup, page.covers(localID: localID) {
+            return page.row(localID: localID)
+        }
         var descriptor = FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.localID == localID })
         descriptor.fetchLimit = 1
         return (try? modelContext.fetch(descriptor))?.first
@@ -4991,6 +5039,9 @@ final class ChatSyncCoordinator {
     }
 
     private func fetchMessage(clientMsgID: String, chatID: Int64) -> MessageEntity? {
+        if let page = pageLookup, page.covers(clientMsgID: clientMsgID, chatID: chatID) {
+            return page.row(clientMsgID: clientMsgID, chatID: chatID)
+        }
         let target: String? = clientMsgID
         var descriptor = FetchDescriptor<MessageEntity>(
             predicate: #Predicate { $0.clientMsgID == target && $0.chatID == chatID })
@@ -5028,6 +5079,121 @@ final class ChatSyncCoordinator {
         return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxPollSeq) })
     }
 
+    // MARK: - Applying a page
+
+    /// The rows one page's dedup lookups will ask for, fetched up front.
+    ///
+    /// `upsert` asks the store up to two questions per row before it writes
+    /// anything — "do I hold this client id in this chat?" and "do I hold
+    /// `s:<id>`?" — and the first is a scan, because `clientMsgID` has no
+    /// index (a `#Index` needs iOS 18). Measured on a Mac over a 5,000-row
+    /// chat: a third of a millisecond each, so a hundred-row page spent more
+    /// time asking than writing, and a phone spends longer. Here both are
+    /// asked ONCE for the whole page — one query whose rows are a superset of
+    /// every row the per-row helpers could find (`makePageLookup` has the
+    /// argument) — and answered from memory.
+    ///
+    /// A key the page did not prefetch falls through to the ordinary query,
+    /// so nothing outside the page can be answered wrongly; and a row the
+    /// page itself inserts is added as it is inserted, so two copies of one
+    /// message in one page still dedup exactly as they did.
+    private final class PageLookup {
+        private let localIDs: Set<String>
+        private let clientKeys: Set<String>
+        private var byLocalID: [String: MessageEntity] = [:]
+        private var byClientKey: [String: MessageEntity] = [:]
+
+        init(localIDs: Set<String>, clientKeys: Set<String>, rows: [MessageEntity]) {
+            self.localIDs = localIDs
+            self.clientKeys = clientKeys
+            for row in rows { noteInserted(row) }
+        }
+
+        private static func clientKey(_ clientMsgID: String, _ chatID: Int64) -> String {
+            "\(chatID)|\(clientMsgID)"
+        }
+
+        func covers(localID: String) -> Bool { localIDs.contains(localID) }
+
+        func covers(clientMsgID: String, chatID: Int64) -> Bool {
+            clientKeys.contains(Self.clientKey(clientMsgID, chatID))
+        }
+
+        func row(localID: String) -> MessageEntity? { byLocalID[localID] }
+
+        func row(clientMsgID: String, chatID: Int64) -> MessageEntity? {
+            byClientKey[Self.clientKey(clientMsgID, chatID)]
+        }
+
+        /// Index a row under both keys. The FIRST row seen for a key keeps
+        /// it, as `fetchLimit = 1` kept whichever came first.
+        func noteInserted(_ row: MessageEntity) {
+            if byLocalID[row.localID] == nil { byLocalID[row.localID] = row }
+            if let clientMsgID = row.clientMsgID {
+                let key = Self.clientKey(clientMsgID, row.chatID)
+                if byClientKey[key] == nil { byClientKey[key] = row }
+            }
+        }
+    }
+
+    /// Set only while `applyPage` runs — synchronously, on the main actor,
+    /// with no suspension inside — so no other path can ever see it.
+    private var pageLookup: PageLookup?
+
+    /// Apply a page of messages with its dedup lookups prefetched
+    /// (`PageLookup`). If the prefetch itself fails, the page is applied
+    /// exactly as before, one query per lookup.
+    private func applyPage(_ page: [MessageDTO], _ apply: (MessageDTO) -> Void) {
+        pageLookup = makePageLookup(page)
+        defer { pageLookup = nil }
+        for dto in page { apply(dto) }
+    }
+
+    private func makePageLookup(_ page: [MessageDTO]) -> PageLookup? {
+        // One chat per page, which every caller's endpoint guarantees; a
+        // mixed page (none exists) simply goes row by row.
+        guard page.count > 1, let chatID = page.first?.chatID,
+              page.allSatisfy({ $0.chatID == chatID }),
+              let low = page.map(\.id).min(), let high = page.map(\.id).max()
+        else { return nil }
+        let localIDs = Set(page.map { "s:\($0.id)" })
+        // An EMPTY client id is left to the ordinary query, exactly as typed.
+        let clientKeys = Set(page.compactMap { dto -> String? in
+            guard let clientMsgID = dto.clientMsgID, !clientMsgID.isEmpty else { return nil }
+            return "\(chatID)|\(clientMsgID)"
+        })
+        // ONE query covers both lookups, built only from predicate forms this
+        // file already relies on (no `contains` over an optional column,
+        // which SwiftData can refuse with an exception no `try` catches):
+        //
+        //   - `s:<id>` is only ever written on a row whose server id IS that
+        //     id, so every such row of the page lies in its id range;
+        //   - a row holding one of the page's client ids is either still
+        //     pending (no server id yet) or already carries the server id
+        //     the server gave that client id — the same message, in range.
+        //     A retried send is answered with the ORIGINAL message
+        //     (docs/protocol.md, "Dedup": `(chat_id, sender, client_msg_id)`
+        //     is unique), so no other server id can carry it. The one row
+        //     this could miss is another SENDER's with the same random UUID,
+        //     which the per-row lookup would have wrongly reconciled into.
+        //
+        // Rows in range that the page does not name come back too and are
+        // simply never asked about.
+        let descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { message in
+                message.chatID == chatID
+                    && (message.serverID == nil
+                        || ((message.serverID ?? 0) >= low && (message.serverID ?? 0) <= high))
+            })
+        do {
+            let rows = try modelContext.fetch(descriptor)
+            return PageLookup(localIDs: localIDs, clientKeys: clientKeys, rows: rows)
+        } catch {
+            AppLog.sync.error("Page prefetch failed, applying row by row: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
     private func saveContext() {
         do {
             try modelContext.save()
@@ -5035,6 +5201,13 @@ final class ChatSyncCoordinator {
             AppLog.sync.error("ModelContext save failed: \(String(describing: error))")
         }
         refreshUnreadBadge()
+    }
+
+    /// The one save after a page applied with `saves: false`. An empty page
+    /// changed nothing and costs nothing.
+    private func savePage(_ count: Int) {
+        guard count > 0 else { return }
+        saveContext()
     }
 
     /// The number the icon should be showing, according to the store alone.

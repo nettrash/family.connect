@@ -1175,7 +1175,7 @@ async fn a_threads_box_keeps_todays_send() {
     let props = ThreadPanelProps {
         chat_id: 42,
         root_id: 1,
-        messages: vec![message(1)],
+        messages: vec![message(1)].into(),
         my_user_id: 7,
         is_family_chat: true,
         is_ai_chat: false,

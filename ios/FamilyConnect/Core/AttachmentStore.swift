@@ -33,6 +33,9 @@
 
 import SwiftUI
 import os
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 @Observable
@@ -44,8 +47,27 @@ final class AttachmentStore {
     /// "Transcripts on request"), kept in a folder inside this store's own
     /// so `forget` and `clear` take it with the attachments it is about.
     let transcripts: TranscriptStore
-    /// Bumped when a fetch lands, so views drawing one re-render.
+    /// Bumped whenever anything lands — a fetch, a 404, a seed, a purge.
+    ///
+    /// NO VIEW READS THIS ANY MORE, and none should. It used to be the only
+    /// observable thing the store had, so every tile, sticker, album and
+    /// poster in the window read it, and every fetch that landed — for any
+    /// picture, anywhere — re-rendered all of them: opening a chat after a
+    /// long absence, a hundred previews arriving one by one was a hundred
+    /// passes over every image view on screen. Each lookup below now
+    /// registers a dependency on ITS OWN key (`track`), and a landing
+    /// invalidates exactly the views drawing that key (`touch`). This
+    /// counter stays as the store-wide "something happened", which is what
+    /// the tests wait on.
     private(set) var generation = 0
+    /// One observable stamp per key, which is what makes invalidation
+    /// per picture rather than per store (see `generation`). The dictionary
+    /// itself is ignored by observation — only a stamp's `value` is read
+    /// from a view — so adding a key while a body runs invalidates nobody.
+    @ObservationIgnored private var stamps: [String: KeyStamp] = [:]
+    /// Files on disk being decoded off the main actor, so the views asking
+    /// for one start one decode between them.
+    @ObservationIgnored private var decoding: Set<String> = []
     /// In-flight ids, so N bubbles of the same photo fetch once.
     @ObservationIgnored private var inFlight: Set<String> = []
     /// Ids the server has nothing for; not retried.
@@ -65,20 +87,47 @@ final class AttachmentStore {
     /// run cannot spend twelve seconds doing it. Matches Android's
     /// `AttachmentRepository.POSTER_RETRY_DELAYS_MS`.
     private let posterRetryDelays: [Duration]
-    /// Small hot cache in front of the disk, so a visible bubble does not
-    /// re-read and re-decode on every scroll frame.
-    @ObservationIgnored private var hot: [String: Image] = [:]
+    /// The decoded pictures in front of the disk, so a visible bubble does
+    /// not re-read and re-decode on every pass. Least recently used, and
+    /// bounded by what the pictures COST decoded rather than by how many
+    /// there are (`ByteBudgetCache` has why forty-first-in-first-out was
+    /// the wrong rule on both counts).
+    @ObservationIgnored private var hot = ByteBudgetCache<String, Image>(budget: AttachmentStore.hotBudget)
     /// Animations being downloaded, and those the server has none of.
     @ObservationIgnored private var animationsInFlight: Set<Int64> = []
     @ObservationIgnored private var animationsMissing: Set<Int64> = []
-    @ObservationIgnored private var hotOrder: [String] = []
+    /// A moving sticker's frames, decoded once per drawn size
+    /// (`StickerFrames`); keyed `"<id>@<edge>"`.
+    @ObservationIgnored private var frames = ByteBudgetCache<String, StickerFrames>(
+        budget: AttachmentStore.framesBudget)
+    /// Frame decodes in flight, and the keys that have none to give — a
+    /// still sticker, or one that cannot move here. The bytes behind an id
+    /// never change, so a settled "no" is final until a forget or a clear.
+    @ObservationIgnored private var framesDecoding: Set<String> = []
+    @ObservationIgnored private var framesNone: Set<String> = []
+    /// The system's memory warning, observed for as long as the store lives.
+    @ObservationIgnored private var memoryWarning: NSObjectProtocol?
 
-    private static let hotLimit = 40
+    /// What the decoded pictures may cost together. Room for about ninety
+    /// bubble previews (600 px, ~1 MB each) or a dozen full photos at
+    /// display size — comfortably more than a window of rows draws at once,
+    /// which is the property that matters: nothing on screen is evicted by
+    /// its own neighbours.
+    #if os(macOS)
+    static let hotBudget = 192 * 1024 * 1024
+    static let framesBudget = 128 * 1024 * 1024
+    #else
+    static let hotBudget = 96 * 1024 * 1024
+    /// What every moving sticker's frames may cost together: a panel's worth
+    /// of cells plus the few in a chat. An animating layer keeps its own
+    /// frames, so this bounds what is kept for LATER, not what plays.
+    static let framesBudget = 64 * 1024 * 1024
+    #endif
 
     /// Longest edge kept decoded. A bubble draws 240pt and the viewer a
     /// screen width, so the uploaded 2048 would be several times the
     /// pixels anyone sees. Matches Android's DISPLAY_PIXELS.
-    static let displayPixels = 1440
+    nonisolated static let displayPixels = 1440
 
     /// `directory` is a test seam, in the same spirit as `APIClient`'s
     /// injected `URLSession`: the app passes nothing and gets the caches
@@ -100,6 +149,54 @@ final class AttachmentStore {
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
         self.transcripts = TranscriptStore(
             api: api, directory: self.directory.appendingPathComponent("transcripts", isDirectory: true))
+        #if os(iOS)
+        // Everything in memory here is a copy of a file on disk, so the
+        // right answer to the system asking for memory back is all of it:
+        // what is on screen keeps drawing what it already rendered, and
+        // costs one re-decode the next time it is asked for.
+        memoryWarning = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.purgeMemory() }
+        }
+        #endif
+    }
+
+    /// Drop every decoded picture and sticker frame, keeping the files.
+    func purgeMemory() {
+        hot.removeAll()
+        frames.removeAll()
+    }
+
+    // MARK: - Per-key observation
+
+    /// Register the calling view's dependency on one key: reading the
+    /// stamp's `value` inside a body is what Observation records.
+    private func track(_ key: String) {
+        if let stamp = stamps[key] {
+            _ = stamp.value
+        } else {
+            let stamp = KeyStamp()
+            stamps[key] = stamp
+            _ = stamp.value
+        }
+    }
+
+    /// Invalidate the views drawing one key — and only those. A key no view
+    /// has ever asked about has no stamp and nothing to invalidate.
+    private func touch(_ key: String) {
+        stamps[key]?.value &+= 1
+    }
+
+    /// Something about this attachment's ORIGINAL bytes changed — for a view
+    /// that waits on their arrival without drawing them through `image` or
+    /// `stickerImage` (the enlarged sticker's "add to the pack" offer).
+    /// Reading it registers the dependency, like every lookup here.
+    func version(id: Int64) -> Int {
+        let key = key(id, preview: false)
+        track(key)
+        return stamps[key]?.value ?? 0
     }
 
     private func key(_ id: Int64, preview: Bool) -> String {
@@ -128,25 +225,63 @@ final class AttachmentStore {
     ///   `posterRetryDelays` and then settles into `missing` exactly like
     ///   any other 404 — a poster that failed for good must stop being
     ///   asked for, not polled forever.
+    ///
+    /// A file already on disk is decoded OFF the main actor too, and the
+    /// view told when it lands — never read and decoded right here. That
+    /// used to happen inside the body that asked, so opening a chat whose
+    /// pictures had fallen out of the in-memory cache decoded every one of
+    /// them, synchronously, on the actor the scroll is driven from; with
+    /// the window widened over a few hundred unread rows that was the
+    /// opening itself stalling. The tile reserves its exact shape before
+    /// any bytes arrive (AttachmentView), so the one pass this now spends
+    /// on the placeholder moves nothing.
     func image(id: Int64, preview: Bool, mayArriveLate: Bool = false) -> Image? {
         let key = key(id, preview: preview)
-        if let cached = hot[key] { return cached }
+        track(key)
+        if let cached = hot.value(for: key) { return cached }
         guard !missing.contains(key) else { return nil }
 
         let url = fileURL(key)
         if FileManager.default.fileExists(atPath: url.path) {
-            guard let data = try? Data(contentsOf: url),
-                  let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels)
-            else {
-                try? FileManager.default.removeItem(at: url)
-                return nil
-            }
-            remember(key, PlatformImage.view(decoded))
-            return hot[key]
+            decodeFromDisk(key, url: url)
+            return nil
         }
         guard !inFlight.contains(key) else { return nil }
         fetch(id: id, preview: preview, key: key, mayArriveLate: mayArriveLate)
         return nil
+    }
+
+    /// Read and decode a cached file off the main actor, then wake the views
+    /// drawing it. A file that is no picture is deleted, and the views asking
+    /// again find no file and fetch it — what the synchronous read used to
+    /// do, one pass later. Either way the wake cannot loop: the next ask hits
+    /// the cache, or starts a fetch that `inFlight` then gates.
+    private func decodeFromDisk(_ key: String, url: URL) {
+        guard !decoding.contains(key) else { return }
+        decoding.insert(key)
+        Task { [weak self] in
+            let still = await Self.decodedFile(at: url)
+            guard let self else { return }
+            decoding.remove(key)
+            if let still {
+                remember(key, still.image)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+            touch(key)
+        }
+    }
+
+    /// A cached file, decoded to display size, off the caller's actor.
+    @concurrent
+    private static func decodedFile(at url: URL) async -> StickerPack.Still? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return decoded(data)
+    }
+
+    /// Bytes decoded to display size — the one decode every path shares.
+    private nonisolated static func decoded(_ data: Data) -> StickerPack.Still? {
+        PlatformImage.decode(data, maxPixels: displayPixels).map { StickerPack.Still(image: $0) }
     }
 
     /// A PHOTO's preview — or, once the server has said it has none, the
@@ -186,7 +321,13 @@ final class AttachmentStore {
                         try? await Task.sleep(for: posterRetryDelays[attempt])
                         continue
                     }
-                    finish(key, data: data, settled: true)
+                    // Decoded off the main actor, like a file on disk.
+                    let still: StickerPack.Still? = if let data {
+                        await Self.decodedBytes(data)
+                    } else {
+                        nil
+                    }
+                    finish(key, data: data, still: still, settled: true)
                     return
                 } catch {
                     // A timeout, a refused connection or a 5xx says nothing
@@ -196,7 +337,7 @@ final class AttachmentStore {
                     // in `image(id:preview:)` sits in front of the disk cache
                     // as well as the fetch, and nothing cleared it short of a
                     // logout. Only a real answer settles a key.
-                    finish(key, data: nil, settled: false)
+                    finish(key, data: nil, still: nil, settled: false)
                     return
                 }
             }
@@ -204,17 +345,23 @@ final class AttachmentStore {
             // the same, because the cost of falling out of this loop is a
             // key stuck in `inFlight` — an image that never loads again
             // for the rest of the launch, and nothing to see that says so.
-            finish(key, data: nil, settled: true)
+            finish(key, data: nil, still: nil, settled: true)
         }
     }
 
+    @concurrent
+    private static func decodedBytes(_ data: Data) async -> StickerPack.Still? {
+        decoded(data)
+    }
+
     /// - Parameter settled: whether the answer is final. Only a real 404 is.
-    private func finish(_ key: String, data: Data?, settled: Bool) {
+    private func finish(_ key: String, data: Data?, still: StickerPack.Still?, settled: Bool) {
         inFlight.remove(key)
-        if let data, let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels) {
+        if let data, let still {
             try? data.write(to: fileURL(key), options: .atomic)
-            remember(key, PlatformImage.view(decoded))
+            remember(key, still.image)
             generation &+= 1
+            touch(key)
         } else if settled {
             // Remember the miss: an attachment with no preview must not be
             // re-requested on every render pass.
@@ -225,6 +372,7 @@ final class AttachmentStore {
             // without starting anything. AvatarStore's `finish` bumps
             // unconditionally for the same reason.
             generation &+= 1
+            touch(key)
         }
         // The UNSETTLED case is the one that must stay silent. Bumping
         // there re-renders every view drawing this key, each of which calls
@@ -251,9 +399,14 @@ final class AttachmentStore {
     /// keeping two sets apart to save it is not worth the divergence.
     func retryAfterReconnect() {
         guard !missing.isEmpty || !animationsMissing.isEmpty else { return }
+        let settled = missing
+        let animations = animationsMissing
         missing.removeAll()
         animationsMissing.removeAll()
         generation &+= 1
+        // Only the views that were drawing a "no" have anything to ask again.
+        for key in settled { touch(key) }
+        for id in animations { touch(animationKey(id)) }
     }
 
     // MARK: - Animations: the video, downloaded
@@ -274,6 +427,7 @@ final class AttachmentStore {
     /// (negative) id is never asked for — the server has never heard of
     /// it; a pending send's own file is `seedAnimation`'s.
     func animationURL(id: Int64) -> URL? {
+        track(animationKey(id))
         let url = animationFileURL(id: id)
         if FileManager.default.fileExists(atPath: url.path) { return url }
         guard id > 0, !animationsInFlight.contains(id), !animationsMissing.contains(id) else {
@@ -289,12 +443,14 @@ final class AttachmentStore {
                 try FileManager.default.moveItem(at: scratch, to: url)
                 animationsInFlight.remove(id)
                 generation &+= 1
+                touch(animationKey(id))
             } catch APIError.notFound(_) {
                 try? FileManager.default.removeItem(at: scratch)
                 animationsInFlight.remove(id)
                 animationsMissing.insert(id)
                 // Settled, like a photo's 404: the tile keeps its poster.
                 generation &+= 1
+                touch(animationKey(id))
             } catch {
                 // Says nothing about whether the video exists — `fetch`'s
                 // rule: no bump, so no tight loop; the next draw asks again.
@@ -314,6 +470,13 @@ final class AttachmentStore {
         guard (try? FileManager.default.copyItem(at: source, to: url)) != nil else { return }
         animationsMissing.remove(id)
         generation &+= 1
+        touch(animationKey(id))
+    }
+
+    /// The observation key of an animation's video — its own, so the video
+    /// landing does not redraw the poster drawn under it, nor the reverse.
+    private func animationKey(_ id: Int64) -> String {
+        "\(id)-animation"
     }
 
     /// Put bytes we already hold into the cache.
@@ -329,8 +492,9 @@ final class AttachmentStore {
         }
         try? data.write(to: fileURL(key), options: .atomic)
         missing.remove(key)
-        remember(key, PlatformImage.view(decoded))
+        remember(key, decoded)
         generation &+= 1
+        touch(key)
     }
 
     // MARK: - Stickers: the original bytes
@@ -399,7 +563,8 @@ final class AttachmentStore {
     /// Never the preview — the key is the original's, unconditionally.
     func stickerImage(id: Int64) -> Image? {
         let key = key(id, preview: false)
-        if let cached = hot[key] { return cached }
+        track(key)
+        if let cached = hot.value(for: key) { return cached }
         guard !missing.contains(key), !inFlight.contains(key) else { return nil }
         inFlight.insert(key)
         let url = fileURL(key)
@@ -438,12 +603,51 @@ final class AttachmentStore {
     private func finishSticker(_ key: String, still: StickerPack.Still?, settled: Bool) {
         inFlight.remove(key)
         if let still {
-            remember(key, PlatformImage.view(still.image))
+            remember(key, still.image)
             generation &+= 1
+            touch(key)
         } else if settled {
             missing.insert(key)
             generation &+= 1
+            touch(key)
         }
+    }
+
+    // MARK: - Stickers: the frames of one that moves
+
+    /// A moving sticker's frames at `edge` pixels, if they are decoded,
+    /// else nil — and the decode is started. Safe to call from a view body,
+    /// like `image`; the view is told by its key when they land.
+    ///
+    /// nil is ALSO the settled answer for a sticker that does not move (or
+    /// cannot, here), and stays nil without decoding anything again: the
+    /// caller draws the still either way, so the two never need telling
+    /// apart. Ask only for a sticker that is on screen and allowed to move
+    /// (`StickerMotion`) — asking is what spends the decode.
+    ///
+    /// `edge` is `StickerFrames.requestedEdge`: a few sizes, each cached on
+    /// its own, so the panel's small cells and the chat's larger box do not
+    /// evict one another by asking for different resolutions of one entry.
+    func stickerFrames(id: Int64, edge: Int) -> StickerFrames? {
+        guard edge > 0 else { return nil }
+        let key = "\(id)@\(edge)"
+        track(key)
+        if let cached = frames.value(for: key) { return cached }
+        guard !framesNone.contains(key), !framesDecoding.contains(key) else { return nil }
+        framesDecoding.insert(key)
+        let url = originalURL(id: id)
+        Task { [weak self] in
+            let decoded = await StickerFrames.decode(fileAt: url, maxEdge: edge)
+            guard let self else { return }
+            framesDecoding.remove(key)
+            if let decoded {
+                frames.insert(decoded, for: key, cost: decoded.byteCost)
+            } else {
+                framesNone.insert(key)
+            }
+            touch(key)
+        }
+        return nil
     }
 
     // MARK: - Repairing a poster the server never got
@@ -579,6 +783,7 @@ final class AttachmentStore {
             // wrong; this device's own bubbles included.
             missing.remove(key(id, preview: true))
             generation &+= 1
+            touch(key(id, preview: true))
             return .done
         } catch {
             switch error as? APIError {
@@ -625,14 +830,15 @@ final class AttachmentStore {
         FileManager.default.fileExists(atPath: posterMarkerURL(id).path)
     }
 
-    private func remember(_ key: String, _ image: Image) {
-        hot[key] = image
-        hotOrder.append(key)
-        while hotOrder.count > Self.hotLimit {
-            let oldest = hotOrder.removeFirst()
-            hot[oldest] = nil
-        }
+    /// Keep a decoded picture, charged at what its pixels cost.
+    private func remember(_ key: String, _ image: CGImage) {
+        hot.insert(PlatformImage.view(image), for: key, cost: image.bytesPerRow * image.height)
     }
+
+    /// Test-facing: what the decoded pictures cost right now, and whether
+    /// one key is among them.
+    var hotCost: Int { hot.totalCost }
+    func isHot(id: Int64, preview: Bool) -> Bool { hot.contains(key(id, preview: preview)) }
 
     /// Forget the bytes of attachments whose messages have just been
     /// deleted locally.
@@ -652,11 +858,15 @@ final class AttachmentStore {
         guard !attachmentIDs.isEmpty else { return }
         for id in attachmentIDs {
             for key in [key(id, preview: true), key(id, preview: false)] {
-                hot[key] = nil
-                hotOrder.removeAll { $0 == key }
+                hot.remove(key)
                 missing.remove(key)
                 try? FileManager.default.removeItem(at: fileURL(key))
+                touch(key)
             }
+            // A moving sticker's frames are its pixels too.
+            let prefix = "\(id)@"
+            frames.removeAll { $0.hasPrefix(prefix) }
+            framesNone = framesNone.filter { !$0.hasPrefix(prefix) }
             // The poster is gone with the chat, so the note asking for it
             // to be re-sent must go too — the repair pass would otherwise
             // find a marker with nothing behind it.
@@ -664,6 +874,7 @@ final class AttachmentStore {
             // An animation's video goes with its message, like its poster.
             try? FileManager.default.removeItem(at: animationFileURL(id: id))
             animationsMissing.remove(id)
+            touch(animationKey(id))
         }
         // A kept transcript is about one of these attachments too, and the
         // words in it are the last thing that should outlive the chat.
@@ -675,7 +886,8 @@ final class AttachmentStore {
     /// The FILES go too — they are the part that would otherwise survive.
     func clear() {
         hot.removeAll()
-        hotOrder.removeAll()
+        frames.removeAll()
+        framesNone.removeAll()
         missing.removeAll()
         animationsMissing.removeAll()
         try? FileManager.default.removeItem(at: directory)
@@ -684,5 +896,16 @@ final class AttachmentStore {
         // their memory too, so the next account reads none of them.
         transcripts.clear()
         generation &+= 1
+        // Every view drawing anything from the previous account asks again,
+        // and finds nothing.
+        for stamp in stamps.values { stamp.value &+= 1 }
     }
+}
+
+/// One key's observable stamp (`AttachmentStore.track`). A class, so the
+/// dictionary holding it can stay invisible to observation while each
+/// stamp's `value` is seen by exactly the views that read it.
+@MainActor @Observable
+final class KeyStamp {
+    var value = 0
 }

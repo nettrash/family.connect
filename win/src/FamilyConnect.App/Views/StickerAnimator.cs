@@ -20,9 +20,17 @@ namespace FamilyConnect.App.Views;
 /// and tested where no window exists.
 /// </para>
 /// <para>
-/// <b>AN IMAGE THAT HAS LEFT THE WINDOW IS LET GO.</b> The conversation is rebuilt on every change,
-/// so its elements come and go constantly; an entry whose image was drawn once and no longer is,
-/// is dropped on the next tick, and the timer stops when nothing is left to move.
+/// <b>AND IT WAKES WHEN A FRAME IS DUE, NOT THIRTY TIMES A SECOND.</b> Most stickers' frames stand a tenth of a second or
+/// more, and a fixed thirtieth woke the window's thread two times in three for nothing — with every sticker on screen
+/// walked each time. Each tick sets the next wait from the soonest frame due on screen
+/// (<see cref="StickerAnimation.UntilNext"/>), never faster than the thirtieth it used to be and never slower than a
+/// quarter of a second, so an image that left is still let go promptly.
+/// </para>
+/// <para>
+/// <b>AN IMAGE THAT HAS LEFT THE WINDOW IS LET GO.</b> A row of the conversation that changed is built
+/// again, and a redraw asked for outright builds them all, so its elements still come and go; an entry
+/// whose image was drawn once and no longer is, is dropped on a later tick, and the timer stops when
+/// nothing is left to move.
 /// </para>
 /// <para>
 /// A still picture never reaches the timer at all: it is set and forgotten.
@@ -79,8 +87,8 @@ internal sealed class StickerAnimator
     public StickerAnimator(DispatcherQueue queue)
     {
         timer = queue.CreateTimer();
-        // Thirty a second: stickers are authored at 15 to 30, and the floor for a frame is a tenth of a second.
-        timer.Interval = TimeSpan.FromMilliseconds(33);
+        // At most thirty a second: stickers are authored at 15 to 30, and the floor for a frame is a tenth of a second.
+        timer.Interval = TimeSpan.FromMilliseconds(StickerAnimation.FastestTickMs);
         timer.Tick += (_, _) => Tick();
     }
 
@@ -118,11 +126,25 @@ internal sealed class StickerAnimator
                 || RoundInline.InView(seen.X, seen.Y, seen.Width, seen.Height, image.ActualWidth, image.ActualHeight);
             if (entry.InView && !lostTrack)
             {
-                timer.Start();
+                Hurry();
             }
         };
         image.EffectiveViewportChanged += entry.Watch;
         playing.Add(entry);
+        Hurry();
+    }
+
+    /// <summary>
+    /// Something new to move — a sticker shown, one scrolled back into view: the timer runs, and its next tick comes within a
+    /// thirtieth of a second rather than after whatever long wait the last tick chose.
+    /// </summary>
+    private void Hurry()
+    {
+        if (timer.Interval.TotalMilliseconds > StickerAnimation.FastestTickMs)
+        {
+            timer.Stop();
+            timer.Interval = TimeSpan.FromMilliseconds(StickerAnimation.FastestTickMs);
+        }
         timer.Start();
     }
 
@@ -213,6 +235,8 @@ internal sealed class StickerAnimator
         try
         {
             var now = clock.ElapsedMilliseconds;
+            // The soonest a frame on screen is due — or a turn for an image not in the window yet, which is asked about at once.
+            var soonest = long.MaxValue;
             for (var at = playing.Count - 1; at >= 0; at--)
             {
                 var entry = playing[at];
@@ -228,7 +252,8 @@ internal sealed class StickerAnimator
                 }
                 else
                 {
-                    // Built and not yet in the window: its turn has not started.
+                    // Built and not yet in the window: its turn has not started, and the next tick looks again soon.
+                    soonest = Math.Min(soonest, StickerAnimation.FastestTickMs);
                     continue;
                 }
                 if (entry.Picture is not { Frames: { } frames, Clock: { } durations })
@@ -248,12 +273,28 @@ internal sealed class StickerAnimator
                     entry.Shown = due;
                     entry.Image.Source = frames[due];
                 }
+                // A millisecond past the change, so a timer that fires on the dot does not find the old frame still up.
+                var until = StickerAnimation.UntilNext(durations, now - entry.Started);
+                if (until < long.MaxValue)
+                {
+                    soonest = Math.Min(soonest, until + 1);
+                }
             }
             // Nothing left, or nothing left on screen (one not loaded yet still needs its turn): the timer rests until a viewport
             // brings something back.
             if (playing.TrueForAll(entry => !entry.InView && entry.WasLoaded))
             {
                 timer.Stop();
+            }
+            else
+            {
+                var wait = TimeSpan.FromMilliseconds(StickerAnimation.TickAfter(soonest));
+                if (timer.Interval != wait)
+                {
+                    timer.Stop();
+                    timer.Interval = wait;
+                    timer.Start();
+                }
             }
         }
         catch (Exception e)

@@ -103,6 +103,8 @@ public sealed partial class ChatsView
         if (held is null && services.Rich is { } rich)
         {
             _ = PutFormulaAsync(rich, job, paragraph, stand, owner, source);
+            // Held — drawn, or refused for good — or the next redraw builds the row again and asks again.
+            SettlesWhen(() => rich.Held(job) is not null);
         }
         return stand;
     }
@@ -175,6 +177,7 @@ public sealed partial class ChatsView
         }
         var holder = new Border { Child = stand };
         _ = PutBlockAsync(rich, job, block.Source, holder);
+        SettlesWhen(() => rich.Held(job) is not null);
         return holder;
     }
 

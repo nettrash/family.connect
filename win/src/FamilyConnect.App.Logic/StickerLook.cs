@@ -165,6 +165,47 @@ public static class StickerAnimation
         }
         return clock.Count - 1;
     }
+
+    /// <summary>
+    /// How long after <paramref name="elapsedMs"/> the frame that is up gives way to the next — what the one timer that moves
+    /// every sticker waits for, instead of waking thirty times a second for stickers whose frames stand a tenth of a second
+    /// or more. Never less than a millisecond.
+    /// </summary>
+    public static long UntilNext(IReadOnlyList<int> clock, long elapsedMs)
+    {
+        if (clock.Count == 0)
+        {
+            return long.MaxValue;
+        }
+        long total = 0;
+        foreach (var duration in clock)
+        {
+            total += Math.Max(duration, 1);
+        }
+        var within = Math.Max(elapsedMs, 0) % total;
+        foreach (var duration in clock)
+        {
+            within -= Math.Max(duration, 1);
+            if (within < 0)
+            {
+                return -within;
+            }
+        }
+        return 1;
+    }
+
+    /// <summary>The shortest the timer waits between frames: thirty a second, the most it ever moved stickers at.</summary>
+    public const int FastestTickMs = 33;
+
+    /// <summary>
+    /// The longest it waits even when nothing on screen is due sooner, so an image that left the window is still let go — and
+    /// its frames with it — within a quarter of a second.
+    /// </summary>
+    public const int SlowestTickMs = 250;
+
+    /// <summary>The timer's next wait, from the soonest any sticker on screen is due: within the fastest and slowest ticks.</summary>
+    public static int TickAfter(long soonestMs) =>
+        (int)Math.Clamp(soonestMs, FastestTickMs, SlowestTickMs);
 }
 
 /// <summary>
@@ -249,6 +290,12 @@ public sealed class StickerShelf<TPicture>(
         picture = null;
         return false;
     }
+
+    /// <summary>
+    /// Whether this sticker has an answer here — decoded, or known to decode to nothing — WITHOUT counting as a drawing: a
+    /// redraw asking whether a row's sticker still needs trying again must not make that sticker the last one to go.
+    /// </summary>
+    public bool Holds(long id) => kept.ContainsKey(id);
 
     /// <summary>
     /// Keep what a decode answered: the picture and what its frames cost, or null for "nothing

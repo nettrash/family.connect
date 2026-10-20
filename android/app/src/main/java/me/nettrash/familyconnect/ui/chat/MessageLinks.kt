@@ -68,10 +68,7 @@ object MessageLinks {
     fun linkSpans(text: String): List<LinkSpan> {
         if (text.isEmpty()) return emptyList()
         val spannable = SpannableString(text)
-        val found = Linkify.addLinks(
-            spannable,
-            Linkify.WEB_URLS or Linkify.EMAIL_ADDRESSES or Linkify.PHONE_NUMBERS,
-        )
+        val found = Linkify.addLinks(spannable, detectorMask(text))
         if (!found) return emptyList()
         return spannable.getSpans(0, spannable.length, URLSpan::class.java)
             .map { span ->
@@ -82,6 +79,35 @@ object MessageLinks {
                 )
             }
             .sortedBy { it.start }
+    }
+
+    /**
+     * Which detectors [linkSpans] runs over [text]: web addresses and email
+     * always, phone numbers only when the text holds a digit.
+     *
+     * The phone matcher is by far the slowest of the three (it is the ICU /
+     * libphonenumber matcher, walking the text for every candidate), and
+     * most chat messages have no digit in them at all. Every phone grammar
+     * it knows needs digits to match — its patterns are built on `\p{Nd}`
+     * (and the pre-ICU fallback on `[0-9]`), both inside what
+     * [Character.isDigit] accepts — so a text with none cannot produce a
+     * phone span, and skipping the matcher there changes no answer. Code
+     * points rather than chars, so a digit outside the BMP still counts.
+     */
+    internal fun detectorMask(text: String): Int {
+        val always = Linkify.WEB_URLS or Linkify.EMAIL_ADDRESSES
+        return if (hasDigit(text)) always or Linkify.PHONE_NUMBERS else always
+    }
+
+    /** Whether [text] holds any decimal digit, of any script (Unicode Nd). */
+    internal fun hasDigit(text: String): Boolean {
+        var index = 0
+        while (index < text.length) {
+            val codePoint = text.codePointAt(index)
+            if (Character.isDigit(codePoint)) return true
+            index += Character.charCount(codePoint)
+        }
+        return false
     }
 
     /**

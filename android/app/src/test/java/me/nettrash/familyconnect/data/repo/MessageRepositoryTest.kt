@@ -132,6 +132,8 @@ class MessageRepositoryTest {
             clock = Clock { NOW },
             pendingAttachmentDao = db.pendingAttachmentDao(),
             staging = MediaStaging(RuntimeEnvironment.getApplication()),
+            // Pages commit as one transaction, as in the app (DbTransactions).
+            transactions = me.nettrash.familyconnect.data.db.DbTransactions.of(db),
         )
         runCurrent() // frame collector must be subscribed before any emit
         return repository

@@ -575,24 +575,19 @@ struct StickerPackTests {
 
     // MARK: - Animation
 
-    /// ImageIO animates an animated WebP on this platform — the claim the
-    /// chat's moving stickers rest on. A still one never starts.
-    @MainActor
-    @Test("an animated WebP produces frames; a still one produces none", .timeLimit(.minutes(1)))
-    func thePlayerAnimates() async {
-        let still = StickerPlayer()
-        still.play(StickerFixtures.stillWebP)
-        #expect(still.frame == nil)
+    /// ImageIO reads every frame of an animated WebP on this platform — the
+    /// claim the chat's moving stickers rest on. A still one has none to
+    /// give, so it never asks Core Animation for anything.
+    @Test("an animated WebP decodes into frames; a still one into none", .timeLimit(.minutes(1)))
+    func framesDecode() async {
+        #expect(await StickerFrames.decode(data: StickerFixtures.stillWebP, maxEdge: 64) == nil)
 
-        let moving = StickerPlayer()
-        moving.play(StickerFixtures.animatedWebP)
-        // The block runs on the main run loop; give it turns to run in.
-        for _ in 0..<200 where moving.frame == nil {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(moving.frame != nil, "ImageIO delivered no frame of an animated WebP")
-        #expect(moving.frame?.width == 8)
-        moving.stop()
+        let moving = await StickerFrames.decode(data: StickerFixtures.animatedWebP, maxEdge: 64)
+        #expect(moving?.frames.count == 2, "ImageIO delivered no frames of an animated WebP")
+        // Never larger than the file: an 8-pixel sticker asked for at 64.
+        #expect(moving?.frames.first?.width == 8)
+        // Two 40 ms frames, stated in the file's own ANMF chunks.
+        #expect(moving?.durationsMS == [40, 40])
     }
 }
 

@@ -126,6 +126,7 @@ android {
         // 36 passes there. Raise it once that path has been checked on a
         // real Android 17 phone; the local network permission it brings is
         // already handled (data/net/LocalNetworkAccess.kt).
+        //noinspection OldTargetApi
         targetSdk = 36
         versionCode = storedVersionCode
         versionName = resolvedVersionName
@@ -201,6 +202,10 @@ android {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
         }
+    }
+    lint {
+        // lint.xml says what is ignored, and why, one issue at a time.
+        lintConfig = file("lint.xml")
     }
     buildFeatures {
         compose = true

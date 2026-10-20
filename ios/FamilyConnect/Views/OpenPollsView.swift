@@ -262,3 +262,84 @@ struct OpenPollsView: View {
         }
     }
 }
+
+// MARK: - The way in, with its count
+
+/// The toolbar's way into this surface, with the count of polls this reader
+/// still has to answer drawn on it (OpenPollsBadge) — shared by the phone's
+/// and the Mac's conversation toolbars.
+///
+/// ITS OWN VIEW WITH ITS OWN QUERY, and that is the whole reason it exists.
+/// The count used to be a property of the conversation view: it filtered the
+/// chat's ENTIRE cached history and JSON-decoded every poll in it, and the
+/// toolbar read it three times — the capsule's test, the capsule's text and
+/// the accessibility value — on every pass of a body that re-runs for every
+/// arriving message and every keystroke. Here the store does the filtering
+/// (only rows that carry a poll come back), the count is taken once per pass
+/// of THIS view, and that pass happens when a poll row changes — not when
+/// the composer does. It also takes the arithmetic out of the conversation
+/// body, which sits at the edge of what CI's type checker will solve.
+struct OpenPollsToolbarButton: View {
+    let action: () -> Void
+
+    @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Query private var polls: [MessageEntity]
+
+    init(chatID: Int64, action: @escaping () -> Void) {
+        self.action = action
+        _polls = Query(filter: #Predicate<MessageEntity> { $0.chatID == chatID && $0.pollJSON != nil })
+    }
+
+    /// Open polls this reader has not voted in. A poll by somebody they have
+    /// blocked is a hidden row and counts toward nothing: a badge is a claim
+    /// that there is something for them to answer, and a question they chose
+    /// not to see is not one (protocol.md, "Finding the open ones").
+    private var toAnswer: Int {
+        let me = AppSettings.currentUserID ?? -1
+        let blocked = coordinator.blockedUserIDs
+        let visible = polls.filter { $0.senderID == me || !blocked.contains($0.senderID) }
+        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
+    }
+
+    var body: some View {
+        let count = toAnswer
+        Button(action: action) {
+            label
+                // The count is drawn BY HAND. `.badge` on a toolbar item
+                // renders only on iOS 26 / macOS 26, and this app deploys to
+                // iOS 17 and macOS 14 — on every earlier OS it is silently
+                // nothing, and the whole OpenPollsBadge apparatus would have
+                // computed a number nobody saw. The capsule is the chat
+                // list's own unread badge.
+                .overlay(alignment: .topTrailing) {
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.tint, in: Capsule())
+                            .offset(x: 9, y: -8)
+                    }
+                }
+        }
+        #if os(macOS)
+        // ONE literal: a ternary of two string literals is inferred as
+        // `String`, which `.help` takes verbatim and never localizes — the
+        // count is on the capsule and, for VoiceOver, in the value below.
+        .help("Open polls")
+        #else
+        .accessibilityLabel("Open polls")
+        #endif
+        .accessibilityValue(count > 0 ? Text("\(count) to answer") : Text(""))
+    }
+
+    @ViewBuilder
+    private var label: some View {
+        #if os(macOS)
+        Label("Open polls", systemImage: "chart.bar.doc.horizontal")
+        #else
+        Image(systemName: "chart.bar.doc.horizontal")
+        #endif
+    }
+}

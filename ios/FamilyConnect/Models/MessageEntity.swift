@@ -223,8 +223,7 @@ final class MessageEntity {
     /// (MessageDTO.attachmentList).
     var attachmentList: [AttachmentDTO] {
         if let attachmentsJSON, !attachmentsJSON.isEmpty,
-           let list = try? Self.attachmentsDecoder.decode(
-               [AttachmentDTO].self, from: Data(attachmentsJSON.utf8)),
+           let list = Self.attachmentsMemo.decode(attachmentsJSON, with: Self.attachmentsDecoder),
            !list.isEmpty {
             return list
         }
@@ -333,8 +332,7 @@ final class MessageEntity {
     var reactionList: [ReactionSnapshot] {
         get {
             guard let reactionsJSON, !reactionsJSON.isEmpty else { return [] }
-            let data = Data(reactionsJSON.utf8)
-            return (try? Self.reactionDecoder.decode([ReactionSnapshot].self, from: data)) ?? []
+            return Self.reactionsMemo.decode(reactionsJSON, with: Self.reactionDecoder) ?? []
         }
         set {
             guard let data = try? Self.reactionEncoder.encode(newValue) else { return }
@@ -348,7 +346,7 @@ final class MessageEntity {
     var poll: PollSnapshot? {
         get {
             guard let pollJSON, !pollJSON.isEmpty else { return nil }
-            return try? Self.pollDecoder.decode(PollSnapshot.self, from: Data(pollJSON.utf8))
+            return Self.pollMemo.decode(pollJSON, with: Self.pollDecoder)
         }
         set {
             guard let newValue else {
@@ -382,10 +380,25 @@ final class MessageEntity {
     private static let mentionsDecoder = JSONDecoder()
     private static let mentionsEncoder = JSONEncoder()
 
+    /// The DECODED values, remembered by the exact JSON they came from.
+    ///
+    /// Sharing the decoders made each read allocation-free; it did not make
+    /// it free. The thread maps every rendered row to a `MessageSnapshot`
+    /// on every pass of its body — up to four of these reads per row, over a
+    /// window that can be a few hundred rows wide — and a body pass happens
+    /// for every catch-up page, every reaction, every keystroke that moves
+    /// the composer. The same JSON decodes to the same value every time, so
+    /// the string itself is the key: a row that changes gets a new string
+    /// and therefore a fresh decode, and nothing can go stale.
+    private static let attachmentsMemo = DecodedJSONMemo<[AttachmentDTO]>()
+    private static let reactionsMemo = DecodedJSONMemo<[ReactionSnapshot]>()
+    private static let pollMemo = DecodedJSONMemo<PollSnapshot>()
+    private static let mentionsMemo = DecodedJSONMemo<[MentionDTO]>()
+
     /// The members this message names, in the sender's order; [] for none.
     var mentionList: [MentionDTO] {
         guard let mentionsJSON, !mentionsJSON.isEmpty,
-              let list = try? Self.mentionsDecoder.decode([MentionDTO].self, from: Data(mentionsJSON.utf8))
+              let list = Self.mentionsMemo.decode(mentionsJSON, with: Self.mentionsDecoder)
         else { return [] }
         return list
     }
@@ -482,5 +495,36 @@ final class MessageEntity {
         } else if let attachment {
             applyAttachmentList([attachment])
         }
+    }
+}
+
+/// Decoded JSON, remembered by its source text (MessageEntity's coders).
+///
+/// An `NSCache` here, unlike the picture caches (`ByteBudgetCache` says why
+/// those are not): an entry is a few hundred bytes, losing one costs a
+/// single decode with no observer waiting on it, and NSCache is safe to
+/// read from any thread, which a `@Model`'s computed property may be. A
+/// failed decode is not remembered — it is a corrupt row, and rare.
+nonisolated final class DecodedJSONMemo<Value>: @unchecked Sendable {
+    // `@unchecked`: NSCache is thread-safe, and the values put in it are
+    // value types that are never mutated in place.
+
+    private final class Box {
+        let value: Value
+        init(_ value: Value) { self.value = value }
+    }
+
+    private let cache = NSCache<NSString, Box>()
+
+    init(countLimit: Int = 4096) {
+        cache.countLimit = countLimit
+    }
+
+    func decode(_ json: String, with decoder: JSONDecoder) -> Value? where Value: Decodable {
+        let key = json as NSString
+        if let hit = cache.object(forKey: key) { return hit.value }
+        guard let value = try? decoder.decode(Value.self, from: Data(json.utf8)) else { return nil }
+        cache.setObject(Box(value), forKey: key)
+        return value
     }
 }

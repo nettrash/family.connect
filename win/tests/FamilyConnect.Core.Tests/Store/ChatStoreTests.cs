@@ -749,6 +749,86 @@ public class ChatStoreTests : IDisposable
     }
 
     /// <summary>
+    /// THE ROSTER AND THE BLOCK LIST ARE KEPT IN MEMORY, AND NO WRITE MAY LEAVE THE COPY BEHIND — not one through another
+    /// store on the same file, and not a wipe, which no store sees. A conversation asks both once per bubble, so a stale
+    /// copy would be a blocked member's words drawn, or a renamed member drawn by their old name, until a restart.
+    /// </summary>
+    [Fact]
+    public void WhatIsKeptOfTheRosterFollowsEveryWriteWhoeverMadeIt()
+    {
+        var reading = Store();
+        var writing = Store();
+        writing.Replace([new MemberDto(7, "anna", "Anna", Role: "owner"), new MemberDto(11, "bob", "Bob", Role: "member")]);
+        Assert.Equal("Bob", reading.Member(11)!.DisplayName);
+        Assert.False(reading.IsBlocked(11));
+        Assert.Empty(reading.Blocked());
+
+        writing.Joined(new UserDto(11, "bob", "Robert", 3));
+        Assert.Equal("Robert", reading.Member(11)!.DisplayName);
+        Assert.Equal(3, reading.Members().Single(member => member.Id == 11).AvatarVersion);
+        writing.SetOwner(11);
+        Assert.True(reading.Member(11)!.Owner);
+        writing.Left(7);
+        Assert.True(reading.Member(7)!.HasLeft);
+        writing.Deleted(new MemberDto(7, "deleted", "Deleted account"));
+        Assert.True(reading.Member(7)!.Deleted);
+
+        writing.SetBlocked(11, true);
+        Assert.True(reading.IsBlocked(11));
+        Assert.Equal([11L], reading.Blocked());
+        writing.ReplaceBlocked([14]);
+        Assert.False(reading.IsBlocked(11));
+        Assert.True(reading.IsBlocked(14));
+
+        database.WipeAll();
+        Assert.Empty(reading.Members());
+        Assert.Null(reading.Member(11));
+        Assert.False(reading.IsBlocked(14));
+        Assert.Empty(reading.Blocked());
+    }
+
+    /// <summary>
+    /// The copy handed out is the caller's to read, never to change: a second caller must get the table, not what the
+    /// first one did to its answer.
+    /// </summary>
+    [Fact]
+    public void TheKeptRosterCannotBeChangedByWhoeverWasHandedIt()
+    {
+        var store = Store();
+        store.Replace([new MemberDto(7, "anna", "Anna", Role: "owner")]);
+        store.ReplaceBlocked([11]);
+        Assert.False(store.Members() is List<MemberDto>);
+        Assert.False(store.Blocked() is List<long>);
+        Assert.Throws<NotSupportedException>(() => ((IList<MemberDto>)store.Members()).Add(new MemberDto(8, "x", "X")));
+        Assert.Throws<NotSupportedException>(() => ((IList<long>)store.Blocked()).Add(12));
+        Assert.Single(store.Members());
+        Assert.Equal([11L], store.Blocked());
+    }
+
+    /// <summary>
+    /// A chat's kind is what its row says — asked of every bubble a conversation draws — null for a chat with no row yet, and
+    /// picked up once the list read writes one; a wipe forgets it.
+    /// </summary>
+    [Fact]
+    public void AChatsKindIsItsRowsAndFollowsTheListRead()
+    {
+        var store = Store();
+        Assert.Null(store.Kind(42));
+        store.Replace([Row(), Row(new ChatDto(43, "direct", "Bob")), Row(new ChatDto(44, "ai", "Assistant"))]);
+        Assert.Equal("family", store.Kind(42));
+        Assert.Equal("direct", store.Kind(43));
+        Assert.Equal("ai", store.Kind(44));
+        Assert.Equal(store.Chat(43)!.Chat.Kind, store.Kind(43));
+        // A chat the list no longer carries is hidden, not forgotten: its kind is still its row's.
+        store.Replace([Row()]);
+        Assert.Equal("direct", store.Kind(43));
+        Assert.Null(store.Kind(99));
+
+        database.WipeAll();
+        Assert.Null(store.Kind(42));
+    }
+
+    /// <summary>
     /// The `member_blocked` frame is a STATE-SET, and it is the one place a client applies the
     /// consequence itself: the frame reaches the blocker's own devices and no list read is
     /// coming. The chat leaves the list and comes back WHOLE, because nothing about it is ever

@@ -49,7 +49,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -77,6 +80,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.PackPicture
 import me.nettrash.familyconnect.ui.chat.animationsRemoved
 import me.nettrash.familyconnect.ui.components.LocalAttachments
+import me.nettrash.familyconnect.ui.components.LocalMotionHold
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.roundToInt
@@ -223,15 +227,32 @@ fun StickerImage(
     // upload lands (a negative placeholder becomes the server's), and
     // dropping the picture for the frames the second decode takes would
     // blink it. What is shown stays until its replacement is ready.
-    var shown by remember { mutableStateOf<Pair<Any, Drawable>?>(null) }
+    //
+    // It STARTS from the drawable this very sticker left behind when it
+    // last scrolled away, when there is one (StickerDrawables): a row
+    // scrolling back in used to read the file and decode it all over again,
+    // drawing an empty box until it had.
+    var shown by remember { mutableStateOf(StickerDrawables.take(key, edge)?.let { Shown(key, edge, it) }) }
     LaunchedEffect(key, retryKey) {
-        if (shown?.first == key) return@LaunchedEffect
+        if (shown?.key == key) {
+            // Landed already — from the pool, before this effect ran. Said,
+            // so a caller drawing a placeholder takes it down; saying it a
+            // second time after a retry is the same answer again.
+            onLoaded(true)
+            return@LaunchedEffect
+        }
         val file = load() ?: return@LaunchedEffect
         val decoded = withContext(Dispatchers.IO) { StickerDrawing.decode(file, edge) }
-        if (decoded != null) shown = key to decoded
+        if (decoded != null) shown = Shown(key, edge, decoded)
         onLoaded(decoded != null)
     }
-    val current = shown?.second ?: return
+    val held = shown ?: return
+    val current = held.drawable
+    // Back to the pool when this sticker leaves the screen or its picture is
+    // replaced. Declared BEFORE the painter on purpose: what was remembered
+    // first is forgotten last, so the painter has stopped the drawable and
+    // let go of its callback by the time anybody else can take it.
+    DisposableEffect(held) { onDispose { StickerDrawables.give(held.key, held.edge, held.drawable) } }
     // The density goes onto a bitmap drawable so its intrinsic size is in
     // the same units the painter reports; the layout then fits it whole.
     val resources = LocalResources.current
@@ -240,10 +261,15 @@ fun StickerImage(
     // "Sticker pack", amended for #96). An AnimatedImageDrawable that is never
     // started draws its first frame.
     val still = animationsRemoved()
+    val hold = LocalMotionHold.current
     val painter = remember(current, still) {
         (current as? BitmapDrawable)?.setTargetDensity(resources.displayMetrics)
-        DrawablePainter(current, animate = !still)
+        DrawablePainter(current, animate = !still, hold = hold)
     }
+    // Still while the thread scrolls or a viewer is over it (LocalMotionHold).
+    // Read here, in an effect, so a scroll starting or stopping reaches the
+    // drawable without recomposing the sticker.
+    LaunchedEffect(painter, hold) { snapshotFlow { hold.value }.collect { painter.setHeld(it) } }
     Image(
         painter = painter,
         contentDescription = contentDescription,
@@ -318,6 +344,108 @@ fun ChatSticker(
     }
 }
 
+/** A decoded sticker on screen: what it is, the box it was decoded for, and the drawable. */
+private class Shown(val key: Any, val edge: Int, val drawable: Drawable)
+
+/**
+ * Decoded stickers that are OFF screen right now, kept so the same sticker
+ * coming back — a row scrolling back into the thread, the panel reopening —
+ * is drawn at once instead of being read and decoded again.
+ *
+ * A checkout pool, not a shared cache: a Drawable has ONE callback and ONE
+ * set of bounds, so two places drawing one instance at the same time would
+ * fight over both (the second to come on screen would steal the first's
+ * redraws, and the first to leave would stop the other's animation). So a
+ * drawable is TAKEN out while it is on screen and GIVEN back when it leaves;
+ * a second copy of a sticker already showing — the recents row and the pack
+ * grid in the panel — simply decodes its own, as it always did.
+ *
+ * Keyed by what identifies the bytes (an attachment or pack-item id — an id
+ * never names different bytes) and by the box edge it was decoded for, so a
+ * panel cell never hands its small decode to the enlarged view. Bounded by
+ * an estimate of the pixels it holds; main thread only, like the
+ * composition that uses it.
+ */
+internal object StickerDrawables {
+
+    /**
+     * What the pool may hold, in estimated bytes of pixels: a couple of
+     * screens of chat stickers at a dense screen's 160dp box. Bitmaps live
+     * in the native heap on every API this app supports, but they are still
+     * the app's memory, so the pool stays small and the oldest go first.
+     */
+    private const val BUDGET_BYTES = 16L * 1024 * 1024
+
+    private val pool = CheckoutPool<Pair<Any, Int>, Drawable>(BUDGET_BYTES) { estimatedBytes(it) }
+
+    /** The pooled decode of [key] for [edge], removed from the pool, or null. */
+    fun take(key: Any, edge: Int): Drawable? = pool.take(key to edge)
+
+    /** [drawable] is off screen again: keep it for the next time [key] is wanted at [edge]. */
+    fun give(key: Any, edge: Int, drawable: Drawable) = pool.give(key to edge, drawable)
+
+    /** For the tests: start from nothing. */
+    internal fun clear() = pool.clear()
+
+    /**
+     * The pixels a drawable holds, roughly: a bitmap's real allocation, and
+     * for anything else (an animated drawable keeps a frame or two of its
+     * own) its intrinsic size at four bytes a pixel, twice over.
+     */
+    internal fun estimatedBytes(drawable: Drawable): Long {
+        (drawable as? BitmapDrawable)?.bitmap?.let { return it.allocationByteCount.toLong() }
+        val pixels = drawable.intrinsicWidth.coerceAtLeast(1).toLong() * drawable.intrinsicHeight.coerceAtLeast(1)
+        return pixels * 4 * 2
+    }
+}
+
+/**
+ * A size-bounded checkout pool: [take] removes what it hands out, [give]
+ * puts it back as the most recently used, and the least recently given go
+ * first once [budget] is passed. One entry per key — giving a second value
+ * under a key replaces the first. Not thread-safe; see [StickerDrawables].
+ */
+internal class CheckoutPool<K : Any, V : Any>(
+    private val budget: Long,
+    private val sizeOf: (V) -> Long,
+) {
+    private val entries = LinkedHashMap<K, V>(16, 0.75f, true)
+    private var held = 0L
+
+    /** Estimated bytes held now — for the tests. */
+    val heldBytes: Long get() = held
+
+    /** How many values are held now — for the tests. */
+    val size: Int get() = entries.size
+
+    fun take(key: K): V? {
+        val value = entries.remove(key) ?: return null
+        held -= sizeOf(value)
+        return value
+    }
+
+    fun give(key: K, value: V) {
+        val size = sizeOf(value)
+        entries.remove(key)?.let { held -= sizeOf(it) }
+        // One value bigger than the whole budget is not kept at all: it
+        // would only push everything else out and then be evicted itself.
+        if (size > budget) return
+        entries[key] = value
+        held += size
+        val oldestFirst = entries.entries.iterator()
+        while (held > budget && oldestFirst.hasNext()) {
+            val eldest = oldestFirst.next()
+            held -= sizeOf(eldest.value)
+            oldestFirst.remove()
+        }
+    }
+
+    fun clear() {
+        entries.clear()
+        held = 0
+    }
+}
+
 /**
  * A [Painter] over a platform [Drawable] that may animate.
  *
@@ -332,10 +460,33 @@ private class DrawablePainter(
     private val drawable: Drawable,
     /** False: frame zero, never started — what "animations off" asks for. */
     private val animate: Boolean = true,
+    /**
+     * Whether to hold still for now (LocalMotionHold): read once when the
+     * painter comes on screen, and followed after that through [setHeld].
+     */
+    private val hold: State<Boolean>? = null,
 ) : Painter(), RememberObserver {
 
     private var tick by mutableIntStateOf(0)
     private val handler = Handler(Looper.getMainLooper())
+    private var onScreen = false
+    private var held = false
+
+    /**
+     * Hold the animation still, or let it run again. A held sticker STOPS:
+     * on a hardware canvas an AnimatedImageDrawable is advanced by the render
+     * thread itself, which keeps drawing the window for as long as one runs —
+     * not drawing it here would not be enough. It shows the frame it stopped
+     * on; started again, the platform may begin the loop from the top, which
+     * is the same thing a sticker scrolling back into view has always done.
+     */
+    fun setHeld(value: Boolean) {
+        if (held == value) return
+        held = value
+        if (!onScreen || !animate) return
+        val animatable = drawable as? Animatable ?: return
+        if (value) animatable.stop() else animatable.start()
+    }
 
     private val callback = object : Drawable.Callback {
         override fun invalidateDrawable(who: Drawable) {
@@ -368,9 +519,12 @@ private class DrawablePainter(
     }
 
     override fun onRemembered() {
+        onScreen = true
+        // Outside composition, so this read subscribes nothing.
+        held = hold?.value == true
         drawable.callback = callback
         drawable.setVisible(true, true)
-        if (animate) (drawable as? Animatable)?.start()
+        if (animate && !held) (drawable as? Animatable)?.start()
     }
 
     override fun onForgotten() = stop()
@@ -378,6 +532,7 @@ private class DrawablePainter(
     override fun onAbandoned() = stop()
 
     private fun stop() {
+        onScreen = false
         (drawable as? Animatable)?.stop()
         drawable.setVisible(false, false)
         drawable.callback = null

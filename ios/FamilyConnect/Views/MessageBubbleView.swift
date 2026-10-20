@@ -322,7 +322,6 @@ struct MessageBubbleView: View {
         // see everything anyway, so a context without the stores loses
         // defence in depth rather than the oracle itself.
         if let attachmentStore {
-            _ = attachmentStore.generation
             for attachment in message.attachments where !attachment.isFile {
                 _ = AttachmentView.image(for: attachment, in: attachmentStore)
             }
@@ -367,6 +366,14 @@ struct MessageBubbleView: View {
     static let captionFloor: CGFloat = 240
 
     var body: some View {
+        // Decided ONCE per pass, outside the geometry hook below. The hook's
+        // transform runs on every scrolled frame for every bubble in the
+        // window, and it used to parse the body for a link
+        // (`previewableLink`) each time — the whole window re-detecting
+        // links sixty times a second while the reader scrolled. Now the
+        // closure tests a captured Bool, and once the bubble has been seen
+        // (or has no link to preview) it is a constant `false`.
+        let watchesVisibility = !hasBeenVisible && previewableLink != nil
         HStack(alignment: .bottom, spacing: 0) {
             if isMine { Spacer(minLength: 48) }
 
@@ -448,7 +455,7 @@ struct MessageBubbleView: View {
         // viewport — geometry, not onAppear, because in this non-lazy
         // window every row "appears" at creation.
         .onGeometryChange(for: Bool.self) { geometry in
-            guard previewableLink != nil, let viewport = geometry.bounds(of: .scrollView) else {
+            guard watchesVisibility, let viewport = geometry.bounds(of: .scrollView) else {
                 return false
             }
             let frame = geometry.frame(in: .scrollView)
@@ -1303,6 +1310,54 @@ private struct DoubleCheckmark: View {
         }
         .font(.caption2)
         .padding(.trailing, 4)
+    }
+}
+
+// MARK: - Skipping an unchanged bubble
+
+/// Lets the thread skip a bubble whose inputs did not change (`.equatable()`
+/// in ConversationView.bubbleRow).
+///
+/// EVERY INPUT THAT IS NOT A CLOSURE IS COMPARED, and adding one without
+/// adding it here is a bubble that stops updating — so this list is the
+/// struct's own list, in its order. The closures are left out because
+/// they cannot be compared and need not be: the thread builds them from
+/// the message (compared) and from its own state, which they read through
+/// SwiftUI's storage at the moment they run. The one closure whose PRESENCE
+/// changes what is drawn — the call record's "call back" — is compared by
+/// whether it is there.
+///
+/// Internal state — the reaction popover, a pending link tap, whether the
+/// bubble has been seen — is not an input and is untouched by this: SwiftUI
+/// skips the body only when the PARENT re-renders with equal inputs, never
+/// when the bubble's own state or the stores it observes change.
+extension MessageBubbleView: Equatable {
+    static func == (lhs: MessageBubbleView, rhs: MessageBubbleView) -> Bool {
+        lhs.message == rhs.message
+            && lhs.isMine == rhs.isMine
+            && lhs.isStreaming == rhs.isStreaming
+            && lhs.assistantFailure == rhs.assistantFailure
+            && lhs.showsSenderName == rhs.showsSenderName
+            && lhs.senderName == rhs.senderName
+            && lhs.senderID == rhs.senderID
+            && lhs.senderAvatarVersion == rhs.senderAvatarVersion
+            && lhs.isRunStart == rhs.isRunStart
+            && lhs.isRunEnd == rhs.isRunEnd
+            && lhs.isRead == rhs.isRead
+            && lhs.reactionChips == rhs.reactionChips
+            && lhs.reactionDetails == rhs.reactionDetails
+            && lhs.avatarVersions == rhs.avatarVersions
+            && lhs.memberNames == rhs.memberNames
+            && lhs.currentUserID == rhs.currentUserID
+            && lhs.replyCount == rhs.replyCount
+            && lhs.memberCount == rhs.memberCount
+            && (lhs.onCallBack == nil) == (rhs.onCallBack == nil)
+            && lhs.publishesAnchor == rhs.publishesAnchor
+            && lhs.blockedUserIDs == rhs.blockedUserIDs
+            && lhs.isHiddenByBlock == rhs.isHiddenByBlock
+            && lhs.isRevealed == rhs.isRevealed
+            && lhs.isReplyQuoteRevealed == rhs.isReplyQuoteRevealed
+            && lhs.isParentQuoteRevealed == rhs.isParentQuoteRevealed
     }
 }
 

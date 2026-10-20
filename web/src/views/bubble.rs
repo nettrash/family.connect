@@ -4,6 +4,7 @@
 //! (docs/protocol.md, "Threads"; ios MacViews/MacMessageRow.swift).
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use fc_text::i18n::{t, tn};
 use yew::prelude::*;
@@ -115,8 +116,11 @@ impl Transcription {
 pub struct BubbleProps {
     pub message: Message,
     pub my_user_id: i64,
-    pub names: HashMap<i64, String>,
-    pub blocked: HashSet<i64>,
+    /// Shared, like `blocked` and `member_ids`: the same for every bubble in
+    /// a chat, so a chat hands every one of them the same `Rc` — nothing
+    /// copied per row, and "unchanged" seen by the pointer.
+    pub names: Rc<HashMap<i64, String>>,
+    pub blocked: Rc<HashSet<i64>>,
     /// Drawn hidden — a blocked sender, not yet revealed.
     pub hidden: bool,
     /// The quote, and the parent under it, peeked at — each level its own
@@ -170,7 +174,7 @@ pub struct BubbleProps {
     /// The live roster's size, for a poll's "N of M voted".
     pub member_count: usize,
     /// The live roster — who a mention may open a chat with.
-    pub member_ids: HashSet<i64>,
+    pub member_ids: Rc<HashSet<i64>>,
     pub on_action: Callback<Action>,
     /// Asked to reply to this message, or to edit it — the composer's
     /// business, so the bubble only says so.
@@ -210,6 +214,12 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let loader = use_context::<crate::media::MediaLoader>();
     let picker_open = use_state(|| false);
     let reactors_open = use_state(|| false);
+    // A mention's click, made once per `on_action`: a fresh one each draw
+    // drew the body again — its markdown parsed, its links found — for a
+    // bubble whose words had not changed.
+    let open_direct = use_callback(props.on_action.clone(), |user_id: i64, on_action| {
+        on_action.emit(Action::OpenDirect { user_id })
+    });
 
     let message = &props.message;
     let me = props.my_user_id;
@@ -869,8 +879,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
                         text={message.body.clone()}
                         mentions={message.mentions().to_vec()}
                         my_user_id={me}
-                        member_ids={props.member_ids.clone()}
-                        on_open_direct={props.on_action.reform(|user_id| Action::OpenDirect { user_id })}
+                        member_ids={(*props.member_ids).clone()}
+                        on_open_direct={open_direct}
                     />
                 }
                 if let Some(failure) = props.ai_failed {
@@ -938,8 +948,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     message={message.clone()}
                     my_user_id={me}
                     member_count={props.member_count}
-                    names={props.names.clone()}
-                    blocked={props.blocked.clone()}
+                    names={(*props.names).clone()}
+                    blocked={(*props.blocked).clone()}
                     on_vote={props.on_action.reform(move |option_id| Action::Vote { chat_id, message_id: id, option_id })}
                     on_unvote={props.on_action.reform(move |_| Action::Unvote { chat_id, message_id: id })}
                     on_close={props.on_action.reform(move |_| Action::ClosePoll { chat_id, message_id: id })}
@@ -1022,8 +1032,8 @@ mod tests {
             my_user_id: ME,
             calls_enabled: false,
             video_calls_enabled: false,
-            names: HashMap::from([(ANNA, "Anna".to_string())]),
-            blocked: HashSet::new(),
+            names: Rc::new(HashMap::from([(ANNA, "Anna".to_string())])),
+            blocked: Rc::new(HashSet::new()),
             hidden: false,
             quote_revealed: false,
             parent_revealed: false,
@@ -1041,7 +1051,7 @@ mod tests {
             in_thread: false,
             can_reply: true,
             member_count: 3,
-            member_ids: HashSet::from([ANNA]),
+            member_ids: Rc::new(HashSet::from([ANNA])),
             on_action: Callback::from(move |action: Action| actions.borrow_mut().push(action)),
             on_reply: Callback::noop(),
             on_edit: Callback::noop(),
@@ -1442,7 +1452,7 @@ mod tests {
         let reported = Rc::new(RefCell::new(Vec::new()));
         let mut hidden = props(message(101, ANNA, "something unkind"), actions.clone());
         hidden.hidden = true;
-        hidden.blocked = HashSet::from([ANNA]);
+        hidden.blocked = Rc::new(HashSet::from([ANNA]));
         hidden.on_report = {
             let reported = reported.clone();
             Callback::from(move |target: (i64, Option<i64>)| reported.borrow_mut().push(target))
@@ -1550,7 +1560,7 @@ mod tests {
             }),
         });
         let mut quoted = props(reply, actions.clone());
-        quoted.blocked = HashSet::from([ANNA]);
+        quoted.blocked = Rc::new(HashSet::from([ANNA]));
         let (root, handle) = render(quoted.clone_for_test()).await;
         assert!(!text(&root).contains("the quote") && !text(&root).contains("the parent"));
         click_text(&root, ".quote button", "Replying to a hidden message");

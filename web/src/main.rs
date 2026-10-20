@@ -127,11 +127,12 @@ fn app() -> Html {
     };
 
     // Signing out, from anywhere: a 401 and the button do the same thing.
+    // Made once: everything it holds is held for the app's life.
     let sign_out = {
         let live = live.clone();
         let media = media.clone();
         let calls = calls.clone();
-        Callback::from(move |revoke: bool| {
+        use_callback((), move |revoke: bool, _| {
             // A call does not outlive the session it was placed in, and the
             // other side is owed the reason rather than a silence.
             calls.end();
@@ -331,15 +332,29 @@ fn app() -> Html {
         });
     }
 
-    let on_action = Actions {
-        live: live.clone(),
-        channels: channels.clone(),
-        sign_out: sign_out.clone(),
-        last_typing,
-        media: media.clone(),
-        calls: calls.clone(),
-    }
-    .callback();
+    // ONE callback for the app's life — everything `Actions` holds is held
+    // for it. Made afresh on every draw, it was a new prop for every pane
+    // and every bubble on every draw of the app, which is after every
+    // change to the state: nothing below could ever be left as it was.
+    let on_action = {
+        let live = live.clone();
+        let channels = channels.clone();
+        let sign_out = sign_out.clone();
+        let media = media.clone();
+        let calls = calls.clone();
+        (*use_memo((), move |_| {
+            Actions {
+                live,
+                channels,
+                sign_out,
+                last_typing,
+                media,
+                calls,
+            }
+            .callback()
+        }))
+        .clone()
+    };
 
     // The board, while it is the pane in front: shown whenever what it
     // shows changes — a note arriving, a note rewritten; never a drag, which
@@ -361,7 +376,15 @@ fn app() -> Html {
     }
 
     let now = sync::wall_ms();
-    let state = live.read(|state| state.clone());
+    // To the minute, for what reads the clock by the day (the day pills):
+    // a day starts on a minute, and a prop that changes on every draw is a
+    // pane drawn again on every draw.
+    let now_minute = (now / 60_000.0).floor() as i64;
+    // The state is LOOKED AT for this draw, not copied: everything below
+    // only reads it, and nothing here changes it — a change goes through
+    // `Live`, from a callback or a task, never from a draw. A copy took
+    // every chat's every message, the board, the outbox… on every draw.
+    let state = live.borrow();
     let store = &state.store;
     let sign_out_click = {
         let confirming = confirming_sign_out.clone();
@@ -639,7 +662,7 @@ fn app() -> Html {
                         blocked={store.blocked.clone()}
                         revealed={store.board.revealed.clone()}
                         pinning={store.board.pinning}
-                        now_minute={(now / 60_000.0).floor() as i64}
+                        {now_minute}
                         on_action={on_action.clone()}
                     />
                 } else if let Some(item) = open_item {
@@ -676,7 +699,7 @@ fn app() -> Html {
                         agreed_to_assistant={store.assistant_consent_at().is_some()}
                         transcripts={store.transcripts.clone()}
                         on_action={on_action.clone()}
-                        now_ms={now}
+                        now_ms={now_minute as f64 * 60_000.0}
                         round={store.round}
                         item={item.clone()}
                     />

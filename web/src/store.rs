@@ -8,6 +8,7 @@
 
 use fc_text::i18n::t;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::model::{
     AiFailure, Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction,
@@ -60,11 +61,67 @@ pub enum Via {
     Pending,
 }
 
+/// A thread's messages, SHARED: cloning them is a reference count, not a
+/// copy of every message.
+///
+/// The whole app is drawn again after every change (live.rs), and every
+/// draw used to take a deep copy of every chat's every message — the state
+/// itself, then the open chat's list again for its pane — so a chat that had
+/// gathered a few hundred messages made every typing frame, every catch-up
+/// page and every tick of a presence change cost a few hundred message
+/// copies, twice. Shared, a draw hands the pane the very list the store
+/// holds; the pane can tell "nothing changed" by the pointer alone; and the
+/// store copies a list only when it changes one that a pane is still
+/// holding (`make_mut`, copy-on-write) — once per change, not once per draw.
+///
+/// Reads go through `Deref` to the `Vec`, so everything that only looks —
+/// `len`, `iter`, indexing, `as_slice` — reads exactly as it did.
+#[derive(Debug, Default, Clone)]
+pub struct Messages(Rc<Vec<Message>>);
+
+impl Messages {
+    /// The list to change. A copy only when a draw still holds this one.
+    pub fn make_mut(&mut self) -> &mut Vec<Message> {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
+impl std::ops::Deref for Messages {
+    type Target = Vec<Message>;
+
+    fn deref(&self) -> &Vec<Message> {
+        &self.0
+    }
+}
+
+impl From<Vec<Message>> for Messages {
+    fn from(messages: Vec<Message>) -> Self {
+        Messages(Rc::new(messages))
+    }
+}
+
+/// The same list is equal without looking at a single message — the answer
+/// a pane asks for on every draw — and two different lists are compared the
+/// way two `Vec`s are (a `Message` is not `Eq`, so `Rc`'s own `==` would
+/// always look).
+impl PartialEq for Messages {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+
 /// One chat's messages, oldest first — which is the order they are drawn in
 /// and NOT the order `before_id` pages arrive in.
+///
+/// Held IN that order at all times — numbered rows by id, then the pending
+/// rows (id 0) in the order they were written — so a message is found by a
+/// binary search and goes in where it belongs, rather than every arrival
+/// searching the whole list and sorting it again: a catch-up of five hundred
+/// messages into a chat holding five hundred was a quarter of a million
+/// comparisons and five hundred sorts.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Thread {
-    pub messages: Vec<Message>,
+    pub messages: Messages,
     /// The oldest id held, which is what the next history page asks before.
     /// None when nothing is held.
     pub oldest: Option<i64>,
@@ -134,26 +191,41 @@ impl Thread {
     /// ID; a pending row that has none yet is matched by `client_msg_id`,
     /// which is what turns the optimistic bubble into the real one instead
     /// of leaving two.
+    ///
+    /// The order it leaves is the one a stable sort by id (pending rows
+    /// last) would: `resort`, which this used to call after every arrival,
+    /// is kept as the reference the tests hold it to.
     pub fn apply(&mut self, incoming: Message) -> Arrival {
         if incoming.id != 0 {
-            if let Some(held) = self.messages.iter_mut().find(|held| held.id == incoming.id) {
-                merge(held, incoming);
+            if let Some(index) = self.index_of(incoming.id) {
+                merge(&mut self.messages.make_mut()[index], incoming);
                 return Arrival::Known;
             }
         }
         if let Some(client_msg_id) = incoming.client_msg_id.as_deref() {
-            if let Some(pending) = self
-                .messages
-                .iter_mut()
-                .find(|held| held.id == 0 && held.client_msg_id.as_deref() == Some(client_msg_id))
+            // Pending rows are the tail, after every numbered one.
+            let pending_from = self.numbered();
+            if let Some(offset) = self.messages[pending_from..]
+                .iter()
+                .position(|held| held.client_msg_id.as_deref() == Some(client_msg_id))
             {
                 let arrival = if incoming.id == 0 {
                     Arrival::Known
                 } else {
                     Arrival::New
                 };
-                *pending = incoming;
-                self.resort();
+                let messages = self.messages.make_mut();
+                if incoming.id == 0 {
+                    // Still pending: it keeps its place among the pending.
+                    messages[pending_from + offset] = incoming;
+                } else {
+                    // Numbered now: out of the pending tail, into the
+                    // numbered rows where its id puts it.
+                    messages.remove(pending_from + offset);
+                    let at = insertion_point(messages, incoming.id);
+                    messages.insert(at, incoming);
+                }
+                self.oldest = self.oldest_numbered();
                 return arrival;
             }
         }
@@ -162,15 +234,24 @@ impl Thread {
         } else {
             Arrival::New
         };
-        self.messages.push(incoming);
-        self.resort();
+        let messages = self.messages.make_mut();
+        if incoming.id == 0 {
+            // The newest pending row: last of all.
+            messages.push(incoming);
+        } else {
+            let at = insertion_point(messages, incoming.id);
+            messages.insert(at, incoming);
+        }
+        self.oldest = self.oldest_numbered();
         arrival
     }
 
     /// Oldest first, with pending rows (id 0) after everything the server
     /// has numbered — they were written last, whatever id they end up with.
+    /// The order `apply` keeps; only the tests sort any more, to check it.
+    #[cfg(test)]
     fn resort(&mut self) {
-        self.messages.sort_by_key(|message| {
+        self.messages.make_mut().sort_by_key(|message| {
             if message.id == 0 {
                 i64::MAX
             } else {
@@ -185,27 +266,55 @@ impl Thread {
             .min();
     }
 
+    /// How many rows the server has numbered — where the pending tail
+    /// starts.
+    fn numbered(&self) -> usize {
+        self.messages.partition_point(|message| message.id != 0)
+    }
+
+    fn oldest_numbered(&self) -> Option<i64> {
+        self.messages
+            .first()
+            .map(|message| message.id)
+            .filter(|id| *id != 0)
+    }
+
+    /// Where the numbered row `id` is held, by binary search.
+    fn index_of(&self, id: i64) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        let at = insertion_point(&self.messages, id);
+        (self.messages.get(at).map(|message| message.id) == Some(id)).then_some(at)
+    }
+
     /// The newest id the server has numbered — the read marker to report,
     /// and the cursor a catch-up asks after.
     pub fn newest_server_id(&self) -> Option<i64> {
         self.messages
             .iter()
+            .rev()
             .map(|message| message.id)
-            .filter(|id| *id != 0)
-            .max()
+            .find(|id| *id != 0)
     }
 
     pub fn get(&self, id: i64) -> Option<&Message> {
-        self.messages
-            .iter()
-            .find(|message| message.id == id && id != 0)
+        self.index_of(id).map(|index| &self.messages[index])
     }
 
-    fn get_mut(&mut self, id: i64) -> Option<&mut Message> {
-        self.messages
-            .iter_mut()
-            .find(|message| message.id == id && id != 0)
+    /// The numbered row `id`, to change — the list copied first if a draw
+    /// still holds it (`Messages::make_mut`), and only when it is here.
+    pub fn get_mut(&mut self, id: i64) -> Option<&mut Message> {
+        let index = self.index_of(id)?;
+        Some(&mut self.messages.make_mut()[index])
     }
+}
+
+/// Where a numbered row with `id` goes among `messages` — held oldest first
+/// with the pending rows last: after every numbered row below it, and before
+/// everything else.
+pub fn insertion_point(messages: &[Message], id: i64) -> usize {
+    messages.partition_point(|held| held.id != 0 && held.id < id)
 }
 
 /// A message this device wrote that the server has not confirmed yet.
@@ -1183,7 +1292,21 @@ impl Store {
         let Some(body) = body else { return };
         let recut = excerpt(&body);
         let requote = |thread: &mut Thread| {
-            for quoting in thread.messages.iter_mut() {
+            // Looked for first: a list a pane still holds is copied by the
+            // first change to it, and an edit nobody quoted changes none.
+            let quotes_it = |message: &Message| {
+                message.reply_to.as_ref().is_some_and(|quote| {
+                    quote.message_id == id
+                        || quote
+                            .parent
+                            .as_ref()
+                            .is_some_and(|parent| parent.message_id == id)
+                })
+            };
+            if !thread.messages.iter().any(quotes_it) {
+                return;
+            }
+            for quoting in thread.messages.make_mut().iter_mut() {
                 if let Some(quote) = quoting.reply_to.as_mut() {
                     if quote.message_id == id {
                         quote.excerpt = recut.clone();
@@ -1655,7 +1778,7 @@ impl Store {
         let Some(thread) = self.threads.get_mut(&row.chat_id) else {
             return;
         };
-        thread.messages.retain(|message| !is_it(message));
+        thread.messages.make_mut().retain(|message| !is_it(message));
         // The list's preview was this bubble; it goes back to what the
         // thread now ends with.
         let newest = thread.messages.last().cloned();
@@ -1918,6 +2041,139 @@ mod tests {
             created_at: "2026-08-19T17:04:00Z".into(),
             ..Message::default()
         }
+    }
+
+    /// `Thread::apply` as it was before it kept the order itself: a search
+    /// of every row, then a sort of every row — the reference the binary
+    /// search and the insert are held to.
+    fn apply_by_sorting(thread: &mut Thread, incoming: Message) -> Arrival {
+        if incoming.id != 0 {
+            if let Some(held) = thread
+                .messages
+                .make_mut()
+                .iter_mut()
+                .find(|held| held.id == incoming.id)
+            {
+                merge(held, incoming);
+                return Arrival::Known;
+            }
+        }
+        if let Some(client_msg_id) = incoming.client_msg_id.clone() {
+            if let Some(pending) = thread.messages.make_mut().iter_mut().find(|held| {
+                held.id == 0 && held.client_msg_id.as_deref() == Some(client_msg_id.as_str())
+            }) {
+                let arrival = if incoming.id == 0 {
+                    Arrival::Known
+                } else {
+                    Arrival::New
+                };
+                *pending = incoming;
+                thread.resort();
+                return arrival;
+            }
+        }
+        let arrival = if incoming.id == 0 {
+            Arrival::Known
+        } else {
+            Arrival::New
+        };
+        thread.messages.make_mut().push(incoming);
+        thread.resort();
+        arrival
+    }
+
+    /// Every kind of arrival, in an order nobody would choose: history and
+    /// frames out of order, copies of what is held (an older edit and a
+    /// newer one), pending bubbles written, written again, and numbered —
+    /// some of them only after the server's copy of a LATER message.
+    /// Whatever arrives, the thread ends up exactly as searching and
+    /// sorting after every arrival left it.
+    #[wasm_bindgen_test]
+    fn a_thread_keeps_the_order_a_sort_after_every_arrival_would() {
+        let mut seed: u64 = 0x5eed;
+        let mut next = |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        let mut kept = Thread::default();
+        let mut sorted = Thread::default();
+        for step in 0..600 {
+            let incoming = match next(6) {
+                // A numbered message, often one already held.
+                0..=2 => {
+                    let id = 1 + next(150) as i64;
+                    let mut message = message(id, ANNA, &format!("copy {step} of {id}"));
+                    message.edit_seq = Some(next(4) as i64);
+                    message
+                }
+                // A bubble of mine, maybe one already pending.
+                3 => pending(&format!("c{}", next(40)), &format!("draft {step}")),
+                // The server's copy of one of my bubbles.
+                _ => {
+                    let mut numbered = pending(&format!("c{}", next(40)), "sent");
+                    numbered.id = 1 + next(150) as i64;
+                    numbered
+                }
+            };
+            assert_eq!(
+                kept.apply(incoming.clone()),
+                apply_by_sorting(&mut sorted, incoming),
+                "the same answer at step {step}"
+            );
+            assert_eq!(kept, sorted, "the same thread after step {step}");
+        }
+        assert!(kept.messages.len() > 100, "the walk built a real thread");
+        assert!(kept.messages.iter().any(|message| message.id == 0));
+        assert_eq!(kept.oldest, sorted.oldest);
+        assert_eq!(kept.newest_server_id(), sorted.newest_server_id());
+        for id in 0..160 {
+            assert_eq!(
+                kept.get(id).map(|message| &message.body),
+                sorted
+                    .messages
+                    .iter()
+                    .find(|message| message.id == id && id != 0)
+                    .map(|message| &message.body),
+                "row {id} found by the binary search"
+            );
+        }
+    }
+
+    /// A draw holds the very list the store holds — equal by the pointer,
+    /// without a message compared — and the store's next change to it
+    /// copies it, leaving the draw's copy as it was.
+    #[wasm_bindgen_test]
+    fn a_threads_messages_are_shared_until_they_change() {
+        let mut thread = Thread::default();
+        thread.apply(message(1, ANNA, "one"));
+        let drawn = thread.messages.clone();
+        assert!(
+            Rc::ptr_eq(&drawn.0, &thread.messages.0),
+            "shared, not copied"
+        );
+        assert_eq!(drawn, thread.messages);
+
+        thread.apply(message(2, ANNA, "two"));
+        assert_eq!(drawn.len(), 1, "what was drawn is left as it was");
+        assert_eq!(thread.messages.len(), 2);
+        assert_ne!(drawn, thread.messages);
+
+        // Two separate lists holding the same messages are still equal.
+        let copy = Messages::from(thread.messages.to_vec());
+        assert!(!Rc::ptr_eq(&copy.0, &thread.messages.0));
+        assert_eq!(copy, thread.messages);
+
+        // An edit changes the store's list and not the one being drawn.
+        let mut store = store();
+        store.threads.insert(42, thread);
+        let before = store.threads[&42].messages.clone();
+        let mut edited = message(1, ANNA, "one, edited");
+        edited.edit_seq = Some(1);
+        store.apply_edit(edited);
+        assert_eq!(store.threads[&42].messages[0].body, "one, edited");
+        assert_eq!(before[0].body, "one", "the draw's list is untouched");
     }
 
     fn chat(id: i64, kind: &str) -> ChatListItem {

@@ -338,7 +338,7 @@ pub(crate) fn props_with(
             max_poll_seq: None,
             mentioned: false,
         },
-        messages,
+        messages: messages.into(),
         my_user_id: 7,
         names: Default::default(),
         members: Vec::new(),
@@ -595,6 +595,169 @@ async fn earlier_messages_arrive_above_without_moving_the_reader() {
     assert!(
         now.contains(menus.item(0).as_ref()),
         "the open menu is still on {id}"
+    );
+
+    handle.destroy();
+    root.remove();
+}
+
+fn drawn_rows(messages: &Element) -> u32 {
+    messages
+        .query_selector_all("article")
+        .expect("a valid selector")
+        .length()
+}
+
+/// A LONG chat is drawn a window at a time (timeline::Window): its newest
+/// rows when it opens, and more of them as the reader scrolls up to them —
+/// with what they were reading left exactly where it was, and no "Earlier
+/// messages" until the rows held above are all drawn.
+#[wasm_bindgen_test]
+async fn a_long_chat_draws_its_newest_rows_and_more_as_the_reader_scrolls_up() {
+    use crate::timeline::{WINDOW, WINDOW_STEP};
+    let root = pane();
+    let mut long = props(500);
+    long.can_load_more = true;
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), long).render();
+    TimeoutFuture::new(50).await;
+    let messages = query(&root, ".messages");
+    assert_eq!(drawn_rows(&messages), WINDOW as u32, "the newest window");
+    assert!(is_at_newest(&messages), "opened at the newest");
+    assert!(document().get_element_by_id("m-500").is_some());
+    assert!(document().get_element_by_id("m-400").is_none());
+    assert!(
+        root.query_selector(".load-more").unwrap().is_none(),
+        "rows are held above the window: those first"
+    );
+
+    let first = document().get_element_by_id("m-401").expect("the top row");
+    // The scroll event is handled as it is dispatched; the rows it asks for
+    // are drawn after — so this is where the row was before they were.
+    scroll_to(&messages, 0);
+    let was = first.get_bounding_client_rect().top();
+    TimeoutFuture::new(50).await;
+    assert_eq!(
+        drawn_rows(&messages),
+        (WINDOW + WINDOW_STEP) as u32,
+        "scrolling up drew more"
+    );
+    assert!(document().get_element_by_id("m-351").is_some());
+    let now = document().get_element_by_id("m-401").expect("still drawn");
+    assert!(
+        (now.get_bounding_client_rect().top() - was).abs() < 2.0,
+        "the row being read stayed put: {was} then {}",
+        now.get_bounding_client_rect().top()
+    );
+    assert!(
+        messages.scroll_top() > 0,
+        "the reader is where they were, not at the new top"
+    );
+
+    handle.destroy();
+    root.remove();
+}
+
+/// A chat opening at a divider far above the newest — well outside the
+/// newest window — still opens AT it: the window is taken up to the divider
+/// before the opening scrolls there.
+#[wasm_bindgen_test]
+async fn a_long_chat_opens_at_a_divider_above_its_newest_window() {
+    let root = pane();
+    let (log, on_action) = recorder();
+    let loading = props_with((1..=500).map(message).collect(), None, on_action.clone());
+    let mut handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), loading).render();
+    TimeoutFuture::new(50).await;
+    // 125 unread from Anna (the odd ids), counted back from the newest with
+    // no marker: the first of them is 251, 250 rows up.
+    handle.update(props_with(
+        (1..=500).map(message).collect(),
+        Some(Opening {
+            chat_id: 42,
+            unread_count: 125,
+            last_read_message_id: 0,
+        }),
+        on_action,
+    ));
+    TimeoutFuture::new(50).await;
+    let divider = query(&root, "#unread-divider");
+    assert_eq!(
+        divider.text_content().unwrap_or_default().trim(),
+        "125 new messages"
+    );
+    assert_eq!(
+        divider
+            .next_element_sibling()
+            .and_then(|row| row.query_selector("article").ok().flatten())
+            .map(|bubble| bubble.id()),
+        Some("m-251".to_string())
+    );
+    let messages = query(&root, ".messages");
+    let list_top = messages.get_bounding_client_rect().top();
+    let at = divider.get_bounding_client_rect().top();
+    assert!(
+        (at - list_top).abs() < 40.0,
+        "opened with the divider at the top: {at} against {list_top}"
+    );
+    assert_eq!(at_newest_said(&log), vec![false], "opened at the divider");
+
+    handle.destroy();
+    root.remove();
+}
+
+/// A quote whose message is held but above the window is still a way to
+/// it: the window is taken up to the quoted message, which is shown and
+/// tinted.
+#[wasm_bindgen_test]
+async fn a_quote_reaches_a_message_above_the_window() {
+    let root = pane();
+    let mut held: Vec<Message> = (1..=500).map(message).collect();
+    held[499].reply_to = Some(crate::model::ReplyTo {
+        message_id: 50,
+        sender_id: 9,
+        excerpt: "Message number 50".into(),
+        parent: None,
+    });
+    let handle = yew::Renderer::<Conversation>::with_root_and_props(
+        root.clone().into(),
+        props_with(
+            held,
+            Some(Opening {
+                chat_id: 42,
+                unread_count: 0,
+                last_read_message_id: 500,
+            }),
+            Callback::noop(),
+        ),
+    )
+    .render();
+    TimeoutFuture::new(50).await;
+    assert!(
+        document().get_element_by_id("m-50").is_none(),
+        "not drawn yet"
+    );
+    let newest = document().get_element_by_id("m-500").expect("the reply");
+    query(&newest, ".quote").dyn_into_html().click();
+    TimeoutFuture::new(80).await;
+    let target = document()
+        .get_element_by_id("m-50")
+        .expect("drawn for the jump");
+    let messages = query(&root, ".messages");
+    let list = messages.get_bounding_client_rect();
+    let shown = target.get_bounding_client_rect();
+    assert!(
+        shown.top() >= list.top() - 1.0 && shown.top() < list.bottom(),
+        "message 50 is on screen: {} in {}..{}",
+        shown.top(),
+        list.top(),
+        list.bottom()
+    );
+    assert!(
+        target
+            .parent_element()
+            .is_some_and(|row| row.class_list().contains("is-highlighted")),
+        "and tinted"
     );
 
     handle.destroy();
@@ -934,7 +1097,7 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
     let props = ThreadPanelProps {
         chat_id: 42,
         root_id: 10,
-        messages: vec![photo_root],
+        messages: vec![photo_root].into(),
         my_user_id: 7,
         is_family_chat: true,
         is_ai_chat: false,
@@ -1975,7 +2138,7 @@ async fn a_thread_sends_a_sticker_to_its_root() {
                 <ThreadPanel
                     chat_id={42}
                     root_id={1}
-                    messages={vec![message(1), message(2)]}
+                    messages={crate::store::Messages::from(vec![message(1), message(2)])}
                     my_user_id={7}
                     is_family_chat={!is_ai_chat}
                     {is_ai_chat}

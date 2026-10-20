@@ -70,6 +70,7 @@ public class CacheConcurrencyTests : IDisposable
         ["chats.Replace(rows)"] = () => chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]),
         ["chats.Chats"] = () => chats.Chats(),
         ["chats.Chat"] = () => chats.Chat(42),
+        ["chats.Kind"] = () => chats.Kind(42),
         ["chats.IsListed"] = () => chats.IsListed(42),
         ["chats.Unread"] = () => chats.Unread(),
         ["chats.MarkRead"] = () => chats.MarkRead(42, 1),
@@ -149,7 +150,7 @@ public class CacheConcurrencyTests : IDisposable
 
     private static readonly string[] Names =
     [
-        "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.IsListed", "chats.Unread",
+        "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.Kind", "chats.IsListed", "chats.Unread",
         "chats.MarkRead", "chats.Advance", "chats.Apply(message)", "chats.Apply(page)",
         "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread", "chats.Refresh", "chats.Polls",
         "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.FlagRepairCandidates", "chats.SettleFlags", "chats.RepairMedia", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",

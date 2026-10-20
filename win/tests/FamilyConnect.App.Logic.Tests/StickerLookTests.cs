@@ -125,6 +125,32 @@ public class StickerLookTests
         Assert.Equal(1, StickerAnimation.FrameAt([0, 0], 1));
     }
 
+    /// <summary>
+    /// The timer waits for the next frame that is due — not a fixed thirtieth of a second — and never past the end of the frame
+    /// that is up, so no frame is drawn later than it was.
+    /// </summary>
+    [Fact]
+    public void TheTimerWaitsForTheNextFrameThatIsDue()
+    {
+        int[] clock = [100, 200, 50];
+        Assert.Equal(100, StickerAnimation.UntilNext(clock, 0));
+        Assert.Equal(40, StickerAnimation.UntilNext(clock, 60));
+        Assert.Equal(200, StickerAnimation.UntilNext(clock, 100));
+        Assert.Equal(1, StickerAnimation.UntilNext(clock, 299));
+        Assert.Equal(50, StickerAnimation.UntilNext(clock, 300));
+        // It loops, as the frames do.
+        Assert.Equal(100, StickerAnimation.UntilNext(clock, 350));
+        Assert.Equal(StickerAnimation.FrameAt(clock, 350 + 99), StickerAnimation.FrameAt(clock, 350));
+        Assert.NotEqual(StickerAnimation.FrameAt(clock, 350 + 100), StickerAnimation.FrameAt(clock, 350));
+        Assert.Equal(long.MaxValue, StickerAnimation.UntilNext([], 10));
+        Assert.Equal(1, StickerAnimation.UntilNext([0, 0], 0));
+
+        // Never faster than the thirty a second it always moved at, and never so slow an image that left is kept long.
+        Assert.Equal(StickerAnimation.FastestTickMs, StickerAnimation.TickAfter(1));
+        Assert.Equal(100, StickerAnimation.TickAfter(100));
+        Assert.Equal(StickerAnimation.SlowestTickMs, StickerAnimation.TickAfter(long.MaxValue));
+    }
+
     // ---- the shelf: what a view keeps decoded, and what that may cost ------------------------------
     //
     // No window in any of this: a "picture" here is a name, and whether it is on screen is a set.
@@ -164,6 +190,30 @@ public class StickerLookTests
         Assert.True(shelf.TryGet(40, out var newest));
         Assert.Equal("s40", newest);
         Assert.False(shelf.TryGet(1, out _));
+    }
+
+    /// <summary>
+    /// Asking whether a sticker has an answer — what a redraw asks of every sticker row it might keep — is not drawing it: it
+    /// must not save that sticker from being the next to go. "Nothing decodes it" is an answer too.
+    /// </summary>
+    [Fact]
+    public void AskingWhetherAStickerIsHeldIsNotDrawingIt()
+    {
+        var wall = new Wall();
+        var shelf = wall.Shelf(budget: 100, most: 2);
+        shelf.Put(1, "a", 10);
+        shelf.Put(2, null, 0);
+        Assert.True(shelf.Holds(1));
+        Assert.True(shelf.Holds(2));
+        Assert.False(shelf.Holds(3));
+
+        // Asked about, not drawn: the oldest DRAWN is still 1, and it is the one that goes.
+        Assert.True(shelf.Holds(1));
+        shelf.Put(3, "c", 10);
+        Assert.False(shelf.Holds(1));
+        Assert.Equal(["a"], wall.LetGo);
+        Assert.True(shelf.Holds(2));
+        Assert.True(shelf.Holds(3));
     }
 
     /// <summary>The budget is two of the largest sticker allowed, so the newest always fits.</summary>

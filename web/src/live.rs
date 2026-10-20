@@ -119,6 +119,17 @@ impl Live {
         look(&self.state.borrow())
     }
 
+    /// The state, borrowed — for a draw, which reads it from top to bottom
+    /// and could not do so through `read` without being a closure.
+    ///
+    /// Held only for the length of a draw, and never across anything that
+    /// changes the state: `update` borrows it to write and would panic. A
+    /// draw cannot call `update` — callbacks and tasks run later, and the
+    /// redraw `update` asks for is scheduled, not run inside it.
+    pub fn borrow(&self) -> std::cell::Ref<'_, AppState> {
+        self.state.borrow()
+    }
+
     pub fn session(&self) -> u64 {
         self.state.borrow().session
     }
