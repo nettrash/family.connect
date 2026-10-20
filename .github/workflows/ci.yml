@@ -289,14 +289,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # JDK 25, NOT the 17 every other Android repo here uses:
-      # android/gradle/gradle-daemon-jvm.properties pins toolchainVersion=25
-      # and is committed. With JAVA_HOME on 17, Gradle satisfies that by
-      # downloading ~137 MB of Temurin 25 from api.foojay.io on every run --
-      # slow, and a hard third-party dependency for a self-hosted project.
+      # JetBrains' JDK 25, NOT the Temurin 17 every other Android repo here
+      # uses: android/gradle/gradle-daemon-jvm.properties pins
+      # toolchainVersion=25 AND toolchainVendor=JETBRAINS, and is committed.
+      # On any other JDK, Gradle satisfies that by downloading ~200 MB of
+      # JetBrains Runtime from api.foojay.io on every run -- slow, and a hard
+      # third-party dependency for a self-hosted project.
+      #
+      # The vendor pin (2026-10-20) exists for the developer's Mac, not CI:
+      # VS Code's Java extension keeps a Gradle daemon on its own stripped
+      # Temurin 25 JRE (no jlink), and with "any vendor 25" Android Studio
+      # reused it and AGP failed with "jlink executable ... does not exist".
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jetbrains
           java-version: '25'
 
       # The default branch (master) is 39 commits behind and effectively never
