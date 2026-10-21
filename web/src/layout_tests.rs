@@ -2453,10 +2453,11 @@ fn long_message(id: i64, sender_id: i64) -> Message {
     }
 }
 
-/// THE COLUMN (#106, 2.2): on a wide window the messages AND the composer
-/// are one column, min(pane − 32, 1024) wide and centred — the composer
-/// exactly as wide as the messages above it — and a bubble is at most
-/// min(column − 48, 560), where it was 78 % of whatever the pane was.
+/// THE COLUMN (#106, 2.2): on a wide window the messages are one column,
+/// min(pane − 32, 1024) wide and centred, and a bubble is at most
+/// min(column − 48, 560), where it was 78 % of whatever the pane was. The
+/// composer is NOT in it on the web (2026-10-21): it spans the pane with
+/// the 16 px margin it had before #106.
 #[wasm_bindgen_test]
 async fn the_column_and_its_bubbles_on_a_wide_window() {
     for width in [1920.0, 1440.0, 600.0] {
@@ -2474,17 +2475,17 @@ async fn the_column_and_its_bubbles_on_a_wide_window() {
         let column = (width - 32.0).min(1024.0);
         let side = (width - column) / 2.0;
 
-        // The composer: from the column's leading edge to its trailing one.
+        // The composer: the whole pane, 16 px in from either edge.
         let clip = rect_of(&root, ".composer .attach > .tool");
         let slot = rect_of(&root, ".composer .slot");
         assert!(
-            (clip.left() - pane.left() - side).abs() <= 1.0,
-            "{width}px: the paperclip at {} — the column starts at {side}",
+            (clip.left() - pane.left() - 16.0).abs() <= 1.0,
+            "{width}px: the paperclip at {} — the composer starts 16 px in",
             clip.left() - pane.left()
         );
         assert!(
-            (pane.right() - slot.right() - side).abs() <= 1.0,
-            "{width}px: the slot ends {} from the edge, not {side}",
+            (pane.right() - slot.right() - 16.0).abs() <= 1.0,
+            "{width}px: the slot ends {} from the edge, not 16",
             pane.right() - slot.right()
         );
 

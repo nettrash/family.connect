@@ -26,12 +26,18 @@
     --tint-soft: #dceafd;
     --shadow: 0 6px 18px rgb(20 24 40 / 16%);
     /* THE CONVERSATION COLUMN (#106, docs/composer-and-wide-layout-2026-10-20.md
-     * 2.2): the messages AND the composer are one column, min(pane − 32,
-     * 1024) wide and centred — this is the space either side of it. A
-     * percentage, so it is the pane's wherever it is used on a box as wide
-     * as the pane (the list, the composer's row, the strips between them);
-     * in a thread's narrow panel it is the 16 px it always was. */
+     * 2.2): the messages are one column, min(pane − 32, 1024) wide and
+     * centred — this is the space either side of it. A percentage, so it is
+     * the pane's wherever it is used on a box as wide as the pane (the list,
+     * the strips between it and the composer); in a thread's narrow panel it
+     * is the 16 px it always was. */
     --column-gutter: max(16px, calc((100% - 1024px) / 2));
+    /* THE COMPOSER is NOT in the column on the web (the owner's call,
+     * 2026-10-21, after living with #106): the row and everything stacked
+     * on it — notices, staged items, the not-sent rows, the @ list, the
+     * sticker panel, "… is typing" — span the whole pane with the 16 px
+     * margin they had before #106. The apps keep the column rule. */
+    --composer-gutter: 16px;
     /* A bubble is at most min(column − 48, 560): the 48 is the other side's
      * spacer, the 560 a readable line on a wide screen. */
     --bubble-max: min(calc(100% - 48px), 560px);
@@ -1120,7 +1126,7 @@ button.mention { cursor: pointer; }
     z-index: 5;
     bottom: 100%;
     /* Under the sticker button, at the field's trailing edge (#106). */
-    right: var(--column-gutter);
+    right: var(--composer-gutter);
     margin-bottom: 6px;
     width: min(348px, calc(100% - 32px));
     max-height: min(320px, 50vh);
@@ -1186,7 +1192,7 @@ button.pack-cell:disabled { cursor: default; }
 
 /* --- the composer --------------------------------------------------------- */
 
-.typing { flex: none; margin: 0 var(--column-gutter); color: var(--muted); font-size: 13px; }
+.typing { flex: none; margin: 0 var(--composer-gutter); color: var(--muted); font-size: 13px; }
 
 .composer-wrap { flex: none; border-top: 1px solid var(--line); background: var(--panel); position: relative; }
 /* Under the video recorder (#79, decision 41): not drawn at all — hidden,
@@ -1198,7 +1204,7 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: flex;
     gap: 8px;
-    padding: 12px var(--column-gutter);
+    padding: 12px var(--composer-gutter);
     align-items: flex-end;
 }
 
@@ -1287,22 +1293,22 @@ button.pack-cell:disabled { cursor: default; }
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px var(--column-gutter) 0;
+    padding: 6px var(--composer-gutter) 0;
     font-size: 13px;
     color: var(--muted);
 }
 .composer-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.composer-notice { padding: 4px var(--column-gutter) 0; font-size: 12px; color: var(--muted); }
-.picture-notice { margin: 0; padding: 6px var(--column-gutter) 0; font-size: 12px; color: var(--muted); }
-/* The consent notice heads the stack (#106, doc 2.4) and keeps the column's gutter like the notices under it — it
-   had none, so on a phone the ✋ touched the screen edge and on a wide window it sat outside the column. */
-.composer-wrap .consent-notice { margin: 0; padding: 6px var(--column-gutter) 0; }
+.composer-notice { padding: 4px var(--composer-gutter) 0; font-size: 12px; color: var(--muted); }
+.picture-notice { margin: 0; padding: 6px var(--composer-gutter) 0; font-size: 12px; color: var(--muted); }
+/* The consent notice heads the stack (#106, doc 2.4) and keeps the composer's gutter like the notices under it — it
+   had none, so on a phone the ✋ touched the screen edge. */
+.composer-wrap .consent-notice { margin: 0; padding: 6px var(--composer-gutter) 0; }
 
 /* The media notices, the staged strip and the voice messages not sent are
  * drawn inside the composer, in the order of #106 (doc 2.4), and like the
  * row never scroll away. */
-.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px var(--column-gutter); border-top: 1px solid var(--line); background: var(--panel); }
+.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px var(--composer-gutter); border-top: 1px solid var(--line); background: var(--panel); }
 .media-notice .link { margin-left: auto; }
 
 .attach { position: relative; flex: none; }
@@ -1324,7 +1330,7 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: flex;
     gap: 8px;
-    padding: 8px var(--column-gutter);
+    padding: 8px var(--composer-gutter);
     overflow-x: auto;
     border-top: 1px solid var(--line);
     background: var(--panel);
@@ -1502,7 +1508,7 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: grid;
     gap: 4px;
-    padding: 8px var(--column-gutter);
+    padding: 8px var(--composer-gutter);
     border-top: 1px solid var(--line);
     background: var(--panel);
     font-size: 13px;
@@ -1568,7 +1574,7 @@ button.pack-cell:disabled { cursor: default; }
 .suggestions {
     position: absolute;
     bottom: 100%;
-    left: var(--column-gutter);
+    left: var(--composer-gutter);
     z-index: 6;
     min-width: 220px;
     max-height: 240px;

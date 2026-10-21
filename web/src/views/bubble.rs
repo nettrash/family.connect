@@ -1752,7 +1752,8 @@ mod tests {
     }
 
     /// "SHOW TEXT" IS DRAWN BY THE RULE: under a voice note this member may
-    /// ask about — their own anywhere; another member's in the family chat
+    /// ask about — their own anywhere; the other person's in a direct chat
+    /// whatever the switch (2026-10-21); another member's in the family chat
     /// only with the owner's switch on — whether the server sends it as
     /// stored or this device supplies its sound (an Ogg file), and never on
     /// a server with no transcription deployment. Pressed, it asks for THAT
@@ -1774,7 +1775,9 @@ mod tests {
             (ME, true, false, true),
             (ANNA, true, true, true),
             (ANNA, true, false, false),
-            (ANNA, false, true, false),
+            // Not the family chat and not the assistant's: a direct chat.
+            (ANNA, false, true, true),
+            (ANNA, false, false, true),
             (2, true, true, false),
         ] {
             let (props, _) = with(sender, family, allows, vec![recording(34, "audio/mp4")]);
@@ -1787,6 +1790,14 @@ mod tests {
             handle.destroy();
             root.remove();
         }
+
+        // In the assistant's chat nobody else's message is ever offered.
+        let (mut props, _) = with(ANNA, false, true, vec![recording(34, "audio/mp4")]);
+        props.is_ai_chat = true;
+        let (root, handle) = render(props).await;
+        assert!(show_buttons(&root).is_empty(), "the assistant's chat");
+        handle.destroy();
+        root.remove();
 
         // An Ogg file is offered too — this device supplies its sound —
         // and each button asks for its own recording.

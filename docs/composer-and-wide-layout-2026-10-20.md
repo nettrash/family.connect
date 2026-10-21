@@ -122,6 +122,10 @@ One rule on all six clients:
 
 - **The conversation column** (messages AND composer) is `min(pane width − 2×16, 1024)` and centred. The composer is
   exactly as wide as the messages above it.
+  *Amended 2026-10-21 — the web only:* after living with it, the owner chose to give the web's composer the whole pane
+  back. Its row and everything stacked on it (notices, staged items, not-sent rows, the `@` list, the sticker panel,
+  "… is typing") keep the 16 px margin they had before #106 (`--composer-gutter` in `web/styles.css`); the messages
+  stay in the column. The apps keep the rule as written.
 - **A bubble** is at most `min(column − 48, 560)` — the iPhone's bubble is unchanged (its limit today is the 48-pt
   spacer), and 560 keeps a line of text readable on a wide screen.
 - **Media in a bubble**: 320 on a wide window, 240 on a narrow one, as today.
