@@ -1937,6 +1937,10 @@ struct MacConversationView: View {
             } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: 16))
+                    // The accent colour, as every other control in the row
+                    // and the phone's paperclip; dimmed by hand, because an
+                    // explicit colour is not dimmed for it.
+                    .foregroundStyle(composerIsBusy ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
                     // Same box as the send button, so the two are
                     // optically level with each other and with the last
                     // line of text — bottom-aligning glyphs of different
@@ -1944,7 +1948,12 @@ struct MacConversationView: View {
                     .frame(width: composerControl, height: composerControl)
                     .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
+            // A button-style menu drawn by SwiftUI, not `.borderlessButton`:
+            // that one is an AppKit pop-up, which ignores the label's colour
+            // AND its box — it drew the paperclip gray and sized to the bare
+            // glyph, so bottom alignment left it lower than everything else.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Attach a photo, video or file")
@@ -2053,6 +2062,9 @@ struct MacConversationView: View {
             } label: {
                 Image(systemName: "paintbrush")
                     .font(.system(size: 15))
+                    // The accent colour, as the stickers beside it and the
+                    // phone's paintbrush; dimmed by hand while editing.
+                    .foregroundStyle(editTarget == nil ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     .frame(width: composerControl, height: composerControl)
                     .contentShape(Rectangle())
             }

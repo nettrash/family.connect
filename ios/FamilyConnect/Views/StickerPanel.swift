@@ -126,6 +126,9 @@ struct StickerComposerButton: View {
     let onPick: (PackItemSnapshot) -> Void
 
     @State private var showsPanel = false
+    #if os(macOS)
+    @Environment(\.isEnabled) private var isEnabled
+    #endif
 
     var body: some View {
         Button {
@@ -134,6 +137,13 @@ struct StickerComposerButton: View {
         } label: {
             Image(systemName: "face.smiling")
                 .font(.system(size: glyph))
+                #if os(macOS)
+                // In the accent colour like the video button beside it and
+                // the slot — a borderless button draws its glyph gray, and
+                // an explicit colour is not dimmed for it, so the dimmed
+                // state is drawn here too, the video button's way.
+                .foregroundStyle(isEnabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                #endif
                 .frame(width: width ?? side, height: side)
                 .contentShape(Rectangle().inset(by: -hitOverhang))
         }
