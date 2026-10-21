@@ -62,8 +62,25 @@ internal sealed class VideoMessageRecorder : IAsyncDisposable
     {
     }
 
-    /// <summary>The live picture, for the circle's <c>MediaPlayerElement</c>: muted, real-time, the frame source's.</summary>
+    /// <summary>
+    /// The live picture for a <c>MediaPlayerElement</c> — ONLY where the frame reader would not start; otherwise null, and the
+    /// picture comes as <see cref="Frame"/>s. The element's <c>CornerRadius</c> does not clip its video (microsoft-ui-xaml
+    /// #8264): the circle showed the camera's whole square.
+    /// </summary>
     public MediaPlayer? Preview => player;
+
+    /// <summary>
+    /// A frame of the live picture as premultiplied BGRA, width and height (any thread): drawn into the circle's own bitmap,
+    /// round because the ellipse it fills is. The array is LENT — no other frame is raised, and the array is not written,
+    /// until <see cref="FrameDrawn"/>: a slow window drops frames, it never queues them.
+    /// </summary>
+    public event Action<byte[], int, int>? Frame;
+
+    /// <summary>The frame lent by <see cref="Frame"/> is drawn, or will never be: the next may come.</summary>
+    public void FrameDrawn() => Volatile.Write(ref frameLent, 0);
+
+    private int frameLent;
+    private byte[]? framePixels;
 
     /// <summary>The first frame arrived (S3.4: Record comes alive). Raised once, on whatever thread Windows delivered it.</summary>
     public event Action? FirstFrame;
@@ -226,12 +243,13 @@ internal sealed class VideoMessageRecorder : IAsyncDisposable
             reader = null;
         }
 
-        player = new MediaPlayer { RealTimePlayback = true, AutoPlay = true, IsMuted = true };
         if (reader is null)
         {
+            // No frames to draw: the player shows the picture, square as the element draws it, and says when it plays.
+            player = new MediaPlayer { RealTimePlayback = true, AutoPlay = true, IsMuted = true };
             player.PlaybackSession.PlaybackStateChanged += OnPlaybackStateChanged;
+            player.Source = MediaSource.CreateFromMediaFrameSource(source);
         }
-        player.Source = MediaSource.CreateFromMediaFrameSource(source);
         return null;
     }
 
@@ -286,6 +304,38 @@ internal sealed class VideoMessageRecorder : IAsyncDisposable
             && video.SoftwareBitmap is { } bitmap && MeanLuma(bitmap) is { } luma)
         {
             listen(luma);
+        }
+        if (Frame is { } show && video.SoftwareBitmap is { } picture && Interlocked.CompareExchange(ref frameLent, 1, 0) == 0)
+        {
+            if (Bgra(picture) is { } pixels)
+            {
+                show(pixels, picture.PixelWidth, picture.PixelHeight);
+            }
+            else
+            {
+                FrameDrawn();
+            }
+        }
+    }
+
+    /// <summary>A camera frame (NV12, YUY2…) as premultiplied BGRA, in the one array lent out; null when Windows cannot convert it.</summary>
+    private byte[]? Bgra(SoftwareBitmap bitmap)
+    {
+        try
+        {
+            using var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+            var length = converted.PixelWidth * converted.PixelHeight * 4;
+            if (framePixels is null || framePixels.Length != length)
+            {
+                framePixels = new byte[length];
+            }
+            converted.CopyToBuffer(framePixels.AsBuffer());
+            return framePixels;
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing a camera frame: {e.GetType().Name}");
+            return null;
         }
     }
 
@@ -528,6 +578,7 @@ internal sealed class VideoMessageRecorder : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         FirstFrame = null;
+        Frame = null;
         Brightness = null;
         Blocked = null;
         Troubled = null;

@@ -16,7 +16,6 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
-using Windows.Media.Core;
 using Windows.Media.Playback;
 using Windows.Storage;
 using Windows.Storage.Streams;
@@ -111,8 +110,10 @@ internal sealed class RoundRecorderLayer
     private string? takePath;
     private string? clipPath;
     private StagedMedia? media;
-    private MediaPlayer? reviewPlayer;
+    private RoundFramePlayer? reviewPlayer;
     private bool reviewStarted;
+    private bool reviewPlaying;
+    private bool reviewFramed;
     private ContentDialog? question;
 
     // ---- what is drawn ----
@@ -127,7 +128,15 @@ internal sealed class RoundRecorderLayer
     private readonly Button circleButton = new() { Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
     private readonly Grid circle = new();
     private readonly MediaPlayerElement previewElement = new() { AreTransportControlsEnabled = false, Stretch = Stretch.UniformToFill, IsTabStop = false };
-    private readonly MediaPlayerElement reviewElement = new() { AreTransportControlsEnabled = false, Stretch = Stretch.UniformToFill, IsTabStop = false };
+
+    // REVIEW's clip as RoundFramePlayer's frames, filling an ellipse — as a circle plays in the chat.
+    private readonly Ellipse reviewCircle = new();
+    private readonly ImageBrush reviewBrush = new() { Stretch = Stretch.UniformToFill };
+
+    // The live picture as the camera's frames, filling an ellipse (VideoMessageRecorder.Frame): round because the shape is.
+    private readonly Ellipse liveCircle = new();
+    private readonly ImageBrush liveBrush = new() { Stretch = Stretch.UniformToFill };
+    private WriteableBitmap? liveBitmap;
     private readonly Ellipse poster = new();
     private readonly ImageBrush posterBrush = new() { Stretch = Stretch.UniformToFill };
     private readonly Ellipse disc = new();
@@ -470,12 +479,58 @@ internal sealed class RoundRecorderLayer
                 Run(flow.CameraTroubled(trouble, Now));
             }
         });
+        opened.Frame += (pixels, width, height) =>
+        {
+            if (!queue.TryEnqueue(() =>
+                {
+                    try
+                    {
+                        if (ReferenceEquals(camera, opened))
+                        {
+                            DrawLive(pixels, width, height);
+                        }
+                    }
+                    finally
+                    {
+                        opened.FrameDrawn();
+                    }
+                }))
+            {
+                opened.FrameDrawn();
+            }
+        };
         previewElement.SetMediaPlayer(opened.Preview);
         Run(flow.CameraOn(Now));
         if (firstTime)
         {
             // Said once on this device (S7.5): written now, read only when the recorder next opens.
             RoundVideoSetting.PreviewSeen = true;
+        }
+    }
+
+    /// <summary>
+    /// One camera frame into the circle's bitmap — made again only when the camera's size changes — and the bitmap told to
+    /// redraw. Its one surface is written in place, never a new source per frame, which WinUI would draw empty in between.
+    /// </summary>
+    private void DrawLive(byte[] pixels, int width, int height)
+    {
+        try
+        {
+            if (pixels.Length != width * height * 4)
+            {
+                return;
+            }
+            if (liveBitmap is null || liveBitmap.PixelWidth != width || liveBitmap.PixelHeight != height)
+            {
+                liveBitmap = new WriteableBitmap(width, height);
+                liveBrush.ImageSource = liveBitmap;
+            }
+            pixels.CopyTo(liveBitmap.PixelBuffer);
+            liveBitmap.Invalidate();
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"drawing the camera's picture: {e.GetType().Name}");
         }
     }
 
@@ -559,24 +614,56 @@ internal sealed class RoundRecorderLayer
         }
     }
 
-    /// <summary>REVIEW's circle: the poster with a play glyph, and the clip AS IT WILL BE SENT — never mirrored (S3.4).</summary>
+    /// <summary>
+    /// REVIEW's circle: the poster with a play glyph, and the clip AS IT WILL BE SENT — never mirrored (S3.4) — played as a
+    /// circle in the chat plays (<see cref="RoundFramePlayer"/>): a <c>MediaPlayerElement</c>'s <c>CornerRadius</c> does not
+    /// clip its video (microsoft-ui-xaml #8264), and the clip showed square.
+    /// </summary>
     private async Task ShowClipAsync(string path, ReadOnlyMemory<byte>? posterJpeg)
     {
         StopReview();
-        var player = new MediaPlayer { AutoPlay = false };
-        player.Source = MediaSource.CreateFromUri(new Uri(path));
-        player.PlaybackSession.PlaybackStateChanged += (_, _) => queue.TryEnqueue(Draw);
-        player.MediaEnded += (_, _) => queue.TryEnqueue(() =>
+        RoundFramePlayer player;
+        try
         {
-            if (ReferenceEquals(reviewPlayer, player))
-            {
-                reviewStarted = false;
-                Draw();
-            }
-        });
+            player = new RoundFramePlayer(queue, RoundFrames.Side(poster.Width, root.XamlRoot?.RasterizationScale ?? 1));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"making a video message's review player: {e.GetType().Name}");
+            return;
+        }
+        // Every event comes on the window's thread, and none after Dispose (StopReview).
+        player.StateChanged += state =>
+        {
+            reviewPlaying = state == MediaPlaybackState.Playing;
+            Draw();
+        };
+        player.FirstFrame += () =>
+        {
+            reviewFramed = true;
+            Draw();
+        };
+        player.Ended += () =>
+        {
+            reviewStarted = false;
+            reviewPlaying = false;
+            Draw();
+        };
+        player.Failed += () => Diagnostics.Write("a video message to review could not be played");
+        player.FramesFailed += () => Diagnostics.Write("a video message to review played, but its frames could not be drawn");
         reviewPlayer = player;
         reviewStarted = false;
-        reviewElement.SetMediaPlayer(player);
+        reviewPlaying = false;
+        reviewFramed = false;
+        reviewBrush.ImageSource = player.Picture;
+        try
+        {
+            player.Open(await File.ReadAllBytesAsync(path), "video/mp4");
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"reading a video message to review: {e.GetType().Name}");
+        }
         posterBrush.ImageSource = null;
         if (posterJpeg is { Length: > 0 } jpeg)
         {
@@ -604,26 +691,20 @@ internal sealed class RoundRecorderLayer
             return;
         }
         flow.Used(Now);
-        try
+        // The player guards its own calls.
+        if (reviewPlaying)
         {
-            if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
-            {
-                player.Pause();
-            }
-            else
-            {
-                hooks.QuietEverything();
-                if (!reviewStarted)
-                {
-                    player.PlaybackSession.Position = TimeSpan.Zero;
-                }
-                reviewStarted = true;
-                player.Play();
-            }
+            player.Pause();
         }
-        catch (Exception e)
+        else
         {
-            Diagnostics.Write($"playing a video message to review: {e.GetType().Name}");
+            hooks.QuietEverything();
+            if (!reviewStarted)
+            {
+                player.Rewind();
+            }
+            reviewStarted = true;
+            player.Play();
         }
         Draw();
     }
@@ -631,20 +712,9 @@ internal sealed class RoundRecorderLayer
     /// <summary>REVIEW's clip paused where it is, when it is playing — the play glyph back, the place kept.</summary>
     private void PauseReview()
     {
-        if (reviewPlayer is not { } player)
+        if (reviewPlayer is { } player && reviewPlaying)
         {
-            return;
-        }
-        try
-        {
-            if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
-            {
-                player.Pause();
-            }
-        }
-        catch (Exception e)
-        {
-            Diagnostics.Write($"pausing a video message's review: {e.GetType().Name}");
+            player.Pause();
         }
     }
 
@@ -656,17 +726,10 @@ internal sealed class RoundRecorderLayer
         }
         reviewPlayer = null;
         reviewStarted = false;
-        Unplug(reviewElement);
-        try
-        {
-            player.Pause();
-            (player.Source as IDisposable)?.Dispose();
-            player.Source = null;
-        }
-        catch (Exception e)
-        {
-            Diagnostics.Write($"stopping a video message's review: {e.GetType().Name}");
-        }
+        reviewPlaying = false;
+        reviewFramed = false;
+        // The bitmap is left to the collector, never closed under the brush (RoundFramePlayer.Dispose).
+        reviewBrush.ImageSource = null;
         player.Dispose();
     }
 
@@ -896,14 +959,18 @@ internal sealed class RoundRecorderLayer
         // The preview is mirrored, like a mirror and a call's self-view; the file is not (S3.5).
         previewElement.RenderTransformOrigin = new Point(0.5, 0.5);
         previewElement.RenderTransform = new ScaleTransform { ScaleX = -1 };
+        liveCircle.Fill = liveBrush;
+        reviewCircle.Fill = reviewBrush;
+        liveCircle.RenderTransformOrigin = new Point(0.5, 0.5);
+        liveCircle.RenderTransform = new ScaleTransform { ScaleX = -1 };
         var card = (Brush)resources["SolidBackgroundFillColorBaseBrush"];
         maskCard.Background = card;
         mask.Fill = card;
-        foreach (var part in new UIElement[] { maskCard, disc, previewElement, reviewElement, poster, mask, discGlyph, slash, spinner, playDisc, ringThin, ringArc, ringFull })
+        foreach (var part in new UIElement[] { maskCard, disc, previewElement, liveCircle, reviewCircle, poster, mask, discGlyph, slash, spinner, playDisc, ringThin, ringArc, ringFull })
         {
             circle.Children.Add(part);
         }
-        foreach (var centred in new FrameworkElement[] { maskCard, disc, previewElement, reviewElement, poster, mask, ringThin, ringFull })
+        foreach (var centred in new FrameworkElement[] { maskCard, disc, previewElement, liveCircle, reviewCircle, poster, mask, ringThin, ringFull })
         {
             centred.HorizontalAlignment = HorizontalAlignment.Center;
             centred.VerticalAlignment = VerticalAlignment.Center;
@@ -1112,6 +1179,12 @@ internal sealed class RoundRecorderLayer
         var sendCentre = send is { } at && at.Width > 0 ? at.X + at.Width / 2 - conversation.X : double.NaN;
 
         var replying = hooks.ReplyText() is not null;
+        // A DesiredSize counts the element's Margin, and the margins are where the LAST frame put the parts: measured with them,
+        // the controls came back as tall as the pane — bar at the top, circle at nothing — on every other layout, which is
+        // the one starting a take always asks for. Measured bare; placed again below.
+        controls.Margin = default;
+        statusBacking.Margin = default;
+        banner.Margin = default;
         banner.MaxWidth = BannerWidest;
         banner.Measure(new Size(Math.Min(BannerWidest, Math.Max(0, paneWidth - 2 * RecorderFrames.Gutter)), double.PositiveInfinity));
         var bannerHeight = replying ? Math.Max(40, banner.DesiredSize.Height) : 0;
@@ -1283,7 +1356,7 @@ internal sealed class RoundRecorderLayer
         var outer = diameter + 2 * (RoundVideoRules.RingWidth + 2);
         circle.Width = outer;
         circle.Height = outer;
-        foreach (var inner in new FrameworkElement[] { disc, previewElement, reviewElement, poster, maskCard, mask })
+        foreach (var inner in new FrameworkElement[] { disc, previewElement, liveCircle, reviewCircle, poster, maskCard, mask })
         {
             inner.Width = diameter;
             inner.Height = diameter;
@@ -1294,7 +1367,7 @@ internal sealed class RoundRecorderLayer
         ringFull.Width = diameter + 2 * RoundVideoRules.RingWidth;
         ringFull.Height = diameter + 2 * RoundVideoRules.RingWidth;
         var clip = RoundVideoRules.Clip;
-        foreach (var video in new MediaPlayerElement[] { previewElement, reviewElement })
+        foreach (var video in new MediaPlayerElement[] { previewElement })
         {
             if (clip == PreviewClip.CornerRadius)
             {
@@ -1347,10 +1420,14 @@ internal sealed class RoundRecorderLayer
         // The circle.
         var live = stage is RecorderStage.Preview or RecorderStage.Recording && camera is not null;
         var review = stage == RecorderStage.Review && flow.ClipReady;
-        var playing = review && reviewPlayer?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
-        previewElement.Visibility = live ? Visibility.Visible : Visibility.Collapsed;
-        reviewElement.Visibility = review && reviewStarted ? Visibility.Visible : Visibility.Collapsed;
-        poster.Visibility = review && !reviewStarted ? Visibility.Visible : Visibility.Collapsed;
+        var playing = review && reviewPlaying;
+        // The camera's frames in the ellipse; the element only for a camera whose frames could not be read.
+        var framed = camera?.Preview is null;
+        previewElement.Visibility = live && !framed ? Visibility.Visible : Visibility.Collapsed;
+        liveCircle.Visibility = live && framed ? Visibility.Visible : Visibility.Collapsed;
+        reviewCircle.Visibility = review && reviewStarted ? Visibility.Visible : Visibility.Collapsed;
+        // The poster stays over the clip until its first frame is drawn: never a blank circle between them.
+        poster.Visibility = review && (!reviewStarted || !reviewFramed) ? Visibility.Visible : Visibility.Collapsed;
         var waiting = stage == RecorderStage.Opening
             || (stage == RecorderStage.Preview && !flow.HasPicture)
             || (stage == RecorderStage.Review && !flow.ClipReady);
@@ -1383,9 +1460,9 @@ internal sealed class RoundRecorderLayer
             fraction = flow.RingFraction(now);
             ringBrush = (Brush)resources[flow.Warns(now) ? "SystemFillColorCautionBrush" : "SystemFillColorCriticalBrush"];
         }
-        else if (review && reviewStarted && reviewPlayer?.PlaybackSession is { NaturalDuration.TotalMilliseconds: > 0 } session)
+        else if (review && reviewStarted && reviewPlayer is { Duration: > 0 } clip)
         {
-            fraction = Math.Clamp(session.Position / session.NaturalDuration, 0, 1);
+            fraction = Math.Clamp(clip.Position / clip.Duration, 0, 1);
             ringBrush = (Brush)resources["AccentFillColorDefaultBrush"];
         }
         DrawRing(fraction, ringBrush);
