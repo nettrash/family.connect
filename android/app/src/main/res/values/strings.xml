@@ -719,6 +719,7 @@
     <string name="s_assistant_transcripts_explanation">With this on, members can ask for the text of other members\' voice notes, audio and videos in the family chat, and that recording\'s sound is then sent to %1$s. It is sent only when someone asks, and only if the member who sent it has agreed to the assistant. Everyone can get the text of their own recordings without this. It is off unless you turn it on.</string>
     <string name="s_assistant_transcripts_no_server">Not available here: this server can\'t turn recordings into text.</string>
     <string name="s_consent_transcript_sound_sent">If you ask for the text of a voice note, audio file or video, its sound is sent to %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Couldn\'t change that setting</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Looking things up</string>

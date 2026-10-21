@@ -169,8 +169,9 @@ struct Ask {
 /// 5. the ASKER's consent — `assistant_consent_required`, asked even when an
 ///    answer is already stored;
 /// 6. the rule — `transcript_not_allowed`: the asker's own message anywhere;
-///    another member's only in the family chat, only with `ai_transcripts`
-///    on, and only when that SENDER has consented too;
+///    the other person's in a direct chat when that SENDER has consented;
+///    another member's in the family chat only with `ai_transcripts` on,
+///    and only when that SENDER has consented too;
 /// 7. the recording in this form — `not_transcribable`;
 /// 8. the provider — `transcript_refused` for its filter, `not_transcribable`
 ///    when it refuses the file itself or names no language (speech
@@ -342,16 +343,18 @@ async fn load(
 /// THE RULE (protocol.md, "Transcripts on request"), in one place:
 ///
 /// - the asker's OWN message — any chat they are in, direct chats included;
-/// - another member's — only in the family chat (its threads are the same
-///   chat), only while the family's `ai_transcripts` is on, and only when
-///   that SENDER has agreed to the assistant themselves: the history a
-///   mention carries is filtered by each sender's consent for exactly this
-///   reason, and a voice is somebody's words;
-/// - never another member's in a direct chat, at any setting;
+/// - the other person's in a direct chat — only when that SENDER has agreed
+///   to the assistant themselves (amended 2026-10-21; until then never). No
+///   owner's switch: a direct chat is two people's, not the family's;
+/// - another member's in the family chat (its threads are the same chat) —
+///   only while the family's `ai_transcripts` is on, and only when that
+///   SENDER has agreed to the assistant: the history a mention carries is
+///   filtered by each sender's consent for exactly this reason, and a voice
+///   is somebody's words;
 /// - never the assistant's: its account has no consent to give (the
-///   history filter's own exception says as much), so the third key above
+///   history filter's own exception says as much), so the sender's consent
 ///   refuses it in the family chat, and in an `ai` chat it is the other
-///   party and the second refuses it. It sends no sound in any case.
+///   party and no chat kind lets it through. It sends no sound in any case.
 async fn allowed(
     state: &AppState,
     asker: i64,
@@ -361,7 +364,12 @@ async fn allowed(
     if held.sender_id == asker {
         return Ok(true);
     }
-    if held.chat_kind != "family" || !switch_on {
+    let shared = match held.chat_kind.as_str() {
+        "direct" => true,
+        "family" => switch_on,
+        _ => false,
+    };
+    if !shared {
         return Ok(false);
     }
     Ok(crate::handlers_ai::has_assistant_consent(state, held.sender_id).await?)

@@ -130,6 +130,7 @@ nonisolated enum AssistantConsent {
         }
         if transcribes {
             lines.append(String(localized: "If you ask for the text of a voice note, audio file or video, its sound is sent to \(processor)."))
+            lines.append(String(localized: "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to \(processor)."))
         }
         lines.append(String(localized: "The answer comes back as a message in that chat, where everyone in the chat can read it."))
         lines.append(String(localized: "You can stop this at any time in Settings. What has already been sent cannot be taken back."))

@@ -103,6 +103,7 @@ fun AssistantConsentDialog(
                 }
                 if (transcripts) {
                     Text(stringResource(R.string.s_consent_transcript_sound_sent, processor))
+                    Text(stringResource(R.string.s_consent_transcript_direct_chat, processor))
                 }
                 // The lookup line, picked by `ai_history` like the
                 // family-chat line above: with it off a mention takes only

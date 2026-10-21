@@ -12,9 +12,9 @@ namespace FamilyConnect.App.Logic;
 /// <remarks>
 /// <para>
 /// <b>THE RULE, AS THE SERVER WRITES IT:</b> a member may ask about a recording on a message THEY sent, in any chat they
-/// are in, direct chats included; about ANOTHER member's only in the family chat (its threads are the same chat), only
-/// while the family's <c>ai_transcripts</c> is on; never about another member's in a direct chat, and never about the
-/// assistant's own messages. The server adds one check this client cannot make — that the other SENDER has agreed to
+/// are in, direct chats included; about the OTHER person's in a direct chat (amended 2026-10-21 — no owner's switch
+/// reaches a direct chat); about ANOTHER member's in the family chat (its threads are the same chat) only while the
+/// family's <c>ai_transcripts</c> is on; and never about the assistant's own messages. The server adds one check this client cannot make — that the other SENDER has agreed to
 /// the assistant — and answers it with the same <c>transcript_not_allowed</c>, which is drawn as "Not available for this
 /// message."
 /// </para>
@@ -67,7 +67,13 @@ public static class TranscriptRules
             // Your own voice, wherever you sent it: only your own consent, which the server asks for.
             return true;
         }
-        // Somebody else's: the family chat only, and only while the owner allows it.
+        // The other person's in a direct chat: their consent alone, which the server asks for. "The other person" needs
+        // a reader who is known.
+        if (chatKind == "direct")
+        {
+            return reader > 0;
+        }
+        // Somebody else's in the family chat: only while the owner allows it.
         return chatKind == "family" && family?.AiTranscripts == true;
     }
 

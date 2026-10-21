@@ -690,6 +690,7 @@
     <string name="s_assistant_transcripts_explanation">Avec ceci activé, les membres peuvent demander le texte des messages vocaux, audios et vidéos des autres membres dans la discussion familiale, et le son de cet enregistrement est alors envoyé à %1$s. Il n’est envoyé que si quelqu’un le demande, et seulement si le membre qui l’a envoyé a accepté l’assistant. Chacun peut obtenir le texte de ses propres enregistrements sans cela. C’est désactivé tant que vous ne l’activez pas.</string>
     <string name="s_assistant_transcripts_no_server">Indisponible ici : ce serveur ne peut pas transcrire les enregistrements.</string>
     <string name="s_consent_transcript_sound_sent">Si vous demandez le texte d’un message vocal, d’un fichier audio ou d’une vidéo, le son est envoyé à %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">Dans une conversation directe, l’autre personne peut demander le texte de vos messages vocaux, fichiers audio et vidéos, et leur son est alors envoyé à %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Impossible de modifier ce réglage</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Recherches</string>

@@ -34,10 +34,11 @@ object TranscriptRules {
      * May this member ask about a recording on this message at all?
      *
      * Their own message, in any chat they are in (direct chats and their
-     * own assistant chat included). Another member's only in the family
-     * chat — its threads are in the family chat too — and only while the
-     * owner's `ai_transcripts` is on. Never another member's in a direct
-     * chat, and never the assistant's own messages.
+     * own assistant chat included). The other person's in a direct chat —
+     * no owner's switch reaches a direct chat (amended 2026-10-21; until
+     * then never). Another member's in the family chat — its threads are in
+     * the family chat too — only while the owner's `ai_transcripts` is on.
+     * Never the assistant's own messages.
      */
     fun mayAsk(
         chatKind: String?,
@@ -49,6 +50,7 @@ object TranscriptRules {
         myUserId == null -> false
         assistantUserId != null && senderId == assistantUserId -> false
         senderId == myUserId -> true
+        chatKind == "direct" -> true
         chatKind == "family" -> familyAllowsOthers
         else -> false
     }

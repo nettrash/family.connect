@@ -118,15 +118,21 @@ public sealed class AssistantConsentTests
         var say = EnglishCatalog.Instance;
         var without = AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: false, say);
         var with = AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: false, say, transcribe: true);
-        Assert.Equal(without.Count + 1, with.Count);
+        Assert.Equal(without.Count + 2, with.Count);
         Assert.Contains(
             $"If you ask for the text of a voice note, audio file or video, its sound is sent to {Processor}.", with);
+        // And, since 2026-10-21, what a direct-chat partner may ask of the member's own recordings.
+        Assert.Contains(
+            $"In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to {Processor}.",
+            with);
         Assert.DoesNotContain(without, line => line.Contains("voice note", StringComparison.Ordinal));
         // Its own line, after what a photo does and before where the answer lands and how to stop.
         var both = AssistantConsent.Disclosure(Processor, familyHistory: true, familyVision: true, say, transcribe: true);
         var photo = both.ToList().FindIndex(line => line.StartsWith("A photo", StringComparison.Ordinal));
         var sound = both.ToList().FindIndex(line => line.Contains("its sound is sent", StringComparison.Ordinal));
+        var partner = both.ToList().FindIndex(line => line.StartsWith("In a direct chat", StringComparison.Ordinal));
         Assert.Equal(photo + 1, sound);
-        Assert.Equal(both.Count - 3, sound);
+        Assert.Equal(sound + 1, partner);
+        Assert.Equal(both.Count - 3, partner);
     }
 }

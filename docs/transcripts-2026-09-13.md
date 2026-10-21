@@ -326,6 +326,10 @@ help videos sent by 1.3 apps, and on request the asker's device can do it for ev
   chats: your own messages only** — the other person's voice in a one-to-one chat stays under the
   rule that nothing reads a direct chat. (Allowing it would need that rule rewritten, and is yours
   to choose.)
+  > **Revised 2026-10-21 — the owner chose to allow it on consent alone.** In a direct chat a member
+  > may now ask for the text of the other person's recording when that sender has agreed to the
+  > assistant; no owner's switch applies. The consent screen says so in a line of its own.
+  > docs/protocol.md, "Transcripts on request", is amended accordingly.
 - **R4. Share a stored answer with other members who ask?** Recommended: yes, for answers made from
   the server's own bytes — one bill per voice note, not one per reader. Never for answers made from
   sound a client supplied.

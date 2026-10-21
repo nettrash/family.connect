@@ -632,6 +632,7 @@
     <string name="s_assistant_transcripts_explanation">打开后，成员可以在家庭聊天中获取其他成员的语音消息、音频和视频的文字，届时该录音的声音会发送给 %1$s。只有在有人请求时才会发送，而且只在发送者本人已同意使用助手时。每个人无需此开关也能获取自己录音的文字。除非你打开，否则它是关闭的。</string>
     <string name="s_assistant_transcripts_no_server">此处不可用：这个服务器无法把录音转成文字。</string>
     <string name="s_consent_transcript_sound_sent">如果你请求获取语音消息、音频文件或视频的文字，它的声音会发送给 %1$s。</string>
+    <string name="s_consent_transcript_direct_chat">在私聊中，对方可以请求获取你的语音消息、音频文件和视频的文字，届时它们的声音会发送给 %1$s。</string>
     <string name="e_change_assistant_transcripts_failed">无法更改该设置</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">查资料</string>

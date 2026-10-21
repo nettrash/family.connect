@@ -690,6 +690,7 @@
     <string name="s_assistant_transcripts_explanation">Con esto activado, los miembros pueden pedir el texto de las notas de voz, audios y vídeos de otros miembros en el chat familiar, y el sonido de esa grabación se envía entonces a %1$s. Solo se envía cuando alguien lo pide, y solo si el miembro que la envió ha aceptado el asistente. Cualquiera puede obtener el texto de sus propias grabaciones sin esto. Está desactivado a menos que lo actives.</string>
     <string name="s_assistant_transcripts_no_server">No disponible aquí: este servidor no puede pasar grabaciones a texto.</string>
     <string name="s_consent_transcript_sound_sent">Si pides el texto de una nota de voz, un archivo de audio o un vídeo, su sonido se envía a %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">En un chat directo, la otra persona puede pedir el texto de tus notas de voz, archivos de audio y vídeos, y su sonido se envía entonces a %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">No se pudo cambiar ese ajuste</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Búsqueda de información</string>

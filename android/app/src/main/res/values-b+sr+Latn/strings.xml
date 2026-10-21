@@ -683,6 +683,7 @@
     <string name="s_assistant_transcripts_explanation">Kada je ovo uključeno, članovi mogu da zatraže tekst glasovnih poruka, audio snimaka i video snimaka drugih članova u porodičnom četu, i tada se zvuk tog snimka šalje ka %1$s. Šalje se samo kada neko zatraži, i samo ako je član koji ga je poslao prihvatio asistenta. Svako može da dobije tekst svojih snimaka i bez ovoga. Isključeno je dok ga ne uključiš.</string>
     <string name="s_assistant_transcripts_no_server">Ovde nije dostupno: ovaj server ne može da pretvori snimke u tekst.</string>
     <string name="s_consent_transcript_sound_sent">Ako zatražiš tekst glasovne poruke, audio datoteke ili videa, zvuk se šalje ka %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">U ličnom razgovoru druga osoba može da zatraži tekst tvojih glasovnih poruka, audio datoteka i videa, i tada se njihov zvuk šalje ka %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Nije uspela promena podešavanja</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Traženje podataka</string>

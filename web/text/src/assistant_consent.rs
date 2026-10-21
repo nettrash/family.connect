@@ -119,6 +119,10 @@ pub fn disclosure(
             "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.",
             processor,
         ));
+        lines.push(t1(
+            "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
+            processor,
+        ));
     }
     let providers = lookups::providers(lookups);
     if !providers.is_empty() {
@@ -283,15 +287,18 @@ mod tests {
 
     /// Where the server can turn a recording into text, the person is told
     /// before they agree that a recording's sound goes to the processor —
-    /// and not told it where nothing of the kind can happen.
+    /// their own asking, and since 2026-10-21 a direct-chat partner's — and
+    /// not told it where nothing of the kind can happen.
     #[test]
     fn the_disclosure_names_recordings_only_where_they_can_go() {
         let line = "If you ask for the text of a voice note, audio file or video, its sound is sent to Azure OpenAI.";
+        let partner = "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to Azure OpenAI.";
         let with = disclosure("Azure OpenAI", true, false, true, &[]);
         assert!(with.iter().any(|said| said == line), "{with:?}");
+        assert!(with.iter().any(|said| said == partner), "{with:?}");
         let without = disclosure("Azure OpenAI", true, false, false, &[]);
         assert!(!without.iter().any(|said| said.contains("voice note")));
-        assert_eq!(with.len(), without.len() + 1);
+        assert_eq!(with.len(), without.len() + 2);
     }
 
     /// Where the server can look things up, the person is told which

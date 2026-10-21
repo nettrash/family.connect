@@ -82,13 +82,13 @@ pub struct Recording<'a> {
 /// The server's allowed rule, as far as a client can know it.
 ///
 /// A member may ask about a message they sent themselves, in any chat they
-/// are in, direct chats included; about another member's message only in
-/// the family chat (its threads included), and only while the family's
-/// `ai_transcripts` is on; never about another member's message in a direct
-/// chat; never about the assistant's own. The server also asks whether the
-/// SENDER has agreed to the assistant, which no client can see — it answers
-/// `transcript_not_allowed` then, and that is drawn as "Not available for
-/// this message.".
+/// are in, direct chats included; about the other person's in a direct chat
+/// (amended 2026-10-21 — no owner's switch reaches a direct chat); about
+/// another member's message in the family chat (its threads included) only
+/// while the family's `ai_transcripts` is on; never about the assistant's
+/// own. The server also asks whether the SENDER has agreed to the
+/// assistant, which no client can see — it answers `transcript_not_allowed`
+/// then, and that is drawn as "Not available for this message.".
 pub fn may_ask(asking: &Asking) -> bool {
     if asking.my_user_id <= 0 {
         return false;
@@ -99,7 +99,7 @@ pub fn may_ask(asking: &Asking) -> bool {
     if asking.sender_id == asking.my_user_id {
         return true;
     }
-    asking.chat_kind == "family" && asking.family_allows
+    asking.chat_kind == "direct" || (asking.chat_kind == "family" && asking.family_allows)
 }
 
 /// Whether the server sends this attachment's STORED bytes as they are: a
@@ -403,12 +403,14 @@ mod tests {
             ("family", ME, true, true),
             ("direct", ME, false, true),
             ("ai", ME, false, true),
-            // Another member's: the family chat (and its threads), with
-            // the switch on — and nowhere else.
+            // The other person's in a direct chat: whatever the switch
+            // says — the server asks the sender's consent (2026-10-21).
+            ("direct", ANNA, true, true),
+            ("direct", ANNA, false, true),
+            // Another member's in the family chat (and its threads): with
+            // the switch on.
             ("family", ANNA, true, true),
             ("family", ANNA, false, false),
-            ("direct", ANNA, true, false),
-            ("direct", ANNA, false, false),
             ("ai", ANNA, true, false),
             // The assistant's own: never.
             ("family", AI, true, false),
@@ -564,7 +566,7 @@ mod tests {
         // The rule says no.
         assert!(!offers_show_text(
             &SERVER,
-            &asking("direct", ANNA, true),
+            &asking("family", ANNA, false),
             &note
         ));
         // Bytes the server does not send as they are are still offered:
@@ -596,9 +598,9 @@ mod tests {
         let sending = Recording { id: -4, ..video };
         assert!(!offers_show_text(&SERVER, &mine, &sending));
         // The rule holds for a video as for a voice note.
-        assert!(!offers_show_text(
+        assert!(offers_show_text(
             &SERVER,
-            &asking("direct", ANNA, true),
+            &asking("direct", ANNA, false),
             &video
         ));
         assert!(offers_show_text(

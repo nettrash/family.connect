@@ -49,10 +49,14 @@ class TranscriptRulesTest {
     }
 
     @Test
-    fun `another member's recording in a direct chat is never asked about`() {
-        // Not even with the switch on: nothing reads a direct chat.
-        assertThat(mayAsk("direct", ANNA, familyAllowsOthers = true)).isFalse()
-        assertThat(mayAsk("direct", ANNA, familyAllowsOthers = false)).isFalse()
+    fun `the other person's recording in a direct chat is offered whatever the switch says`() {
+        // The owner's switch does not reach a direct chat; the server asks
+        // the sender's consent (amended 2026-10-21).
+        assertThat(mayAsk("direct", ANNA, familyAllowsOthers = true)).isTrue()
+        assertThat(mayAsk("direct", ANNA, familyAllowsOthers = false)).isTrue()
+        assertThat(
+            TranscriptRules.mayAsk("direct", ANNA, myUserId = null, assistantUserId = ASSISTANT, familyAllowsOthers = true),
+        ).isFalse()
     }
 
     @Test
@@ -150,7 +154,8 @@ class TranscriptRulesTest {
     fun `another member's voice note follows the rule and the switch`() {
         assertThat(offers(sender = ANNA)).isFalse()
         assertThat(offers(sender = ANNA, familyAllowsOthers = true)).isTrue()
-        assertThat(offers(sender = ANNA, familyAllowsOthers = true, chatKind = "direct")).isFalse()
+        // The other person's in a direct chat: whatever the switch says (2026-10-21).
+        assertThat(offers(sender = ANNA, chatKind = "direct")).isTrue()
     }
 
     // -- Phase 3: what this device supplies --------------------------------------------
@@ -169,7 +174,7 @@ class TranscriptRulesTest {
         assertThat(offers(attachment = clip)).isTrue()
         assertThat(offers(attachment = clip, sender = ANNA)).isFalse()
         assertThat(offers(attachment = clip, sender = ANNA, familyAllowsOthers = true)).isTrue()
-        assertThat(offers(attachment = clip, sender = ANNA, familyAllowsOthers = true, chatKind = "direct")).isFalse()
+        assertThat(offers(attachment = clip, sender = ANNA, chatKind = "direct")).isTrue()
         assertThat(offers(attachment = clip, sender = ASSISTANT)).isFalse()
         assertThat(offers(attachment = clip, serverTranscribes = false)).isFalse()
     }
