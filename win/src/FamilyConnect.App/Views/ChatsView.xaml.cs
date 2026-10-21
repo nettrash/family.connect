@@ -246,7 +246,13 @@ public sealed partial class ChatsView : UserControl
     private bool hasCamera;
     private bool askingForCamera;
     private readonly DoorGuard doorGuard = new();
-    private bool fieldPadded;
+
+    /// <summary>The video button is showing in the field (DrawVideoDoor) — one of the glyphs the field makes room for (DrawField).</summary>
+    private bool doorShowing;
+
+    /// <summary>The glyphs each field was last drawn with, so a keystroke that changes none of them lays nothing out again.</summary>
+    private IReadOnlyList<FieldGlyph>? fieldDrawn;
+    private IReadOnlyList<FieldGlyph>? threadFieldDrawn;
     private long? chatAfterRecorder;
     private readonly Action<SessionState> onSession;
 
@@ -344,8 +350,8 @@ public sealed partial class ChatsView : UserControl
     internal event Action<long, long, bool>? CallRequested;
     private bool sendingMedia;
 
-    /// <summary>The names a half-typed @ could mean, and which of them Enter or Tab would take.</summary>
-    private IReadOnlyList<MemberDto> offered = [];
+    /// <summary>The names a half-typed @ could mean — the assistant first where it can be asked — and which of them Enter or Tab would take.</summary>
+    private IReadOnlyList<MentionChoice> offered = [];
     private int activeName;
     private bool gone;
     private ConversationModel? open;
@@ -462,6 +468,8 @@ public sealed partial class ChatsView : UserControl
         ChatsHeading.Text = say.Get("Chats");
         EmptyListText.Text = say.Get("No chats yet");
         ComposerBox.PlaceholderText = say.Get("Message");
+        // A placeholder is not a name: Narrator names the field whatever it holds.
+        AutomationProperties.SetName(ComposerBox, say.Get("Message"));
         ToolTipService.SetToolTip(AttachButton, say.Get("Attach a photo, video or file"));
         AutomationProperties.SetName(AttachButton, say.Get("Attach a photo, video or file"));
         OpenPollsText.Text = say.Get("Open polls");
@@ -497,13 +505,10 @@ public sealed partial class ChatsView : UserControl
         };
         ViewerAddSticker.Content = say.Get("Add to family stickers");
         ViewerAddSticker.Click += (_, _) => _ = AddViewedStickerAsync();
-        AskAssistantButton.Content = "✨";
-        AskPictureButton.Content = "🎨";
-        ToolTipService.SetToolTip(AskAssistantButton, say.Get("Ask the assistant"));
-        AutomationProperties.SetName(AskAssistantButton, say.Get("Ask the assistant"));
+        // The paintbrush, a Segoe Fluent glyph inside the assistant chat's field. @ai has no button any more (#106): the
+        // paperclip's "Ask the Assistant" and the first line of the @ strip write it.
         ToolTipService.SetToolTip(AskPictureButton, say.Get("Ask for a picture"));
         AutomationProperties.SetName(AskPictureButton, say.Get("Ask for a picture"));
-        AskAssistantButton.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
         AskPictureButton.Click += (_, _) => PutInComposer(AssistantText.WithDrawToken(ComposerBox.Text));
         PictureHintText.Text = PictureHint.Sentence(say);
 
@@ -632,13 +637,25 @@ public sealed partial class ChatsView : UserControl
             }
         };
         ThreadTitle.Text = say.Get("Thread");
-        ThreadSend.Content = say.Get("Send");
+        ToolTipService.SetToolTip(ThreadSend, say.Get("Send"));
+        AutomationProperties.SetName(ThreadSend, say.Get("Send"));
         ThreadComposer.PlaceholderText = say.Get("Reply in thread");
+        AutomationProperties.SetName(ThreadComposer, say.Get("Reply in thread"));
         AutomationProperties.SetName(ThreadClose, say.Get("Close"));
         ToolTipService.SetToolTip(ThreadClose, say.Get("Close"));
         ThreadClose.Click += (_, _) => CloseThread();
         ThreadSend.Click += (_, _) => SendInThread();
         ThreadComposer.PreviewKeyDown += OnThreadComposerKey;
+        // The second Esc (#106, doc 2.3): the first left a drafted reply for the panel, and this one, anywhere in the panel,
+        // closes it. The field's own Esc never reaches here — its preview handler has taken it.
+        ThreadPanel.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Escape)
+            {
+                e.Handled = true;
+                CloseThread();
+            }
+        };
         CapitalLetters.Attach(ThreadComposer);
         ToolTipService.SetToolTip(CallButton, say.Get("Call"));
         AutomationProperties.SetName(CallButton, say.Get("Call"));
@@ -652,7 +669,13 @@ public sealed partial class ChatsView : UserControl
             {
                 _ = typed.TypingAsync();
             }
+            DrawThreadSend();
         };
+        // The list, the conversation and the thread share the width (ConversationColumn.Arrange): again whenever the view is
+        // resized or the thread opens or closes; and the column follows the pane it is left with.
+        ChatsRoot.SizeChanged += (_, _) => Arrange();
+        ThreadPanel.RegisterPropertyChangedCallback(VisibilityProperty, (_, _) => Arrange());
+        ConversationPane.SizeChanged += (_, _) => FitColumn();
         // The player's events arrive on its own thread and may still be queued when the view is let go.
         audio.PlaybackSession.PositionChanged += (_, _) => DispatcherQueue.TryEnqueue(() =>
         {
@@ -975,13 +998,12 @@ public sealed partial class ChatsView : UserControl
         _ = ReportReadAsync();
     }
 
-    /// <summary>The composer's assistant doors, for this chat, this server's assistant, and whether an edit is open.</summary>
+    /// <summary>
+    /// The composer's assistant door — the paintbrush, inside the assistant chat's field (DrawField) — for this chat, this
+    /// server's assistant, and whether an edit is open; and the line under a picture request.
+    /// </summary>
     private void ShowAssistantButtons()
     {
-        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
-        var (ask, picture) = AssistantButtons.Offered(kind, connection.Session.State.Assistant, editing is not null);
-        AskAssistantButton.Visibility = ask ? Visibility.Visible : Visibility.Collapsed;
-        AskPictureButton.Visibility = picture ? Visibility.Visible : Visibility.Collapsed;
         ShowStickerButton();
         DrawPictureHint();
     }
@@ -1026,12 +1048,128 @@ public sealed partial class ChatsView : UserControl
     /// </remarks>
     private void ShowStickerButton()
     {
-        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
-        var offered = PackSending.Offered(kind, editing is not null, pack.Offered);
-        StickerButton.Visibility = offered ? Visibility.Visible : Visibility.Collapsed;
+        DrawField();
         // The thread's composer is enabled exactly when there is a root to answer (DrawThread).
-        var inThread = PackSending.OfferedInThread(thread is not null && ThreadComposer.IsEnabled, pack.Offered);
-        ThreadStickerButton.Visibility = inThread ? Visibility.Visible : Visibility.Collapsed;
+        var inThread = ComposerRow.InThreadField(thread is not null && ThreadComposer.IsEnabled, pack.Offered);
+        if (threadFieldDrawn is null || !threadFieldDrawn.SequenceEqual(inThread))
+        {
+            threadFieldDrawn = inThread;
+            ThreadStickerButton.Visibility = inThread.Contains(FieldGlyph.Sticker) ? Visibility.Visible : Visibility.Collapsed;
+            FitField(ThreadComposer, inThread);
+        }
+    }
+
+    /// <summary>
+    /// The glyphs inside the conversation's field (docs/composer-and-wide-layout-2026-10-20.md, 2.1; <see cref="ComposerRow.InField"/>):
+    /// the stickers in every chat a message can be sent in, empty or typing — they never move under the pointer — the
+    /// paintbrush beside them in the assistant's chat, the video button where S1.4 shows it; and the field padded for them.
+    /// </summary>
+    private void DrawField()
+    {
+        var kind = open is { } chat ? connection.Chats.Kind(chat.ChatId) : null;
+        var glyphs = ComposerRow.InField(kind, editing is not null, pack.Offered, connection.Session.State.Assistant, doorShowing);
+        if (fieldDrawn is not null && fieldDrawn.SequenceEqual(glyphs))
+        {
+            return;
+        }
+        fieldDrawn = glyphs;
+        StickerButton.Visibility = glyphs.Contains(FieldGlyph.Sticker) ? Visibility.Visible : Visibility.Collapsed;
+        AskPictureButton.Visibility = glyphs.Contains(FieldGlyph.Picture) ? Visibility.Visible : Visibility.Collapsed;
+        VideoDoorButton.Visibility = glyphs.Contains(FieldGlyph.VideoDoor) ? Visibility.Visible : Visibility.Collapsed;
+        FitField(ComposerBox, glyphs);
+    }
+
+    /// <summary>
+    /// A field's padding: its style's own, lifted so one line stands as tall as the 44-epx targets beside it and centred on
+    /// them, and one target of trailing room per glyph drawn over it — so text never runs under a button.
+    /// </summary>
+    private static void FitField(TextBox field, IReadOnlyList<FieldGlyph> glyphs)
+    {
+        var style = FieldStylePadding.Value;
+        field.Padding = new Thickness(
+            style.Left,
+            style.Top + ComposerRow.FieldLiftEpx,
+            style.Right + ComposerRow.TrailingRoom(glyphs),
+            style.Bottom + ComposerRow.FieldLiftEpx);
+    }
+
+    /// <summary>The padding a TextBox's own style gives it (TextControlThemePadding), read once.</summary>
+    private static readonly Lazy<Thickness> FieldStylePadding = new(() =>
+    {
+        try
+        {
+            return (Thickness)Application.Current.Resources["TextControlThemePadding"];
+        }
+        catch (Exception e)
+        {
+            // WinUI's own value since the Fluent styles: a missing key costs a pixel or two, never the field.
+            Diagnostics.Write($"reading the field's padding: {e.GetType().Name}");
+            return new Thickness(10, 5, 6, 6);
+        }
+    });
+
+    /// <summary>The thread's Send disc: lit with a root to answer and something to say; drawn dim, not ringed, when it is not.</summary>
+    private void DrawThreadSend()
+    {
+        var enabled = ComposerRow.ThreadSendEnabled(thread is not null && ThreadComposer.IsEnabled, ThreadComposer.Text);
+        if (ThreadSend.IsEnabled != enabled)
+        {
+            ThreadSend.IsEnabled = enabled;
+        }
+        ThreadSendLook.Opacity = enabled ? 1 : 0.4;
+    }
+
+    /// <summary>
+    /// The chat list, the conversation and the thread across this view (<see cref="ConversationColumn.Arrange"/>): the list
+    /// narrows first, then the thread goes OVER the conversation instead of beside it — on an opaque underlay, since what it
+    /// covers is still there — so the conversation's field always keeps its run of text.
+    /// </summary>
+    private void Arrange()
+    {
+        if (gone || ChatsRoot.ActualWidth <= 0)
+        {
+            return;
+        }
+        var arranged = ConversationColumn.Arrange(ChatsRoot.ActualWidth, ThreadPanel.Visibility == Visibility.Visible);
+        if (ListColumn.Width.Value != arranged.ListWidth)
+        {
+            ListColumn.Width = new GridLength(arranged.ListWidth);
+        }
+        var over = ThreadPanel.Visibility == Visibility.Visible && !arranged.ThreadBeside;
+        var underlay = over ? Visibility.Visible : Visibility.Collapsed;
+        if (ThreadUnderlay.Visibility != underlay)
+        {
+            ThreadUnderlay.Visibility = underlay;
+        }
+        if (Grid.GetColumn(ThreadPanel) != (over ? 2 : 3))
+        {
+            Grid.SetColumn(ThreadPanel, over ? 2 : 3);
+            Grid.SetColumnSpan(ThreadPanel, over ? 2 : 1);
+            ThreadPanel.Width = over ? double.NaN : ConversationColumn.ThreadEpx;
+        }
+    }
+
+    /// <summary>
+    /// The conversation column for the pane as it now is (<see cref="ConversationColumn.Width"/>): the messages and everything
+    /// under them exactly as wide, centred. A bubble's own cap and margin make it <see cref="ConversationColumn.BubbleMax"/> of
+    /// whatever this is, so a resize redraws no bubble and the incremental list stays incremental.
+    /// </summary>
+    private void FitColumn()
+    {
+        var width = ConversationColumn.Width(ConversationPane.ActualWidth);
+        if (MessageStack.Width != width)
+        {
+            MessageStack.Width = width;
+            ComposerColumn.Width = width;
+        }
+        // The jump button at the column's trailing edge, not the pane's (#106, doc 2.2): on a wide window the pane's edge is
+        // far from the newest bubble it takes the reader to. Outside the width check — past 1024 the column stops growing
+        // and only its margins do.
+        var jump = ConversationColumn.JumpInset(ConversationPane.ActualWidth);
+        if (JumpButton.Margin.Right != jump)
+        {
+            JumpButton.Margin = new Thickness(0, 0, jump, 16);
+        }
     }
 
     /// <summary>
@@ -1769,10 +1907,11 @@ public sealed partial class ChatsView : UserControl
         var column = new StackPanel
         {
             Spacing = 3,
-            MaxWidth = 600,
+            // min(column − 48, 560) (ConversationColumn.BubbleMax): the cap and the margin on the side it does not lean to.
+            MaxWidth = ConversationColumn.BubbleMaxEpx,
             HorizontalAlignment = mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             // Runs breathe less than turns do.
-            Margin = new Thickness(mine ? 72 : 0, row.RunStart ? 8 : 1, mine ? 0 : 72, 0),
+            Margin = new Thickness(mine ? ConversationColumn.BubbleSpacerEpx : 0, row.RunStart ? 8 : 1, mine ? 0 : ConversationColumn.BubbleSpacerEpx, 0),
         };
         if (row.ShowsSender)
         {
@@ -2748,9 +2887,9 @@ public sealed partial class ChatsView : UserControl
             Child = stack,
             Padding = new Thickness(12, 8, 12, 8),
             CornerRadius = new CornerRadius(14),
-            MaxWidth = 600,
+            MaxWidth = ConversationColumn.BubbleMaxEpx,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(72, 8, 0, 0),
+            Margin = new Thickness(ConversationColumn.BubbleSpacerEpx, 8, 0, 0),
             Background = Palette.Surface(ActualTheme),
             Opacity = row.Failed ? 0.9 : 0.6,
         };
@@ -2851,7 +2990,7 @@ public sealed partial class ChatsView : UserControl
         {
             Spacing = 3,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(72, 8, 0, 0),
+            Margin = new Thickness(ConversationColumn.BubbleSpacerEpx, 8, 0, 0),
         };
         column.Children.Add(balloon);
         column.Children.Add(PendingFoot(chat, row));
@@ -3758,9 +3897,9 @@ public sealed partial class ChatsView : UserControl
         {
             ThreadStack.Children.Add(PendingElement(chat, row));
         }
-        // A reply needs a root to answer.
+        // A reply needs a root to answer — and Send, something to say (DrawThreadSend).
         ThreadComposer.IsEnabled = hasRoot;
-        ThreadSend.IsEnabled = hasRoot;
+        DrawThreadSend();
         ShowStickerButton();
         ThreadScroller.UpdateLayout();
         if (atEnd)
@@ -3771,10 +3910,16 @@ public sealed partial class ChatsView : UserControl
 
     private void OnThreadComposerKey(object sender, KeyRoutedEventArgs e)
     {
-        // Escape closes the panel, as it closes the web client's.
+        // Escape closes the panel, as it closes the web client's — but never over a draft (#106, doc 2.3): closing would lose
+        // it, so with words in the box the first Esc only leaves the box, onto the panel's Close, and a second closes it.
         if (e.Key == Windows.System.VirtualKey.Escape)
         {
             e.Handled = true;
+            if (!string.IsNullOrWhiteSpace(ThreadComposer.Text))
+            {
+                ThreadClose.Focus(FocusState.Keyboard);
+                return;
+            }
             CloseThread();
             return;
         }
@@ -4794,13 +4939,13 @@ public sealed partial class ChatsView : UserControl
         liveLevels.Clear();
         levelsMove = StickerImaging.AnimationsWanted();
         RecordingLevels.Children.Clear();
-        RecordingRow.MinHeight = Math.Max(ComposerBox.ActualHeight, ComposerTools.ActualHeight);
+        RecordingRow.MinHeight = Math.Max(ComposerField.ActualHeight, ComposerTools.ActualHeight);
         RecordingStop.Visibility = recordingBesideDraft ? Visibility.Collapsed : Visibility.Visible;
         RecordingWarning.Visibility = Visibility.Collapsed;
         RecordingTime.ClearValue(TextBlock.ForegroundProperty);
         ShowRecording();
         ComposerTools.Visibility = Visibility.Collapsed;
-        ComposerBox.Visibility = Visibility.Collapsed;
+        ComposerField.Visibility = Visibility.Collapsed;
         SuggestionScroller.Visibility = Visibility.Collapsed;
         RecordingRow.Visibility = Visibility.Visible;
         FadeIn(RecordingRow);
@@ -5014,9 +5159,9 @@ public sealed partial class ChatsView : UserControl
         RecordingRow.Visibility = Visibility.Collapsed;
         RecordingLevels.Visibility = Visibility.Collapsed;
         RecordingLevels.Children.Clear();
-        ComposerBox.Visibility = Visibility.Visible;
+        ComposerField.Visibility = Visibility.Visible;
         ComposerTools.Visibility = Visibility.Visible;
-        FadeIn(ComposerBox);
+        FadeIn(ComposerField);
         FadeIn(ComposerTools);
         AttachButton.IsEnabled = !finding;
         DrawSuggestions();
@@ -7198,37 +7343,43 @@ public sealed partial class ChatsView : UserControl
     private string? Kind(ConversationModel chat) => connection.Chats.Kind(chat.ChatId);
 
     /// <summary>
-    /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone. The arrows walk
-    /// it, Enter or Tab takes the highlighted name, and a click takes that one.
+    /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone — the assistant first,
+    /// where it can be asked, whose pick writes @ai (#106). The arrows walk it, Enter or Tab takes the highlighted name, and a
+    /// click takes that one.
     /// </summary>
     private void DrawSuggestions()
     {
         offered = open is { } chat
-            ? ComposerMentions.Offered(ComposerBox.Text, connection.Chats.Members(), Reader, connection.Chats.IsBlocked, IsFamily(chat), editing is not null)
+            ? ComposerMentions.Choices(
+                ComposerBox.Text, connection.Chats.Members(), Reader, connection.Chats.IsBlocked, IsFamily(chat), editing is not null,
+                connection.Session.State.Assistant)
             : [];
         SuggestionStrip.Children.Clear();
         SuggestionScroller.Visibility = offered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         AutomationProperties.SetName(SuggestionStrip, services.Say.Get("Members"));
         for (var index = 0; index < offered.Count; index++)
         {
-            var member = offered[index];
+            var choice = offered[index];
             var label = new TextBlock();
-            label.Inlines.Add(new Run { Text = member.DisplayName, FontWeight = FontWeights.SemiBold });
-            if (member.Username.Length > 0)
+            label.Inlines.Add(new Run { Text = choice.Name, FontWeight = FontWeights.SemiBold });
+            if (choice.Handle.Length > 0)
             {
-                label.Inlines.Add(new Run { Text = $"  @{member.Username}", Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+                label.Inlines.Add(new Run { Text = $"  {choice.Handle}", Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
             }
             var button = new Button { Content = label, IsTabStop = false };
             if (index == Math.Min(activeName, offered.Count - 1))
             {
                 button.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
             }
-            button.Click += (_, _) => AcceptName(member.DisplayName);
+            button.Click += (_, _) => AcceptName(choice.Writes);
             SuggestionStrip.Children.Add(button);
         }
     }
 
-    /// <summary>The trailing @prefix replaced by the whole name — which is what makes the resolution at send find somebody.</summary>
+    /// <summary>
+    /// The trailing @prefix replaced by the whole name — which is what makes the resolution at send find somebody — or by
+    /// <c>ai</c>, the assistant's token.
+    /// </summary>
     private void AcceptName(string name)
     {
         ComposerBox.Text = Mentions.Accept(ComposerBox.Text, name);
@@ -7697,7 +7848,7 @@ public sealed partial class ChatsView : UserControl
                 case Windows.System.VirtualKey.Enter when !NewLineHeld(e):
                 case Windows.System.VirtualKey.Tab when !shifted:
                     e.Handled = true;
-                    AcceptName(offered[Math.Min(activeName, offered.Count - 1)].DisplayName);
+                    AcceptName(offered[Math.Min(activeName, offered.Count - 1)].Writes);
                     return;
             }
         }
@@ -7893,7 +8044,8 @@ public sealed partial class ChatsView : UserControl
             // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
             offersPictureAttach: AssistantPictures.OffersPictureAttach(kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true),
             familyChat: kind == "family",
-            roundAvailable: RoundAvailable());
+            roundAvailable: RoundAvailable(),
+            assistantAvailable: AttachMenu.AssistantAvailable(state.Assistant));
         foreach (var group in groups)
         {
             // Between groups only: a group that would be empty is not in the list, so it draws no line.
@@ -7968,6 +8120,19 @@ public sealed partial class ChatsView : UserControl
                 };
                 video.Click += (_, _) => _ = OpenRoundRecorderAsync(AttachButton);
                 return video;
+            }
+            case AttachItem.AskAssistant:
+            {
+                // "Ask the Assistant" (#106): @ai put into the draft, as its button did — appended, the caret at the end. Off in
+                // an edit, which cannot become a request.
+                var ask = new MenuFlyoutItem
+                {
+                    Text = say.Get("Ask the Assistant"),
+                    Icon = new FontIcon { Glyph = ((char)ComposerRow.AssistantGlyph).ToString() },
+                    IsEnabled = editing is null,
+                };
+                ask.Click += (_, _) => PutInComposer(AssistantText.WithAssistantMention(ComposerBox.Text));
+                return ask;
             }
             case AttachItem.Location:
             {
@@ -8075,31 +8240,17 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>
-    /// The video button inside the empty field (S1.4): drawn — dimmed with the slot's sentence in rows 7 and 8 — or not, and
-    /// the field given trailing room while it is, so a placeholder never runs under it. Its 600 ms guard starts when it appears.
+    /// The video button inside the empty field (S1.4): drawn — dimmed with the slot's sentence in rows 7 and 8 — or not, beside
+    /// the stickers, and the field given trailing room while it is (DrawField), so a placeholder never runs under it. Its
+    /// 600 ms guard starts when it appears.
     /// </summary>
     private void DrawVideoDoor()
     {
         var door = CurrentDoor();
-        var showing = door.Kind != DoorKind.Hidden && ComposerBox.Visibility == Visibility.Visible;
+        var showing = door.Kind != DoorKind.Hidden && ComposerField.Visibility == Visibility.Visible;
         doorGuard.Showing(showing, Environment.TickCount64);
-        var shown = showing ? Visibility.Visible : Visibility.Collapsed;
-        if (VideoDoorButton.Visibility != shown)
-        {
-            VideoDoorButton.Visibility = shown;
-        }
-        // Room for it at the field's trailing edge while it shows; the style's own padding back when it goes.
-        if (showing && !fieldPadded)
-        {
-            var padding = ComposerBox.Padding;
-            ComposerBox.Padding = new Thickness(padding.Left, padding.Top, padding.Right + ComposerButton.MinTargetWindowsEpx, padding.Bottom);
-            fieldPadded = true;
-        }
-        else if (!showing && fieldPadded)
-        {
-            ComposerBox.ClearValue(Control.PaddingProperty);
-            fieldPadded = false;
-        }
+        doorShowing = showing;
+        DrawField();
         if (!showing)
         {
             return;
@@ -9444,7 +9595,7 @@ public sealed partial class ChatsView : UserControl
         {
             Spacing = 3,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(72, 8, 0, 0),
+            Margin = new Thickness(ConversationColumn.BubbleSpacerEpx, 8, 0, 0),
         };
         var face = new Grid
         {
@@ -9701,7 +9852,7 @@ public sealed partial class ChatsView : UserControl
         {
             Spacing = 3,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(72, 8, 0, 0),
+            Margin = new Thickness(ConversationColumn.BubbleSpacerEpx, 8, 0, 0),
         };
         var frame = new Grid
         {

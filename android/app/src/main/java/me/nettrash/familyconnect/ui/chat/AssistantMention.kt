@@ -39,6 +39,22 @@ object AssistantMention {
     fun mentions(body: String): Boolean = ranges(body).isNotEmpty()
 
     /**
+     * What "Ask the assistant" appends to [draft] (#106 moved it from a
+     * button of the composer row into the paperclip's menu): `@ai ` at the
+     * END, with a space before it unless the draft is empty or already
+     * ends in one — or null, adding nothing, when the draft already asks.
+     *
+     * Appended, never inserted at the caret: moving somebody's cursor is
+     * worse than adding to the end of what they were writing, and the
+     * phone and the Mac do the same.
+     */
+    fun appendedToken(draft: String): String? {
+        if (mentions(draft)) return null
+        val gap = if (draft.isEmpty() || draft.endsWith(" ")) "" else " "
+        return "$gap$TOKEN "
+    }
+
+    /**
      * Every `@ai` in [body], as ranges of UTF-16 code-unit indices — which
      * is what `AnnotatedString` spans and `String.substring` both want.
      *

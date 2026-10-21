@@ -54,6 +54,8 @@ import me.nettrash.familyconnect.ui.components.VoiceBubbleRules
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.automirrored.outlined.Subject
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.graphics.lerp
 import me.nettrash.familyconnect.ui.components.WaveformBars
 import me.nettrash.familyconnect.ui.components.VoicePlayDisc
@@ -101,6 +103,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -141,8 +145,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.data.net.dto.MentionsCodec
-import me.nettrash.familyconnect.data.net.dto.MentionDto
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -173,7 +177,6 @@ import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Block
@@ -201,7 +204,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
@@ -324,8 +326,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.R
-import me.nettrash.familyconnect.ui.components.readableColumn
-import me.nettrash.familyconnect.ui.components.READABLE_COLUMN
+import me.nettrash.familyconnect.ui.components.ConversationColumn
+import me.nettrash.familyconnect.ui.components.conversationComposerColumn
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
@@ -1075,6 +1077,7 @@ fun ChatScreen(
     // again with its next Enter.
     val slotFocus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val softwareKeyboard = LocalSoftwareKeyboardController.current
     val configuration = LocalConfiguration.current
     val hapticsOnThisDevice by rememberUpdatedState(voiceHapticsOn(configuration.smallestScreenWidthDp))
     val keyboardAttached by rememberUpdatedState(
@@ -1093,7 +1096,20 @@ fun ChatScreen(
                     runCatching { slotFocus.requestFocus() }
                 }
                 ChatViewModel.VoiceEffect.Ended ->
-                    if (keyboardAttached) runCatching { focusRequester.requestFocus() }
+                    if (keyboardAttached) {
+                        runCatching { focusRequester.requestFocus() }
+                        // ...WITHOUT the on-screen keyboard (#106, section 3):
+                        // focusing a text field raises the IME on any device
+                        // set to show it beside a physical keyboard, so a
+                        // Delete tapped on the recording row used to open the
+                        // keyboard by itself, over the conversation, though
+                        // nobody had asked to type. The field takes focus for
+                        // the physical keyboard's sake alone (S2.4); the IME
+                        // comes when the field is tapped. A frame later, once
+                        // the field's own show request has gone out.
+                        withFrameNanos { }
+                        softwareKeyboard?.hide()
+                    }
             }
         }
     }
@@ -1444,6 +1460,15 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                // What the Scaffold's padding already covers — the system
+                // bars, the navigation bar at the bottom among them — is
+                // consumed here, so the two below add only the REST: the
+                // navigation bar used to be added twice (an empty 24dp band
+                // under the composer), and with the keyboard up the IME's
+                // whole height went on top of the Scaffold's share of it,
+                // which on a phone lying down was the composer's last 24dp
+                // (#106, section 3, fix 4).
+                .consumeWindowInsets(padding)
                 .imePadding()
                 .navigationBarsPadding()
                 // A hardware keyboard (S1.6, S2.4): Ctrl+Shift+R records a voice
@@ -1475,14 +1500,20 @@ fun ChatScreen(
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
-                // The readable column (iOS: threadMaxWidth = 560): on a
-                // window wider than it the thread is padded in from BOTH
-                // sides so bubbles, polls and cards keep a phone's measure
-                // instead of running 1,000dp across a tablet. Padding
-                // rather than a narrower list, so a drag anywhere in the
-                // window still scrolls the thread and the empty state's
-                // fillParentMaxSize still means the whole pane.
-                val columnInset = ((maxWidth - READABLE_COLUMN) / 2).coerceAtLeast(0.dp)
+                // The conversation's column (#106, ConversationColumn —
+                // `min(pane − 2 × gutter, 1024)`, centred), replacing #44's
+                // 560dp readable column: bubbles keep a readable measure by
+                // their OWN cap (bubbleMaxWidth, 560dp), so the column can
+                // use a tablet's width instead of leaving 40% of it empty.
+                // Padding rather than a narrower list, so a drag anywhere in
+                // the window still scrolls the thread and the empty state's
+                // fillParentMaxSize still means the whole pane. On a phone
+                // the padding is the 12dp it always was.
+                val listPadding = ConversationColumn.listPadding(maxWidth)
+                // How far the column stands in from where a phone's would:
+                // zero until the 1024dp cap binds. What the jump-to-newest
+                // button adds to its own margin, to stay at the column's edge.
+                val columnInset = ConversationColumn.composerInset(maxWidth)
                 // The width every row is laid out at, said once for all of
                 // them (LocalBubbleRowWidth says why): the list's width less
                 // its horizontal content padding, in whole pixels, each side
@@ -1491,7 +1522,7 @@ fun ChatScreen(
                 // report.
                 val density = LocalDensity.current
                 val rowWidth = with(density) {
-                    val sidePx = (12.dp + columnInset).roundToPx()
+                    val sidePx = listPadding.roundToPx()
                     (constraints.maxWidth - 2 * sidePx).coerceAtLeast(0).toDp()
                 }
                 CompositionLocalProvider(
@@ -1503,7 +1534,7 @@ fun ChatScreen(
                         modifier = Modifier.fillMaxSize(),
                         reverseLayout = true,
                         contentPadding = PaddingValues(
-                            horizontal = 12.dp + columnInset,
+                            horizontal = listPadding,
                             vertical = 8.dp,
                         ),
                     ) {
@@ -1757,6 +1788,20 @@ fun ChatScreen(
             // While the video recorder is open the composer row is not drawn
             // and takes no hits: the recorder's own bar is where it was
             // (#79, decision 41).
+            //
+            // The composer keeps its full height whatever is left for it
+            // (#106, section 3, fix 4): a phone lying down with the keyboard
+            // up leaves about 60dp under the top bar, and the row used to
+            // take what the Column could still give it — squeezed to a
+            // sliver, the field and the slot cut in half. Measured at its
+            // own height and anchored to the bottom, it wins over the list
+            // (which collapses, as it must) and any overflow rises under the
+            // top bar instead of out of the row.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(align = Alignment.Bottom, unbounded = true),
+            ) {
             ComposerUnderRecorder(recorderOpen = recorderOpen) {
             InputBar(
                 state = viewModel.inputState,
@@ -1873,7 +1918,13 @@ fun ChatScreen(
                 onDeleteNotSent = viewModel::deleteNotSent,
                 onDiscardStaged = viewModel::discardStaged,
                 onDismissMediaError = viewModel::clearMediaState,
-                showsAssistantMention = chat?.kind == "family" && assistantUserId != null,
+                // The family chat, on a server with an assistant that names
+                // its processor — the rule iOS has always used (#106).
+                showsAssistantMention = AssistantConsent.offersMention(
+                    chatKind = chat?.kind,
+                    hasAssistant = assistantUserId != null,
+                    processor = assistantProcessor,
+                ),
                 onShareLocation = shareLocation,
                 // The picture affordances. Each is absent, not disabled,
                 // wherever the server cannot do the thing — an affordance
@@ -1899,6 +1950,7 @@ fun ChatScreen(
                 assistantIsUnnamed = assistantIsUnnamed,
                 onReviewAssistantConsent = viewModel::send,
             )
+            }
             }
         }
     }
@@ -3237,7 +3289,11 @@ internal fun MessageBubble(
     }
     val uriHandler = LocalUriHandler.current
     BubbleRowBox(LocalBubbleRowWidth.current) { rowWidth ->
-        val bubbleMaxWidth = rowWidth * 0.8f
+        // Four fifths of the row on a phone, as always; at most 560dp on a
+        // wide pane (#106) — the column grew to use the pane, the balloon
+        // did not, so a line of text stays readable and a photo's balloon
+        // stays photo-sized.
+        val bubbleMaxWidth = ConversationColumn.bubbleMaxWidth(rowWidth)
         val bubbleModifier = Modifier
             .widthIn(max = bubbleMaxWidth)
             .onGloballyPositioned {
@@ -4915,11 +4971,15 @@ private fun ThreadChip(count: Long, onClick: () -> Unit, modifier: Modifier = Mo
  * a member"): a row of names above the composer, narrowed as the name is
  * typed; picking one rewrites the trailing `@prefix` into `@Name `. iOS:
  * MentionSuggestions.
+ *
+ * Since #106 the assistant leads it in the family chat — its own button
+ * left the composer row — drawn with the assistant's sparkle and its own
+ * name, and picked as `@ai ` (MemberMention.accept), never as that name.
  */
 @Composable
 internal fun MentionSuggestionsRow(
-    candidates: List<MentionDto>,
-    onPick: (String) -> Unit,
+    candidates: List<MemberMention.Suggestion>,
+    onPick: (MemberMention.Suggestion) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyRow(
@@ -4927,13 +4987,38 @@ internal fun MentionSuggestionsRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        items(candidates, key = { it.userId }) { member ->
-            val label = stringResource(R.string.s_mention_member, member.name)
-            AssistChip(
-                onClick = { onPick(member.name) },
-                label = { Text("@" + member.name, maxLines = 1) },
-                modifier = Modifier.semantics { contentDescription = label },
-            )
+        items(candidates, key = { it.key }) { suggestion ->
+            when (suggestion) {
+                is MemberMention.Suggestion.Assistant -> {
+                    // What it does, for TalkBack: the chip reads its name,
+                    // and picking it asks the assistant rather than naming
+                    // a member.
+                    val label = stringResource(R.string.s_ask_the_assistant)
+                    AssistChip(
+                        onClick = { onPick(suggestion) },
+                        label = { Text("@" + suggestion.displayName, maxLines = 1) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(AssistChipDefaults.IconSize),
+                            )
+                        },
+                        modifier = Modifier
+                            .testTag("mention-assistant")
+                            .semantics { contentDescription = label },
+                    )
+                }
+                is MemberMention.Suggestion.Member -> {
+                    val member = suggestion.mention
+                    val label = stringResource(R.string.s_mention_member, member.name)
+                    AssistChip(
+                        onClick = { onPick(suggestion) },
+                        label = { Text("@" + member.name, maxLines = 1) },
+                        modifier = Modifier.semantics { contentDescription = label },
+                    )
+                }
+            }
         }
     }
 }
@@ -6192,9 +6277,12 @@ internal fun InputBar(
     replyDraft: ReplyToDto?,
     replyAuthorName: String,
     onCancelReply: () -> Unit,
-    /** The roster offered while a member is being named (docs/protocol.md, "Mentioning a member"). */
-    mentionCandidates: List<MentionDto> = emptyList(),
-    onPickMention: (String) -> Unit = {},
+    /**
+     * The roster offered while a member is being named (docs/protocol.md,
+     * "Mentioning a member") — the assistant first, in the family chat (#106).
+     */
+    mentionCandidates: List<MemberMention.Suggestion> = emptyList(),
+    onPickMention: (MemberMention.Suggestion) -> Unit = {},
     focusRequester: FocusRequester,
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
@@ -6310,10 +6398,12 @@ internal fun InputBar(
     /** Share where this device is, once. */
     onShareLocation: () -> Unit,
     /**
-     * Offer the `@ai` mention. Only in the family chat, and only on a
-     * server that has an assistant — an absent `assistant` on
-     * `GET /families/mine` is the whole capability check
-     * (docs/protocol.md, "Mentioning the assistant in the family chat").
+     * Offer the `@ai` mention — since #106 the paperclip's "Ask the
+     * assistant", which appends `@ai ` as the row's button used to (the
+     * `@` strip offers it too, through [mentionCandidates]). Only in the
+     * family chat, and only on a server that has an assistant AND names
+     * its processor ([AssistantConsent.offersMention]; docs/protocol.md,
+     * "Mentioning the assistant in the family chat").
      */
     showsAssistantMention: Boolean,
     /**
@@ -6389,25 +6479,38 @@ internal fun InputBar(
         Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             // The bar spans the window; what is IN it is held to the
-            // thread's readable column, centred the same way, so the
-            // attach button and Send sit over the bubbles they act on
-            // rather than at the window's far edges (iOS does the same).
-            Column(modifier = Modifier.readableColumn()) {
-            if (mentionCandidates.isNotEmpty()) {
-                MentionSuggestionsRow(candidates = mentionCandidates, onPick = onPickMention)
-            }
-            if (replyDraft != null) {
-                ReplyBanner(
-                    authorName = replyAuthorName,
-                    excerpt = replyDraft.excerpt,
-                    onCancel = onCancelReply,
+            // conversation's column (#106, ConversationColumn), centred the
+            // same way, so the attach button and Send sit over the bubbles
+            // they act on rather than at the window's far edges — and the
+            // composer is exactly as wide as the messages above it, where
+            // #44's 560dp cap squeezed it to a phone's width under a
+            // pane-wide bar.
+            Column(modifier = Modifier.conversationComposerColumn()) {
+            // What stacks above the row, in one order on every client (#106,
+            // docs/composer-and-wide-layout-2026-10-20.md, 2.4), top to bottom
+            // and nearest the field being what is being written: the notices,
+            // the voice messages not sent, the reply or edit banner, the staged
+            // attachments, the mention suggestions, then the row — with the
+            // busy/failure line directly above the row. The mentions used to
+            // sit on top, far from the `@` that raised them, and the notices
+            // below the banner.
+            //
+            // The consent first of the notices: nothing goes to the model until this
+            // member has said so, and the strip appears as the draft
+            // becomes one that would travel — in the assistant's own chat
+            // from the first character, in the family chat the moment
+            // `@ai` is typed (docs/protocol.md, "Consenting to the
+            // assistant").
+            if (assistantConsentNeeded && assistantProcessor != null) {
+                AssistantConsentStrip(
+                    processor = assistantProcessor,
+                    onReview = onReviewAssistantConsent,
                 )
-            }
-            if (isEditing) {
-                EditBanner(onCancel = onCancelEdit)
-            }
-            if (mediaState != ChatViewModel.MediaSendState.Idle) {
-                MediaStrip(state = mediaState, onDismiss = onDismissMediaError, onOpenSettings = onOpenSettings)
+            } else if (assistantIsUnnamed) {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen.
+                AssistantConsentStrip(processor = null, onReview = null)
             }
             if (pictureNotice != null) {
                 AssistantPictureStrip(notice = pictureNotice)
@@ -6425,23 +6528,6 @@ internal fun InputBar(
                 PictureDescriptionHintText(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
-            }
-            // Before any of those: nothing goes to the model until this
-            // member has said so, and the strip appears as the draft
-            // becomes one that would travel — in the assistant's own chat
-            // from the first character, in the family chat the moment
-            // `@ai` is typed (docs/protocol.md, "Consenting to the
-            // assistant").
-            if (assistantConsentNeeded && assistantProcessor != null) {
-                AssistantConsentStrip(
-                    processor = assistantProcessor,
-                    onReview = onReviewAssistantConsent,
-                )
-            } else if (assistantIsUnnamed) {
-                // Nothing to agree TO on such a server, so there is no
-                // screen to raise — only this, and a send that does not
-                // happen.
-                AssistantConsentStrip(processor = null, onReview = null)
             }
             // Each in its own row, never carried by the composer's Send: a
             // recording nobody finished deciding about cannot ride out with
@@ -6469,8 +6555,25 @@ internal fun InputBar(
                     )
                 }
             }
+            if (replyDraft != null) {
+                ReplyBanner(
+                    authorName = replyAuthorName,
+                    excerpt = replyDraft.excerpt,
+                    onCancel = onCancelReply,
+                )
+            }
+            if (isEditing) {
+                EditBanner(onCancel = onCancelEdit)
+            }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)
+            }
+            if (mentionCandidates.isNotEmpty()) {
+                MentionSuggestionsRow(candidates = mentionCandidates, onPick = onPickMention)
+            }
+            // "Sending…" or what went wrong, against the row it is about (2.4).
+            if (mediaState != ChatViewModel.MediaSendState.Idle) {
+                MediaStrip(state = mediaState, onDismiss = onDismissMediaError, onOpenSettings = onOpenSettings)
             }
             Row(
                 modifier = Modifier
@@ -6489,6 +6592,16 @@ internal fun InputBar(
                 // message, which has no second attachment to add.
                 // One "attach" intent with two sources — the composer is
                 // too narrow for two buttons beside the field.
+                //
+                // THE ROW (#106, docs/composer-and-wide-layout-2026-10-20.md,
+                // 2.1): the paperclip ALONE before the field, the stickers
+                // (and the assistant chat's paintbrush, and the empty
+                // field's video button) INSIDE it at its trailing edge, the
+                // slot after it. Three buttons used to stand before the
+                // field and left it 120dp on a 412dp phone, 35dp in a
+                // 600dp split pane; `@ai` moved into the paperclip's menu
+                // and the `@` strip, and nothing in the row moves under the
+                // thumb when the first character is typed.
                 //
                 // While a voice message is recorded, its row takes the field's
                 // place AND the buttons' (S2.4).
@@ -6521,7 +6634,8 @@ internal fun InputBar(
                             // only be refused is worse than a disabled button.
                             enabled = !isEditing && !mediaState.isBusy &&
                                 staged.size < AttachmentDto.MAX_PER_MESSAGE,
-                            modifier = Modifier.size(44.dp),
+                            // A 48dp target, as every control of the row (#106).
+                            modifier = Modifier.size(ComposerSlot.MIN_TARGET_ANDROID_DP.dp),
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.AttachFile,
@@ -6582,6 +6696,7 @@ internal fun InputBar(
                                     recordVoice = showsRecordVoice,
                                     recordVideo = videoRoundAvailable,
                                     poll = showsPoll,
+                                    askAssistant = showsAssistantMention,
                                 )
                                 groups.forEachIndexed { index, group ->
                                     if (index > 0) HorizontalDivider()
@@ -6682,6 +6797,24 @@ internal fun InputBar(
                                                     onRecordVideo()
                                                 },
                                             )
+                                            // "Ask the assistant" (#106): what the row's
+                                            // sparkle button did, in words, where people
+                                            // look for words — `@ai ` at the end of the
+                                            // draft, and the field focused to write the
+                                            // question.
+                                            AttachMenu.Item.ASK_ASSISTANT -> DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.s_ask_the_assistant)) },
+                                                leadingIcon = {
+                                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                                },
+                                                onClick = {
+                                                    closeAttachMenu()
+                                                    AssistantMention.appendedToken(state.text.toString())?.let { token ->
+                                                        state.edit { append(token) }
+                                                    }
+                                                    runCatching { focusRequester.requestFocus() }
+                                                },
+                                            )
                                             AttachMenu.Item.LOCATION -> DropdownMenuItem(
                                                 text = { Text(stringResource(R.string.s_share_your_location)) },
                                                 leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
@@ -6708,79 +6841,6 @@ internal fun InputBar(
                                     }
                                 }
                             }
-                        }
-                    }
-                    if (showsStickers) {
-                        // Its own button rather than a line in the attach menu:
-                        // a sticker is SENT by the tap that picks it, which is a
-                        // different promise from everything in that menu — those
-                        // stage something for Send.
-                        IconButton(
-                            onClick = {
-                                onOtherAction()
-                                onOpenStickers()
-                            },
-                            // An edit borrows the composer to rewrite one
-                            // message; a sticker is a new one.
-                            enabled = !isEditing,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.EmojiEmotions,
-                                contentDescription = stringResource(R.string.s_stickers),
-                            )
-                        }
-                    }
-                    if (showsAssistantMention) {
-                        IconButton(
-                            onClick = {
-                                onOtherAction()
-                                // Appended, never inserted at the caret: moving
-                                // somebody's cursor is worse than adding to the
-                                // end of what they were writing, and the phone
-                                // and the Mac do the same.
-                                val current = state.text.toString()
-                                if (!AssistantMention.mentions(current)) {
-                                    val prefix = when {
-                                        current.isEmpty() -> ""
-                                        current.endsWith(" ") -> ""
-                                        else -> " "
-                                    }
-                                    state.edit {
-                                        append(prefix + AssistantMention.TOKEN + " ")
-                                    }
-                                }
-                                focusRequester.requestFocus()
-                            },
-                            enabled = !isEditing,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.AutoAwesome,
-                                contentDescription = stringResource(R.string.s_ask_the_assistant),
-                            )
-                        }
-                    }
-                    if (showsDraw) {
-                        // Its own button, out of the attach menu (#78, the
-                        // owner's choice), and the assistant chat's only. It
-                        // attaches nothing — it rewrites the draft into a
-                        // request, because the token has to be FIRST.
-                        IconButton(
-                            onClick = {
-                                onOtherAction()
-                                onAskForPicture()
-                                focusRequester.requestFocus()
-                            },
-                            // An edit borrows the composer to rewrite one
-                            // message, which calls no model.
-                            enabled = !isEditing,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Brush,
-                                contentDescription = stringResource(R.string.s_ask_for_a_picture),
-                            )
                         }
                     }
                 }
@@ -6846,7 +6906,59 @@ internal fun InputBar(
                 val videoDoor = videoEntries
                     ?.let { ComposerSlot.videoDoor(it.copy(slot = it.slot.copy(draftBlank = state.text.isBlank()))) }
                     ?: ComposerSlot.Door.Hidden
+                // What sits inside the field, at its trailing edge (#106): the
+                // stickers always — empty or typing, so nothing moves under
+                // the thumb; the assistant chat's paintbrush beside them; and
+                // the empty field's video button. None of them while a
+                // recording row covers the field: they are the field's.
+                val showsVideoDoor = videoDoor != ComposerSlot.Door.Hidden && !covered
+                val fieldStickers = showsStickers && !covered
+                val fieldDraw = showsDraw && !covered
+                val hasTrailing = showsVideoDoor || fieldStickers || fieldDraw
                 Box(modifier = Modifier.weight(1f)) {
+                    ComposerPill(
+                        modifier = Modifier.fillMaxWidth().alpha(fieldAlpha),
+                        trailing = {
+                            if (fieldStickers) {
+                                StickerFieldButton(
+                                    // An edit borrows the composer to rewrite one
+                                    // message; a sticker is a new one.
+                                    enabled = !isEditing,
+                                    onClick = {
+                                        onOtherAction()
+                                        onOpenStickers()
+                                    },
+                                )
+                            }
+                            if (fieldDraw) {
+                                // The assistant chat's "Ask for a picture" stays a
+                                // button (#78, the owner's choice; #106 kept it),
+                                // inside the field beside the stickers: that chat
+                                // has no microphone and no video button, so there
+                                // is room. It attaches nothing — it rewrites the
+                                // draft into a request, because the token has to
+                                // be FIRST.
+                                FieldIconButton(
+                                    // An edit borrows the composer to rewrite one
+                                    // message, which calls no model.
+                                    enabled = !isEditing,
+                                    onClick = {
+                                        onOtherAction()
+                                        onAskForPicture()
+                                        focusRequester.requestFocus()
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Brush,
+                                        contentDescription = stringResource(R.string.s_ask_for_a_picture),
+                                    )
+                                }
+                            }
+                            if (showsVideoDoor) {
+                                VideoDoorButton(door = videoDoor, onOpen = onRecordVideo)
+                            }
+                        },
+                    ) {
                     TextField(
                         state = state,
                         inputTransformation = proseInput,
@@ -6856,56 +6968,42 @@ internal fun InputBar(
                         // heightIn beats the field's 56.dp defaultMinSize, which
                         // only applies when the incoming min constraint is zero.
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 44.dp)
-                            .alpha(fieldAlpha)
+                            .weight(1f)
+                            .heightIn(min = ComposerPillMinHeight)
                             .semantics { if (covered) hideFromAccessibility() }
                             // Hands-free, focus is the slot's: Tab walks Delete,
                             // Stop and the slot, never the hidden field (S2.4).
                             .focusProperties { canFocus = handsFree == null }
                             .focusRequester(focusRequester)
                             .contentReceiver(pasteReceiver)
-                            // Ctrl+Enter (or Cmd+Enter) sends from a hardware
-                            // keyboard; Enter alone keeps inserting a line
-                            // break, as it always has on a phone.
+                            // A hardware keyboard (#106, 2.3): Enter sends and
+                            // Shift+Enter breaks the line, as on the Mac, the
+                            // web and Windows; Ctrl/Cmd+Enter keeps sending.
+                            // The on-screen keyboard's Enter is still a line
+                            // break — ComposerKeys tells the two apart by the
+                            // event, never by the window. Send never records
+                            // (S1.3): Enter in an empty field does nothing.
                             .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown &&
-                                    event.key == Key.Enter &&
-                                    (event.isCtrlPressed || event.isMetaPressed)
-                                ) {
-                                    onSend()
-                                    true
-                                } else {
-                                    false
+                                when (event.composerAction()) {
+                                    ComposerKeys.Action.SEND -> {
+                                        onSend()
+                                        true
+                                    }
+                                    ComposerKeys.Action.NEWLINE, ComposerKeys.Action.PASS -> false
                                 }
                             },
-                        // M3's default content padding for an unlabelled field is
-                        // 16.dp top and bottom, which is taller than the 44.dp
-                        // buttons' own centring — so both icons sat visibly below
-                        // the last line of text. 10.dp puts the text's optical
-                        // centre level with them at one line and at five alike.
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        contentPadding = composerFieldPadding(hasTrailing),
                         placeholder = {
                             // Truncated, never overlapped, by the video button (S1.4).
                             Text(stringResource(R.string.s_message), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        },
-                        trailingIcon = if (videoDoor != ComposerSlot.Door.Hidden && !covered) {
-                            { VideoDoorButton(door = videoDoor, onOpen = onRecordVideo) }
-                        } else {
-                            null
                         },
                         lineLimits = TextFieldLineLimits.MultiLine(
                             minHeightInLines = 1,
                             maxHeightInLines = 5,
                         ),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        ),
+                        colors = composerFieldColors(),
                     )
+                    }
                     val rowKind = if (handsFree != null) VoiceRowKind.HANDS_FREE else VoiceRowKind.NONE
                     Crossfade(
                         targetState = rowKind,
@@ -6953,6 +7051,10 @@ internal fun InputBar(
                     onRecordVideo = if (videoRoundAvailable) onRecordVideo else null,
                     focusRequester = slotFocus,
                     pressIgnored = onSlotPressIgnored,
+                    // The 44dp disc in a 48dp box: level with the 48dp pill
+                    // and paperclip, whose centres it would otherwise sit
+                    // 2dp below in a bottom-aligned row.
+                    modifier = Modifier.padding(vertical = SLOT_LEVELLING),
                 )
             }
         }

@@ -420,7 +420,12 @@ struct MessageBubbleView: View {
                 // the retry button, and it cannot wait for the run to end.
                 if isRunEnd || message.isEdited || message.state != .sent {
                 HStack(spacing: 4) {
-                    Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                    // The locale's own short time — "20:58" or "8:58 PM".
+                    // `.hour(.twoDigits(amPM: .omitted))` read the clock
+                    // the locale keeps and then dropped its AM/PM, so on a
+                    // 12-hour locale 20:58 came out "08:58" beside a
+                    // status bar saying 8:58 PM.
+                    Text(message.createdAt, format: .dateTime.hour().minute())
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     if message.isEdited {
@@ -445,6 +450,18 @@ struct MessageBubbleView: View {
                     threadChip
                 }
             }
+            // A bubble's widest is min(column − 48, 560) (#106, 2.2): the
+            // spacer gives the first, this the second. OUTSIDE the balloon
+            // and everything it draws, so it can only narrow the PROPOSAL
+            // the balloon wraps against — never widen what it fills, which
+            // is the full-width-slab mistake this view has shipped twice.
+            // The frame is empty beside a short bubble (it hit-tests
+            // nothing there) and aligned to the speaker's side, so the
+            // balloon sits where it did. Below 608 points of column — every
+            // iPhone — the spacer binds first and the proposal is exactly
+            // what it was; on an iPad's 1024-pt column a line of text stops
+            // at a readable 560 instead of running 976.
+            .frame(maxWidth: ComposerRow.maxBubble, alignment: isMine ? .trailing : .leading)
 
             if !isMine { Spacer(minLength: 48) }
         }

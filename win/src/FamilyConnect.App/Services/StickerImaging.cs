@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
 using Microsoft.UI.Xaml.Media;
@@ -95,19 +96,18 @@ internal sealed class StickerPicture(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>ANIMATED WHERE THIS MACHINE CAN, FRAME ZERO WHERE IT CANNOT</b> (docs/protocol.md, "Animation
-/// is stored, never refused and never stripped"). XAML's <c>BitmapImage</c> plays an animated GIF
-/// by itself and is not documented to play anything else, so an animated WebP is asked of Windows
-/// Imaging frame by frame and cycled by <c>StickerAnimator</c>. Whether the codec hands out more
-/// than one frame is a fact about the machine: WebP is decoded by the "WebP Image Extension", which
-/// ships with Windows 11 and can be removed, and PNG's decoder has never read APNG. Every one of
-/// those outcomes lands on the same line — the first frame — and a sticker drawn still is the same
-/// sticker.
+/// <b>ANIMATED BY THIS CLIENT'S OWN FRAMES</b> (docs/protocol.md, "Animation is stored, never refused
+/// and never stripped"). An animated WebP's or APNG's frames are walked from its own bytes and
+/// composited by App.Logic (<see cref="StickerFrames"/>, the compositor #96 makes videos with); Windows
+/// Imaging only decodes one standalone still at a time, which it does for both formats. Until
+/// 2026-10-20 Windows Imaging was asked for the frames themselves — and PNG's decoder has never read
+/// APNG, and the "WebP Image Extension" hands out one frame or the file's raw sub-rectangles — so on
+/// Windows nearly every animated sticker was drawn as its first frame.
 /// </para>
 /// <para>
-/// <b>ONLY WHOLE FRAMES ARE CYCLED.</b> A frame that is not the size of the first is a codec
-/// handing out the file's raw sub-rectangles, which would have to be composited with offsets and
-/// blend rules this code would be guessing at. That is drawn as frame zero instead of drawn wrong.
+/// <b>WINDOWS IMAGING'S FRAMES ARE THE FALLBACK</b>, for a file whose frames cannot be walked: there
+/// only whole frames are cycled. A frame that is not the size of the first is a codec handing out
+/// raw sub-rectangles, drawn as frame zero instead of drawn wrong.
 /// </para>
 /// <para>
 /// <b>EVERY CALL HERE IS GUARDED.</b> A codec that is missing, a file that lies and a stream that
@@ -129,7 +129,9 @@ internal static class StickerImaging
             using var stream = await StreamAsync(bytes);
             if (animate && StickerFile.IsAnimated(bytes))
             {
-                var moving = await FramesAsync(stream, bytes, box, rasterScale);
+                // This client's own frames first; Windows Imaging's only where the file's own frames cannot be walked.
+                var moving = await OwnFramesAsync(bytes, box, rasterScale)
+                    ?? await FramesAsync(stream, bytes, box, rasterScale);
                 if (moving is not null)
                 {
                     return moving;
@@ -150,6 +152,74 @@ internal static class StickerImaging
         {
             // No codec for it here (WebP without its extension), or bytes that are not a picture.
             Diagnostics.Write($"decoding a sticker: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Every frame, walked and composited by this client (<see cref="StickerFrames"/>), or null when the file's frames cannot
+    /// be had that way — or are not worth animating — and Windows Imaging is asked instead.
+    /// </summary>
+    /// <remarks>
+    /// The fix for animated stickers drawn still on Windows: an APNG's frames do not exist for PNG's decoder, and an
+    /// animated WebP's come out of the WebP extension as one frame or as raw rectangles, so <see cref="FramesAsync"/> alone
+    /// drew nearly every animated sticker as its first frame. The work on the bytes runs off the window's thread; only the
+    /// <c>SoftwareBitmapSource</c>s are made on it, as they must be.
+    /// </remarks>
+    private static async Task<StickerPicture?> OwnFramesAsync(byte[] bytes, double box, double rasterScale)
+    {
+        try
+        {
+            if (AnimationPrep.Layout(bytes) is not { } layout)
+            {
+                return null;
+            }
+            var (width, height) = StickerAnimation.DecodeSize(layout.Width, layout.Height, box, rasterScale);
+            if (!StickerAnimation.Worth(layout.Frames.Count, width, height))
+            {
+                return null;
+            }
+            var drawn = await Task.Run(async () =>
+                await AnimationPreparing.SourceAsync(bytes, layout, CancellationToken.None) is { } source
+                    && source.Layout.Frames.Count == layout.Frames.Count
+                    ? await StickerFrames.ComposeAsync(source.Layout, source.Pixels, width, height)
+                    : null);
+            if (drawn is null)
+            {
+                Diagnostics.Write("an animated sticker's frames could not be walked; asking Windows Imaging for them");
+                return null;
+            }
+            var frames = new List<ImageSource>(drawn.Count);
+            var kept = false;
+            try
+            {
+                foreach (var pixels in drawn)
+                {
+                    using var bitmap = SoftwareBitmap.CreateCopyFromBuffer(
+                        pixels.AsBuffer(), BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
+                    var source = new SoftwareBitmapSource();
+                    // On the list BEFORE it is filled, so a fill that throws still leaves it where it is given back.
+                    frames.Add(source);
+                    await source.SetBitmapAsync(bitmap);
+                }
+                kept = true;
+                return new StickerPicture(
+                    frames[0], frames,
+                    // The durations the walk read, frame for frame — the same file's word the compositor drew by.
+                    StickerAnimation.Clock([.. layout.StatedMs.Select(ms => (int)Math.Min(ms, int.MaxValue))], frames.Count),
+                    StickerAnimation.DecodedBytes(frames.Count, width, height));
+            }
+            finally
+            {
+                if (!kept)
+                {
+                    StickerPicture.GiveBack(frames);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"composing a sticker's frames: {e.GetType().Name}");
             return null;
         }
     }

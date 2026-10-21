@@ -21,6 +21,7 @@ package me.nettrash.familyconnect.ui.components
 import android.content.Context
 import androidx.compose.foundation.layout.height
 import com.google.android.gms.maps.GoogleMapOptions
+import com.google.android.gms.maps.model.MapColorScheme
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -675,6 +676,31 @@ private fun LocationRow(
  *
  * Interaction is deliberately none: the whole row is clickable and hands
  * off to a real map app, which is where panning belongs.
+ *
+ * **The colour scheme is pinned to LIGHT, and that is a crash fix, not a
+ * style choice.** Lite mode has no colour scheme at all (the bitmap is
+ * always the light one), and the renderer that Play services ships
+ * refuses to be handed one: `java.lang.UnsupportedOperationException:
+ * setMapColorScheme not supported in Lite mode`, thrown from
+ * `MapView.onCreate` — that is, from maps-compose's lifecycle observer,
+ * before a single frame — took the whole process down the moment a thread
+ * with a shared location opened with Map previews on (API 36 Play image,
+ * Maps module 24.51). Nothing in this file had changed. play-services-maps
+ * 20.1.0 initialises `GoogleMapOptions`' colour scheme to -1 ("unset")
+ * where 19.2.0 and 20.0.0 left it at 0 (LIGHT), and a renderer older than
+ * 26.x applies whatever is in the options inside `onCreate` and throws on
+ * a lite map; 26.x renderers ignore it silently
+ * (googlemaps/android-maps-compose#1028). maps-compose 9.0.1 carries the
+ * fix for #1028 — it never applies ITS OWN `mapColorScheme` to a lite map —
+ * and that is not enough, because the value that crashes is the SDK's own
+ * default, which maps-compose never touches. Writing LIGHT puts the
+ * pre-20.1.0 value back on the wire, the one every renderer accepts, and
+ * `mapColorScheme = null` keeps maps-compose from ever re-applying its
+ * FOLLOW_SYSTEM default here, which is exactly how #601 (6.0.0) and #1028
+ * (8.6.0) crashed lite maps before. Before removing either: open a thread
+ * with a shared location, Map previews ON, on a Play-image emulator whose
+ * Maps module predates 26 — a current phone proves nothing, its renderer
+ * swallows the call.
  */
 @Composable
 private fun LocationMap(latitude: Double, longitude: Double) {
@@ -689,7 +715,12 @@ private fun LocationMap(latitude: Double, longitude: Double) {
             .fillMaxWidth()
             .height(140.dp),
         cameraPositionState = cameraPositionState,
-        googleMapOptionsFactory = { GoogleMapOptions().liteMode(true) },
+        googleMapOptionsFactory = {
+            GoogleMapOptions()
+                .liteMode(true)
+                .mapColorScheme(MapColorScheme.LIGHT)
+        },
+        mapColorScheme = null,
         uiSettings = MapUiSettings(
             compassEnabled = false,
             mapToolbarEnabled = false,

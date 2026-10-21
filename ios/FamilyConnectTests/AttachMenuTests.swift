@@ -22,12 +22,14 @@ struct AttachMenuTests {
         hasCamera: Bool = true,
         offersVoice: Bool = true,
         roundAvailable: Bool = true,
-        isFamilyChat: Bool = false
+        isFamilyChat: Bool = false,
+        offersAssistant: Bool = false
     ) -> [[I]] {
         AttachMenu.groups(
             isAssistantChat: isAssistantChat, showsPictureAttach: showsPictureAttach,
             hasCamera: hasCamera, offersVoice: offersVoice,
-            roundAvailable: roundAvailable, isFamilyChat: isFamilyChat)
+            roundAvailable: roundAvailable, isFamilyChat: isFamilyChat,
+            offersAssistant: offersAssistant)
     }
 
     @Test("the family chat on the phone: the spec's full menu, in three groups")
@@ -37,6 +39,31 @@ struct AttachMenuTests {
             [.voiceMessage, .videoMessage],
             [.location, .poll],
         ])
+    }
+
+    @Test("the family chat with an assistant: Ask the Assistant leads the last group (#106)")
+    func familyChatAsksTheAssistant() {
+        #expect(Self.phone(isFamilyChat: true, offersAssistant: true) == [
+            [.photoOrVideo, .camera, .file, .paste],
+            [.voiceMessage, .videoMessage],
+            [.askAssistant, .location, .poll],
+        ])
+        // The Mac's list is the phone's without the camera — the item too.
+        #expect(Self.phone(hasCamera: false, isFamilyChat: true, offersAssistant: true).last
+            == [.askAssistant, .location, .poll])
+    }
+
+    @Test("Ask the Assistant only in the family chat — never a direct chat or the assistant's own")
+    func askTheAssistantIsTheFamilyChats() {
+        // A server with an assistant offers it to every chat's composer;
+        // the rule keeps the item to the one chat where `@ai` is answered.
+        #expect(!Self.phone(offersAssistant: true).joined().contains(.askAssistant))
+        #expect(!Self.phone(
+            isAssistantChat: true, showsPictureAttach: true, offersVoice: false,
+            roundAvailable: false, offersAssistant: true
+        ).joined().contains(.askAssistant))
+        // And in the family chat, only where the assistant is offered.
+        #expect(!Self.phone(isFamilyChat: true).joined().contains(.askAssistant))
     }
 
     @Test("a direct chat has no poll")
@@ -103,16 +130,19 @@ struct AttachMenuTests {
         ])
     }
 
-    @Test("no group is ever empty, and no item appears twice", arguments: 0..<64)
+    @Test("no group is ever empty, and no item appears twice", arguments: 0..<128)
     func neverAnEmptyGroup(bits: Int) {
         let groups = AttachMenu.groups(
             isAssistantChat: bits & 1 != 0, showsPictureAttach: bits & 2 != 0,
             hasCamera: bits & 4 != 0, offersVoice: bits & 8 != 0,
-            roundAvailable: bits & 16 != 0, isFamilyChat: bits & 32 != 0)
+            roundAvailable: bits & 16 != 0, isFamilyChat: bits & 32 != 0,
+            offersAssistant: bits & 64 != 0)
         #expect(groups.allSatisfy { !$0.isEmpty })
         let items = Array(groups.joined())
         #expect(Set(items).count == items.count)
         #expect(!(items.contains(.photoOrVideo) && items.contains(.assistantPhoto)))
+        // Ask the Assistant is the family chat's alone (#106).
+        #expect(!items.contains(.askAssistant) || (bits & 32 != 0 && bits & 64 != 0))
         // The spec's order holds whatever is left out.
         let order = I.allCases
         let positions = items.compactMap { order.firstIndex(of: $0) }

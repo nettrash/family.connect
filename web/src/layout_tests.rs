@@ -1079,6 +1079,35 @@ async fn a_send_carries_what_is_staged() {
     root.remove();
 }
 
+/// The conversation hands its staged strip to the composer, which draws it
+/// in the one order of #106 (doc 2.4): inside the composer, under the
+/// notices and the reply, above the row — not above the whole composer.
+#[wasm_bindgen_test]
+async fn the_staged_strip_is_drawn_inside_the_composer_above_the_row() {
+    let root = pane();
+    let (_, on_action) = recorder();
+    let mut props = props_with(vec![my_message(100, "hi")], None, on_action);
+    props.staged = vec![crate::staged::Prepared::location(1.0, 2.0, None)];
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+    TimeoutFuture::new(50).await;
+    let strip = query(&root, ".composer-wrap > .staging");
+    let mut after = strip.next_element_sibling();
+    while let Some(element) = after
+        .as_ref()
+        .filter(|element| !element.matches(".composer").unwrap_or(false))
+    {
+        after = element.next_element_sibling();
+    }
+    assert!(after.is_some(), "the row comes after the strip");
+    assert!(
+        rect_of(&root, ".staging").bottom() <= rect_of(&root, ".composer").top() + 0.5,
+        "above the row"
+    );
+    handle.destroy();
+    root.remove();
+}
+
 /// A thread's box says it too: every send there replies to the root, so an
 /// `@ai` there is pointed at the root's photos.
 #[wasm_bindgen_test]
@@ -2282,4 +2311,613 @@ async fn a_sticker_still_on_its_way_spins_and_a_failed_one_does_not() {
     assert_eq!(spinner("#queued .chat-sticker"), "\"\"", "on its way");
     assert_eq!(spinner("#failed .chat-sticker"), "none", "not coming");
     root.remove();
+}
+
+// --- #106: the row, the column, one surface at a time ----------------------
+// docs/composer-and-wide-layout-2026-10-20.md
+
+/// An assistant that names who answers: `@ai` may be written.
+fn an_assistant() -> crate::model::Assistant {
+    assistant_answered_by(Some("Microsoft — Azure OpenAI"))
+}
+
+fn rect_of(root: &Element, selector: &str) -> web_sys::DomRect {
+    query(root, selector).get_bounding_client_rect()
+}
+
+/// The hit area a button's `::after` gives it, as wide and as tall.
+fn hit_area(element: &Element) -> (f64, f64) {
+    let style = web_sys::window()
+        .expect("a window")
+        .get_computed_style_with_pseudo_elt(element, "::after")
+        .expect("a style")
+        .expect("a style");
+    let px = |property: &str| {
+        style
+            .get_property_value(property)
+            .unwrap_or_default()
+            .trim_end_matches("px")
+            .parse::<f64>()
+            .unwrap_or(0.0)
+    };
+    (px("width"), px("height"))
+}
+
+/// THE ROW ON A PHONE (#106, 2.1, and section 3's first fix): with every
+/// button the family chat can have — the paperclip, the sticker button and
+/// the video button inside the field, the slot — the slot is wholly on the
+/// screen (it was clipped ~31 px off a 393-px one), the words have room
+/// (at least 150 px at 390), and the sticker button stays INSIDE the field
+/// while typing, so nothing moves under the thumb. `@ai` has no button of
+/// its own any more, and every button is a 44-px target.
+#[wasm_bindgen_test]
+async fn the_row_fits_a_phone_with_every_button() {
+    for width in [320.0, 360.0, 390.0] {
+        let root = pane_of(width);
+        let (_, on_action) = recorder();
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.stickers = Some(pack_of(3));
+        props.assistant = Some(an_assistant());
+        props.round = crate::round_video::RoundLimits::of(Some(60_000), Some(20_000_000));
+        let handle =
+            yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+        // The video button comes once the browser has said what it can
+        // record; where it cannot, the row is only roomier.
+        let door = crate::round_record_tests::until(5_000, || {
+            root.query_selector(".composer .field .video-door")
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await;
+        let pane = root.get_bounding_client_rect();
+        let slot = rect_of(&root, ".composer .slot");
+        assert!(
+            slot.left() >= pane.left() - 0.5 && slot.right() <= pane.right() + 0.5,
+            "{width}px: the slot is {}..{} in a pane {}..{}",
+            slot.left(),
+            slot.right(),
+            pane.left(),
+            pane.right()
+        );
+        assert!(slot.width() >= 39.5, "{width}px: the slot is whole");
+        let field = rect_of(&root, ".composer textarea");
+        if width >= 390.0 {
+            assert!(
+                field.width() >= 150.0,
+                "390px: the words have {} px (door {door})",
+                field.width()
+            );
+        }
+        let area = query(&root, ".composer .field > textarea");
+        assert_eq!(
+            area.get_attribute("placeholder").as_deref(),
+            Some("Message")
+        );
+        assert!(
+            root.query_selector(".composer .field .pack-menu .tool")
+                .unwrap()
+                .is_some(),
+            "{width}px: the sticker button is inside the field"
+        );
+        assert!(
+            root.query_selector(".composer > button").unwrap().is_none(),
+            "{width}px: no `@ai` button in the row"
+        );
+        let in_field = root.query_selector_all(".composer .field button").unwrap();
+        assert_eq!(
+            in_field.length(),
+            if door { 2 } else { 1 },
+            "{width}px: in the field, the sticker button and the video button only"
+        );
+        let buttons = root
+            .query_selector_all(".composer .tool, .composer .slot, .composer .video-door")
+            .unwrap();
+        for index in 0..buttons.length() {
+            let button: Element = buttons.item(index).unwrap().dyn_into().unwrap();
+            let (wide, tall) = hit_area(&button);
+            assert!(
+                wide >= 43.5 && tall >= 43.5,
+                "{width}px: {} is a {wide}×{tall} target",
+                button.get_attribute("aria-label").unwrap_or_default()
+            );
+        }
+
+        // Typing: the sticker button stays where it was, and the words only
+        // gain the video button's room.
+        let sticker = rect_of(&root, ".composer .field .pack-menu .tool");
+        type_into(&area, "Sunday works for us, we'll bring the cake");
+        TimeoutFuture::new(30).await;
+        let typed = rect_of(&root, ".composer .field .pack-menu .tool");
+        assert!(
+            (typed.right() - sticker.right()).abs() <= 48.5 && typed.width() > 0.0,
+            "{width}px: the sticker button stays in the field"
+        );
+        assert!(rect_of(&root, ".composer textarea").width() >= field.width() - 0.5);
+        let slot = rect_of(&root, ".composer .slot");
+        assert!(
+            slot.right() <= pane.right() + 0.5,
+            "{width}px: Send is whole"
+        );
+        handle.destroy();
+        root.remove();
+    }
+}
+
+/// A message by somebody else, or by me, long enough to fill any bubble.
+fn long_message(id: i64, sender_id: i64) -> Message {
+    Message {
+        sender_id,
+        body: "So much to say about Sunday ".repeat(40),
+        ..message(id)
+    }
+}
+
+/// THE COLUMN (#106, 2.2): on a wide window the messages AND the composer
+/// are one column, min(pane − 32, 1024) wide and centred — the composer
+/// exactly as wide as the messages above it — and a bubble is at most
+/// min(column − 48, 560), where it was 78 % of whatever the pane was.
+#[wasm_bindgen_test]
+async fn the_column_and_its_bubbles_on_a_wide_window() {
+    for width in [1920.0, 1440.0, 600.0] {
+        let root = pane_of(width);
+        let (_, on_action) = recorder();
+        let props = props_with(
+            vec![long_message(1, 9), long_message(2, 7)],
+            None,
+            on_action,
+        );
+        let handle =
+            yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+        TimeoutFuture::new(60).await;
+        let pane = root.get_bounding_client_rect();
+        let column = (width - 32.0).min(1024.0);
+        let side = (width - column) / 2.0;
+
+        // The composer: from the column's leading edge to its trailing one.
+        let clip = rect_of(&root, ".composer .attach > .tool");
+        let slot = rect_of(&root, ".composer .slot");
+        assert!(
+            (clip.left() - pane.left() - side).abs() <= 1.0,
+            "{width}px: the paperclip at {} — the column starts at {side}",
+            clip.left() - pane.left()
+        );
+        assert!(
+            (pane.right() - slot.right() - side).abs() <= 1.0,
+            "{width}px: the slot ends {} from the edge, not {side}",
+            pane.right() - slot.right()
+        );
+
+        // The messages: the same column, less the list's scrollbar.
+        let rows = root.query_selector_all(".messages .row").unwrap();
+        assert_eq!(rows.length(), 2);
+        for index in 0..rows.length() {
+            let row: Element = rows.item(index).unwrap().dyn_into().unwrap();
+            let drawn = row.get_bounding_client_rect();
+            assert!(
+                (drawn.left() - pane.left() - side).abs() <= 1.0,
+                "{width}px: row {index} starts at {}",
+                drawn.left() - pane.left()
+            );
+            assert!(
+                drawn.width() <= column + 0.5 && drawn.width() >= column - 20.0,
+                "{width}px: row {index} is {} wide in a {column} column",
+                drawn.width()
+            );
+            let bubble = query(&row, ".bubble").get_bounding_client_rect();
+            let most = (drawn.width() - 48.0).min(560.0);
+            assert!(
+                (bubble.width() - most).abs() <= 1.0,
+                "{width}px: bubble {index} is {} wide, not min(column − 48, 560) = {most}",
+                bubble.width()
+            );
+            // Mine at the column's trailing edge, theirs at its leading one.
+            if index == 1 {
+                assert!(
+                    (bubble.right() - drawn.right()).abs() <= 1.0,
+                    "{width}px: mine"
+                );
+            } else {
+                assert!(
+                    (bubble.left() - drawn.left()).abs() <= 1.0,
+                    "{width}px: theirs"
+                );
+            }
+        }
+        handle.destroy();
+        root.remove();
+    }
+}
+
+/// THE JUMP BUTTON COVERS NOTHING (#106): it stood over the end of the last
+/// bubble — mine end there. Now it has a strip of its own under the list.
+#[wasm_bindgen_test]
+async fn the_jump_button_never_covers_a_bubble() {
+    let root = pane();
+    let (_, on_action) = recorder();
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props(40)).render();
+    TimeoutFuture::new(60).await;
+    let messages = query(&root, ".messages");
+    assert!(root.query_selector(".jump-newest").unwrap().is_none());
+    scroll_to(&messages, messages.scroll_top() - 120);
+    TimeoutFuture::new(40).await;
+    let jump = rect_of(&root, ".jump-newest");
+    let list = messages.get_bounding_client_rect();
+    assert!(
+        jump.top() >= list.bottom() - 0.5,
+        "under the list ({} vs {}), not over its last bubble",
+        jump.top(),
+        list.bottom()
+    );
+    drop(on_action);
+    handle.destroy();
+    root.remove();
+}
+
+/// The way back to the list, in the conversation's own header: it closes
+/// the chat — nothing is read while the list is in front.
+#[wasm_bindgen_test]
+async fn the_way_back_to_the_list_closes_the_chat() {
+    let root = pane();
+    let (log, on_action) = recorder();
+    let handle = yew::Renderer::<Conversation>::with_root_and_props(
+        root.clone().into(),
+        props_with(vec![message(1)], None, on_action),
+    )
+    .render();
+    TimeoutFuture::new(50).await;
+    let back = query(&root, ".conversation-bar .back-to-chats");
+    assert_eq!(visible_text(&back).trim(), "Chats");
+    back.dyn_into_html().click();
+    TimeoutFuture::new(20).await;
+    assert!(log.borrow().contains(&Action::CloseChat));
+    handle.destroy();
+    root.remove();
+}
+
+/// "ASK THE ASSISTANT" IN THE PAPERCLIP'S MENU (#106): the first line of its
+/// last group in the family chat — where the row's `@ai` button was — and
+/// it puts `@ai ` into the draft. Not in a direct chat, nor where the server
+/// names nobody.
+#[wasm_bindgen_test]
+async fn the_paperclip_asks_the_assistant_in_the_family_chat() {
+    let mount = |kind: &'static str, processor: Option<&'static str>| async move {
+        let root = pane();
+        let (_, on_action) = recorder();
+        let mut props = props_with(vec![message(1)], None, on_action);
+        props.item.chat.kind = kind.into();
+        props.assistant = Some(assistant_answered_by(processor));
+        let handle =
+            yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+        TimeoutFuture::new(50).await;
+        query(&root, ".composer .attach > .tool")
+            .dyn_into_html()
+            .click();
+        TimeoutFuture::new(30).await;
+        (root, handle)
+    };
+    let (root, handle) = mount("family", Some("Microsoft — Azure OpenAI")).await;
+    let children = root
+        .query_selector_all(".attach-menu > hr, .attach-menu > [role=menuitem]")
+        .unwrap();
+    let mut last_group = Vec::new();
+    for index in 0..children.length() {
+        let child: Element = children.item(index).unwrap().dyn_into().unwrap();
+        if child.tag_name() == "HR" {
+            last_group.clear();
+        } else if child.get_attribute("role").as_deref() == Some("menuitem") {
+            last_group.push(visible_text(&child).trim().to_string());
+        }
+    }
+    assert_eq!(last_group, ["Ask the Assistant", "Location", "Poll"]);
+    click_labelled(&root, ".attach-menu [role=menuitem]", "Ask the Assistant");
+    TimeoutFuture::new(30).await;
+    let area: HtmlTextAreaElement = query(&root, "textarea").dyn_into().unwrap();
+    assert_eq!(area.value(), "@ai ");
+    assert!(
+        root.query_selector(".attach-menu").unwrap().is_none(),
+        "closed"
+    );
+    handle.destroy();
+    root.remove();
+
+    for (kind, processor) in [
+        ("direct", Some("Microsoft — Azure OpenAI")),
+        ("family", None),
+    ] {
+        let (root, handle) = mount(kind, processor).await;
+        let lines = root
+            .query_selector_all(".attach-menu [role=menuitem]")
+            .unwrap();
+        let said: Vec<String> = (0..lines.length())
+            .map(|index| {
+                visible_text(&lines.item(index).unwrap().dyn_into::<Element>().unwrap())
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            !said.iter().any(|line| line == "Ask the Assistant"),
+            "{kind}, {processor:?}: {said:?}"
+        );
+        handle.destroy();
+        root.remove();
+    }
+}
+
+/// ESC IN A THREAD NEVER LOSES A DRAFT (#106, 2.3): with words in the box
+/// the first Esc leaves the box, onto the panel, and the panel stays; a
+/// second closes it. With the box empty, one closes it, as it always did.
+#[wasm_bindgen_test]
+async fn esc_in_a_thread_keeps_its_draft() {
+    use crate::views::thread_panel::{ThreadPanel, ThreadPanelProps};
+    let escape = |at: &Element| {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        at.dispatch_event(
+            &web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+        )
+        .unwrap();
+    };
+    let closed = |log: &Rc<RefCell<Vec<Action>>>| {
+        log.borrow()
+            .iter()
+            .filter(|action| **action == Action::CloseThread)
+            .count()
+    };
+    let root = pane();
+    let (log, on_action) = recorder();
+    let props = ThreadPanelProps {
+        chat_id: 42,
+        root_id: 1,
+        messages: vec![message(1)].into(),
+        my_user_id: 7,
+        is_family_chat: true,
+        is_ai_chat: false,
+        names: Default::default(),
+        members: Vec::new(),
+        assistant: None,
+        blocked: Default::default(),
+        revealed: Default::default(),
+        revealed_quotes: Default::default(),
+        failed: Default::default(),
+        ai_failed: Default::default(),
+        family: None,
+        stickers: None,
+        agreed_to_assistant: true,
+        transcripts: Default::default(),
+        on_action,
+    };
+    let handle =
+        yew::Renderer::<ThreadPanel>::with_root_and_props(root.clone().into(), props).render();
+    TimeoutFuture::new(50).await;
+    let area = query(&root, ".thread-panel textarea");
+    area.clone().dyn_into_html().focus().unwrap();
+    type_into(&area, "on my way");
+    TimeoutFuture::new(20).await;
+    escape(&area);
+    TimeoutFuture::new(20).await;
+    assert_eq!(closed(&log), 0, "a draft keeps the panel open");
+    let panel = query(&root, ".thread-panel");
+    assert_eq!(
+        document().active_element().as_ref(),
+        Some(&panel),
+        "the box is left, onto the panel"
+    );
+    assert_eq!(
+        area.dyn_ref::<HtmlTextAreaElement>().unwrap().value(),
+        "on my way",
+        "its words kept"
+    );
+    escape(&panel);
+    TimeoutFuture::new(20).await;
+    assert_eq!(closed(&log), 1, "a second Esc closes it");
+
+    type_into(&area, "");
+    TimeoutFuture::new(20).await;
+    escape(&area);
+    TimeoutFuture::new(20).await;
+    assert_eq!(closed(&log), 2, "an empty box: one Esc");
+    handle.destroy();
+    root.remove();
+}
+
+/// The shipped stylesheet in a frame `width` wide — a WINDOW that wide, so
+/// its media queries are the ones a phone or a tablet meets — with `body`.
+async fn framed_window(width: u32, body: &str) -> (web_sys::HtmlIFrameElement, Document) {
+    let frame: web_sys::HtmlIFrameElement = document()
+        .create_element("iframe")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    frame
+        .set_attribute(
+            "style",
+            &format!("position:fixed;top:0;left:0;width:{width}px;height:640px;border:0"),
+        )
+        .unwrap();
+    let html = format!(
+        "<!doctype html><html><head><style>{}</style></head><body>{body}\
+         <i id=\"drawn\"></i></body></html>",
+        include_str!("../styles.css")
+    );
+    frame.set_attribute("srcdoc", &html).unwrap();
+    document().body().unwrap().append_child(&frame).unwrap();
+    assert!(
+        crate::round_record_tests::until(3_000, || frame
+            .content_document()
+            .and_then(|inner| inner.get_element_by_id("drawn"))
+            .is_some())
+        .await,
+        "the frame drew"
+    );
+    TimeoutFuture::new(30).await;
+    let inner = frame.content_document().unwrap();
+    (frame, inner)
+}
+
+/// The signed-in shell as main.rs draws it, with `split`'s classes and what
+/// stands beside the list.
+fn split_shell(classes: &str, pane: &str, panel: &str) -> String {
+    let rows: String = (0..30)
+        .map(|i| {
+            format!(r#"<button class="chat-row"><span class="chat-title">Chat {i}</span></button>"#)
+        })
+        .collect();
+    format!(
+        r#"<div class="app"><header class="bar"><span class="brand">Family Connect</span></header>
+           <div class="split {classes}"><nav class="chat-list">{rows}</nav>{pane}{panel}</div></div>"#
+    )
+}
+
+/// A conversation's markup, as views/conversation.rs draws it.
+const CHAT_PANE: &str = r#"<section class="conversation">
+    <header class="conversation-bar"><button class="back-to-chats">‹ Chats</button>
+      <h2 class="conversation-title">The Smiths</h2></header>
+    <div class="messages"><div class="row"><article class="bubble"><p class="body">Hello</p></article></div></div>
+    <div class="composer-wrap"><div class="composer">
+      <div class="attach"><button class="tool">clip</button></div>
+      <div class="field"><textarea rows="1"></textarea></div>
+      <div class="slot-wrap"><button class="slot">Send</button></div>
+    </div></div></section>"#;
+
+const THREAD_PANEL: &str = r#"<aside class="thread-panel"><header class="thread-bar"><h2>2 replies</h2></header>
+    <div class="thread-messages"></div></aside>"#;
+
+fn shown(document: &Document, selector: &str) -> bool {
+    document
+        .query_selector(selector)
+        .unwrap()
+        .is_some_and(|element| element.get_bounding_client_rect().width() > 0.0)
+}
+
+fn frame_rect(document: &Document, selector: &str) -> web_sys::DomRect {
+    document
+        .query_selector(selector)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{selector} is in the frame"))
+        .get_bounding_client_rect()
+}
+
+/// ONE SURFACE AT A TIME ON A PHONE (#106, section 3): the list, or the
+/// conversation it opened — the whole window, with the way back in its
+/// header — never the list as a band over a chat that showed three
+/// bubbles. With nothing open the list is the whole window. Beside the
+/// list, where there is room, the way back is not drawn.
+#[wasm_bindgen_test]
+async fn a_phone_shows_the_list_or_the_chat_never_both() {
+    let (frame, inner) = framed_window(390, &split_shell("is-reading", CHAT_PANE, "")).await;
+    assert!(!shown(&inner, ".chat-list"), "reading: no list");
+    let chat = frame_rect(&inner, ".conversation");
+    assert!(
+        (chat.width() - 390.0).abs() <= 1.0,
+        "the whole width: {}",
+        chat.width()
+    );
+    assert!(shown(&inner, ".back-to-chats"), "and the way back");
+    let back = frame_rect(&inner, ".back-to-chats");
+    assert!(back.height() >= 43.5, "a 44-px target: {}", back.height());
+    assert!(frame_rect(&inner, ".composer").bottom() <= 640.5);
+    frame.remove();
+
+    let empty =
+        r#"<section class="conversation empty"><p>Pick a chat from the sidebar.</p></section>"#;
+    let (frame, inner) = framed_window(390, &split_shell("is-listing", empty, "")).await;
+    assert!(!shown(&inner, ".conversation"), "listing: no empty pane");
+    let list = frame_rect(&inner, ".chat-list");
+    let split = frame_rect(&inner, ".split");
+    assert!(
+        (list.height() - split.height()).abs() <= 1.0 && (list.width() - 390.0).abs() <= 1.0,
+        "the list is the whole window: {}×{}",
+        list.width(),
+        list.height()
+    );
+    frame.remove();
+
+    let (frame, inner) = framed_window(1024, &split_shell("is-reading", CHAT_PANE, "")).await;
+    assert!(shown(&inner, ".chat-list"), "two panes");
+    assert!(
+        !shown(&inner, ".back-to-chats"),
+        "no way back where the list is beside"
+    );
+    assert!(
+        frame_rect(&inner, ".chat-list").right()
+            <= frame_rect(&inner, ".conversation").left() + 0.5
+    );
+    frame.remove();
+}
+
+/// AN UPRIGHT IPAD (834 px, #106, section 3): a thread or the open polls
+/// open OVER the conversation, from its trailing edge — the conversation
+/// keeps its width and its whole composer under it, where beside it the
+/// chat was squeezed to ~154 px. Wider, the panel stands beside the chat;
+/// on a phone it takes the chat's place.
+#[wasm_bindgen_test]
+async fn an_upright_ipad_opens_a_panel_over_the_chat() {
+    let (frame, inner) = framed_window(
+        834,
+        &split_shell("with-panel is-reading", CHAT_PANE, THREAD_PANEL),
+    )
+    .await;
+    let list = frame_rect(&inner, ".chat-list");
+    let chat = frame_rect(&inner, ".conversation");
+    let panel = frame_rect(&inner, ".thread-panel");
+    let composer = frame_rect(&inner, ".composer-wrap");
+    assert!(
+        (chat.width() - (834.0 - list.width())).abs() <= 1.0 && chat.width() >= 500.0,
+        "the chat keeps its width: {}",
+        chat.width()
+    );
+    assert!(
+        (composer.width() - chat.width()).abs() <= 1.0,
+        "and its whole composer"
+    );
+    assert!(
+        (panel.right() - 834.0).abs() <= 1.0 && panel.left() >= chat.left() - 0.5,
+        "the panel is over the chat: {}..{}",
+        panel.left(),
+        panel.right()
+    );
+    assert!(
+        (280.0..=380.5).contains(&panel.width()),
+        "as wide as beside: {}",
+        panel.width()
+    );
+    let on_top = inner.element_from_point(
+        (panel.left() + panel.width() / 2.0) as f32,
+        (panel.top() + 10.0) as f32,
+    );
+    let aside = inner.query_selector(".thread-panel").unwrap().unwrap();
+    assert!(
+        on_top.is_some_and(|hit| aside.contains(Some(&hit))),
+        "and on top of it"
+    );
+    frame.remove();
+
+    let (frame, inner) = framed_window(
+        1280,
+        &split_shell("with-panel is-reading", CHAT_PANE, THREAD_PANEL),
+    )
+    .await;
+    assert!(
+        frame_rect(&inner, ".conversation").right()
+            <= frame_rect(&inner, ".thread-panel").left() + 0.5,
+        "a desk: beside"
+    );
+    frame.remove();
+
+    let (frame, inner) = framed_window(
+        390,
+        &split_shell("with-panel is-reading", CHAT_PANE, THREAD_PANEL),
+    )
+    .await;
+    assert!(!shown(&inner, ".conversation") && !shown(&inner, ".chat-list"));
+    assert!(
+        (frame_rect(&inner, ".thread-panel").width() - 390.0).abs() <= 1.0,
+        "a phone: alone"
+    );
+    frame.remove();
 }

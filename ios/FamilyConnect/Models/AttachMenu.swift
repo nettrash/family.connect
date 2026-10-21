@@ -18,8 +18,15 @@
 //      Record Voice Message
 //      Record Video Message
 //      ──────────────
+//      Ask the Assistant (the family chat, where the assistant is offered — #106)
 //      Location
 //      Poll              (the family chat only)
+//
+//  "Ask the Assistant" is the `@ai` button that used to stand in the row
+//  (#106, docs/composer-and-wide-layout-2026-10-20.md): the row gave the
+//  field its width back, and the button became the first line of the last
+//  group here and the first entry of the `@` list. It types `@ai ` as the
+//  button did.
 //
 //  This decides WHICH items appear. Whether one that appears is enabled
 //  (a call in progress, an unsent voice message, a busy composer) stays
@@ -39,6 +46,8 @@ nonisolated enum AttachMenu {
         case paste
         case voiceMessage
         case videoMessage
+        /// Types `@ai ` into the draft — the family chat only (#106).
+        case askAssistant
         case location
         case poll
     }
@@ -57,13 +66,19 @@ nonisolated enum AttachMenu {
     ///     alongside `offersVoice` — the video item sits in the recording
     ///     group, right below the voice item.
     ///   - isFamilyChat: the family chat, the one place a poll is valid.
+    ///   - offersAssistant: the server advertises an assistant this client
+    ///     offers (one with a named `processor`) — exactly where `@ai` may
+    ///     be written. Read only in the family chat: a direct chat is two
+    ///     people who each already have a private assistant, and the
+    ///     assistant's own chat answers everything without being asked.
     static func groups(
         isAssistantChat: Bool,
         showsPictureAttach: Bool,
         hasCamera: Bool,
         offersVoice: Bool,
         roundAvailable: Bool,
-        isFamilyChat: Bool
+        isFamilyChat: Bool,
+        offersAssistant: Bool
     ) -> [[Item]] {
         // In the assistant's chat the picture doors ARE the vision gate,
         // and absent rather than disabled when it is shut (protocol.md,
@@ -85,7 +100,9 @@ nonisolated enum AttachMenu {
             if roundAvailable { recording.append(.videoMessage) }
         }
 
-        var sharing: [Item] = [.location]
+        var sharing: [Item] = []
+        if isFamilyChat, offersAssistant { sharing.append(.askAssistant) }
+        sharing.append(.location)
         if isFamilyChat { sharing.append(.poll) }
 
         return [sources, recording, sharing].filter { !$0.isEmpty }

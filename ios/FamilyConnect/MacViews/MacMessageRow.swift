@@ -224,7 +224,10 @@ struct MacMessageRow: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            if isMine { Spacer(minLength: 80) }
+            // The room a bubble always leaves on its far side: 48, the
+            // phone's, since #106 made min(column − 48, 560) every client's
+            // bubble (docs/composer-and-wide-layout-2026-10-20.md, 2.2).
+            if isMine { Spacer(minLength: ComposerRow.bubbleGutter) }
             VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
                 // The run-corner geometry below and the `isRunStart` top
                 // padding are deliberately NOT fed `isHidden`: run GROUPING
@@ -256,7 +259,7 @@ struct MacMessageRow: View {
                     // Double-click is ❤️, as on the phone
                     // (MessagePresentation.doubleTapReaction). On the
                     // BALLOON, not the row: the row spans the full width
-                    // including the 80pt spacer, and double-clicking empty
+                    // including the 48pt spacer, and double-clicking empty
                     // space beside a message must not leave a reaction on
                     // it. Acked only — there is no id to react to before.
                     .onTapGesture(count: 2) { quickHeart() }
@@ -297,9 +300,10 @@ struct MacMessageRow: View {
                     // after it, in .secondary — .tertiary vanished on the
                     // window's grey in dark mode.
                     HStack(spacing: 4) {
-                        Text(
-                            message.createdAt,
-                            format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                        // The locale's own short time (#106, 3.6): the
+                        // two-digit hour with its AM/PM dropped read 20:58
+                        // as "08:58" on a 12-hour Mac.
+                        Text(message.createdAt, format: .dateTime.hour().minute())
                         if message.isEdited {
                             Text("edited")
                         }
@@ -317,7 +321,7 @@ struct MacMessageRow: View {
                     threadChip
                 }
             }
-            if !isMine { Spacer(minLength: 80) }
+            if !isMine { Spacer(minLength: ComposerRow.bubbleGutter) }
         }
         // Runs breathe less than turns do: 1pt inside a run, 8 between.
         .padding(.top, isRunStart ? 8 : 1)
@@ -771,7 +775,9 @@ struct MacMessageRow: View {
         // against the window. Same rule as MessageBubbleView.
         .foregroundStyle(
             isMine && !isBare ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-        .frame(maxWidth: 460, alignment: isMine ? .trailing : .leading)
+        // A bubble's widest, 560 on every client since #106 (it was 460):
+        // after the background, so it bounds the balloon, never fills it.
+        .frame(maxWidth: ComposerRow.maxBubble, alignment: isMine ? .trailing : .leading)
         // A pending row is dimmed until the server has it — the same
         // signal the phone gives, without a status glyph.
         .opacity(message.state == .pending ? 0.55 : 1)
@@ -1341,7 +1347,7 @@ private struct MacQuoteBlock: View {
         // the 420 that used to be here reported ~420pt however short the
         // excerpt was, and every reply balloon on the Mac came out a
         // fixed-width slab regardless of what the reply said. The balloon
-        // already caps itself at 460 after its background, which is the
+        // already caps itself at 560 after its background, which is the
         // bound that was actually wanted. (In an OWN reply the balloon
         // uses BalloonContentLayout, which hugs its widest child and places
         // this block on the leading edge — BalloonEdgeKey's default; it is

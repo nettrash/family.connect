@@ -7033,8 +7033,8 @@
         }
       }
     },
-    "Ask the assistant" : {
-      "comment" : "A button that puts “@ai” in the message field, so the assistant answers in the family chat.",
+    "Ask the Assistant" : {
+      "comment" : "A paperclip-menu item that puts “@ai” in the message field, so the assistant answers in the family chat.",
       "localizations" : {
         "de" : {
           "stringUnit" : {

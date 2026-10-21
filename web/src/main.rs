@@ -581,6 +581,12 @@ fn app() -> Html {
         }
     });
 
+    // What the pane beside the list is: a pane or the board in front, a
+    // conversation, or nothing yet.
+    let in_front = panel.is_some() || (state.board_open && store.family.is_some());
+    let reading = !in_front && open_item.is_some();
+    let listing = !in_front && open_item.is_none();
+
     html! {
         <ContextProvider<Calls> context={calls.clone()}>
         <ContextProvider<MediaLoader> context={media}>
@@ -625,7 +631,17 @@ fn app() -> Html {
                     <button class="link" onclick={dismiss} aria-label={t("Dismiss")}>{ "✕" }</button>
                 </LiveRegion>
             }
-            <div class={classes!("split", (store.thread_view.is_some() || store.open_polls.is_some()).then_some("with-panel"))}>
+            // Below the two panes ONE surface at a time (#106, section 3):
+            // the list, or the conversation it opened — which has the way
+            // back in its header — never the list as a band above the chat.
+            // The board and the panes keep the list above them: the list is
+            // their way out.
+            <div class={classes!(
+                "split",
+                (store.thread_view.is_some() || store.open_polls.is_some()).then_some("with-panel"),
+                reading.then_some("is-reading"),
+                listing.then_some("is-listing"),
+            )}>
                 <ChatList
                     chats={store.sorted_chats()}
                     names={store.names.clone()}

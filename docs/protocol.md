@@ -2638,8 +2638,16 @@ reader sets it (unless they are looking, which reads it at once); reading clears
 own `read` frame from another device clears it there too; and the next `GET /chats` overwrites it.
 
 **What a client shows**, all three clients: typing `@` in the family chat's composer offers the
-roster — every current member but the reader, the blocked and the assistant — narrowed as the
-name is typed; picking one puts `@Name ` into the text. At send the client resolves the mentions
+roster — every current member but the reader and the blocked — narrowed as the name is typed;
+picking one puts `@Name ` into the text. **The assistant is offered too, FIRST, above the members**
+(*amended 2026-10-20, #106*: it used to be left out of the list, and was reached by a button of its
+own in the composer row, which the row no longer has — see `docs/composer-and-wide-layout-2026-10-20.md`).
+It is offered exactly where `@ai` may be written at all — the family chat, on a server that
+advertises `assistant` (with its `processor`) — under its `display_name`, narrowed by that name and
+by `ai` as a member is by theirs, and picking it puts **`@ai `** into the text: the token
+"Mentioning the assistant in the family chat" defines, never `@<display_name>`. It is not a member
+for anything below — it is never a mention target, never in `mention_user_ids`, never marked in a
+bubble as a member is. At send the client resolves the mentions
 FROM THE TEXT against the roster, so a name typed by hand mentions too, a name deleted after
 picking does not, and a draft parked across screens loses nothing. Names are tried longest first, and among
 equally long names the LOWER `user_id` first; a token once claimed is not offered again. So
@@ -2647,7 +2655,7 @@ equally long names the LOWER `user_id` first; a token once claimed is not offere
 without the claim both would be named and both woken — and in a family with two members called
 Anna, one `@Anna` names the one with the lower id on every platform rather than whichever the
 roster happened to list first. A bubble marks the tokens by the same rule. The list rides on the pending row, so
-a retry re-sends it. The web client does all of it too; Windows is not asked to yet.
+a retry re-sends it. The web and Windows clients do all of it too.
 
 ### Mentioning the assistant in the family chat
 

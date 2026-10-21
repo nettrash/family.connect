@@ -2,6 +2,7 @@
 // comfortable size in the middle of the screen it opens on.
 using System.Globalization;
 using System.Runtime.InteropServices;
+using FamilyConnect.App.Logic;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
 
@@ -18,6 +19,12 @@ namespace FamilyConnect.App.Services;
 /// <b>THE RESTORED SIZE IS KEPT, NOT THE MAXIMISED ONE.</b> A window closed maximised opens maximised, and un-maximising it
 /// then goes back to the size it had before — not to a restored window as big as the screen.
 /// </para>
+/// <para>
+/// <b>NEVER NARROWER THAN THE COMPOSER NEEDS</b> (issue #106): below about 560 epx the message field's width went negative.
+/// The least width is <see cref="ConversationColumn.MinimumWindowWidthEpx"/> — the rail, the chat list at its narrowest and
+/// a conversation whose field keeps a 200-epx run of text — in physical pixels at the window's own DPI, set again whenever the
+/// size changes, which is also what a move to a screen of another scale does.
+/// </para>
 /// </remarks>
 internal sealed class WindowPlacement
 {
@@ -28,13 +35,19 @@ internal sealed class WindowPlacement
     private static string Path => System.IO.Path.Combine(AppFolders.Root, "window.txt");
 
     private readonly AppWindow window;
+    private readonly IntPtr handle;
     private RectInt32 restored;
 
-    private WindowPlacement(AppWindow window) => this.window = window;
+    private WindowPlacement(AppWindow window, IntPtr handle)
+    {
+        this.window = window;
+        this.handle = handle;
+    }
 
     public static WindowPlacement Apply(AppWindow window, IntPtr handle)
     {
-        var placement = new WindowPlacement(window);
+        var placement = new WindowPlacement(window, handle);
+        placement.KeepMinimum();
         var maximized = false;
         try
         {
@@ -83,11 +96,39 @@ internal sealed class WindowPlacement
 
     private void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
+        if (args.DidSizeChange)
+        {
+            KeepMinimum();
+        }
         // Only a restored window's bounds are its size: maximised and minimised are states, not sizes to come back to.
         if ((args.DidPositionChange || args.DidSizeChange)
             && sender.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Restored })
         {
             restored = new RectInt32(sender.Position.X, sender.Position.Y, sender.Size.Width, sender.Size.Height);
+        }
+    }
+
+    /// <summary>The least width the window may be dragged to, at its DPI now (<see cref="ConversationColumn.MinimumWindowWidthEpx"/>).</summary>
+    private void KeepMinimum()
+    {
+        try
+        {
+            if (window.Presenter is not OverlappedPresenter presenter)
+            {
+                return;
+            }
+            var dpi = GetDpiForWindow(handle);
+            var scale = dpi > 0 ? dpi / 96.0 : 1.0;
+            var least = (int)Math.Ceiling(ConversationColumn.MinimumWindowWidthEpx * scale);
+            if (presenter.PreferredMinimumWidth != least)
+            {
+                presenter.PreferredMinimumWidth = least;
+            }
+        }
+        catch (Exception e)
+        {
+            // A minimum is never worth a launch: without it the window can be dragged too narrow, as it always could.
+            Diagnostics.Write($"the window's least width: {e.GetType().Name} 0x{e.HResult:X8}");
         }
     }
 

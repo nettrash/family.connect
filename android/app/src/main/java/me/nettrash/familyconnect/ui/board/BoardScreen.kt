@@ -2456,11 +2456,14 @@ internal fun NoteDialog(
                     val offered = MemberMention.query(text.text)
                         ?.let { query -> MemberMention.candidates(roster, query, excluding = emptySet()) }
                         .orEmpty()
+                        // Members only: a note is not a message, and nothing
+                        // on the board reaches the assistant.
+                        .map { MemberMention.Suggestion.Member(it) }
                     if (offered.isNotEmpty()) {
                         MentionSuggestionsRow(
                             candidates = offered,
-                            onPick = { name ->
-                                val accepted = MemberMention.accept(text.text, name)
+                            onPick = { suggestion ->
+                                val accepted = MemberMention.accept(text.text, suggestion)
                                 text = TextFieldValue(accepted, TextRange(accepted.length))
                             },
                         )

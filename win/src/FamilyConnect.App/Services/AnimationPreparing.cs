@@ -116,9 +116,10 @@ internal static class AnimationPreparing
     }
 
     /// <summary>Where each frame's pixels come from, and the layout they are composited by.</summary>
-    private sealed record FrameSource(AnimationLayout Layout, Func<int, CancellationToken, Task<byte[]?>> Pixels);
+    internal sealed record FrameSource(AnimationLayout Layout, Func<int, CancellationToken, Task<byte[]?>> Pixels);
 
-    private static async Task<FrameSource?> SourceAsync(byte[] bytes, AnimationLayout layout, CancellationToken cancel)
+    /// <remarks>Also how an animated STICKER's frames are had (<see cref="StickerImaging"/>).</remarks>
+    internal static async Task<FrameSource?> SourceAsync(byte[] bytes, AnimationLayout layout, CancellationToken cancel)
     {
         switch (layout.Format)
         {

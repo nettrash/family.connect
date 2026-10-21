@@ -59,11 +59,12 @@ import androidx.navigation.navArgument
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.navigation.Routes
 import me.nettrash.familyconnect.ui.chat.ChatScreen
+import me.nettrash.familyconnect.ui.components.LIST_PANE_WIDTH_DP
 import me.nettrash.familyconnect.ui.thread.ThreadScreen
 import me.nettrash.familyconnect.ui.polls.OpenPollsScreen
 
-/** The list pane's width: the iPad sidebar's 320pt, which fits a two-line family name beside its time. */
-private val LIST_PANE_WIDTH = 340.dp
+/** The list pane's width — shared with isTwoPane, which keeps the conversation beside it at least 400dp. */
+private val LIST_PANE_WIDTH = LIST_PANE_WIDTH_DP.dp
 
 @Composable
 fun ChatListDetailPane(

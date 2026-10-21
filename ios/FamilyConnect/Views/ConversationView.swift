@@ -189,6 +189,15 @@ struct ConversationView: View {
     /// smallest.
     @ScaledMetric(relativeTo: .body) private var attachGlyph: CGFloat = 20
     @ScaledMetric(relativeTo: .body) private var sendGlyph: CGFloat = 26
+    /// The width of a glyph INSIDE the field — the stickers, the video
+    /// button, the paintbrush (#106). Narrower than a row control because
+    /// the capsule's own padding is its margin; its height is the row
+    /// control's, so it sits centred on the field's line.
+    @ScaledMetric(relativeTo: .body) private var fieldGlyph: CGFloat = 30
+    /// The shortest text run the field keeps beside the paperclip and the
+    /// slot before it takes a line of its own — the same seven-odd
+    /// characters at every text size (`ComposerRow.shortestTextRun`).
+    @ScaledMetric(relativeTo: .body) private var shortestTextRun: CGFloat = ComposerRow.shortestTextRun
 
     /// Live height of the input bar; changes exactly when the draft wraps
     /// to more (or fewer) lines.
@@ -434,13 +443,16 @@ struct ConversationView: View {
             .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
     }
 
-    /// What the strip offers for the prefix being typed: never the reader
-    /// themself, never the blocked, and never the assistant — which is not
-    /// in the roster and has its own button.
-    private func mentionCandidates(matching query: String) -> [MentionDTO] {
-        MemberMentions.candidates(
+    /// What the strip offers for the prefix being typed: the assistant
+    /// FIRST where it is offered (#106 — its button left the row, and this
+    /// is where people look for it), then the roster: never the reader
+    /// themself, never the blocked. Picking the assistant writes `@ai `.
+    private func mentionCandidates(matching query: String) -> [MentionSuggestion] {
+        MemberMentions.suggestions(
             in: mentionRoster, matching: query,
-            excluding: coordinator.blockedUserIDs.union([currentUserID]))
+            excluding: coordinator.blockedUserIDs.union([currentUserID]),
+            assistantName: offersAssistant
+                ? (AppSettings.assistantName ?? String(localized: "Assistant")) : nil)
     }
 
     /// The members the text names, resolved at send — family chat only,
@@ -507,11 +519,21 @@ struct ConversationView: View {
     /// window exists to prevent, and starting the window MUCH wider (which
     /// is what an anchored open does) makes it materially worse.
     private static let maxWindow = 300
-    /// The readable column the thread's content is capped to (#21/#44),
-    /// named because the floating jump-to-newest button has to line up
-    /// with the SAME column — see the overlay for why that is not a
-    /// cosmetic choice.
-    static let threadMaxWidth: CGFloat = 560
+    /// The cap on the centred container that holds the thread's column
+    /// (#21/#44, widened by #106), named because the floating
+    /// jump-to-newest button and the composer have to line up with the SAME
+    /// column — see the overlay for why that is not a cosmetic choice.
+    ///
+    /// It is the column, 1024, plus the 12-pt inset each container pads
+    /// inside it, so what is left for content is `min(pane − 24, 1024)`
+    /// (`ComposerRow.column`) with no measured width anywhere: on a 13"
+    /// iPad in landscape with the sidebar shown (a 1056-pt detail) the
+    /// column is 1024, and every iPhone is narrower than the cap, so its
+    /// column is the pane less the inset it always had. #44's 560 used to
+    /// be here, and squeezed the iPad's composer to 360 points; it lives on
+    /// as the BUBBLE's cap (`MessageBubbleView`), which is where its
+    /// concern — a phone-sized card inside a pane-wide balloon — was.
+    static let threadMaxWidth: CGFloat = ComposerRow.containerCap()
 
     private var visibleMessages: ArraySlice<MessageEntity> {
         messages.suffix(visibleCount)
@@ -649,14 +671,16 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
-                // A readable column on a big screen, the second half of
-                // #21. The CONTAINER is capped, never the bubble: the
-                // greedy-frame ordering question stays out of
-                // MessageBubbleView (which has shipped a full-width-slab
-                // regression twice) and ReplyBalloonLayout — shared with
-                // macOS, carrying no #if os(iOS) — is untouched. 560 sits
-                // above every iPhone PORTRAIT width, so the bubble subtree
-                // there sees exactly the proposal it ships with today.
+                // The conversation column on a big screen (#21, #44, #106):
+                // min(pane − 24, 1024), centred — see `threadMaxWidth`. The
+                // container sets the COLUMN; the bubble's own 560 cap sits
+                // OUTSIDE its balloon in MessageBubbleView, so the
+                // greedy-frame question that shipped a full-width slab
+                // twice stays out of the balloon, and ReplyBalloonLayout —
+                // shared with macOS, carrying no #if os(iOS) — is
+                // untouched. The cap is above every iPhone width, so the
+                // bubble subtree there sees exactly the proposal it always
+                // had.
                 .frame(maxWidth: Self.threadMaxWidth)
                 .frame(maxWidth: .infinity)
             }
@@ -1647,6 +1671,42 @@ struct ConversationView: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // One order on every client, top to bottom, the nearest to the
+            // field being what is being written (#106, docs/composer-and-
+            // wide-layout-2026-10-20.md, 2.4): notices, voice messages not
+            // sent, the reply or edit banner, staged attachments, mention
+            // suggestions — then the voice line and the busy/failure strip
+            // directly above the row.
+            //
+            // First of the notices: nothing goes to the model until this
+            // member has said so (protocol.md, "Consenting to the
+            // assistant"). Shown rather than a silent refusal, and shown
+            // as the draft becomes one that would travel — in the
+            // assistant's own chat that is from the first character, and
+            // in the family chat it is the moment `@ai` is typed.
+            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
+                AssistantConsentBar(processor: processor) {
+                    afterAssistantConsent = { send() }
+                    showAssistantConsent = true
+                }
+            } else if assistantIsUnnamed {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen (protocol.md, "Consenting to the assistant").
+                assistantPictureNotice(AssistantConsent.unnamedProcessorNotice)
+            }
+            // Two strips, never both: the assistant's own chat says what a
+            // staged photo will meet; the family chat says the same for a
+            // photo an `@ai` draft is about to carry (#56).
+            if let notice = pictureNotice ?? mentionPictureNotice {
+                assistantPictureNotice(notice)
+            }
+            // While the draft is a `/draw` request: the picture provider's
+            // filter refuses most real names and brands, so say so where
+            // the description is being written (`PictureRequestHint`).
+            if showsPictureRequestHint {
+                pictureRequestHint
+            }
             // Voice messages something else stopped, each in its own row,
             // above everything that belongs to the field — they carry their
             // own reply and caption, and no other Send carries them (#79,
@@ -1667,28 +1727,8 @@ struct ConversationView: View {
             if editTarget != nil {
                 editBanner()
             }
-            if mediaState != .idle || composerNotice != nil {
-                mediaStrip
-            }
-            // What the voice flow has to say: the silence warning while a
-            // recording runs, otherwise its latest hint (S2.3, S2.9).
-            if let line = voiceLine {
-                voiceLineView(line)
-            }
             if !staged.isEmpty {
                 stagedRow
-            }
-            // Two strips, never both: the assistant's own chat says what a
-            // staged photo will meet; the family chat says the same for a
-            // photo an `@ai` draft is about to carry (#56).
-            if let notice = pictureNotice ?? mentionPictureNotice {
-                assistantPictureNotice(notice)
-            }
-            // While the draft is a `/draw` request: the picture provider's
-            // filter refuses most real names and brands, so say so where
-            // the description is being written (`PictureRequestHint`).
-            if showsPictureRequestHint {
-                pictureRequestHint
             }
             // The roster, while a member is being named (protocol.md,
             // "Mentioning a member") — family chat only, and only while
@@ -1696,57 +1736,35 @@ struct ConversationView: View {
             if isFamilyChat, let query = MemberMentions.query(in: model.draft) {
                 let candidates = mentionCandidates(matching: query)
                 if !candidates.isEmpty {
-                    MentionSuggestions(candidates: candidates) { name in
+                    MentionSuggestions(suggestions: candidates) { name in
                         model.draft = MemberMentions.accept(draft: model.draft, name: name)
                         // A suggestion taken is a change the person made (S1.1).
                         voice.otherAction()
                     }
                 }
             }
-            // Before any of that: nothing goes to the model until this
-            // member has said so (protocol.md, "Consenting to the
-            // assistant"). Shown rather than a silent refusal, and shown
-            // as the draft becomes one that would travel — in the
-            // assistant's own chat that is from the first character, and
-            // in the family chat it is the moment `@ai` is typed.
-            if assistantConsentNeeded, let processor = AppSettings.assistantProcessor {
-                AssistantConsentBar(processor: processor) {
-                    afterAssistantConsent = { send() }
-                    showAssistantConsent = true
-                }
-            } else if assistantIsUnnamed {
-                // Nothing to agree TO on such a server, so there is no
-                // screen to raise — only this, and a send that does not
-                // happen (protocol.md, "Consenting to the assistant").
-                assistantPictureNotice(AssistantConsent.unnamedProcessorNotice)
+            // What the voice flow has to say: the silence warning while a
+            // recording runs, otherwise its latest hint (S2.3, S2.9).
+            if let line = voiceLine {
+                voiceLineView(line)
             }
-            // The input row: the controls and the field — or, while a voice
-            // message is being made, the row that takes their place at the
-            // same height — and the slot, which never moves (#79, S1.3).
-            HStack(alignment: .bottom, spacing: 8) {
-                ZStack(alignment: .bottom) {
-                    composerControls
-                        .opacity(voiceRowCoversControls ? 0 : 1)
-                        .allowsHitTesting(!voiceRowCoversControls)
-                        .accessibilityHidden(voiceRowCoversControls)
-                    voiceRow
-                }
-                .animation(voiceRowAnimation, value: voiceRowKey)
-                recordSendSlot
+            // Directly above the row on every client (#106, doc 2.4).
+            if mediaState != .idle || composerNotice != nil {
+                mediaStrip
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            inputRow
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
-        // The same readable column the thread is held to (#21/#44),
-        // centred the same way: on an iPad's detail column the bar used to
-        // run the full width while the bubbles sat in a centred 560pt
-        // band, so the attach button was 200pt left of the messages it
-        // attaches to and the send button 100pt right of them. The bar's
-        // material still spans the column — only its controls are held.
-        // Every iPhone is narrower than the cap in PORTRAIT, so nothing
-        // moves there; in landscape a phone is wider than 560, and its
-        // composer now sits over its thread column exactly as the
-        // thread itself already did.
+        // The same column the thread is held to (#21/#44/#106), centred the
+        // same way and padded by the same 12 points, so the composer is
+        // exactly as wide as the messages above it: on an iPad's detail
+        // column the bar used to run the full width while the bubbles sat
+        // in a centred band, so the attach button was 200pt left of the
+        // messages it attaches to and the send button 100pt right of them.
+        // The bar's material still spans the pane — only its controls are
+        // held. Every iPhone is narrower than the cap, so nothing moves
+        // there.
         .frame(maxWidth: Self.threadMaxWidth)
         .frame(maxWidth: .infinity)
         .background(.bar)
@@ -1789,7 +1807,8 @@ struct ConversationView: View {
             hasCamera: CameraPicker.isAvailable,
             offersVoice: offersVoiceMessages,
             roundAvailable: roundAvailable,
-            isFamilyChat: isFamilyChat)
+            isFamilyChat: isFamilyChat,
+            offersAssistant: offersAssistant)
         ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
             if index > 0 { Divider() }
             ForEach(group, id: \.self) { item in
@@ -1879,6 +1898,16 @@ struct ConversationView: View {
             // Busy, editing (the menu's own guard) and a call; NOT a
             // waiting voice message — that rule is about voice.
             .disabled(slotInputs.call)
+        case .askAssistant:
+            // The `@ai` button that stood in the row until #106, worded:
+            // it types `@ai ` and gives the field back, exactly as the
+            // button did. The menu's own guard covers an edit, which the
+            // button was disabled for.
+            Button {
+                insertAssistantMention()
+            } label: {
+                Label("Ask the Assistant", systemImage: "sparkles")
+            }
         case .location:
             Button {
                 shareLocation()
@@ -1899,91 +1928,112 @@ struct ConversationView: View {
         }
     }
 
-    /// The paperclip, the sticker, `@ai` and `/draw` buttons and the field —
-    /// one view, so that a voice row can cover it whole while the field
-    /// underneath keeps its place and its focus (S2.3).
-    private var composerControls: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            // A Menu rather than two buttons: the composer is narrow,
-            // and "attach" is one intent with several sources.
-            Menu {
-                attachMenuContent
-            } label: {
-                Image(systemName: "paperclip")
-                    .font(.system(size: attachGlyph))
-                    .foregroundStyle(.tint)
-                    .frame(width: composerControl, height: composerControl)
-                    .contentShape(Rectangle())
-            }
-            // Editing borrows the composer to rewrite an existing
-            // message, which has no second attachment to add — and
-            // attaching would have posted the edit as a new message
-            // while leaving the banner armed. Android already gated
-            // this; iOS did not.
-            .disabled(composerIsBusy)
-            .accessibilityLabel("Attach a photo, video or file")
-            // Top to bottom, as on every other client (#78): `.automatic`
-            // turned the list round on the iPhone, so the first item sat
-            // at the bottom, next to the paperclip.
-            .menuOrder(.fixed)
-            .photosPicker(
-                isPresented: $showPhotoPicker,
-                selection: $pickedMedia,
-                maxSelectionCount: StagedAttachment.maxPerMessage,
-                // No `photoLibrary:` — see the note in SettingsView. The
-                // out-of-process picker needs no PhotoKit reference and
-                // no usage description, and nothing here reads a PHAsset.
-                matching: isAssistantChat ? .images : .any(of: [.images, .videos]),
-                // The bytes as they are in the library (#96): a GIF has to
-                // arrive as a GIF to become an animation, and `.automatic`
-                // is allowed to hand over something more compatible.
-                // Everything else is prepared from its original either way.
-                preferredItemEncoding: .current)
-            // The family's stickers, one tap from the composer
-            // (docs/protocol.md, "In the panel, one tap sends"). Absent
-            // rather than disabled where there is nothing behind it —
-            // see `showsStickers`.
-            if showsStickers {
-                StickerComposerButton(
-                    side: composerControl, glyph: attachGlyph, onOpen: { voice.otherAction() }
-                ) { item in
-                    sendSticker(item)
-                }
-                // The same guard the attach menu carries: an edit has
-                // borrowed the composer, or a send is already running.
-                .disabled(composerIsBusy)
-            }
-            if showsAssistantMention {
-                Button {
-                    insertAssistantMention()
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.tint)
-                        .frame(width: composerControl, height: composerControl)
-                        .contentShape(Rectangle())
-                }
-                .disabled(editTarget != nil)
-                .accessibilityLabel("Ask the assistant")
-            }
-            if showsPictureRequest {
-                Button {
-                    insertDrawToken()
-                } label: {
-                    Image(systemName: "paintbrush")
-                        .font(.system(size: 19))
-                        .foregroundStyle(.tint)
-                        .frame(width: composerControl, height: composerControl)
-                        .contentShape(Rectangle())
-                }
-                .disabled(editTarget != nil)
-                .accessibilityLabel("Ask for a picture")
-            }
+    /// The input row (#106, docs/composer-and-wide-layout-2026-10-20.md,
+    /// 2.1): the paperclip, alone; the field, with the stickers and the
+    /// video button (or, in the assistant's chat, the paintbrush) INSIDE it
+    /// at its trailing edge; and the slot, which never moves (#79, S1.3).
+    /// While a voice message records, its row covers the paperclip and the
+    /// field, which keep their places — and the field its focus — underneath
+    /// (S2.3). `ComposerRowLayout` puts the field on a line of its own when
+    /// the text size leaves it too little room beside the controls.
+    private var inputRow: some View {
+        ComposerRowLayout(spacing: 8, fieldChrome: fieldChromeForLayout, textRun: shortestTextRun) {
+            paperclipMenu
+                .modifier(CoveredWhileRecording(
+                    covered: voiceRowCoversControls, animation: voiceRowAnimation, key: voiceRowKey))
+                .composerRowRole(.paperclip)
             messageField
+                .modifier(CoveredWhileRecording(
+                    covered: voiceRowCoversControls, animation: voiceRowAnimation, key: voiceRowKey))
+                .composerRowRole(.field)
+            recordSendSlot
+                .composerRowRole(.slot)
+            // Always one child, empty or not, so the layout always has its
+            // cover and the row's own transition plays inside it.
+            ZStack(alignment: .bottom) {
+                voiceRow
+            }
+            .animation(voiceRowAnimation, value: voiceRowKey)
+            .composerRowRole(.cover)
         }
     }
 
-    /// The message field.
+    /// The paperclip and the menu it opens. A Menu rather than several
+    /// buttons: the composer is narrow, and "attach" is one intent with
+    /// several sources.
+    private var paperclipMenu: some View {
+        Menu {
+            attachMenuContent
+        } label: {
+            Image(systemName: "paperclip")
+                .font(.system(size: attachGlyph))
+                .foregroundStyle(.tint)
+                .frame(width: composerControl, height: composerControl)
+                // A 44-pt target around the 36-pt box (S1.1 "Targets"): it
+                // reaches into the gaps on either side, and costs the row
+                // no width.
+                .contentShape(Rectangle().inset(by: -ComposerRow.targetOverhang(side: composerControl)))
+        }
+        // Editing borrows the composer to rewrite an existing
+        // message, which has no second attachment to add — and
+        // attaching would have posted the edit as a new message
+        // while leaving the banner armed. Android already gated
+        // this; iOS did not.
+        .disabled(composerIsBusy)
+        .accessibilityLabel("Attach a photo, video or file")
+        // Top to bottom, as on every other client (#78): `.automatic`
+        // turned the list round on the iPhone, so the first item sat
+        // at the bottom, next to the paperclip.
+        .menuOrder(.fixed)
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $pickedMedia,
+            maxSelectionCount: StagedAttachment.maxPerMessage,
+            // No `photoLibrary:` — see the note in SettingsView. The
+            // out-of-process picker needs no PhotoKit reference and
+            // no usage description, and nothing here reads a PHAsset.
+            matching: isAssistantChat ? .images : .any(of: [.images, .videos]),
+            // The bytes as they are in the library (#96): a GIF has to
+            // arrive as a GIF to become an animation, and `.automatic`
+            // is allowed to hand over something more compatible.
+            // Everything else is prepared from its original either way.
+            preferredItemEncoding: .current)
+    }
+
+    /// The glyphs inside the field, in order (`ComposerRow.fieldGlyphs`).
+    private var fieldGlyphList: [ComposerRow.FieldGlyph] {
+        ComposerRow.fieldGlyphs(
+            stickers: showsStickers, paintbrush: showsPictureRequest, video: videoDoor != .hidden)
+    }
+
+    /// The text run's trailing inset for the glyphs showing NOW, so a
+    /// placeholder or a line of text never runs under them (S1.4).
+    private var fieldTrailingInset: CGFloat {
+        ComposerRow.trailingInset(
+            glyphs: fieldGlyphList.count, glyphWidth: fieldGlyph, spacing: Self.fieldGlyphSpacing,
+            endInset: Self.fieldGlyphEndInset, bareInset: Self.fieldLeadingInset)
+    }
+
+    /// What the field spends on chrome at its WIDEST in this chat — every
+    /// glyph it can show here, the video button included while typing has
+    /// sent it away — so the row's arrangement is decided once per text
+    /// size and chat, never by a keystroke.
+    private var fieldChromeForLayout: CGFloat {
+        let widest = (stickerDoor != .absent ? 1 : 0)
+            + (showsPictureRequest || roundAvailable ? 1 : 0)
+        return Self.fieldLeadingInset + ComposerRow.trailingInset(
+            glyphs: widest, glyphWidth: fieldGlyph, spacing: Self.fieldGlyphSpacing,
+            endInset: Self.fieldGlyphEndInset, bareInset: Self.fieldLeadingInset)
+    }
+
+    /// The field's text inset on its leading side — and on its trailing
+    /// side when no glyph sits there.
+    private static let fieldLeadingInset: CGFloat = 12
+    /// Between two glyphs, and after the last one.
+    private static let fieldGlyphSpacing: CGFloat = 2
+    private static let fieldGlyphEndInset: CGFloat = 6
+
+    /// The message field: the capsule, the text, and the glyphs inside it.
     private var messageField: some View {
         TextField("Message", text: typedDraft, axis: .vertical)
             .proseTextEntry()
@@ -2002,21 +2052,130 @@ struct ConversationView: View {
                 composerNotice = String(
                     localized: "A message can be at most \(ComposerText.bodyLimit) characters.")
             }
+            // A hardware keyboard's Return sends, Shift+Return breaks the
+            // line (#106, 2.3). That Return reaches SwiftUI as a SUBMIT on a
+            // multi-line field — measured on iOS 27: `onKeyPress` never sees
+            // it, Shift+Return included, and a keyboard shortcut on plain
+            // Return loses to the field — while the on-screen keyboard's
+            // Return never submits at all: it types the new line it always
+            // has, so a phone or a tablet without a keyboard is unchanged.
+            .onSubmit { hardwareReturn() }
+            // …and Shift+Return, taken before the field can submit it.
+            .background(ReturnKeyCommands(active: inputFocused) { appendLine() })
             .lineLimit(1...5)
-            .padding(.horizontal, 12)
-            // Room for the video button while it shows, so a placeholder
-            // never runs under it (S1.4).
-            .padding(.trailing, videoDoor == .hidden ? 0 : 28)
+            .padding(.leading, Self.fieldLeadingInset)
+            // Room for the glyphs while they show, so a placeholder
+            // never runs under them (S1.4).
+            .padding(.trailing, fieldTrailingInset)
             .padding(.vertical, 7)
             .composerFieldBackground()
-            .overlay(alignment: .topTrailing) {
-                if videoDoor != .hidden {
-                    videoDoorButton
-                }
+            .overlay(alignment: .bottomTrailing) {
+                fieldGlyphs
             }
             .onChange(of: videoDoor == .hidden, initial: true) { _, hidden in
                 if !hidden { videoDoorShownAtMS = VoiceComposer.uptimeMS() }
             }
+    }
+
+    /// The glyphs at the field's trailing edge, each centred on the LAST
+    /// line — level with the paperclip and the slot, which sit on the row's
+    /// bottom edge — in the order `ComposerRow.fieldGlyphs` gives: the
+    /// stickers innermost, so the video button leaving at the first
+    /// character never moves them.
+    @ViewBuilder
+    private var fieldGlyphs: some View {
+        let glyphs = fieldGlyphList
+        if !glyphs.isEmpty {
+            HStack(spacing: Self.fieldGlyphSpacing) {
+                if glyphs.contains(.stickers) {
+                    // The family's stickers, one tap from the composer
+                    // (docs/protocol.md, "In the panel, one tap sends") —
+                    // empty or typing since #106, so nothing moves under
+                    // the thumb. Absent rather than disabled where there is
+                    // nothing behind it — see `showsStickers`.
+                    StickerComposerButton(
+                        side: composerControl, glyph: attachGlyph, width: fieldGlyph,
+                        hitOverhang: fieldGlyphOverhang, onOpen: { voice.otherAction() }
+                    ) { item in
+                        sendSticker(item)
+                    }
+                    // The same guard the attach menu carries: an edit has
+                    // borrowed the composer, or a send is already running.
+                    .disabled(composerIsBusy)
+                }
+                if glyphs.contains(.paintbrush) {
+                    paintbrushButton
+                }
+                if glyphs.contains(.video) {
+                    videoDoorButton
+                }
+            }
+            .padding(.trailing, Self.fieldGlyphEndInset)
+        }
+    }
+
+    /// How far an in-field glyph's hit area reaches past its box: to 44
+    /// points across (S1.1). Neighbours overlap by the difference, and the
+    /// trailing one — drawn last — takes the overlap.
+    private var fieldGlyphOverhang: CGFloat {
+        ComposerRow.targetOverhang(side: fieldGlyph)
+    }
+
+    /// The assistant chat's `/draw` — inside the field, beside the stickers
+    /// (#106). A button and not a menu line, as decided on 2026-10-07.
+    private var paintbrushButton: some View {
+        Button {
+            insertDrawToken()
+        } label: {
+            Image(systemName: "paintbrush")
+                .font(.system(size: 19))
+                .foregroundStyle(.tint)
+                .frame(width: fieldGlyph, height: composerControl)
+                .contentShape(Rectangle().inset(by: -fieldGlyphOverhang))
+        }
+        .buttonStyle(.plain)
+        .disabled(editTarget != nil)
+        .accessibilityLabel("Ask for a picture")
+    }
+
+    /// A HARDWARE Return in the field (2.3), arriving as the field's submit:
+    /// the slot on rows 2 to 5 and nothing else (S1.3), a new line with
+    /// Shift (⌥ and ⌃ too), and ⌘↩ left to the hidden shortcut that has
+    /// always been the iPad's Send. The submit names no modifier, so they
+    /// are read off the keyboard itself (`HardwareReturn.held`).
+    ///
+    /// A submit takes the focus away; every outcome gives it back — the
+    /// person is still typing, and a keyboard-only iPad has no other way
+    /// back into the field.
+    private func hardwareReturn() {
+        // A Shift+Return the key command saw: a line, never a send.
+        if ReturnKeyCommands.takeShiftReturn() {
+            appendLine()
+            inputFocused = true
+            return
+        }
+        let held = HardwareReturn.held()
+        switch ComposerRow.hardwareReturn(
+            shift: held.shift, option: held.option, command: held.command, control: held.control,
+            slotTakesReturn: slot.takesReturn && slot != .save(enabled: false)) {
+        case .activateSlot:
+            activateSlot()
+        case .newLine:
+            appendLine()
+        case .nothing, .shortcut:
+            break
+        }
+        inputFocused = true
+    }
+
+    /// A line break from Shift+Return (⌥↩, ⌃↩). At the END: SwiftUI's field
+    /// publishes no caret before iOS 18 (see `insertAssistantMention`), and
+    /// the end is where a line break is being typed in all but the rarest
+    /// case. The person's own edit, so it lifts the slot's guard (S1.1).
+    private func appendLine() {
+        guard let extended = HardwareReturn.appendingLine(to: model.draft) else { return }
+        model.draft = extended
+        voice.otherAction()
     }
 
     /// The draft as the FIELD writes it: every character typed, deleted,
@@ -2392,7 +2551,8 @@ struct ConversationView: View {
     }
 
     /// A 22-point glyph in a 44-point target at the field's trailing edge,
-    /// centred on the first line (S1.4).
+    /// centred on its line (S1.4) — the first line and the last are one
+    /// line while it shows, since it leaves at the first character.
     private var videoDoorButton: some View {
         Button {
             // It appears beside the slot the moment a text Send empties the
@@ -2405,8 +2565,8 @@ struct ConversationView: View {
             Image(systemName: "video.circle")
                 .font(.system(size: 22))
                 .foregroundStyle(videoDoor == .shown ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                .frame(width: 34, height: 36)
-                .contentShape(Rectangle().inset(by: -5))
+                .frame(width: fieldGlyph, height: composerControl)
+                .contentShape(Rectangle().inset(by: -fieldGlyphOverhang))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(verbatim: VideoDoor.label))
@@ -3766,15 +3926,16 @@ struct ConversationView: View {
     /// and a message like any other, so it goes through the consent
     /// question (`sendSticker`), never around it.
     ///
-    /// And on a phone it steps aside while there is something in the
-    /// composer: a sticker is its own message — it takes no caption and no
-    /// attachment — so with words typed or a photo staged the button has
-    /// nothing to offer, and the width it would take is the field's. The
-    /// Mac has the room and keeps it always.
+    /// It used to step aside on a phone while there was something in the
+    /// composer — a sticker is its own message, and the width was the
+    /// field's — and the `@ai` button slid into its place at the first
+    /// character. That was the row moving under the thumb, and #106 stopped
+    /// it: the glyph is INSIDE the field now, costs the text 32 points
+    /// rather than a control and its gap, and stays, typing or not, as it
+    /// always did on the Mac (docs/composer-and-wide-layout-2026-10-20.md,
+    /// decision 3). A sticker still goes on its own; the words stay.
     private var showsStickers: Bool {
         stickerDoor != .absent
-            && staged.isEmpty
-            && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var stickerDoor: StickerDoor {
@@ -4044,7 +4205,8 @@ struct ConversationView: View {
         }
     }
 
-    /// Offer the mention only where it does something.
+    /// Offer the assistant only where `@ai` does something — the first
+    /// entry of the `@` list and the paperclip's "Ask the Assistant" (#106).
     ///
     /// The family chat is the only place `@ai` is answered (a direct chat
     /// is two people who each already have a private assistant, and the
@@ -4052,10 +4214,13 @@ struct ConversationView: View {
     /// actually has one — which is exactly what an absent `assistant` on
     /// `GET /families/mine` says (docs/protocol.md).
     ///
-    /// A button rather than an autocomplete popup: there is precisely one
-    /// name to complete, and a menu of one is a worse way to type three
-    /// characters than a button that types them.
-    private var showsAssistantMention: Bool {
+    /// It used to be a button of its own in the row, on the reasoning that
+    /// one name to complete deserves a button rather than a list. It was
+    /// the control that cost the field most and the one used least, so the
+    /// owner moved it (docs/composer-and-wide-layout-2026-10-20.md, 4.2):
+    /// typing `@` is where people look for a name, and the menu is where
+    /// they look for words.
+    private var offersAssistant: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
             // A server that names nobody is one whose assistant this
             // client does not offer: the consent screen would have a hole
@@ -4443,8 +4608,9 @@ private struct VoiceSurfaces: ViewModifier {
     }
 }
 
-private extension View {
-    /// The message field's backdrop. On iOS 26 the system's own text
+extension View {
+    /// The message field's backdrop — the chat's composer and the thread's
+    /// (#106: one capsule for both). On iOS 26 the system's own text
     /// fields in bars are glass, and a flat grey capsule beside glass
     /// toolbar buttons read as last year's control; earlier systems keep
     /// the fill they have always had.
@@ -4455,6 +4621,25 @@ private extension View {
         } else {
             self.background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
+    }
+}
+
+/// Hides a composer control under the voice row while a voice message
+/// records — still in its place, its focus kept, untouchable and unread —
+/// and fades it back with the row's own cross-fade (S1.1 "Motion", S2.3).
+/// One modifier for the paperclip and the field alike, which the voice row
+/// covered together when they were one HStack.
+private struct CoveredWhileRecording: ViewModifier {
+    let covered: Bool
+    let animation: Animation?
+    let key: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(covered ? 0 : 1)
+            .allowsHitTesting(!covered)
+            .accessibilityHidden(covered)
+            .animation(animation, value: key)
     }
 }
 

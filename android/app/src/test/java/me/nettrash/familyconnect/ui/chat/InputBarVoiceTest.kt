@@ -33,6 +33,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyPress
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.click
@@ -40,7 +41,9 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.assertCountEquals
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.ui.chat.ComposerSlot.Recording
+import me.nettrash.familyconnect.util.MemberMention
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -79,6 +82,9 @@ class InputBarVoiceTest {
         assistantPictures: Boolean = false,
         showsDraw: Boolean = false,
         showsPoll: Boolean = false,
+        showsStickers: Boolean = false,
+        askAssistant: Boolean = false,
+        mentionCandidates: List<MemberMention.Suggestion> = emptyList(),
     ) {
         compose.setContent {
             val state = hold()
@@ -120,7 +126,11 @@ class InputBarVoiceTest {
                 onDiscardStaged = {},
                 onDismissMediaError = {},
                 onShareLocation = {},
-                showsAssistantMention = false,
+                showsAssistantMention = askAssistant,
+                showsStickers = showsStickers,
+                onOpenStickers = { calls += "stickers" },
+                mentionCandidates = mentionCandidates,
+                onPickMention = { calls += "picked ${it.key}" },
                 showsAssistantPicture = assistantPictures,
                 onShowAssistantPicture = { calls += "show the assistant" },
                 showsDraw = showsDraw,
@@ -366,5 +376,165 @@ class InputBarVoiceTest {
         compose.waitForIdle()
         paperclip().assertIsDisplayed()
         compose.onNodeWithContentDescription("Record voice message").assertIsDisplayed()
+    }
+
+    // --- The row of #106 (docs/composer-and-wide-layout-2026-10-20.md, 2.1) ---------
+
+    /**
+     * The stickers sit INSIDE the field and stay while typing — nothing moves
+     * under the thumb at the first character.
+     */
+    @Test
+    fun theStickersStayInsideTheFieldWhileTyping() {
+        show(showsStickers = true)
+        val stickers = compose.onNodeWithContentDescription("Stickers")
+        stickers.assertIsDisplayed()
+        val emptyAt = stickers.fetchSemanticsNode().boundsInRoot
+
+        field.setTextAndPlaceCursorAtEnd("Sunday works for us")
+        compose.waitForIdle()
+        stickers.assertIsDisplayed()
+        // Inside the field: left of the slot, which is now Send.
+        val send = compose.onNodeWithContentDescription("Send").fetchSemanticsNode().boundsInRoot
+        assertThat(stickers.fetchSemanticsNode().boundsInRoot.right).isAtMost(send.left)
+        // And it did not move: the video button that leaves was AFTER it.
+        assertThat(stickers.fetchSemanticsNode().boundsInRoot.left).isAtLeast(emptyAt.left)
+
+        stickers.performClick()
+        assertThat(calls).containsExactly("other action", "stickers").inOrder()
+    }
+
+    /** A 48dp target, as every control of the row (#106). */
+    @Test
+    fun theRowsControlsAre48dpTargets() {
+        show(showsStickers = true)
+        val density = compose.density.density
+        for (label in listOf("Attach a photo, video or file", "Stickers")) {
+            val bounds = compose.onNodeWithContentDescription(label).fetchSemanticsNode().boundsInRoot
+            assertThat(bounds.width / density).isWithin(0.5f).of(48f)
+            assertThat(bounds.height / density).isWithin(0.5f).of(48f)
+        }
+    }
+
+    /** A recording row takes the field's place: the field's own icons go with it (S2.4). */
+    @Test
+    fun handsFreeTheFieldsIconsAreGone() {
+        show(
+            hold = { RecordGesture.HoldState(phase = RecordGesture.Phase.HandsFree(besideDraft = false)) },
+            showsStickers = true,
+        )
+        compose.onNodeWithContentDescription("Stickers").assertDoesNotExist()
+    }
+
+    /**
+     * `@ai` left the row (#106): no sparkle button beside the field, and
+     * "Ask the assistant" in the paperclip's menu appends the token.
+     */
+    @Test
+    fun askTheAssistantIsAMenuLineThatAppendsTheToken() {
+        show(askAssistant = true, showsPoll = true)
+        compose.onNodeWithContentDescription("Ask the assistant").assertDoesNotExist()
+
+        field.setTextAndPlaceCursorAtEnd("what about Sunday")
+        paperclip().performClick()
+        compose.onNodeWithText("Ask the assistant").performClick()
+        compose.waitForIdle()
+        assertThat(field.text.toString()).isEqualTo("what about Sunday @ai ")
+        compose.onAllNodes(isPopup()).assertCountEquals(0)
+
+        // Asked once: a second time adds nothing.
+        paperclip().performClick()
+        compose.onNodeWithText("Ask the assistant").performClick()
+        assertThat(field.text.toString()).isEqualTo("what about Sunday @ai ")
+    }
+
+    @Test
+    fun withoutTheAssistantOfferedTheMenuHasNoAskLine() {
+        show(askAssistant = false, showsPoll = true)
+        paperclip().performClick()
+        compose.onNodeWithText("Ask the assistant").assertDoesNotExist()
+        compose.onNodeWithText("Poll").assertIsDisplayed()
+    }
+
+    /** The `@` strip leads with the assistant, and picking it hands back the assistant (#106). */
+    @Test
+    fun theMentionStripLeadsWithTheAssistant() {
+        show(
+            mentionCandidates = listOf(
+                MemberMention.Suggestion.Assistant("Hazel"),
+                MemberMention.Suggestion.Member(MentionDto(8, "Anna")),
+            ),
+        )
+        val assistant = compose.onNodeWithContentDescription("Ask the assistant")
+        val anna = compose.onNodeWithContentDescription("Mention Anna")
+        assertThat(assistant.fetchSemanticsNode().boundsInRoot.left)
+            .isLessThan(anna.fetchSemanticsNode().boundsInRoot.left)
+        compose.onNodeWithText("@Hazel").assertIsDisplayed()
+        assistant.performClick()
+        anna.performClick()
+        assertThat(calls).containsExactly("picked assistant", "picked member-8").inOrder()
+    }
+
+    // --- The keyboard of #106 (docs/composer-and-wide-layout-2026-10-20.md, 2.3) ----
+
+    /** An Enter (or Shift+Enter) as a physical keyboard sends it: its own device, no soft-keyboard flag. */
+    private fun key(code: Int, meta: Int = 0, hardware: Boolean = true, action: Int = android.view.KeyEvent.ACTION_DOWN) =
+        androidx.compose.ui.input.key.KeyEvent(
+            android.view.KeyEvent(
+                0L, 0L, action, code, 0, meta,
+                if (hardware) 7 else android.view.KeyCharacterMap.VIRTUAL_KEYBOARD,
+                0,
+                if (hardware) 0 else android.view.KeyEvent.FLAG_SOFT_KEYBOARD,
+                android.view.InputDevice.SOURCE_KEYBOARD,
+            ),
+        )
+
+    private fun pressOnField(code: Int, meta: Int = 0, hardware: Boolean = true) {
+        val node = compose.onNode(hasSetTextAction())
+        node.performKeyPress(key(code, meta, hardware))
+        node.performKeyPress(key(code, meta, hardware, android.view.KeyEvent.ACTION_UP))
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun aHardwareEnterSendsAndShiftEnterBreaksTheLine() {
+        show()
+        field.setTextAndPlaceCursorAtEnd("Sunday")
+        compose.onNode(hasSetTextAction()).performClick()
+
+        pressOnField(
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.META_SHIFT_ON or android.view.KeyEvent.META_SHIFT_LEFT_ON,
+        )
+        assertThat(field.text.toString()).isEqualTo("Sunday\n")
+        assertThat(calls).doesNotContain("send")
+
+        pressOnField(android.view.KeyEvent.KEYCODE_ENTER)
+        assertThat(calls).contains("send")
+        // Sent, not typed: the Enter never reached the field.
+        assertThat(field.text.toString()).isEqualTo("Sunday\n")
+    }
+
+    /** The old chord keeps sending. */
+    @Test
+    fun ctrlEnterStillSends() {
+        show()
+        field.setTextAndPlaceCursorAtEnd("ok")
+        compose.onNode(hasSetTextAction()).performClick()
+        pressOnField(
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.META_CTRL_ON or android.view.KeyEvent.META_CTRL_LEFT_ON,
+        )
+        assertThat(calls).contains("send")
+    }
+
+    /** An IME's Enter, handed over as a key event, is a line break — never a send. */
+    @Test
+    fun anOnScreenKeyboardsEnterNeverSends() {
+        show()
+        field.setTextAndPlaceCursorAtEnd("ok")
+        compose.onNode(hasSetTextAction()).performClick()
+        pressOnField(android.view.KeyEvent.KEYCODE_ENTER, hardware = false)
+        assertThat(calls).doesNotContain("send")
     }
 }

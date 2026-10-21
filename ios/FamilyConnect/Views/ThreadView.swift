@@ -435,51 +435,162 @@ struct ThreadView: View {
             agreedAt: session.assistantConsentAt)
     }
 
-    /// The side and glyph of the sticker button — the chat composer's own
-    /// on each platform, so the button is the one people already know.
+    /// The row's sizes — the chat composer's own on each platform, so the
+    /// capsule, the sticker glyph and the Send disc are the ones people
+    /// already know (#106). Scaled on the phone, as the chat's are.
     #if os(macOS)
-    private let stickerControl: (side: CGFloat, glyph: CGFloat) = (24, 16)
+    private let control: CGFloat = 24
+    private let sendGlyph: CGFloat = 22
+    private let stickerGlyph: CGFloat = 16
+    private let fieldGlyph: CGFloat = 24
     #else
-    private let stickerControl: (side: CGFloat, glyph: CGFloat) = (36, 20)
+    @ScaledMetric(relativeTo: .body) private var control: CGFloat = 36
+    @ScaledMetric(relativeTo: .body) private var sendGlyph: CGFloat = 26
+    @ScaledMetric(relativeTo: .body) private var stickerGlyph: CGFloat = 20
+    @ScaledMetric(relativeTo: .body) private var fieldGlyph: CGFloat = 30
     #endif
 
+    /// The thread's row (#106, docs/composer-and-wide-layout-2026-10-20.md,
+    /// 2.1): the chat composer's capsule with the sticker glyph inside it at
+    /// the trailing edge, and the chat's Send disc — disabled while the
+    /// draft is blank. No paperclip and no microphone: a thread has neither
+    /// an attach menu nor a recorder (#79, S1.3), and that is unchanged.
+    /// It used to be a bare 22-pt arrow beside a plain field, with the
+    /// sticker button in front of it — a second product inside the first.
     private var composerRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            // A sticker answers from here as words do (docs/protocol.md,
-            // "Sending one": "It may be a reply, which is how one answers
-            // something" — and a thread is nothing but replies). Without
-            // it, answering a chain with a sticker meant leaving the chain,
-            // arming a reply in the chat and sending from there.
-            if showsStickers {
-                StickerComposerButton(
-                    side: stickerControl.side, glyph: stickerControl.glyph
-                ) { item in
-                    sendSticker(item)
-                }
-            }
+            replyField
+            sendButton
+        }
+        #if os(macOS)
+        // The Mac chat's box around the whole row, its focus ring with it.
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.appSecondaryFill.opacity(0.5)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(composerFocused ? Color.accentColor.opacity(0.6) : .clear))
+        .padding(12)
+        #else
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        #endif
+    }
+
+    /// The field, with the sticker glyph inside it.
+    @ViewBuilder
+    private var replyField: some View {
+        #if os(macOS)
+        HStack(alignment: .bottom, spacing: 4) {
             TextField("Reply in thread", text: emojiTyping.binding($draft), axis: .vertical)
                 .proseTextEntry()
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
+                .font(.body)
                 .focused($composerFocused)
+                // Return sends on the Mac, as in the chat; every modified
+                // Return is a new line (#95, MacNewLineKeys).
                 .onSubmit(send)
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
+                .frame(minHeight: control)
+            if showsStickers {
+                stickerGlyphButton
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            #if !os(macOS)
-            // A hardware keyboard's Send on iPhone and iPad. On the Mac ⌘↩ is
-            // a new line, as every modified Return is (#95), and Return alone
-            // already sends through `onSubmit`.
-            .keyboardShortcut(.return, modifiers: .command)
-            #endif
-            .accessibilityLabel(Text("Send"))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        #else
+        TextField("Reply in thread", text: emojiTyping.binding($draft), axis: .vertical)
+            .proseTextEntry()
+            .lineLimit(1...5)
+            .textFieldStyle(.plain)
+            .focused($composerFocused)
+            // The chat's keys (#106, 2.3): a HARDWARE Return sends and
+            // Shift+Return breaks the line. It arrives as the field's submit
+            // (HardwareReturn) — the on-screen keyboard's Return never
+            // submits a multi-line field, and stays a new line.
+            .onSubmit { hardwareReturn() }
+            .background(ReturnKeyCommands(active: composerFocused) {
+                if let extended = HardwareReturn.appendingLine(to: draft) { draft = extended }
+            })
+            .padding(.leading, 12)
+            .padding(.trailing, ComposerRow.trailingInset(
+                glyphs: showsStickers ? 1 : 0, glyphWidth: fieldGlyph, spacing: 2,
+                endInset: 6, bareInset: 12))
+            .padding(.vertical, 7)
+            .composerFieldBackground()
+            .overlay(alignment: .bottomTrailing) {
+                if showsStickers {
+                    stickerGlyphButton
+                        .padding(.trailing, 6)
+                }
+            }
+        #endif
     }
+
+    /// A sticker answers from here as words do (docs/protocol.md, "Sending
+    /// one": "It may be a reply, which is how one answers something" — and
+    /// a thread is nothing but replies). Without it, answering a chain with
+    /// a sticker meant leaving the chain, arming a reply in the chat and
+    /// sending from there.
+    private var stickerGlyphButton: some View {
+        StickerComposerButton(
+            side: control, glyph: stickerGlyph, width: fieldGlyph,
+            hitOverhang: ComposerRow.targetOverhang(side: fieldGlyph)
+        ) { item in
+            sendSticker(item)
+        }
+    }
+
+    /// The chat's Send disc: the same glyph, size and tint, dimmed while
+    /// there is nothing to send.
+    private var sendButton: some View {
+        Button(action: send) {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: sendGlyph))
+                .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .frame(width: control, height: control)
+                #if os(macOS)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Rectangle().inset(by: -ComposerRow.targetOverhang(side: control)))
+                #endif
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        #if !os(macOS)
+        // A hardware keyboard's ⌘↩ on iPhone and iPad, as in the chat. On
+        // the Mac ⌘↩ is a new line, as every modified Return is (#95), and
+        // Return alone already sends through `onSubmit`.
+        .keyboardShortcut(.return, modifiers: .command)
+        #endif
+        .accessibilityLabel(Text("Send"))
+    }
+
+    #if !os(macOS)
+    /// A hardware Return in the reply field — the chat's rule with this
+    /// sheet's Send for the slot (`ComposerRow.threadHardwareReturn`). The
+    /// submit took the focus; it is given back, as in the chat.
+    private func hardwareReturn() {
+        // A Shift+Return the key command saw: a line, never a send.
+        if ReturnKeyCommands.takeShiftReturn() {
+            if let extended = HardwareReturn.appendingLine(to: draft) { draft = extended }
+            composerFocused = true
+            return
+        }
+        let held = HardwareReturn.held()
+        switch ComposerRow.threadHardwareReturn(
+            shift: held.shift, option: held.option, command: held.command, control: held.control,
+            canSend: canSend) {
+        case .activateSlot:
+            send()
+        case .newLine:
+            if let extended = HardwareReturn.appendingLine(to: draft) { draft = extended }
+        case .nothing, .shortcut:
+            break
+        }
+        composerFocused = true
+    }
+    #endif
 
     /// A reply to the ROOT, whatever the reader was looking at — the
     /// iMessage rule, and the one that keeps the root's count honest

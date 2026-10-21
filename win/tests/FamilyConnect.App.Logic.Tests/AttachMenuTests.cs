@@ -1,5 +1,6 @@
 using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
+using FamilyConnect.Core.Protocol;
 
 namespace FamilyConnect.App.Logic.Tests;
 
@@ -22,7 +23,7 @@ public sealed class AttachMenuTests
     public void AFamilyChatHasEveryLineInThreeGroups()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: true, roundAvailable: true),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: true, roundAvailable: true, assistantAvailable: false),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice, AttachItem.RecordVideo],
             [AttachItem.Location, AttachItem.Poll]);
@@ -32,7 +33,7 @@ public sealed class AttachMenuTests
     public void ADirectChatHasNoPollAndNoVideoMessageWhereNoneCanBeRecorded()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: false, roundAvailable: false),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice],
             [AttachItem.Location]);
@@ -43,7 +44,7 @@ public sealed class AttachMenuTests
     {
         // Never both lines, and no recording group — so no empty group for a separator to sit around.
         Menu(
-            AttachMenu.Groups(assistantChat: true, offersPictureAttach: true, familyChat: false, roundAvailable: true),
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: true, familyChat: false, roundAvailable: true, assistantAvailable: true),
             [AttachItem.AssistantPhoto, AttachItem.File, AttachItem.Paste],
             [AttachItem.Location]);
     }
@@ -52,7 +53,7 @@ public sealed class AttachMenuTests
     public void AnAssistantThatCannotSeeOffersNoPhotoLineAtAll()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, familyChat: false, roundAvailable: false),
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: false),
             [AttachItem.File, AttachItem.Paste],
             [AttachItem.Location]);
     }
@@ -64,8 +65,9 @@ public sealed class AttachMenuTests
         foreach (var pictures in new[] { false, true })
         foreach (var family in new[] { false, true })
         foreach (var round in new[] { false, true })
+        foreach (var asks in new[] { false, true })
         {
-            var groups = AttachMenu.Groups(assistant, pictures, family, round);
+            var groups = AttachMenu.Groups(assistant, pictures, family, round, asks);
             Assert.All(groups, group => Assert.NotEmpty(group));
             var lines = groups.SelectMany(group => group).ToList();
             Assert.Equal(lines.Count, lines.Distinct().Count());
@@ -73,7 +75,46 @@ public sealed class AttachMenuTests
             Assert.Contains(AttachItem.File, lines);
             Assert.Contains(AttachItem.Paste, lines);
             Assert.Contains(AttachItem.Location, lines);
+            // "Ask the Assistant" only in the family chat of a server whose assistant can be asked — and first in its group.
+            Assert.Equal(family && asks, lines.Contains(AttachItem.AskAssistant));
+            if (family && asks)
+            {
+                Assert.Equal(AttachItem.AskAssistant, groups[^1][0]);
+            }
         }
+    }
+
+    /// <summary>
+    /// #106: the @ai button left the composer's row, and "Ask the Assistant" opens the family chat's last group — never a
+    /// direct chat's, never the assistant's own (where every message already asks it).
+    /// </summary>
+    [Fact]
+    public void AskTheAssistantOpensTheFamilyChatsLastGroup()
+    {
+        Menu(
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: true, roundAvailable: false, assistantAvailable: true),
+            [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
+            [AttachItem.RecordVoice],
+            [AttachItem.AskAssistant, AttachItem.Location, AttachItem.Poll]);
+        Menu(
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
+            [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
+            [AttachItem.RecordVoice],
+            [AttachItem.Location]);
+        Menu(
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
+            [AttachItem.File, AttachItem.Paste],
+            [AttachItem.Location]);
+    }
+
+    /// <summary>An assistant can be asked only where the server names who answers (docs/protocol.md, "Consenting to the assistant").</summary>
+    [Fact]
+    public void TheAssistantIsAvailableOnlyWhereItsProcessorIsNamed()
+    {
+        Assert.True(AttachMenu.AssistantAvailable(new AssistantDto(99, "Assistant", "@ai", Processor: "Microsoft — Azure OpenAI")));
+        Assert.False(AttachMenu.AssistantAvailable(new AssistantDto(99, "Assistant", "@ai")));
+        Assert.False(AttachMenu.AssistantAvailable(new AssistantDto(99, "Assistant", "@ai", Processor: "  ")));
+        Assert.False(AttachMenu.AssistantAvailable(null));
     }
 
     [Fact]

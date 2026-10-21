@@ -24,12 +24,15 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -38,14 +41,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -66,6 +68,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -83,6 +90,18 @@ import me.nettrash.familyconnect.ui.chat.NoLinkPreviews
 import me.nettrash.familyconnect.ui.components.LocalMotionHold
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
+import me.nettrash.familyconnect.ui.chat.ComposerKeys
+import me.nettrash.familyconnect.ui.chat.ComposerPill
+import me.nettrash.familyconnect.ui.chat.ComposerPillMinHeight
+import me.nettrash.familyconnect.ui.chat.ComposerSlot
+import me.nettrash.familyconnect.ui.chat.RecordSendButton
+import me.nettrash.familyconnect.ui.chat.SLOT_LEVELLING
+import me.nettrash.familyconnect.ui.chat.StickerFieldButton
+import me.nettrash.familyconnect.ui.chat.composerAction
+import me.nettrash.familyconnect.ui.chat.composerFieldColors
+import me.nettrash.familyconnect.ui.chat.composerFieldPadding
+import me.nettrash.familyconnect.ui.components.ConversationColumn
+import me.nettrash.familyconnect.ui.components.conversationComposerColumn
 import me.nettrash.familyconnect.ui.chat.shareWithSystem
 import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.ui.stickers.StickerNotices
@@ -135,6 +154,8 @@ fun ThreadScreen(
     }
     // Emoji as you type (#101): the live replacement a Backspace takes back.
     val replyEmoji = remember { EmojiTypingField() }
+    // The Send disc's own focus, as the chat's slot has one.
+    val sendFocus = remember { FocusRequester() }
     var viewingAlbum by remember { mutableStateOf<AttachmentAlbum?>(null) }
     var pendingSave by remember { mutableStateOf<AttachmentDto?>(null) }
     val context = LocalContext.current
@@ -184,14 +205,23 @@ fun ThreadScreen(
         },
         bottomBar = {
             Surface(tonalElevation = 2.dp) {
-                Column(modifier = Modifier.navigationBarsPadding().imePadding()) {
+                Column(
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .imePadding()
+                        // The chat's column (#106): the composer as wide as
+                        // the chain above it, centred on a wide pane.
+                        .conversationComposerColumn(),
+                ) {
                 // The roster, while a member is being named (docs/protocol.md,
-                // "Mentioning a member") — the chat composer's own strip.
+                // "Mentioning a member") — the chat composer's own strip,
+                // members only: a reply in a thread is not where #106 offers
+                // the assistant, which the family chat's composer does.
                 val mentionCandidates = if (chat?.kind == "family") {
                     MemberMention.query(draft.text)?.let { query ->
                         MemberMention.candidates(
                             mentionRoster, query, excluding = blockedUserIds + setOfNotNull(myUserId),
-                        )
+                        ).map { MemberMention.Suggestion.Member(it) }
                     }.orEmpty()
                 } else {
                     emptyList()
@@ -199,62 +229,121 @@ fun ThreadScreen(
                 if (mentionCandidates.isNotEmpty()) {
                     MentionSuggestionsRow(
                         candidates = mentionCandidates,
-                        onPick = { name ->
-                            val accepted = MemberMention.accept(draft.text, name)
+                        onPick = { suggestion ->
+                            val accepted = MemberMention.accept(draft.text, suggestion)
                             draft = TextFieldValue(accepted, TextRange(accepted.length))
                         },
                     )
                 }
+                // Disabled until the root is here to answer: a reply
+                // with nothing to quote is not a reply in this chain.
+                val canSend = hasRoot && draft.text.isNotBlank()
+                val sendReply = {
+                    if (canSend) {
+                        viewModel.send(draft.text)
+                        draft = TextFieldValue("")
+                    }
+                }
+                // The main composer's row, less what a thread does not have
+                // (#106, docs/composer-and-wide-layout-2026-10-20.md, 2.1):
+                // the same filled pill with the stickers inside it, and the
+                // same Send disc, disabled while blank — no paperclip and no
+                // microphone, as before. It used to be an outlined field
+                // with a grey glyph, a second product beside the first.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     // A sticker can be sent in every chat a message can,
                     // and a thread's composer is one: it answers the root,
                     // like the words beside it.
-                    if (stickerLimits != null) {
-                        IconButton(
-                            onClick = { stickerPanelOpen = true },
-                            enabled = hasRoot,
-                            modifier = Modifier.testTag("thread-stickers"),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.EmojiEmotions,
-                                contentDescription = stringResource(R.string.s_stickers),
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = draft,
-                        // Emoji as you type (#101), like every prose field.
-                        onValueChange = { draft = replyEmoji.onValueChange(draft, it) },
+                    val stickers = stickerLimits != null
+                    ComposerPill(
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text(stringResource(R.string.s_reply_in_thread)) },
-                        maxLines = 5,
-                        keyboardOptions = ProseKeyboard.Sentences,
-                    )
-                    // Disabled until the root is here to answer: a reply
-                    // with nothing to quote is not a reply in this chain.
-                    IconButton(
-                        onClick = {
-                            viewModel.send(draft.text)
-                            draft = TextFieldValue("")
+                        trailing = {
+                            if (stickers) {
+                                StickerFieldButton(
+                                    enabled = hasRoot,
+                                    onClick = { stickerPanelOpen = true },
+                                    modifier = Modifier.testTag("thread-stickers"),
+                                )
+                            }
                         },
-                        enabled = hasRoot && draft.text.isNotBlank(),
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = stringResource(R.string.s_send),
+                        // The value-based field, for the caret (see `draft`),
+                        // drawn by Material's own decoration so it takes the
+                        // pill's padding — the value-based TextField has no
+                        // contentPadding of its own.
+                        val fieldInteraction = remember { MutableInteractionSource() }
+                        val fieldColors = composerFieldColors()
+                        BasicTextField(
+                            value = draft,
+                            // Emoji as you type (#101), like every prose field.
+                            onValueChange = { draft = replyEmoji.onValueChange(draft, it) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = ComposerPillMinHeight)
+                                // A hardware keyboard sends with Enter here too
+                                // (#106, 2.3); the on-screen keyboard's Enter
+                                // still breaks the line.
+                                .onPreviewKeyEvent { event ->
+                                    when (event.composerAction()) {
+                                        ComposerKeys.Action.SEND -> {
+                                            sendReply()
+                                            true
+                                        }
+                                        ComposerKeys.Action.NEWLINE, ComposerKeys.Action.PASS -> false
+                                    }
+                                },
+                            textStyle = LocalTextStyle.current.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = ProseKeyboard.Sentences,
+                            maxLines = 5,
+                            interactionSource = fieldInteraction,
+                            decorationBox = { innerTextField ->
+                                TextFieldDefaults.DecorationBox(
+                                    value = draft.text,
+                                    innerTextField = innerTextField,
+                                    enabled = true,
+                                    singleLine = false,
+                                    visualTransformation = VisualTransformation.None,
+                                    interactionSource = fieldInteraction,
+                                    placeholder = {
+                                        Text(
+                                            stringResource(R.string.s_reply_in_thread),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                    colors = fieldColors,
+                                    contentPadding = composerFieldPadding(hasTrailing = stickers),
+                                )
+                            },
                         )
                     }
+                    RecordSendButton(
+                        slot = if (canSend) ComposerSlot.Slot.Send else ComposerSlot.Slot.SendDisabled,
+                        onActivate = {},
+                        onSend = sendReply,
+                        onStopAndListen = {},
+                        onDeleteRecording = {},
+                        onRecordFromMenu = {},
+                        focusRequester = sendFocus,
+                        modifier = Modifier.padding(vertical = SLOT_LEVELLING),
+                    )
                 }
                 }
             }
         },
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // The chat's column (#106, ConversationColumn): the chain uses a
+            // tablet's width, centred, its balloons capped at 560dp by the
+            // bubble's own rule — the composer below is held to the same.
+            val listPadding = ConversationColumn.listPadding(maxWidth)
             when {
                 state.loading && items.isEmpty() ->
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -272,7 +361,7 @@ fun ThreadScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(horizontal = listPadding, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(items, key = { it.key }) { item ->

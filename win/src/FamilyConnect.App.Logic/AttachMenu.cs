@@ -21,6 +21,12 @@ public enum AttachItem
     /// <summary>"Record Video Message": the round-video recorder.</summary>
     RecordVideo,
 
+    /// <summary>
+    /// "Ask the Assistant": <c>@ai </c> put into the draft — the family chat's door to the assistant since its button left the
+    /// row (issue #106), first in the last group.
+    /// </summary>
+    AskAssistant,
+
     /// <summary>"Location": where I am, once.</summary>
     Location,
 
@@ -33,8 +39,13 @@ public enum AttachItem
 /// to bottom — what to pick (a photo or video, a file, the clipboard), what to record, and the rest (a place, a poll) —
 /// with a separator between groups and none around a group that is empty. Windows has no Camera line (S1.5 of
 /// docs/audio-video-messages-2026-10-04.md). Only WHICH lines show is decided here; whether a line is enabled (a call in
-/// progress, an unsent voice message, a busy composer) stays with the view.
+/// progress, an unsent voice message, a busy composer, an edit) stays with the view.
 /// </summary>
+/// <remarks>
+/// Amended 2026-10-20 (#106, docs/composer-and-wide-layout-2026-10-20.md): the <c>@ai</c> button left the composer's row,
+/// and "Ask the Assistant" opens the last group in the family chat — only on a server with an assistant that names who
+/// answers (<see cref="AssistantConsent.IsAvailable"/>), exactly where the button was drawn.
+/// </remarks>
 public static class AttachMenu
 {
     /// <summary>
@@ -48,14 +59,19 @@ public static class AttachMenu
         ".mp4", ".m4v", ".mov",
     ];
 
+    /// <summary>Whether this server's assistant can be asked at all: there is one, and it names who answers.</summary>
+    public static bool AssistantAvailable(Core.Protocol.AssistantDto? assistant) =>
+        assistant is not null && AssistantConsent.IsAvailable(assistant.Processor);
+
     /// <summary>
     /// The menu's lines, group by group, top to bottom. In the assistant's chat, "Show the Assistant a Photo…" stands where
     /// "Photo or Video" does — and only where <paramref name="offersPictureAttach"/> (the server can see and the family
     /// allows it); never both lines. Nothing is recorded for the assistant, where every message is a consented model call;
-    /// a video message only where one can be recorded; a poll only in the family chat.
+    /// a video message only where one can be recorded; "Ask the Assistant" and a poll only in the family chat — the first
+    /// only where <paramref name="assistantAvailable"/>: the server has an assistant and names its processor.
     /// </summary>
     public static IReadOnlyList<IReadOnlyList<AttachItem>> Groups(
-        bool assistantChat, bool offersPictureAttach, bool familyChat, bool roundAvailable)
+        bool assistantChat, bool offersPictureAttach, bool familyChat, bool roundAvailable, bool assistantAvailable)
     {
         List<AttachItem> pick = [];
         if (!assistantChat)
@@ -79,7 +95,12 @@ public static class AttachMenu
             }
         }
 
-        List<AttachItem> rest = [AttachItem.Location];
+        List<AttachItem> rest = [];
+        if (familyChat && assistantAvailable)
+        {
+            rest.Add(AttachItem.AskAssistant);
+        }
+        rest.Add(AttachItem.Location);
         if (familyChat)
         {
             rest.Add(AttachItem.Poll);

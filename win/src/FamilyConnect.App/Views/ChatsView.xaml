@@ -3,9 +3,13 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!-- Structure and x:Name only: every word is set from code, through the catalogue. -->
-    <Grid>
+    <!--
+        The list, the conversation and the thread share the width by one rule (ConversationColumn.Arrange, issue #106): the list
+        narrows first, then the thread goes over the conversation instead of beside it, so the field always keeps its run of text.
+    -->
+    <Grid x:Name="ChatsRoot">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="300" />
+            <ColumnDefinition x:Name="ListColumn" Width="300" />
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
@@ -32,9 +36,6 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <Border x:Name="ConversationHeader" Padding="20,10,16,10" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Visibility="Collapsed">
@@ -66,10 +67,15 @@
                     </StackPanel>
                 </Grid>
             </Border>
+            <!--
+                The conversation column (docs/composer-and-wide-layout-2026-10-20.md, 2.2): min(pane − 32, 1024) epx and centred, the
+                messages and the composer under them alike, set from code as the pane changes (FitColumn). The scroller stays the
+                pane's width, so the wheel works over the margins and its bar sits at the edge.
+            -->
             <ScrollViewer x:Name="MessageScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel x:Name="MessageStack" Padding="20,12,20,12" />
+                <StackPanel x:Name="MessageStack" Padding="0,12,0,12" />
             </ScrollViewer>
-            <!-- Down to the newest, over the messages while the reader is scrolled up them. -->
+            <!-- Down to the newest, over the messages while the reader is scrolled up them: inside the column, its right margin set from code (FitColumn). -->
             <Button
                 x:Name="JumpButton"
                 Grid.Row="1"
@@ -84,174 +90,208 @@
                 Visibility="Collapsed">
                 <FontIcon Glyph="&#xE70D;" FontSize="14" />
             </Button>
-            <Grid x:Name="BannerPanel" Grid.Row="2" ColumnSpacing="8" Margin="24,4,24,0" Visibility="Collapsed">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <HyperlinkButton x:Name="BannerCancel" Grid.Column="1" />
-            </Grid>
-            <!-- What will reach the assistant's model, said before the pixels leave. -->
-            <!-- Each line carries its own top margin, so nothing shown takes no room. -->
-            <StackPanel Grid.Row="3" Margin="24,0,24,0">
-                <TextBlock x:Name="PictureNoticeText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
-                <!-- While a picture is being asked for: real names and brands are what the images model refuses (PictureHint). -->
-                <TextBlock x:Name="PictureHintText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
-                <!-- Nothing goes to the model until this member has said so, and the line says where it would go -->
-                <!-- (docs/protocol.md, "Consenting to the assistant"). The door is absent where there is nothing -->
-                <!-- to open: a server that named no processor cannot be agreed to. -->
-                <StackPanel x:Name="ConsentBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
-                    <TextBlock x:Name="ConsentText" VerticalAlignment="Center" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <HyperlinkButton x:Name="ConsentReview" VerticalAlignment="Center" Visibility="Collapsed" />
+            <!--
+                Everything under the messages, in the column's width (FitColumn), top to bottom in the one order every client keeps
+                (#106, docs/composer-and-wide-layout-2026-10-20.md, 2.4) — the nearer the field, the nearer to what is being
+                written: the notices (consent, the picture notice, the /draw hint), the voice messages not sent, the reply or edit
+                banner, and the card — staged items, mention suggestions, the busy/failure lines, the row. Each client had its own
+                order until then, and Windows drew the failure line under the card, where nobody looking at the field saw it.
+            -->
+            <StackPanel x:Name="ComposerColumn" Grid.Row="2">
+                <!-- Each line carries its own top margin, so nothing shown takes no room. -->
+                <StackPanel Margin="8,0,8,0">
+                    <!-- Nothing goes to the model until this member has said so, and the line says where it would go -->
+                    <!-- (docs/protocol.md, "Consenting to the assistant"). The door is absent where there is nothing -->
+                    <!-- to open: a server that named no processor cannot be agreed to. -->
+                    <StackPanel x:Name="ConsentBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                        <TextBlock x:Name="ConsentText" VerticalAlignment="Center" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <HyperlinkButton x:Name="ConsentReview" VerticalAlignment="Center" Visibility="Collapsed" />
+                    </StackPanel>
+                    <!-- What will reach the assistant's model, said before the pixels leave. -->
+                    <TextBlock x:Name="PictureNoticeText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                    <!-- While a picture is being asked for: real names and brands are what the images model refuses (PictureHint). -->
+                    <TextBlock x:Name="PictureHintText" Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
+                    <!-- Voice messages that were not sent: a row each, with Send and a cross (DrawNotSent). Something other than -->
+                    <!-- the person stopped them, and they wait here, never carried by another Send. -->
+                    <StackPanel x:Name="NotSentPanel" Margin="0,6,0,0" Spacing="6" Visibility="Collapsed" />
                 </StackPanel>
-                <!-- Voice messages that were not sent: a row each, with Send and a cross (DrawNotSent). Something other than -->
-                <!-- the person stopped them, and they wait here, never carried by another Send. -->
-                <StackPanel x:Name="NotSentPanel" Margin="0,6,0,0" Spacing="6" Visibility="Collapsed" />
-                <!-- Looking for where this device is: said while it looks, so the pause is not a dead menu item. -->
-                <StackPanel x:Name="LocationBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
-                    <ProgressRing x:Name="LocationRing" Width="16" Height="16" IsActive="False" />
-                    <TextBlock x:Name="LocationText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </StackPanel>
-                <!-- Files being prepared. A video is transcoded first, which can take minutes: said while it runs, with a way out. -->
-                <StackPanel x:Name="PreparingBar" Margin="0,6,0,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
-                    <ProgressRing x:Name="PreparingRing" Width="16" Height="16" IsActive="False" />
-                    <TextBlock x:Name="PreparingText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <HyperlinkButton x:Name="PreparingCancel" VerticalAlignment="Center" />
-                </StackPanel>
-            </StackPanel>
-            <Border
-                x:Name="ComposerPanel"
-                Grid.Row="4"
-                Margin="16,8,16,12"
-                Padding="6"
-                CornerRadius="8"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                AllowDrop="True"
-                Visibility="Collapsed">
-                <Grid ColumnSpacing="6" RowSpacing="6">
+                <Grid x:Name="BannerPanel" ColumnSpacing="8" Margin="8,4,8,0" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
-                        <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
-                    </ScrollViewer>
-                    <ScrollViewer x:Name="SuggestionScroller" Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
-                        <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
-                    </ScrollViewer>
-                    <!-- One door for everything a message can carry: its menu is built from what this chat allows. A paperclip, -->
-                    <!-- Segoe Fluent's Attach glyph, as on every client (docs/attachment-menu-2026-10-07.md). -->
-                    <StackPanel x:Name="ComposerTools" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
-                        <Button x:Name="AttachButton" Background="Transparent" BorderThickness="0" Padding="8">
-                            <FontIcon Glyph="&#xE723;" FontSize="16" />
-                        </Button>
-                        <!-- The family's stickers: a panel over the composer, where one click sends. Drawn only on a server -->
-                        <!-- that has packs, in every chat a message can be sent in, and never while a message is being -->
-                        <!-- edited (ShowStickerButton). -->
-                        <Button x:Name="StickerButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
-                            <FontIcon Glyph="&#xE899;" FontSize="16" />
-                        </Button>
-                        <!-- The assistant's two doors, drawn only where they lead somewhere (AssistantButtons). -->
-                        <Button x:Name="AskAssistantButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
-                        <Button x:Name="AskPictureButton" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed" />
-                    </StackPanel>
-                    <TextBox x:Name="ComposerBox" Grid.Row="2" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="160" VerticalAlignment="Center" />
-                    <!--
-                        The video button (docs/audio-video-messages-2026-10-04.md, S1.4): inside the empty field at its trailing edge,
-                        centred on its one line — a 22-epx Segoe Fluent E714 in a 44-epx target — and the field given trailing room
-                        while it shows. Drawn only where a video message can be recorded (DrawVideoDoor), which no build does until
-                        RoundVideoRules.RecordingEnabled is switched on after the Windows trials.
-                    -->
-                    <Button
-                        x:Name="VideoDoorButton"
-                        Grid.Row="2"
-                        Grid.Column="1"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center"
-                        Width="44"
-                        Height="44"
-                        Padding="0"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        IsHoldingEnabled="False"
-                        Visibility="Collapsed">
-                        <FontIcon Glyph="&#xE714;" FontSize="22" />
-                    </Button>
-                    <!--
-                        A voice message being recorded, IN the input row (docs/audio-video-messages-2026-10-04.md, S2.4, S8.6): it
-                        takes the place of the field and the buttons beside it, at the height they had, and the slot stays where it
-                        is. Delete, the red dot and the clock, "30 seconds left" from 4:30, and Stop — which is not drawn when the
-                        recording began beside words or staged items, because then the slot itself is Stop.
-                    -->
-                    <Grid x:Name="RecordingRow" Grid.Row="2" Grid.ColumnSpan="2" Visibility="Collapsed">
-                        <Grid Height="44" VerticalAlignment="Bottom" ColumnSpacing="10" Padding="4,0,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Button x:Name="RecordingDelete" VerticalAlignment="Center" />
-                            <Ellipse x:Name="RecordingDot" Grid.Column="1" Width="8" Height="8" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.AccessibilityView="Raw" />
-                            <TextBlock x:Name="RecordingTime" Grid.Column="2" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
-                            <!--
-                                The live waveform (the approved design of 2026-10-05): the newest peaks scrolling in from the right, in the
-                                recording red, where Windows lets a second reader measure the microphone (VoiceMeter) — and not drawn
-                                at all where it does not, nor with Windows' animations off. "30 seconds left" takes its place from 4:30.
-                            -->
-                            <StackPanel x:Name="RecordingLevels" Grid.Column="3" Height="24" Orientation="Horizontal" Spacing="2" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="0.8" AutomationProperties.AccessibilityView="Raw" Visibility="Collapsed" />
-                            <TextBlock x:Name="RecordingWarning" Grid.Column="3" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
-                            <Button x:Name="RecordingStop" Grid.Column="4" VerticalAlignment="Center" />
-                        </Grid>
-                    </Grid>
-                    <!--
-                        The trailing slot (S1.3, S8.6): Send, Save, the microphone, the recording's Send or Stop — one fixed 40-epx
-                        accent disc in a 44-epx target, so the Auto column never jumps. Its glyph, name and tooltip are set per state
-                        from code (ComposerButton.Face); a press of any length with any input clicks, and holding is off.
-                    -->
-                    <Button
-                        x:Name="SendButton"
-                        Grid.Row="2"
-                        Grid.Column="2"
-                        VerticalAlignment="Bottom"
-                        Width="44"
-                        Height="44"
-                        Padding="0"
-                        CornerRadius="22"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        IsHoldingEnabled="False">
-                        <!-- Disabled is drawn on the disc itself (DrawSlot): no grey ring around it. -->
-                        <Button.Resources>
-                            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
-                        </Button.Resources>
-                        <Grid x:Name="SlotLook" Width="40" Height="40">
-                            <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                            <FontIcon x:Name="SlotGlyphLeaving" FontSize="16" Opacity="0" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
-                            <FontIcon x:Name="SlotGlyph" Glyph="&#xE724;" FontSize="16" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
-                        </Grid>
-                    </Button>
-                    <!--
-                        What the recording does, said to a screen reader and never drawn (S6): "Recording", "Recording deleted",
-                        "Voice message sent", "Ready to review, 0:42", "30 seconds left". A polite live region under the field, taking
-                        no room of its own — the composer's notice line says what has to be SEEN.
-                    -->
-                    <TextBlock x:Name="RecordingStatus" Grid.Row="2" Grid.Column="1" Opacity="0" IsHitTestVisible="False" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <HyperlinkButton x:Name="BannerCancel" Grid.Column="1" />
                 </Grid>
-            </Border>
-            <!-- The composer's notice line: a polite live region, so what a recording's end says is heard as well as seen. -->
-            <TextBlock x:Name="ComposerError" Grid.Row="5" Margin="24,0,24,8" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
+                <Border
+                    x:Name="ComposerPanel"
+                    Margin="0,8,0,12"
+                    Padding="6"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    AllowDrop="True"
+                    Visibility="Collapsed">
+                    <Grid ColumnSpacing="6" RowSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <ScrollViewer x:Name="StagingScroller" Grid.ColumnSpan="3" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                            <StackPanel x:Name="StagingStrip" Orientation="Horizontal" Spacing="6" />
+                        </ScrollViewer>
+                        <!--
+                            The mention suggestions, then the busy/failure lines DIRECTLY above the row (#106, doc 2.4): one grid row
+                            for all of them, because the grid puts its RowSpacing between rows whether or not they hold anything, and
+                            a fourth row would open a gap over the field when every line is hidden. 1 epx in, so the lines start
+                            where the notices above the card do.
+                        -->
+                        <StackPanel Grid.Row="1" Grid.ColumnSpan="3">
+                            <ScrollViewer x:Name="SuggestionScroller" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                                <StackPanel x:Name="SuggestionStrip" Orientation="Horizontal" Spacing="6" />
+                            </ScrollViewer>
+                            <!-- Looking for where this device is: said while it looks, so the pause is not a dead menu item. -->
+                            <StackPanel x:Name="LocationBar" Margin="1,6,1,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                                <ProgressRing x:Name="LocationRing" Width="16" Height="16" IsActive="False" />
+                                <TextBlock x:Name="LocationText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <!-- Files being prepared. A video is transcoded first, which can take minutes: said while it runs, with a way out. -->
+                            <StackPanel x:Name="PreparingBar" Margin="1,6,1,0" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                                <ProgressRing x:Name="PreparingRing" Width="16" Height="16" IsActive="False" />
+                                <TextBlock x:Name="PreparingText" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <HyperlinkButton x:Name="PreparingCancel" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <!--
+                                The composer's notice line — a failure, or what a recording's end says — nearest the row of all, where the
+                                eye already is (it sat under the card until #106): a polite live region, so it is heard as well as seen.
+                            -->
+                            <TextBlock x:Name="ComposerError" Margin="1,6,1,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
+                        </StackPanel>
+                        <!--
+                            The row (docs/composer-and-wide-layout-2026-10-20.md, 2.1): the paperclip alone left of the field, the field
+                            with its own glyphs inside its trailing edge, the slot. One door for everything a message can carry — its menu
+                            is built from what this chat allows, "Ask the Assistant" included — Segoe Fluent's Attach glyph in a 44-epx
+                            target, as on every client (docs/attachment-menu-2026-10-07.md).
+                        -->
+                        <StackPanel x:Name="ComposerTools" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                            <Button x:Name="AttachButton" Width="44" Height="44" Padding="0" Background="Transparent" BorderThickness="0">
+                                <FontIcon Glyph="&#xE723;" FontSize="16" />
+                            </Button>
+                        </StackPanel>
+                        <!--
+                            The field, bottom-aligned with the controls, one line as tall as their targets. Its glyphs sit over its trailing
+                            edge and it is padded by one target per glyph shown (FitField), so text never runs under them: the stickers,
+                            always, empty or typing (ShowStickerButton); the paintbrush beside them in the assistant's chat
+                            (ShowAssistantButtons); the video button where S1.4 puts it (DrawVideoDoor).
+                        -->
+                        <Grid x:Name="ComposerField" Grid.Row="2" Grid.Column="1" VerticalAlignment="Bottom">
+                            <TextBox x:Name="ComposerBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="160" VerticalAlignment="Bottom" />
+                            <StackPanel x:Name="FieldTools" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                <!-- The family's stickers: a panel over the composer, where one click sends. -->
+                                <Button x:Name="StickerButton" Width="44" Height="44" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed">
+                                    <FontIcon Glyph="&#xE899;" FontSize="16" />
+                                </Button>
+                                <!-- "Ask for a picture": the assistant's chat, where it draws — a Segoe Fluent brush, not colour emoji. -->
+                                <Button x:Name="AskPictureButton" Width="44" Height="44" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed">
+                                    <FontIcon Glyph="&#xE771;" FontSize="16" />
+                                </Button>
+                                <!--
+                                    The video button (docs/audio-video-messages-2026-10-04.md, S1.4): inside the empty field at its trailing
+                                    edge, a 22-epx Segoe Fluent E714 in a 44-epx target. Drawn only where a video message can be recorded
+                                    (DrawVideoDoor), which no build does until RoundVideoRules.RecordingEnabled is switched on after the
+                                    Windows trials.
+                                -->
+                                <Button
+                                    x:Name="VideoDoorButton"
+                                    Width="44"
+                                    Height="44"
+                                    Padding="0"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    IsHoldingEnabled="False"
+                                    Visibility="Collapsed">
+                                    <FontIcon Glyph="&#xE714;" FontSize="22" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                        <!--
+                            A voice message being recorded, IN the input row (docs/audio-video-messages-2026-10-04.md, S2.4, S8.6): it
+                            takes the place of the field and the buttons beside it, at the height they had, and the slot stays where it
+                            is. Delete, the red dot and the clock, "30 seconds left" from 4:30, and Stop — which is not drawn when the
+                            recording began beside words or staged items, because then the slot itself is Stop.
+                        -->
+                        <Grid x:Name="RecordingRow" Grid.Row="2" Grid.ColumnSpan="2" Visibility="Collapsed">
+                            <Grid Height="44" VerticalAlignment="Bottom" ColumnSpacing="10" Padding="4,0,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="RecordingDelete" VerticalAlignment="Center" />
+                                <Ellipse x:Name="RecordingDot" Grid.Column="1" Width="8" Height="8" VerticalAlignment="Center" Fill="{ThemeResource SystemFillColorCriticalBrush}" AutomationProperties.AccessibilityView="Raw" />
+                                <TextBlock x:Name="RecordingTime" Grid.Column="2" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                                <!--
+                                    The live waveform (the approved design of 2026-10-05): the newest peaks scrolling in from the right, in the
+                                    recording red, where Windows lets a second reader measure the microphone (VoiceMeter) — and not drawn
+                                    at all where it does not, nor with Windows' animations off. "30 seconds left" takes its place from 4:30.
+                                -->
+                                <StackPanel x:Name="RecordingLevels" Grid.Column="3" Height="24" Orientation="Horizontal" Spacing="2" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="0.8" AutomationProperties.AccessibilityView="Raw" Visibility="Collapsed" />
+                                <TextBlock x:Name="RecordingWarning" Grid.Column="3" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
+                                <Button x:Name="RecordingStop" Grid.Column="4" VerticalAlignment="Center" />
+                            </Grid>
+                        </Grid>
+                        <!--
+                            The trailing slot (S1.3, S8.6): Send, Save, the microphone, the recording's Send or Stop — one fixed 40-epx
+                            accent disc in a 44-epx target, so the Auto column never jumps. Its glyph, name and tooltip are set per state
+                            from code (ComposerButton.Face); a press of any length with any input clicks, and holding is off.
+                        -->
+                        <Button
+                            x:Name="SendButton"
+                            Grid.Row="2"
+                            Grid.Column="2"
+                            VerticalAlignment="Bottom"
+                            Width="44"
+                            Height="44"
+                            Padding="0"
+                            CornerRadius="22"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            IsHoldingEnabled="False">
+                            <!-- Disabled is drawn on the disc itself (DrawSlot): no grey ring around it. -->
+                            <Button.Resources>
+                                <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
+                            </Button.Resources>
+                            <Grid x:Name="SlotLook" Width="40" Height="40">
+                                <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                                <FontIcon x:Name="SlotGlyphLeaving" FontSize="16" Opacity="0" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                <FontIcon x:Name="SlotGlyph" Glyph="&#xE724;" FontSize="16" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                            </Grid>
+                        </Button>
+                        <!--
+                            What the recording does, said to a screen reader and never drawn (S6): "Recording", "Recording deleted",
+                            "Voice message sent", "Ready to review, 0:42", "30 seconds left". A polite live region under the field, taking
+                            no room of its own — the composer's notice line says what has to be SEEN.
+                        -->
+                        <TextBlock x:Name="RecordingStatus" Grid.Row="2" Grid.Column="1" Opacity="0" IsHitTestVisible="False" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                    </Grid>
+                </Border>
+            </StackPanel>
         </Grid>
+
+        <!--
+            What the thread stands on when it goes OVER the conversation (ConversationColumn.Arrange): its own layer is translucent,
+            and the conversation under it is still there. Shown and hidden with that placement, in code.
+        -->
+        <Border x:Name="ThreadUnderlay" Grid.Column="2" Grid.ColumnSpan="2" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" Visibility="Collapsed" />
 
         <!-- A chain of replies, beside the conversation: the root at the top, the replies below, a composer that answers the root. -->
         <Border
@@ -288,6 +328,11 @@
                     <StackPanel x:Name="ThreadStack" Padding="16,12,16,12" />
                 </ScrollViewer>
                 <TextBlock x:Name="ThreadNotice" Grid.Row="2" Margin="20,4,20,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                <!--
+                    The thread's composer is the conversation's own field (docs/composer-and-wide-layout-2026-10-20.md, 2.1): the
+                    stickers inside its trailing edge — one click answers the root with one, under the same rule (ShowStickerButton)
+                    — and the same Send disc, disabled while the reply is blank (DrawThreadSend). No paperclip and no microphone.
+                -->
                 <Border
                     Grid.Row="3"
                     Margin="12,8,12,12"
@@ -298,17 +343,34 @@
                     BorderThickness="1">
                     <Grid ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <!-- The family's stickers, from the thread: one click answers the root with one. Drawn where the -->
-                        <!-- conversation's own button is, under the same rule (ShowStickerButton). -->
-                        <Button x:Name="ThreadStickerButton" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Padding="8" Visibility="Collapsed">
-                            <FontIcon Glyph="&#xE899;" FontSize="16" />
+                        <Grid VerticalAlignment="Bottom">
+                            <TextBox x:Name="ThreadComposer" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" MaxHeight="120" VerticalAlignment="Bottom" />
+                            <Button x:Name="ThreadStickerButton" Width="44" Height="44" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="Transparent" BorderThickness="0" Visibility="Collapsed">
+                                <FontIcon Glyph="&#xE899;" FontSize="16" />
+                            </Button>
+                        </Grid>
+                        <Button
+                            x:Name="ThreadSend"
+                            Grid.Column="1"
+                            VerticalAlignment="Bottom"
+                            Width="44"
+                            Height="44"
+                            Padding="0"
+                            CornerRadius="22"
+                            Background="Transparent"
+                            BorderThickness="0">
+                            <!-- Disabled is drawn on the disc itself (DrawThreadSend), as the slot's is: no grey ring around it. -->
+                            <Button.Resources>
+                                <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
+                            </Button.Resources>
+                            <Grid x:Name="ThreadSendLook" Width="40" Height="40">
+                                <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                                <FontIcon Glyph="&#xE724;" FontSize="16" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                            </Grid>
                         </Button>
-                        <TextBox x:Name="ThreadComposer" Grid.Column="1" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="120" VerticalAlignment="Center" />
-                        <Button x:Name="ThreadSend" Grid.Column="2" VerticalAlignment="Bottom" Style="{StaticResource AccentButtonStyle}" />
                     </Grid>
                 </Border>
             </Grid>

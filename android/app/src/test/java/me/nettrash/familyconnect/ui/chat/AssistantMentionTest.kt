@@ -435,4 +435,22 @@ class AssistantMentionTest {
         assertEquals("\u200Ba cat", AssistantMention.drawPrompt("/draw \u200Ba cat"))
         assertNull(AssistantMention.drawPrompt("/draw\u200Ba cat"))
     }
+
+    /**
+     * "Ask the assistant" (#106) appends the token at the END — a space
+     * before it unless there is nothing or a space already — and adds
+     * nothing to a draft that already asks.
+     */
+    @Test
+    fun askTheAssistantAppendsTheTokenOnce() {
+        assertEquals("@ai ", AssistantMention.appendedToken(""))
+        assertEquals(" @ai ", AssistantMention.appendedToken("what about Sunday"))
+        assertEquals("@ai ", AssistantMention.appendedToken("what about Sunday "))
+        assertNull(AssistantMention.appendedToken("@ai hi"))
+        assertNull(AssistantMention.appendedToken("so, @AI?"))
+        // "@aiden" is a name, not the token: the assistant is not asked yet.
+        assertEquals(" @ai ", AssistantMention.appendedToken("@aiden"))
+        val draft = "dinner?" + AssistantMention.appendedToken("dinner?")
+        assertTrue(AssistantMention.mentions(draft))
+    }
 }

@@ -135,4 +135,86 @@ object MemberMention {
         if (at < 0) return "$draft@$name "
         return draft.substring(0, at) + "@" + name + " "
     }
+
+    // -- The assistant in the strip (#106) ---------------------------------
+
+    /**
+     * One chip of the strip above the composer: the assistant or a member.
+     *
+     * The assistant is not a member for anything but this strip
+     * (docs/protocol.md, "Mentioning a member", amended 2026-10-20 for
+     * #106): it is never a mention target, never resolved at send, never
+     * marked in a bubble as a member is. So it is its own case here rather
+     * than a [MentionDto] with a made-up id that [resolve] could one day
+     * mistake for somebody.
+     */
+    sealed interface Suggestion {
+        /** Stable across keystrokes, for the strip's list keys. */
+        val key: String
+
+        /** `@ai`, shown under the assistant's own name. */
+        data class Assistant(val displayName: String) : Suggestion {
+            override val key: String get() = "assistant"
+        }
+
+        data class Member(val mention: MentionDto) : Suggestion {
+            override val key: String get() = "member-${mention.userId}"
+        }
+    }
+
+    /** `ai`, what the assistant is narrowed by besides its name: the token without its `@`. */
+    private val ASSISTANT_WORD = AssistantMention.TOKEN.removePrefix("@")
+
+    /**
+     * Whether the assistant is offered for [query]: as a member is by
+     * their name — the prefix being typed starts its display name — and
+     * also by `ai`, the word that will land in the text, so somebody who
+     * knows the token finds it by typing it. Never twice: a draft that
+     * already asks it (anywhere before the `@` being typed) has nothing
+     * to gain from a second `@ai`.
+     */
+    fun offersAssistant(draft: String, query: String, displayName: String): Boolean {
+        val at = draft.lastIndexOf('@')
+        if (at > 0 && AssistantMention.mentions(draft.substring(0, at))) return false
+        val needle = query.lowercase()
+        return needle.isEmpty() ||
+            displayName.lowercase().startsWith(needle) ||
+            ASSISTANT_WORD.startsWith(needle)
+    }
+
+    /**
+     * What the strip offers for [draft] (#106): the assistant FIRST, above
+     * the members, when [assistantName] says it may be offered at all —
+     * the caller decides that (the family chat, a server that advertises
+     * an assistant WITH its processor); then the members [candidates]
+     * offers, never the assistant's own account among them even if a
+     * roster carried it. Empty outside a token.
+     */
+    fun suggestions(
+        draft: String,
+        roster: List<MentionDto>,
+        excluding: Set<Long>,
+        assistantName: String?,
+        assistantUserId: Long?,
+    ): List<Suggestion> {
+        val query = query(draft) ?: return emptyList()
+        val members = candidates(roster, query, excluding + setOfNotNull(assistantUserId))
+            .map { Suggestion.Member(it) }
+        val assistant = assistantName
+            ?.takeIf { offersAssistant(draft, query, it) }
+            ?.let { Suggestion.Assistant(it) }
+        return listOfNotNull(assistant) + members
+    }
+
+    /**
+     * The draft with the trailing `@prefix` replaced by [Suggestion]'s
+     * token: `@Name ` for a member, and for the assistant `@ai ` — the
+     * token "Mentioning the assistant in the family chat" defines, NEVER
+     * `@<display name>`, which the server would read as plain words and
+     * nobody would answer.
+     */
+    fun accept(draft: String, suggestion: Suggestion): String = when (suggestion) {
+        is Suggestion.Assistant -> accept(draft, ASSISTANT_WORD)
+        is Suggestion.Member -> accept(draft, suggestion.mention.name)
+    }
 }

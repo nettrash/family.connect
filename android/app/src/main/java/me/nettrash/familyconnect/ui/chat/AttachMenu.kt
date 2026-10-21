@@ -17,12 +17,19 @@ package me.nettrash.familyconnect.ui.chat
  * Record voice message
  * Record video message
  * ──
+ * Ask the assistant — the family chat, where `@ai` is offered (#106)
  * Location
  * Poll             — the family chat only
  * ```
  *
  * The assistant chat takes images only, so its camera is a direct
  * "Take photo" rather than a "Camera" that would open a page of one item.
+ *
+ * "Ask the assistant" is the `@ai` button that stood beside the field
+ * until #106 (docs/composer-and-wide-layout-2026-10-20.md): it cost the
+ * field the most and was used the least, so it became words in this menu
+ * — first in the last group, the group of things a message can carry
+ * beyond words — and the assistant's chip at the head of the `@` strip.
  *
  * Whether an item is ENABLED (a call, an unsent voice message, a busy
  * composer) is not decided here: the composer still owns that, exactly as
@@ -49,6 +56,8 @@ object AttachMenu {
         PASTE,
         RECORD_VOICE,
         RECORD_VIDEO,
+        /** Appends `@ai ` to the draft (#106) — the family chat only. */
+        ASK_ASSISTANT,
         LOCATION,
         POLL,
     }
@@ -67,6 +76,10 @@ object AttachMenu {
      *   assistant chat).
      * @param recordVideo round video is available here.
      * @param poll a poll can be started (the family chat).
+     * @param askAssistant `@ai` is offered here — the family chat, on a
+     *   server whose assistant names its processor
+     *   (AssistantConsent.offersMention). Never in the assistant chat,
+     *   where every message is already for it.
      */
     fun groups(
         assistantChat: Boolean,
@@ -75,6 +88,7 @@ object AttachMenu {
         recordVoice: Boolean,
         recordVideo: Boolean,
         poll: Boolean,
+        askAssistant: Boolean = false,
     ): List<List<Item>> {
         val pictures = !assistantChat || assistantPictures
         val attach = buildList {
@@ -91,6 +105,7 @@ object AttachMenu {
             if (recordVideo && !assistantChat) add(Item.RECORD_VIDEO)
         }
         val share = buildList {
+            if (askAssistant && !assistantChat) add(Item.ASK_ASSISTANT)
             add(Item.LOCATION)
             if (poll && !assistantChat) add(Item.POLL)
         }
