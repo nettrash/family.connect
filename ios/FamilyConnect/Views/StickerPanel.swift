@@ -111,6 +111,14 @@ struct StickerComposerButton: View {
     let side: CGFloat
     /// The glyph's point size, which differs between the two composers.
     let glyph: CGFloat
+    /// The box's width when it is not square: inside the field (#106) the
+    /// glyph is narrower than the row's controls, because the capsule's
+    /// padding is its margin. Nil is `side` — a square.
+    var width: CGFloat? = nil
+    /// How far the hit area reaches past the box on every side, to make a
+    /// 44-pt target out of a smaller glyph (S1.1 "Targets") without the row
+    /// paying for it in width.
+    var hitOverhang: CGFloat = 0
     /// The panel is opening: "any other action" to a voice composer, which
     /// lifts the slot's activation guard (#79, S1.1 names "a sticker" — the
     /// tap that opens the panel, not only the one that sends from it).
@@ -118,6 +126,9 @@ struct StickerComposerButton: View {
     let onPick: (PackItemSnapshot) -> Void
 
     @State private var showsPanel = false
+    #if os(macOS)
+    @Environment(\.isEnabled) private var isEnabled
+    #endif
 
     var body: some View {
         Button {
@@ -126,8 +137,15 @@ struct StickerComposerButton: View {
         } label: {
             Image(systemName: "face.smiling")
                 .font(.system(size: glyph))
-                .frame(width: side, height: side)
-                .contentShape(Rectangle())
+                #if os(macOS)
+                // In the accent colour like the video button beside it and
+                // the slot — a borderless button draws its glyph gray, and
+                // an explicit colour is not dimmed for it, so the dimmed
+                // state is drawn here too, the video button's way.
+                .foregroundStyle(isEnabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                #endif
+                .frame(width: width ?? side, height: side)
+                .contentShape(Rectangle().inset(by: -hitOverhang))
         }
         #if os(macOS)
         .buttonStyle(.borderless)

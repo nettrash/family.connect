@@ -128,6 +128,7 @@ import me.nettrash.familyconnect.data.repo.PastedMedia
 import me.nettrash.familyconnect.data.repo.ShareStash
 import android.content.ClipData
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.data.net.dto.PollCodec
 import me.nettrash.familyconnect.util.OpenPollsBadge
 import me.nettrash.familyconnect.di.AppScope
@@ -1051,29 +1052,51 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /**
-     * What the strip above the composer offers: the roster narrowed to the
-     * `@prefix` being typed — never the reader themself, never the
-     * blocked, and never the assistant, which is not in the roster and has
-     * its own button. Empty outside the family chat and outside a token.
+     * What the strip above the composer offers: the assistant FIRST, then
+     * the roster, narrowed to the `@prefix` being typed — never the reader
+     * themself and never the blocked. Empty outside the family chat and
+     * outside a token.
+     *
+     * The assistant is offered since #106 took its button out of the
+     * composer row (docs/protocol.md, "Mentioning a member", amended
+     * 2026-10-20) — exactly where `@ai` may be written at all, which is
+     * [offersAssistantMention]'s rule, under the name the server gave it.
      */
-    val mentionCandidates: StateFlow<List<MentionDto>> = combine(
+    val mentionCandidates: StateFlow<List<MemberMention.Suggestion>> = combine(
         draftText,
         mentionRoster,
         chat,
         settings.state,
     ) { draft, roster, chatEntity, settingsState ->
         if (chatEntity?.kind != "family") return@combine emptyList()
-        val query = MemberMention.query(draft) ?: return@combine emptyList()
-        MemberMention.candidates(
-            roster,
-            query,
+        MemberMention.suggestions(
+            draft = draft,
+            roster = roster,
             excluding = settingsState.blockedUserIds + setOfNotNull(settingsState.myUserId),
+            assistantName = if (offersAssistantMention(chatEntity.kind, settingsState)) {
+                settingsState.assistantName?.takeIf { it.isNotBlank() }
+                    ?: appContext.getString(R.string.s_assistant)
+            } else {
+                null
+            },
+            assistantUserId = settingsState.assistantUserId,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** A name picked from the strip: the trailing `@prefix` becomes `@Name `. */
-    fun acceptMention(name: String) {
-        inputState.setTextAndPlaceCursorAtEnd(MemberMention.accept(inputState.text.toString(), name))
+    /** [AssistantConsent.offersMention], asked of this chat and these settings. */
+    private fun offersAssistantMention(chatKind: String?, settingsState: SettingsState): Boolean =
+        AssistantConsent.offersMention(
+            chatKind = chatKind,
+            hasAssistant = settingsState.assistantUserId != null,
+            processor = settingsState.assistantProcessor,
+        )
+
+    /**
+     * A chip picked from the strip: the trailing `@prefix` becomes `@Name `
+     * — or `@ai ` for the assistant, never its display name.
+     */
+    fun acceptMention(suggestion: MemberMention.Suggestion) {
+        inputState.setTextAndPlaceCursorAtEnd(MemberMention.accept(inputState.text.toString(), suggestion))
     }
 
     /** The members the text names, resolved at send — family chat only. */

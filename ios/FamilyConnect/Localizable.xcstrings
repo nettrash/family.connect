@@ -7033,8 +7033,8 @@
         }
       }
     },
-    "Ask the assistant" : {
-      "comment" : "A button that puts “@ai” in the message field, so the assistant answers in the family chat.",
+    "Ask the Assistant" : {
+      "comment" : "A paperclip-menu item that puts “@ai” in the message field, so the assistant answers in the family chat.",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -45731,6 +45731,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你的加入申请被拒绝了。你可以索取新的邀请码再试一次。"
+          }
+        }
+      }
+    },
+    "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@." : {
+      "comment" : "Assistant consent screen, right after the line about asking for the text of a recording, when the server can make text from recordings (assistant.transcribe); %@ is who receives the sound. protocol.md requires this line (amended 2026-10-21: a direct-chat partner may ask on the sender's consent).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In einem Direktchat kann die andere Person den Text deiner Sprachnachrichten, Audiodateien und Videos abrufen; ihr Ton wird dann an %@ gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En un chat directo, la otra persona puede pedir el texto de tus notas de voz, archivos de audio y vídeos, y su sonido se envía entonces a %@."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dans une conversation directe, l’autre personne peut demander le texte de vos messages vocaux, fichiers audio et vidéos, et leur son est alors envoyé à %@."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "個別チャットでは、相手があなたのボイスメッセージ、オーディオファイル、ビデオのテキストを求めることができ、そのときその音声が %@ に送られます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В личном чате собеседник может попросить текст ваших голосовых сообщений, аудиофайлов и видео — тогда их звук будет отправлен в %@."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У личном разговору друга особа може да затражи текст твојих гласовних порука, аудио датотека и видеа, и тада се њихов звук шаље ка %@."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "U ličnom razgovoru druga osoba može da zatraži tekst tvojih glasovnih poruka, audio datoteka i videa, i tada se njihov zvuk šalje ka %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在私聊中，对方可以请求获取你的语音消息、音频文件和视频的文字，届时它们的声音会发送给 %@。"
           }
         }
       }

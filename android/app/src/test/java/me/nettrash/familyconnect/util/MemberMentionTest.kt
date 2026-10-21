@@ -130,4 +130,90 @@ class MemberMentionTest {
         assertThat(MemberMention.userIdFrom(MemberMention.url(42))).isEqualTo(42L)
         assertThat(MemberMention.userIdFrom("https://example.com/42")).isNull()
     }
+
+    // -- The assistant in the strip (#106; docs/protocol.md, "Mentioning a
+    //    member", amended 2026-10-20) ------------------------------------
+
+    private val family = listOf(MentionDto(7, "Me"), MentionDto(8, "Anna"), MentionDto(9, "Aidan"), MentionDto(10, "Bob"))
+
+    private fun offered(draft: String, name: String? = "Hazel", assistantId: Long? = 99) =
+        MemberMention.suggestions(draft, family, excluding = setOf(7), assistantName = name, assistantUserId = assistantId)
+
+    @Test
+    fun `a bare at offers the assistant FIRST, then every member but the reader`() {
+        assertThat(offered("@")).containsExactly(
+            MemberMention.Suggestion.Assistant("Hazel"),
+            MemberMention.Suggestion.Member(family[1]),
+            MemberMention.Suggestion.Member(family[2]),
+            MemberMention.Suggestion.Member(family[3]),
+        ).inOrder()
+    }
+
+    @Test
+    fun `the assistant is narrowed by its own name and by ai, as a member by theirs`() {
+        // By its display name, case-insensitively.
+        assertThat(offered("@ha")).containsExactly(MemberMention.Suggestion.Assistant("Hazel"))
+        assertThat(offered("@HAZEL")).containsExactly(MemberMention.Suggestion.Assistant("Hazel"))
+        // By the token's word — and a member called Aidan still matches "a" and "ai".
+        assertThat(offered("@a")).containsExactly(
+            MemberMention.Suggestion.Assistant("Hazel"),
+            MemberMention.Suggestion.Member(family[1]),
+            MemberMention.Suggestion.Member(family[2]),
+        ).inOrder()
+        assertThat(offered("hey @AI")).containsExactly(
+            MemberMention.Suggestion.Assistant("Hazel"),
+            MemberMention.Suggestion.Member(family[2]),
+        ).inOrder()
+        // Past both: only the members the prefix still fits.
+        assertThat(offered("@aid")).containsExactly(MemberMention.Suggestion.Member(family[2]))
+        assertThat(offered("@b")).containsExactly(MemberMention.Suggestion.Member(family[3]))
+        // Outside a token, nothing at all.
+        assertThat(offered("no at")).isEmpty()
+        assertThat(offered("mail@x")).isEmpty()
+    }
+
+    @Test
+    fun `no assistant is offered where the caller offers none`() {
+        // A direct chat, a server without one, one that names no processor:
+        // the caller passes no name, and the strip is the members alone.
+        assertThat(offered("@", name = null)).containsExactly(
+            MemberMention.Suggestion.Member(family[1]),
+            MemberMention.Suggestion.Member(family[2]),
+            MemberMention.Suggestion.Member(family[3]),
+        ).inOrder()
+    }
+
+    @Test
+    fun `the assistant's own account is never offered as a member`() {
+        val withBot = family + MentionDto(99, "Hazel")
+        assertThat(
+            MemberMention.suggestions("@ha", withBot, excluding = emptySet(), assistantName = "Hazel", assistantUserId = 99),
+        ).containsExactly(MemberMention.Suggestion.Assistant("Hazel"))
+    }
+
+    @Test
+    fun `a draft that already asks the assistant is not offered it again`() {
+        assertThat(offered("@ai what time is it @")).doesNotContain(MemberMention.Suggestion.Assistant("Hazel"))
+        // A longer word is not the token: "@aiden" asks nobody.
+        assertThat(offered("@aiden @").first()).isEqualTo(MemberMention.Suggestion.Assistant("Hazel"))
+    }
+
+    @Test
+    fun `picking the assistant writes the token, never its display name`() {
+        val hazel = MemberMention.Suggestion.Assistant("Hazel")
+        assertThat(MemberMention.accept("@", hazel)).isEqualTo("@ai ")
+        assertThat(MemberMention.accept("so @Ha", hazel)).isEqualTo("so @ai ")
+        assertThat(MemberMention.accept("hey @an", MemberMention.Suggestion.Member(family[1]))).isEqualTo("hey @Anna ")
+        // The token it writes is the one the assistant grammar reads.
+        assertThat(me.nettrash.familyconnect.ui.chat.AssistantMention.mentions(MemberMention.accept("@", hazel))).isTrue()
+        // And it names no member, so nothing is resolved for it at send.
+        assertThat(MemberMention.resolve(MemberMention.accept("@", hazel), family)).isEmpty()
+    }
+
+    @Test
+    fun `strip keys are distinct and stable`() {
+        val keys = offered("@").map { it.key }
+        assertThat(keys).containsNoDuplicates()
+        assertThat(keys.first()).isEqualTo("assistant")
+    }
 }

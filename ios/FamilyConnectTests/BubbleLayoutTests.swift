@@ -164,7 +164,7 @@ struct BubbleLayoutTests {
     /// capped at 280pt, so a balloon that took this column would be ~512pt
     /// and one that hugs, ~260-310pt. (At the phone-ish 320pt render width
     /// above the two cannot be told apart, which is how the slab shipped.)
-    private static let wideColumn: CGFloat = 560
+    private nonisolated static let wideColumn: CGFloat = 560
 
     /// The balloon's inset on each side of its content, plus the 48pt
     /// spacer an own message leaves on its far side: the room every
@@ -236,15 +236,49 @@ struct BubbleLayoutTests {
         #expect(width < 120, "a one-word balloon came out \(Int(width))pt wide")
     }
 
+    // MARK: - The bubble's cap (#106)
+
+    /// A message long enough to run past any bubble on one line.
+    private static let paragraph = String(repeating: Self.body + " ", count: 3)
+
+    @Test("on an iPad's 1024-pt column a long message wraps at the 560-pt bubble, not across the column")
+    func longTextStopsAtTheBubbleCapOnAWideColumn() throws {
+        // The 13" iPad in landscape with its sidebar shown (#106, 2.2).
+        let column = ComposerRow.column(pane: 1056)
+        #expect(column == 1024)
+        let width = try balloonWidth(body: Self.paragraph, column: column)
+        #expect(
+            width <= ComposerRow.maxBubble + 1,
+            "a long message's balloon is \(Int(width))pt on a \(Int(column))pt column — the 560 cap is not holding")
+        // And it does use the room: a cap that bound far below 560 would be
+        // a different bug, with the same green test above.
+        #expect(width >= ComposerRow.maxBubble - 40, "the balloon stopped at \(Int(width))pt, well short of 560")
+    }
+
+    @Test("on an iPhone's column the bubble's limit is still the 48-pt spacer — nothing moved there")
+    func phoneColumnKeepsItsBubble() throws {
+        // iPhone 17 portrait: a 393-pt pane less the 12-pt inset each side.
+        let column = ComposerRow.column(pane: 393)
+        #expect(column == 369)
+        let limit = ComposerRow.bubble(column: column)
+        #expect(limit == column - 48)
+        let width = try balloonWidth(body: Self.paragraph, column: column)
+        #expect(width <= limit + 1, "the balloon is \(Int(width))pt, past the spacer's \(Int(limit))pt")
+        // Wrapping AT the limit, not at some fraction of it: the cap's frame
+        // must not change how the row shares its width with the spacer.
+        #expect(width >= limit - 30, "the balloon wrapped at \(Int(width))pt, short of its \(Int(limit))pt")
+    }
+
     /// The balloon's drawn width in a wide column: the horizontal extent
     /// of every opaque pixel. The canvas is transparent, an own balloon is
     /// filled with the tint, and its timestamp and tick sit under its
     /// trailing edge — so the extent IS the balloon.
     private func balloonWidth(
-        body: String, attachments: [AttachmentDTO] = [], poll: PollSnapshot? = nil
+        body: String, attachments: [AttachmentDTO] = [], poll: PollSnapshot? = nil,
+        column: CGFloat = BubbleLayoutTests.wideColumn
     ) throws -> CGFloat {
         let renderer = ImageRenderer(
-            content: bubble(body: body, replyTo: nil, attachments: attachments, poll: poll, width: Self.wideColumn))
+            content: bubble(body: body, replyTo: nil, attachments: attachments, poll: poll, width: column))
         renderer.scale = 1
         let image = try #require(renderer.cgImage, "the bubble did not render")
         let extent = try opaqueExtent(in: image)

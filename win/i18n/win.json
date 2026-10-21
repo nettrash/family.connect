@@ -167,6 +167,16 @@
       "sr-Latn": "Animirani stikeri moraju da budu WebP.",
       "zh-Hans": "动态贴纸必须是 WebP。"
     },
+    "Ask the Assistant": {
+      "de": "Assistenten fragen",
+      "es": "Preguntar al asistente",
+      "fr": "Demander à l’assistant",
+      "ja": "アシスタントに聞く",
+      "ru": "Спросить ассистента",
+      "sr": "Питај асистента",
+      "sr-Latn": "Pitaj asistenta",
+      "zh-Hans": "询问助手"
+    },
     "Brings Family Connect forward from any app. Press it again to put it back in the notification area.": {
       "de": "Holt Family Connect aus jeder App nach vorne. Drücke es erneut, um es wieder in den Infobereich zu legen.",
       "es": "Trae Family Connect al frente desde cualquier app. Púlsalo otra vez para devolverlo al área de notificación.",

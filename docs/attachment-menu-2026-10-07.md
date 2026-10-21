@@ -27,6 +27,7 @@ Paste                   the clipboard
 Record Voice Message    hands-free voice note    — not in the assistant chat
 Record Video Message    the round-video recorder — where round video is offered
 ──────────────
+Ask the Assistant       puts `@ai ` in the field — the family chat only, with an assistant and a processor (#106)
 Location                share where I am, once
 Poll                    a poll                   — the family chat only
 ```
@@ -52,7 +53,8 @@ Poll                    a poll                   — the family chat only
   `doc.on.clipboard`, `mic`, `video.circle`, `mappin.and.ellipse`, `chart.bar`, and their Material, Segoe and emoji
   counterparts.
 - **What is NOT in the menu**, on every client: stickers (their own button — a sticker is sent by the tap that picks
-  it), `@ai` (its own button), `/draw` "Ask for a picture" (its own paintbrush button in the assistant chat — Android
+  it; inside the field since #106), `@ai` (its own button until 2026-10-20 — #106 moved it into this menu as "Ask the
+  Assistant", first in the last group of the family chat, and into the `@` list; see `docs/composer-and-wide-layout-2026-10-20.md`), `/draw` "Ask for a picture" (its own paintbrush button in the assistant chat — Android
   moves it out of the menu, owner's choice), the video-call button. Availability rules are unchanged (call in
   progress, unsent voice message, busy composer, server features).
 
@@ -64,7 +66,7 @@ again without a test noticing:
 | Client | The rule | Its tests |
 |---|---|---|
 | iOS + Mac | `ios/FamilyConnect/Models/AttachMenu.swift` (and `Core/PickedMediaPrep.swift`, the photo-picker staging both now share) | `FamilyConnectTests/AttachMenuTests.swift` |
-| Android | `ui/chat/AttachMenu.kt` | `AttachMenuTest.kt`, `InputBarVoiceTest.kt` |
+| Android | `ui/chat/AttachMenu.kt` (`ASK_ASSISTANT` gated by `AssistantConsent.offersMention`) | `AttachMenuTest.kt`, `AssistantConsentTest.kt`, `InputBarVoiceTest.kt` |
 | Windows | `FamilyConnect.App.Logic/AttachMenu.cs` (`PhotoOrVideoTypes` is tied to `MediaPrep.MimeFor`) | `AttachMenuTests.cs` |
 | Web | `web/text/src/attach_menu.rs` | its own unit tests |
 

@@ -103,6 +103,9 @@ public static class AssistantConsent
         {
             lines.Add(say.Format(
                 "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.", processor));
+            lines.Add(say.Format(
+                "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
+                processor));
         }
         if (lookups is { Count: > 0 })
         {

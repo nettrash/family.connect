@@ -7,6 +7,13 @@ namespace FamilyConnect.App.Logic;
 public sealed record NameRun(string Text, long? UserId, bool Opens);
 
 /// <summary>
+/// One line of the strip over the composer: a member, or — <see cref="Member"/> null — the assistant. <see cref="Name"/> is
+/// what it is drawn as, <see cref="Handle"/> the quieter words after it, and <see cref="Writes"/> what a pick puts after the
+/// <c>@</c>: a member's display name, and the assistant's <c>ai</c>, never its display name.
+/// </summary>
+public sealed record MentionChoice(MemberDto? Member, string Name, string Handle, string Writes);
+
+/// <summary>
 /// Mentioning a member from the composer (docs/protocol.md, "Mentioning a member") — the web client's
 /// composer rules: who the strip offers, what a send carries, and whom a name in a bubble opens.
 /// </summary>
@@ -42,6 +49,35 @@ public static class ComposerMentions
             .Select(member => member.UserId)
             .ToHashSet();
         return [.. roster.Where(member => offered.Contains(member.Id))];
+    }
+
+    /// <summary>
+    /// The strip's lines for a half-typed <c>@</c>: <b>THE ASSISTANT FIRST</b>, above the members (docs/protocol.md,
+    /// "Mentioning a member", amended 2026-10-20, #106) — exactly where <c>@ai</c> may be written at all: the family chat,
+    /// not while editing, on a server whose assistant names who answers — narrowed by its display name and by <c>ai</c> as a
+    /// member is by theirs; then <see cref="Offered"/>. The assistant is never a member here: if the roster carries its
+    /// account, that row is left out rather than offered as <c>@&lt;display_name&gt;</c>.
+    /// </summary>
+    public static IReadOnlyList<MentionChoice> Choices(
+        string draft,
+        IReadOnlyList<MemberDto> members,
+        long me,
+        Func<long, bool> blocked,
+        bool familyChat,
+        bool editing,
+        AssistantDto? assistant)
+    {
+        var people = Offered(draft, members, me, blocked, familyChat, editing)
+            .Where(member => assistant is null || member.Id != assistant.UserId)
+            .Select(member => new MentionChoice(member, member.DisplayName, member.Username.Length > 0 ? $"@{member.Username}" : string.Empty, member.DisplayName));
+        if (!familyChat || editing || !AttachMenu.AssistantAvailable(assistant) || Mentions.Query(draft) is not { } query)
+        {
+            return [.. people];
+        }
+        var token = AssistantText.Token[1..];
+        var name = assistant!.DisplayName.Length > 0 ? assistant.DisplayName : token;
+        var asked = Mentions.Candidates([new Named(assistant.UserId, name), new Named(assistant.UserId, token)], query, []).Count > 0;
+        return asked ? [new MentionChoice(null, name, AssistantText.Token, token), .. people] : [.. people];
     }
 
     /// <summary>The names a text carries, resolved against the live roster, at most <see cref="Mentions.MaxPerMessage"/>.</summary>

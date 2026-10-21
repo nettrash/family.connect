@@ -261,6 +261,22 @@ pub fn candidates<'a>(roster: &[Member<'a>], query: &str, excluding: &[i64]) -> 
         .collect()
 }
 
+/// Whether the strip offers the ASSISTANT for `query` — at the top, above
+/// the members (docs/protocol.md, "Mentioning a member", amended
+/// 2026-10-20 for #106, when the composer row lost its `@ai` button). It is
+/// narrowed as a member is, by the same prefix rule as [`candidates`]: by
+/// its `display_name`, and by `ai`, the token it puts into the text. The
+/// caller decides whether it is offered at all — the family chat, on a
+/// server with an assistant that names its processor — and picking it
+/// writes `@ai `, never `@<display_name>`: `accept(draft, "ai")`.
+pub fn offers_assistant(query: &str, display_name: &str) -> bool {
+    let needle = lowercased(query);
+    let token = super::assistant::TOKEN.trim_start_matches('@');
+    needle.is_empty()
+        || has_prefix(&lowercased(display_name), &needle)
+        || has_prefix(token, &needle)
+}
+
 /// The draft with the trailing `@prefix` replaced by `@Name `. With no `@`
 /// in it at all, `@Name ` is appended — Swift's fallback, which the strip
 /// never reaches because [`query`] answered `None` there.
@@ -666,5 +682,21 @@ mod tests {
         // `İ` lowercases to `i` + U+0307, so plain `il` is not its prefix.
         assert!(super::candidates(&roster, "il", &[]).is_empty());
         assert_eq!(super::candidates(&roster, "i\u{307}l", &[]), [roster[4]]);
+    }
+
+    /// #106: the assistant is offered for an empty query, by its name and
+    /// by `ai`, case aside — and picking it writes the token, not the name.
+    #[test]
+    fn the_assistant_is_narrowed_by_its_name_and_by_ai() {
+        assert!(super::offers_assistant("", "Helper"));
+        assert!(super::offers_assistant("he", "Helper"));
+        assert!(super::offers_assistant("HEL", "Helper"));
+        assert!(super::offers_assistant("a", "Helper"));
+        assert!(super::offers_assistant("AI", "Helper"));
+        assert!(!super::offers_assistant("ai ", "Helper"));
+        assert!(!super::offers_assistant("aix", "Helper"));
+        assert!(!super::offers_assistant("an", "Helper"));
+        assert!(super::offers_assistant("пом", "Помощник"));
+        assert_eq!(super::accept("so @he", "ai"), "so @ai ");
     }
 }

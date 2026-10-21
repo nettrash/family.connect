@@ -22,6 +22,7 @@ class AttachMenuTest {
         recordVoice: Boolean = true,
         recordVideo: Boolean = true,
         poll: Boolean = false,
+        askAssistant: Boolean = false,
     ) = AttachMenu.groups(
         assistantChat = assistantChat,
         assistantPictures = assistantPictures,
@@ -29,6 +30,7 @@ class AttachMenuTest {
         recordVoice = recordVoice,
         recordVideo = recordVideo,
         poll = poll,
+        askAssistant = askAssistant,
     )
 
     @Test
@@ -38,6 +40,34 @@ class AttachMenuTest {
             listOf(Item.RECORD_VOICE, Item.RECORD_VIDEO),
             listOf(Item.LOCATION, Item.POLL),
         ).inOrder()
+    }
+
+    /**
+     * #106: the `@ai` button left the composer row for this menu — "Ask the
+     * assistant", the FIRST item of the last group, in the family chat.
+     */
+    @Test
+    fun theFamilyChatWithAnAssistantAsksItFirstInTheLastGroup() {
+        assertThat(groups(poll = true, askAssistant = true)).containsExactly(
+            listOf(Item.PHOTO_OR_VIDEO, Item.CAMERA, Item.FILE, Item.PASTE),
+            listOf(Item.RECORD_VOICE, Item.RECORD_VIDEO),
+            listOf(Item.ASK_ASSISTANT, Item.LOCATION, Item.POLL),
+        ).inOrder()
+    }
+
+    /** Where `@ai` is not offered — no assistant, no processor, another chat — there is no line. */
+    @Test
+    fun withoutTheAssistantOfferedThereIsNoAskLine() {
+        assertThat(groups(poll = true, askAssistant = false).flatten()).doesNotContain(Item.ASK_ASSISTANT)
+    }
+
+    /** Even if the caller forgot: the assistant's own chat never asks it with `@ai`. */
+    @Test
+    fun theAssistantChatNeverHasTheAskLine() {
+        for (pictures in listOf(false, true)) {
+            assertThat(groups(assistantChat = true, assistantPictures = pictures, askAssistant = true).flatten())
+                .doesNotContain(Item.ASK_ASSISTANT)
+        }
     }
 
     @Test
@@ -104,7 +134,7 @@ class AttachMenuTest {
     @Test
     fun theMenuNeverHoldsTheCameraPageItemsOrADrawLine() {
         for (assistant in listOf(false, true)) for (pictures in listOf(false, true)) {
-            val all = groups(assistantChat = assistant, assistantPictures = pictures, poll = true).flatten()
+            val all = groups(assistantChat = assistant, assistantPictures = pictures, poll = true, askAssistant = true).flatten()
             assertThat(all).doesNotContain(Item.TAKE_VIDEO)
             assertThat(all).containsNoDuplicates()
         }
@@ -121,7 +151,7 @@ class AttachMenuTest {
         "s_attach_a_photo_video_or_file", "s_photo_or_video", "s_show_the_assistant_a_picture",
         "s_camera", "s_back", "s_take_photo", "s_take_video", "s_file", "s_paste",
         "s_record_voice_message", "s_record_video_message", "s_share_your_location", "s_poll",
-        "s_ask_for_a_picture",
+        "s_ask_for_a_picture", "s_ask_the_assistant",
     )
 
     private fun strings(locale: String): Map<String, String> {
@@ -149,6 +179,8 @@ class AttachMenuTest {
                 .that(strings).doesNotContainKey("s_show_the_assistant_a_picture_note")
         }
         assertThat(strings("values")["s_camera"]).isEqualTo("Camera")
+        // Android's sentence case (#78), for the line #106 added.
+        assertThat(strings("values")["s_ask_the_assistant"]).isEqualTo("Ask the assistant")
         // A translation that is just English again is a translation nobody did.
         assertThat(strings("values-de")["s_camera"]).isEqualTo("Kamera")
     }

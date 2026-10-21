@@ -41,6 +41,19 @@ object AssistantConsent {
      */
     fun isAvailable(processor: String?): Boolean = !processor.isNullOrBlank()
 
+    /**
+     * May `@ai` be OFFERED here — the `@` strip's assistant chip and the
+     * paperclip's "Ask the assistant" (#106)? The family chat only, on a
+     * server that advertises an assistant AND names who processes what is
+     * typed: iOS has always asked both, and Android used to ask only the
+     * first, so a server that named nobody got an `@ai` button whose every
+     * use ended in "this assistant cannot be used" — an affordance offered
+     * to be refused. Typing `@ai` by hand is still possible, and the
+     * composer then says why it goes nowhere ([isWithheldFromAnUnnamedAssistant]).
+     */
+    fun offersMention(chatKind: String?, hasAssistant: Boolean, processor: String?): Boolean =
+        chatKind == "family" && hasAssistant && isAvailable(processor)
+
     /** Must this member be asked before this message is sent? */
     fun isRequired(
         chatKind: String?,

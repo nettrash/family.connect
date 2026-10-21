@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
 using Microsoft.UI.Xaml.Media;
@@ -8,83 +9,94 @@ using Windows.Storage.Streams;
 namespace FamilyConnect.App.Services;
 
 /// <summary>
-/// A chat sticker decoded for drawing: its first frame always, and — where this machine's codec
-/// gave more than one — every frame with how long each stands.
+/// A chat sticker decoded for drawing: the one picture an <c>Image</c> shows, and — where it moves —
+/// every frame's pixels with how long each stands.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>FRAMES ARE MEMORY THAT .NET CANNOT SEE.</b> Each is a <c>SoftwareBitmapSource</c>: a surface
-/// outside the managed heap, which the collector has no reason to hurry for. So a picture that is
-/// done with says so — <see cref="Release"/> when nothing draws it, <see cref="MakeStill"/> when
-/// something does and the memory is wanted back — rather than waiting for a finalizer.
+/// <b>ONE SURFACE, REDRAWN — NEVER A SOURCE PER FRAME.</b> A moving sticker is one
+/// <c>WriteableBitmap</c> that every image of it shows; a frame that is due is copied into it and
+/// it is invalidated. Until 2026-10-21 each frame was its own <c>SoftwareBitmapSource</c> and the
+/// image's <c>Source</c> was swapped to it, and WinUI draws an image EMPTY for a composition frame
+/// whenever its source changes: the sticker blinked on every frame (a third of screenshots taken
+/// at 60 a second were blank).
 /// </para>
 /// <para>
-/// <b>FRAME ZERO IS NEVER DISPOSED BY <see cref="MakeStill"/>.</b> It is what an image goes on
-/// showing, and one frame is what a still picture costs anyway.
+/// <b>AND SO NOTHING HERE IS DISPOSED UNDER AN IMAGE.</b> The frames are managed bytes and the
+/// surface is never let go while the picture is held, so <see cref="MakeStill"/> and
+/// <see cref="Release"/> drop bytes the collector takes: an image still showing the surface goes on
+/// showing whichever frame was last drawn into it.
 /// </para>
 /// </remarks>
-/// <param name="first">Frame zero, or the whole picture when it does not move.</param>
-/// <param name="frames">Every frame in order, or null for a still picture and for one drawn as its first frame.</param>
-/// <param name="clock">Milliseconds per frame, the same length as <paramref name="frames"/>.</param>
-/// <param name="bytes">What the frames hold between them, decoded; 0 for a still picture.</param>
-internal sealed class StickerPicture(
-    ImageSource first, IReadOnlyList<ImageSource>? frames = null, IReadOnlyList<int>? clock = null, long bytes = 0)
+internal sealed class StickerPicture
 {
-    public ImageSource First { get; } = first;
+    private readonly WriteableBitmap? canvas;
+    private int drawn;
 
-    public IReadOnlyList<ImageSource>? Frames { get; private set; } = frames;
+    /// <summary>A still picture.</summary>
+    public StickerPicture(ImageSource still) => First = still;
 
-    public IReadOnlyList<int>? Clock { get; private set; } = clock;
+    private StickerPicture(WriteableBitmap canvas, IReadOnlyList<byte[]> frames, IReadOnlyList<int> clock, long bytes)
+    {
+        this.canvas = canvas;
+        First = canvas;
+        Frames = frames;
+        Clock = clock;
+        Bytes = Math.Max(bytes, 0);
+    }
+
+    /// <summary>
+    /// A moving picture of <paramref name="frames"/> — premultiplied BGRA, <paramref name="width"/> ×
+    /// <paramref name="height"/> each — on one surface showing frame zero. The window's thread only.
+    /// </summary>
+    /// <param name="clock">Milliseconds per frame, the same length as <paramref name="frames"/>.</param>
+    /// <param name="bytes">What the frames hold between them, decoded.</param>
+    public static StickerPicture Moving(IReadOnlyList<byte[]> frames, int width, int height, IReadOnlyList<int> clock, long bytes)
+    {
+        var canvas = new WriteableBitmap(width, height);
+        frames[0].CopyTo(canvas.PixelBuffer);
+        canvas.Invalidate();
+        return new StickerPicture(canvas, frames, clock, bytes);
+    }
+
+    /// <summary>What an image draws: the surface of a moving picture, or the still one.</summary>
+    public ImageSource First { get; }
+
+    /// <summary>Every frame's pixels in order, or null for a still picture and one made still.</summary>
+    public IReadOnlyList<byte[]>? Frames { get; private set; }
+
+    public IReadOnlyList<int>? Clock { get; private set; }
 
     /// <summary>What could be given back: every frame's bytes while it moves, nothing once it is still.</summary>
-    public long Bytes { get; private set; } = frames is { Count: > 1 } ? Math.Max(bytes, 0) : 0;
+    public long Bytes { get; private set; }
 
     public bool Moves => Frames is { Count: > 1 } && Clock is { Count: > 1 };
 
-    /// <summary>
-    /// From here on this is its first frame and nothing else. <paramref name="dispose"/> gives the
-    /// other frames back now — only when no image is still showing one of them.
-    /// </summary>
-    public void MakeStill(bool dispose)
+    /// <summary>Frame <paramref name="index"/> into the surface every image of this picture shows — unless it is there already.</summary>
+    public void Draw(int index)
     {
-        var rest = Frames;
-        Frames = null;
-        Clock = null;
-        Bytes = 0;
-        if (dispose && rest is not null)
+        if (canvas is null || Frames is not { } frames || index == drawn || index < 0 || index >= frames.Count)
         {
-            GiveBack(rest.Where(frame => !ReferenceEquals(frame, First)));
+            return;
         }
+        frames[index].CopyTo(canvas.PixelBuffer);
+        canvas.Invalidate();
+        drawn = index;
     }
 
-    /// <summary>Nothing draws this any more: every frame is given back, the first included.</summary>
+    /// <summary>From here on this is its first frame and nothing else: frame zero is drawn, and the other frames' bytes go.</summary>
+    public void MakeStill()
+    {
+        Draw(0);
+        Release();
+    }
+
+    /// <summary>Nothing draws this any more, or nothing will move it: the frames' bytes go.</summary>
     public void Release()
     {
-        var all = Frames;
         Frames = null;
         Clock = null;
         Bytes = 0;
-        if (all is not null)
-        {
-            GiveBack(all);
-        }
-    }
-
-    /// <summary>Frames no image will draw again — a decode that stopped halfway has some and no picture to hold them.</summary>
-    public static void GiveBack(IEnumerable<ImageSource> frames)
-    {
-        foreach (var frame in frames)
-        {
-            try
-            {
-                (frame as IDisposable)?.Dispose();
-            }
-            catch (Exception e)
-            {
-                // A surface that would not go is the collector's after all; the rest still go.
-                Diagnostics.Write($"letting a sticker's frame go: {e.GetType().Name}");
-            }
-        }
     }
 }
 
@@ -95,19 +107,18 @@ internal sealed class StickerPicture(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>ANIMATED WHERE THIS MACHINE CAN, FRAME ZERO WHERE IT CANNOT</b> (docs/protocol.md, "Animation
-/// is stored, never refused and never stripped"). XAML's <c>BitmapImage</c> plays an animated GIF
-/// by itself and is not documented to play anything else, so an animated WebP is asked of Windows
-/// Imaging frame by frame and cycled by <c>StickerAnimator</c>. Whether the codec hands out more
-/// than one frame is a fact about the machine: WebP is decoded by the "WebP Image Extension", which
-/// ships with Windows 11 and can be removed, and PNG's decoder has never read APNG. Every one of
-/// those outcomes lands on the same line — the first frame — and a sticker drawn still is the same
-/// sticker.
+/// <b>ANIMATED BY THIS CLIENT'S OWN FRAMES</b> (docs/protocol.md, "Animation is stored, never refused
+/// and never stripped"). An animated WebP's or APNG's frames are walked from its own bytes and
+/// composited by App.Logic (<see cref="StickerFrames"/>, the compositor #96 makes videos with); Windows
+/// Imaging only decodes one standalone still at a time, which it does for both formats. Until
+/// 2026-10-20 Windows Imaging was asked for the frames themselves — and PNG's decoder has never read
+/// APNG, and the "WebP Image Extension" hands out one frame or the file's raw sub-rectangles — so on
+/// Windows nearly every animated sticker was drawn as its first frame.
 /// </para>
 /// <para>
-/// <b>ONLY WHOLE FRAMES ARE CYCLED.</b> A frame that is not the size of the first is a codec
-/// handing out the file's raw sub-rectangles, which would have to be composited with offsets and
-/// blend rules this code would be guessing at. That is drawn as frame zero instead of drawn wrong.
+/// <b>WINDOWS IMAGING'S FRAMES ARE THE FALLBACK</b>, for a file whose frames cannot be walked: there
+/// only whole frames are cycled. A frame that is not the size of the first is a codec handing out
+/// raw sub-rectangles, drawn as frame zero instead of drawn wrong.
 /// </para>
 /// <para>
 /// <b>EVERY CALL HERE IS GUARDED.</b> A codec that is missing, a file that lies and a stream that
@@ -129,7 +140,9 @@ internal static class StickerImaging
             using var stream = await StreamAsync(bytes);
             if (animate && StickerFile.IsAnimated(bytes))
             {
-                var moving = await FramesAsync(stream, bytes, box, rasterScale);
+                // This client's own frames first; Windows Imaging's only where the file's own frames cannot be walked.
+                var moving = await OwnFramesAsync(bytes, box, rasterScale)
+                    ?? await FramesAsync(stream, bytes, box, rasterScale);
                 if (moving is not null)
                 {
                     return moving;
@@ -150,6 +163,52 @@ internal static class StickerImaging
         {
             // No codec for it here (WebP without its extension), or bytes that are not a picture.
             Diagnostics.Write($"decoding a sticker: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Every frame, walked and composited by this client (<see cref="StickerFrames"/>), or null when the file's frames cannot
+    /// be had that way — or are not worth animating — and Windows Imaging is asked instead.
+    /// </summary>
+    /// <remarks>
+    /// The fix for animated stickers drawn still on Windows: an APNG's frames do not exist for PNG's decoder, and an
+    /// animated WebP's come out of the WebP extension as one frame or as raw rectangles, so <see cref="FramesAsync"/> alone
+    /// drew nearly every animated sticker as its first frame. The work on the bytes runs off the window's thread; only the
+    /// surface is made on it, as it must be.
+    /// </remarks>
+    private static async Task<StickerPicture?> OwnFramesAsync(byte[] bytes, double box, double rasterScale)
+    {
+        try
+        {
+            if (AnimationPrep.Layout(bytes) is not { } layout)
+            {
+                return null;
+            }
+            var (width, height) = StickerAnimation.DecodeSize(layout.Width, layout.Height, box, rasterScale);
+            if (!StickerAnimation.Worth(layout.Frames.Count, width, height))
+            {
+                return null;
+            }
+            var drawn = await Task.Run(async () =>
+                await AnimationPreparing.SourceAsync(bytes, layout, CancellationToken.None) is { } source
+                    && source.Layout.Frames.Count == layout.Frames.Count
+                    ? await StickerFrames.ComposeAsync(source.Layout, source.Pixels, width, height)
+                    : null);
+            if (drawn is null)
+            {
+                Diagnostics.Write("an animated sticker's frames could not be walked; asking Windows Imaging for them");
+                return null;
+            }
+            return StickerPicture.Moving(
+                drawn, width, height,
+                // The durations the walk read, frame for frame — the same file's word the compositor drew by.
+                StickerAnimation.Clock([.. layout.StatedMs.Select(ms => (int)Math.Min(ms, int.MaxValue))], drawn.Count),
+                StickerAnimation.DecodedBytes(drawn.Count, width, height));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"composing a sticker's frames: {e.GetType().Name}");
             return null;
         }
     }
@@ -176,51 +235,33 @@ internal static class StickerImaging
                 ScaledHeight = (uint)height,
                 InterpolationMode = BitmapInterpolationMode.Fant,
             };
-            var frames = new List<ImageSource>(count);
-            // Whatever ends this early — a frame that is not whole, a frame that will not decode — the frames already
-            // made are given back here: nobody else will ever hold them.
-            var kept = false;
-            try
+            var frames = new List<byte[]>(count);
+            for (var at = 0; at < count; at++)
             {
-                return await ReadAsync();
-            }
-            finally
-            {
-                if (!kept)
+                var frame = await decoder.GetFrameAsync((uint)at);
+                if (frame.PixelWidth != decoder.PixelWidth || frame.PixelHeight != decoder.PixelHeight)
                 {
-                    StickerPicture.GiveBack(frames);
+                    // Raw sub-rectangles, not whole pictures: not this client's to composite.
+                    return null;
                 }
-            }
-
-            async Task<StickerPicture?> ReadAsync()
-            {
-                for (var at = 0; at < count; at++)
+                // Premultiplied BGRA is what a WriteableBitmap holds — and it keeps the alpha, which is the point of a sticker.
+                var pixels = await frame.GetPixelDataAsync(
+                    BitmapPixelFormat.Bgra8,
+                    BitmapAlphaMode.Premultiplied,
+                    transform,
+                    ExifOrientationMode.IgnoreExifOrientation,
+                    ColorManagementMode.DoNotColorManage);
+                var data = pixels.DetachPixelData();
+                if (data.LongLength != 4L * width * height)
                 {
-                    var frame = await decoder.GetFrameAsync((uint)at);
-                    if (frame.PixelWidth != decoder.PixelWidth || frame.PixelHeight != decoder.PixelHeight)
-                    {
-                        // Raw sub-rectangles, not whole pictures: not this client's to composite.
-                        return null;
-                    }
-                    // Premultiplied BGRA is the one format a SoftwareBitmapSource takes — and it keeps the alpha,
-                    // which is the point of a sticker.
-                    var bitmap = await frame.GetSoftwareBitmapAsync(
-                        BitmapPixelFormat.Bgra8,
-                        BitmapAlphaMode.Premultiplied,
-                        transform,
-                        ExifOrientationMode.IgnoreExifOrientation,
-                        ColorManagementMode.DoNotColorManage);
-                    var source = new SoftwareBitmapSource();
-                    // On the list BEFORE it is filled, so a fill that throws still leaves it where it is given back.
-                    frames.Add(source);
-                    await source.SetBitmapAsync(bitmap);
+                    return null;
                 }
-                kept = true;
-                return new StickerPicture(
-                    frames[0], frames,
-                    StickerAnimation.Clock(StickerFile.FrameDurations(bytes), count),
-                    StickerAnimation.DecodedBytes(count, width, height));
+                frames.Add(data);
             }
+            return StickerPicture.Moving(
+                frames, width, height,
+                StickerAnimation.Clock(StickerFile.FrameDurations(bytes), count),
+                StickerAnimation.DecodedBytes(count, width, height));
         }
         catch (Exception e)
         {

@@ -28,6 +28,10 @@ use crate::sync::{self, expiry, wake, Channels, Shared, PAGE};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     SelectChat(i64),
+    /// Back to the list, from a conversation that is the whole window — a
+    /// phone's, below the two panes (#106). Nothing is read while the list
+    /// is in front, so the chat is CLOSED, not hidden.
+    CloseChat,
     LoadMore {
         chat_id: i64,
     },
@@ -1079,6 +1083,20 @@ impl Actions {
             }
             Action::CloseThread => {
                 live.now(|state| state.store.thread_view = None);
+            }
+            Action::CloseChat => {
+                // Over a video message in review, it asks first (S4), as
+                // every way out of a chat does.
+                if !crate::round_video::may_leave() {
+                    return;
+                }
+                live.now(|state| {
+                    state.open_chat = None;
+                    state.at_newest = false;
+                    state.opening = None;
+                    state.store.open_polls = None;
+                    state.store.thread_view = None;
+                });
             }
             Action::ShowOpenPolls { chat_id } => {
                 spawn_local(async move { this.read_open_polls(session, &token, chat_id).await });
@@ -3297,6 +3315,25 @@ mod tests {
         actions.live.read(|state| {
             assert!(!state.board_open);
             assert_eq!(state.open_chat, Some(42));
+        });
+    }
+
+    /// The way back to the list, where the conversation is the whole window
+    /// (#106): the chat is CLOSED, its panels with it — nothing is read
+    /// while the list is in front.
+    #[wasm_bindgen_test]
+    fn the_way_back_to_the_list_closes_the_chat_and_its_panels() {
+        let actions = actions();
+        actions.live.now(|state| {
+            state.open_chat = Some(42);
+            state.at_newest = true;
+        });
+        actions.handle(Action::CloseChat);
+        actions.live.read(|state| {
+            assert_eq!(state.open_chat, None);
+            assert!(!state.at_newest);
+            assert!(state.store.thread_view.is_none() && state.store.open_polls.is_none());
+            assert_eq!(crate::sync::reading(state), None, "no chat is being read");
         });
     }
 

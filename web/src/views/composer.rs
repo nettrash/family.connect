@@ -1,8 +1,16 @@
 //! The box a message is written in — with the rules of the Apple app's
 //! composer (fc_text::mentions, ::assistant, ::composer): the "@" that
-//! offers the roster, who a text names when Send is pressed, the `@ai` and
-//! `/draw` buttons, the 4,000-character limit, and the reply and edit
-//! banners.
+//! offers the assistant and the roster, who a text names when Send is
+//! pressed, the `/draw` button, the 4,000-character limit, and the reply
+//! and edit banners.
+//!
+//! THE ROW (#106, docs/composer-and-wide-layout-2026-10-20.md, 2.1): the
+//! paperclip alone before the field; inside the field, at its trailing
+//! edge, the sticker button — always, empty or typing, so nothing moves
+//! under the thumb — then the video button while the field is empty (#79,
+//! S1.4), or the assistant chat's paintbrush; and the Send slot after it.
+//! `@ai` has no button of its own any more: typing `@` offers the
+//! assistant first, and the paperclip's menu has "Ask the Assistant".
 //!
 //! In a conversation its trailing button is the Send SLOT of the plan for
 //! #79 (docs/audio-video-messages-2026-10-04.md, S1.3): one fixed icon
@@ -10,7 +18,9 @@
 //! when there is not, whose every state is fc_text::record::composer_slot's.
 //! A click, Enter or Space on it records hands-free; a touch acts on its
 //! `pointerup` (S8.8); a right-click, Shift+F10 or the Menu key opens its
-//! menu (S1.6, S8.7). A thread's box is not changed: today's Send.
+//! menu (S1.6, S8.7). A thread's box has the same field and the same Send
+//! disc, which is never a microphone and is disabled while the box is
+//! blank (#106, 2.1).
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -75,7 +85,7 @@ pub struct Records {
     /// The voice recording the slot is showing.
     pub recording: record::Recording,
     /// The recording row (S2.4), drawn in place of the field — and of the
-    /// paperclip, the sticker and `@ai` buttons — while one runs.
+    /// paperclip and of the buttons inside the field — while one runs.
     pub row: Html,
     /// A call in any phase but ended (S1.2 **call**).
     pub call: bool,
@@ -96,8 +106,9 @@ pub struct Records {
     /// The slot's own Send or Save just emptied the box.
     pub on_emptied: Callback<()>,
     /// The person changed what the box holds — typed, deleted, took a
-    /// suggestion, pasted, added `@ai` or `/draw` — which lifts the guard
-    /// (S1.1). The conversation says the same of what it stages.
+    /// suggestion, pasted, asked the assistant or added `/draw` — which
+    /// lifts the guard (S1.1). The conversation says the same of what it
+    /// stages.
     pub on_changed: Callback<()>,
     /// Until when the slot ignores activation (S1.1), by `recorder::now_ms`.
     pub guard_until: Callback<(), u64>,
@@ -183,6 +194,44 @@ impl Glyph {
     }
 }
 
+/// The row's other pictures (#106, 2.1): LINE icons in the accent colour,
+/// drawn inline, where the row used to show 📎 🙂 🎨 — emoji that every
+/// system draws in its own colours and at its own size. Decoration only:
+/// each button keeps its label and its title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Paperclip,
+    Smile,
+    Paintbrush,
+}
+
+impl Tool {
+    fn paths(self) -> &'static [&'static str] {
+        match self {
+            Tool::Paperclip => &["M20 11.5 12.2 19.3a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.65 1.65 0 0 1-2.3-2.3L15.3 6.8"],
+            Tool::Smile => &[
+                "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z",
+                "M8.2 14.2a4.6 4.6 0 0 0 7.6 0",
+                "M9.2 9.6v.6M14.8 9.6v.6",
+            ],
+            Tool::Paintbrush => &[
+                "M19.2 3.4a1.9 1.9 0 0 1 2.7 2.7l-8.3 8.6-2.7-2.7z",
+                "M9.6 13.3c-2.2 0-3.6 1.5-3.6 3.5 0 1.3-.8 2.3-2.2 2.7 1 .8 2.4 1.2 3.9 1.2 2.7 0 4.6-1.9 4.6-4.5",
+            ],
+        }
+    }
+
+    pub fn draw(self) -> Html {
+        html! {
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+                 fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round">
+                { for self.paths().iter().map(|path| html! { <path d={*path} /> }) }
+            </svg>
+        }
+    }
+}
+
 /// What the slot says it is, in the reader's language: its accessibility
 /// label and the word it keeps as visually hidden text (S6, S8.7) — the
 /// English of each is fc_text::record's `Slot::label`.
@@ -211,6 +260,25 @@ fn guarded(records: Option<&Records>) -> bool {
 fn changed(records: &Option<Records>) {
     if let Some(records) = records {
         records.on_changed.emit(());
+    }
+}
+
+/// One line of the `@` strip: the assistant, first, or a member.
+#[derive(Debug, Clone, PartialEq)]
+enum Suggestion {
+    /// The assistant, under its display name (#106).
+    Assistant(String),
+    Member(Member),
+}
+
+impl Suggestion {
+    /// What picking it puts after the `@`: the assistant's TOKEN — `@ai `,
+    /// never `@<display name>` — or the member's name.
+    fn token(&self) -> String {
+        match self {
+            Suggestion::Assistant(_) => assistant::TOKEN.trim_start_matches('@').to_string(),
+            Suggestion::Member(member) => member.display_name.clone(),
+        }
     }
 }
 
@@ -316,13 +384,31 @@ pub struct ComposerProps {
     /// On the thread surface: no edits.
     #[prop_or_default]
     pub in_thread: bool,
-    /// What goes before the box: the conversation's attach menu.
+    /// What goes before the box: the conversation's paperclip and its menu.
     #[prop_or_default]
     pub attach: Html,
+    /// The sticker button, drawn INSIDE the field at its trailing edge —
+    /// empty or typing, in every chat that has one (#106, 2.1).
+    #[prop_or_default]
+    pub stickers: Html,
+    /// Each time this moves, `@ai ` goes into the draft — "Ask the
+    /// Assistant" in the paperclip's menu, the row's old `@ai` button
+    /// (#106; fc_text::assistant::with_assistant_mention).
+    #[prop_or_default]
+    pub ask_assistant: u32,
     /// How many attachments are staged — with any, Send goes with no words
     /// at all (a photo needs no caption).
     #[prop_or_default]
     pub staged: usize,
+    /// The conversation's voice messages not sent, its staged strip and its
+    /// busy line ("Preparing…", a failure), placed here in the one order of
+    /// #106 (doc 2.4) — a thread has none of them.
+    #[prop_or_default]
+    pub not_sent_rows: Html,
+    #[prop_or_default]
+    pub staging_strip: Html,
+    #[prop_or_default]
+    pub busy_line: Html,
     /// Something is being prepared or found: Send waits for it.
     #[prop_or_default]
     pub busy: bool,
@@ -477,7 +563,30 @@ pub fn composer(props: &ComposerProps) -> Html {
     }
 
     let editing = props.editing.clone();
-    let suggestions: Vec<Member> = if props.is_family_chat && editing.is_none() {
+    let processor = props
+        .assistant
+        .as_ref()
+        .and_then(|assistant| assistant.processor.clone());
+    // The assistant, offered where `@ai` may be written at all: the family
+    // chat, on a server with an assistant that names who answers
+    // (docs/protocol.md, "Mentioning a member", amended 2026-10-20 — #106).
+    let offers_ai = props.is_family_chat
+        && editing.is_none()
+        && processor
+            .as_deref()
+            .is_some_and(|processor| !processor.trim().is_empty());
+    // FIRST in the strip, above the members, under its own name — and
+    // picking it writes `@ai `, never that name.
+    let assistant_offered = props
+        .assistant
+        .as_ref()
+        .filter(|_| offers_ai)
+        .and_then(|assistant| {
+            mentions::query(&text)
+                .filter(|query| mentions::offers_assistant(query, &assistant.display_name))
+                .map(|_| assistant.display_name.clone())
+        });
+    let members_offered: Vec<Member> = if props.is_family_chat && editing.is_none() {
         match mentions::query(&text) {
             Some(query) => {
                 let roster: Vec<mentions::Member> = props
@@ -507,6 +616,11 @@ pub fn composer(props: &ComposerProps) -> Html {
     } else {
         Vec::new()
     };
+    let suggestions: Vec<Suggestion> = assistant_offered
+        .map(Suggestion::Assistant)
+        .into_iter()
+        .chain(members_offered.into_iter().map(Suggestion::Member))
+        .collect();
 
     let accept = {
         let text = text.clone();
@@ -598,10 +712,6 @@ pub fn composer(props: &ComposerProps) -> Html {
     } else {
         "direct"
     };
-    let processor = props
-        .assistant
-        .as_ref()
-        .and_then(|assistant| assistant.processor.clone());
     let send = {
         let text = text.clone();
         let notice = notice.clone();
@@ -728,10 +838,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         let accept = accept.clone();
         let active = active.clone();
         let on_cancel = props.on_cancel.clone();
-        let offered: Vec<String> = suggestions
-            .iter()
-            .map(|member| member.display_name.clone())
-            .collect();
+        let offered: Vec<String> = suggestions.iter().map(Suggestion::token).collect();
         Callback::from(move |event: KeyboardEvent| {
             let key = event.key();
             if !offered.is_empty() {
@@ -772,14 +879,23 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     };
 
-    let ask_assistant = {
+    // "Ask the Assistant", from the paperclip's menu: `@ai ` onto the end
+    // of the draft, as the row's button put it there, and the cursor back
+    // in the box to write the question.
+    {
         let text = text.clone();
+        let latest = latest.clone();
+        let area = area.clone();
         let records = props.records.clone();
-        Callback::from(move |_: MouseEvent| {
+        use_effect_with(props.ask_assistant, move |asked| {
+            if *asked == 0 {
+                return;
+            }
             changed(&records);
-            text.set(assistant::with_assistant_mention(&text))
-        })
-    };
+            text.set(assistant::with_assistant_mention(&latest.borrow()));
+            focus_the_box(&area);
+        });
+    }
     let ask_picture = {
         let text = text.clone();
         let records = props.records.clone();
@@ -793,7 +909,6 @@ pub fn composer(props: &ComposerProps) -> Html {
         Callback::from(move |_: MouseEvent| on_cancel.emit(()))
     };
 
-    let has_assistant = props.assistant.is_some();
     let can_draw = props.is_ai_chat
         && props
             .assistant
@@ -808,7 +923,6 @@ pub fn composer(props: &ComposerProps) -> Html {
             .is_some_and(|assistant| assistant.images),
         processor.as_deref(),
     );
-    let offers_ai = props.is_family_chat && has_assistant && editing.is_none();
     let empty =
         composer::trimmed_for_send(&text).is_none() && (props.staged == 0 || editing.is_some());
 
@@ -1162,15 +1276,29 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     };
     let slot_html = match slot {
-        // A thread: today's Send, unchanged.
-        None => html! {
-            <button
-                onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
-                disabled={empty || props.busy}
-            >
-                { if editing.is_some() { t("Save") } else { t("Send") } }
-            </button>
-        },
+        // A thread: the conversation's Send disc, never a microphone, and
+        // disabled while there is nothing to send (#106, 2.1).
+        None => {
+            let (glyph, word) = if editing.is_some() {
+                (Glyph::Save, t("Save"))
+            } else {
+                (Glyph::Send, t("Send"))
+            };
+            html! {
+                <div class="slot-wrap">
+                    <button
+                        type="button"
+                        class={classes!("slot", format!("is-{}", glyph.name()))}
+                        aria-label={word}
+                        onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
+                        disabled={empty || props.busy}
+                    >
+                        { glyph.draw() }
+                        <span class="visually-hidden">{ word }</span>
+                    </button>
+                </div>
+            }
+        }
         Some(slot) => {
             let starting = records.as_ref().is_some_and(|records| records.starting);
             let (glyph, title, disabled) = match slot {
@@ -1296,10 +1424,48 @@ pub fn composer(props: &ComposerProps) -> Html {
     let covered = records
         .as_ref()
         .is_some_and(|records| records.recorder_open && !records.call);
+    // What the empty box says, and what it is called: a thread's every send
+    // is a reply.
+    let placeholder = if props.in_thread {
+        t("Reply in thread")
+    } else {
+        t("Message")
+    };
 
     html! {
         <div class={classes!("composer-wrap", covered.then_some("is-covered"))}
              ref={wrap_ref} inert={covered.then_some("")}>
+            // WHAT STACKS ABOVE THE ROW (#106, doc 2.4): one order on every
+            // client, top to bottom, the nearest to the field being what is
+            // being written — the notices (the assistant's consent, the
+            // picture notice, the `/draw` hint) · the voice messages not
+            // sent · the reply or edit banner · the staged strip · the
+            // mention suggestions · the busy or failure line, directly above
+            // · THE ROW. (The reply banner was first, and the staged strip
+            // and the voice messages not sent above the whole composer.)
+            if editing.is_none() && assistant_consent::is_required(chat_kind, &text, processor.as_deref(), props.agreed_to_assistant) {
+                <AssistantConsentBar
+                    processor={processor.clone().unwrap_or_default()}
+                    on_review={props.on_review_consent.clone()}
+                />
+            } else if editing.is_none() && assistant_consent::is_withheld_from_an_unnamed_assistant(chat_kind, &text, props.assistant.is_some(), processor.as_deref()) {
+                // Nothing to agree TO on such a server, so there is no
+                // screen to raise — only this, and a send that does not
+                // happen.
+                <p class="consent-notice" role="note">
+                    <span aria-hidden="true">{ "✋ " }</span>
+                    { assistant_consent::unnamed_processor_notice() }
+                </p>
+            }
+            if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
+                <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
+            }
+            // While a picture is being asked for: the image model's filter
+            // refuses real names and brands (docs/protocol.md, "Pictures").
+            if assistant_pictures::shows_picture_hint(chat_kind, &text, editing.is_some(), server_draws) {
+                <LiveRegion class="picture-notice picture-hint" role="status">{ assistant_pictures::picture_hint() }</LiveRegion>
+            }
+            { props.not_sent_rows.clone() }
             if let Some(reply) = props.replying.clone() {
                 <div class="composer-banner">
                     <span class="banner-text">
@@ -1315,88 +1481,89 @@ pub fn composer(props: &ComposerProps) -> Html {
                     <button class="link" onclick={cancel} aria-label={t("Cancel editing")}>{ "✕" }</button>
                 </div>
             }
+            { props.staging_strip.clone() }
+            if !suggestions.is_empty() {
+                // Hung from a line of its own just above the busy line and
+                // the row, not from the top of the whole composer: the list
+                // is nearest the field, over the strips above it (doc 2.4).
+                <div class="suggestions-anchor">
+                    <div class="suggestions" role="listbox" aria-label={t("Members")}>
+                        { for suggestions.iter().enumerate().map(|(index, suggestion)| {
+                            let accept = accept.clone();
+                            let token = suggestion.token();
+                            let (name, handle) = match suggestion {
+                                Suggestion::Assistant(name) => (name.clone(), token.clone()),
+                                Suggestion::Member(member) => {
+                                    (member.display_name.clone(), member.username.clone())
+                                }
+                            };
+                            html! {
+                                <button
+                                    role="option"
+                                    class={classes!(
+                                        (index == *active).then_some("is-active"),
+                                        matches!(suggestion, Suggestion::Assistant(_)).then_some("is-assistant"),
+                                    )}
+                                    aria-selected={(index == *active).to_string()}
+                                    onmousedown={Callback::from(move |event: MouseEvent| {
+                                        event.prevent_default();
+                                        accept.emit(token.clone());
+                                    })}
+                                >
+                                    { name }
+                                    if !handle.is_empty() {
+                                        <span class="meta">{ format!("  @{handle}") }</span>
+                                    }
+                                </button>
+                            }
+                        }) }
+                    </div>
+                </div>
+            }
+            { props.busy_line.clone() }
             if let Some(message) = (*notice).clone() {
                 <LiveRegion class="composer-notice" role="status">{ message }</LiveRegion>
-            }
-            if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
-                <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
-            }
-            // While a picture is being asked for: the image model's filter
-            // refuses real names and brands (docs/protocol.md, "Pictures").
-            if assistant_pictures::shows_picture_hint(chat_kind, &text, editing.is_some(), server_draws) {
-                <LiveRegion class="picture-notice picture-hint" role="status">{ assistant_pictures::picture_hint() }</LiveRegion>
-            }
-            if editing.is_none() && assistant_consent::is_required(chat_kind, &text, processor.as_deref(), props.agreed_to_assistant) {
-                <AssistantConsentBar
-                    processor={processor.clone().unwrap_or_default()}
-                    on_review={props.on_review_consent.clone()}
-                />
-            } else if editing.is_none() && assistant_consent::is_withheld_from_an_unnamed_assistant(chat_kind, &text, props.assistant.is_some(), processor.as_deref()) {
-                // Nothing to agree TO on such a server, so there is no
-                // screen to raise — only this, and a send that does not
-                // happen.
-                <p class="consent-notice" role="note">
-                    <span aria-hidden="true">{ "✋ " }</span>
-                    { assistant_consent::unnamed_processor_notice() }
-                </p>
-            }
-            if !suggestions.is_empty() {
-                <div class="suggestions" role="listbox" aria-label={t("Members")}>
-                    { for suggestions.iter().enumerate().map(|(index, member)| {
-                        let accept = accept.clone();
-                        let name = member.display_name.clone();
-                        html! {
-                            <button
-                                role="option"
-                                class={classes!((index == *active).then_some("is-active"))}
-                                aria-selected={(index == *active).to_string()}
-                                onmousedown={Callback::from(move |event: MouseEvent| {
-                                    event.prevent_default();
-                                    accept.emit(name.clone());
-                                })}
-                            >
-                                { &member.display_name }
-                                if !member.username.is_empty() {
-                                    <span class="meta">{ format!("  @{}", member.username) }</span>
-                                }
-                            </button>
-                        }
-                    }) }
-                </div>
             }
             <div class="composer" onkeydown={on_row_key}>
                 if recording_now {
                     // The recording row takes the field's place, and the
-                    // paperclip's, the sticker's and `@ai`'s, at the same
-                    // height (S2.4).
+                    // paperclip's, at the same height (S2.4).
                     { records.as_ref().map(|records| records.row.clone()).unwrap_or_default() }
                 } else {
                     { props.attach.clone() }
-                    if offers_ai {
-                        <button class="tool" title={t("Ask the assistant")} aria-label={t("Ask the assistant")} onclick={ask_assistant}>{ "✨" }</button>
-                    }
-                    if can_draw && editing.is_none() {
-                        <button class="tool" title={t("Ask for a picture")} aria-label={t("Ask for a picture")} onclick={ask_picture}>{ "🎨" }</button>
-                    }
                 }
-                // Kept while a recording hides it, words and all: they are
-                // the box's own, and come back with it.
-                <textarea
-                    ref={area}
-                    class={classes!(door_shown.then_some("has-door"))}
-                    aria-label={t("Message")}
-                    // A phone's keyboard capitalises sentences once asked;
-                    // a computer gets the built-in rule (`use_capitals`).
-                    autocapitalize="sentences"
-                    rows="1"
-                    hidden={recording_now}
-                    value={(*text).clone()}
-                    oninput={on_input}
-                    onkeydown={on_key}
-                    onpaste={on_paste}
-                />
-                // Inside the field, at its trailing edge (S1.4).
-                { door_html }
+                // THE FIELD (#106, 2.1): the box for the words, and at its
+                // trailing edge the sticker button — always — then the video
+                // button while it is empty (S1.4), or the assistant chat's
+                // paintbrush. Kept while a recording hides it, words and
+                // all: they are the box's own, and come back with it.
+                <div class="field" hidden={recording_now}>
+                    <textarea
+                        ref={area}
+                        class={classes!(door_shown.then_some("has-door"))}
+                        aria-label={placeholder}
+                        // Said on the screen too, while the box is empty —
+                        // the label alone is heard and never seen.
+                        placeholder={placeholder}
+                        // A phone's keyboard capitalises sentences once asked;
+                        // a computer gets the built-in rule (`use_capitals`).
+                        autocapitalize="sentences"
+                        rows="1"
+                        hidden={recording_now}
+                        value={(*text).clone()}
+                        oninput={on_input}
+                        onkeydown={on_key}
+                        onpaste={on_paste}
+                    />
+                    { props.stickers.clone() }
+                    if can_draw && editing.is_none() {
+                        <button type="button" class="tool" title={t("Ask for a picture")}
+                                aria-label={t("Ask for a picture")} onclick={ask_picture}>
+                            { Tool::Paintbrush.draw() }
+                        </button>
+                    }
+                    { door_html }
+                </div>
                 { slot_html }
             </div>
         </div>
@@ -1489,10 +1656,19 @@ fn focus_is_within(wrap: &NodeRef) -> bool {
     let on_the_page = document
         .body()
         .is_some_and(|body| body.unchecked_ref::<web_sys::Element>() == &active);
+    // The strips the conversation hands in (#106, doc 2.4) are inside the
+    // wrap but not the composer's: a focus on a staged item or a voice
+    // message not sent was put there, and stays.
+    let on_a_strip = active
+        .closest(".not-sent, .staging, .media-notice")
+        .ok()
+        .flatten()
+        .is_some();
     on_the_page
-        || wrap
-            .cast::<web_sys::Node>()
-            .is_some_and(|wrap| wrap.contains(Some(&active)))
+        || (!on_a_strip
+            && wrap
+                .cast::<web_sys::Node>()
+                .is_some_and(|wrap| wrap.contains(Some(&active))))
 }
 
 /// A textarea as tall as what it holds, inside the ceiling the stylesheet
@@ -1623,7 +1799,12 @@ mod tests {
             in_thread: false,
             focus: 0,
             attach: Html::default(),
+            stickers: Html::default(),
+            ask_assistant: 0,
             staged: 0,
+            not_sent_rows: Html::default(),
+            staging_strip: Html::default(),
+            busy_line: Html::default(),
             busy: false,
             append: (0, String::new()),
             take: 0,
@@ -1798,7 +1979,12 @@ mod tests {
                 in_thread: false,
                 focus: 0,
                 attach: Html::default(),
+                stickers: Html::default(),
+                ask_assistant: 0,
                 staged: 0,
+                not_sent_rows: Html::default(),
+                staging_strip: Html::default(),
+                busy_line: Html::default(),
                 busy: false,
                 append: (0, String::new()),
                 take: 0,
@@ -1891,7 +2077,12 @@ mod tests {
                 in_thread: false,
                 focus: 0,
                 attach: Html::default(),
+                stickers: Html::default(),
+                ask_assistant: 0,
                 staged,
+                not_sent_rows: Html::default(),
+                staging_strip: Html::default(),
+                busy_line: Html::default(),
                 busy: false,
                 append: (0, String::new()),
                 take: 0,
@@ -1987,7 +2178,12 @@ mod tests {
                 in_thread: false,
                 focus: 0,
                 attach: Html::default(),
+                stickers: Html::default(),
+                ask_assistant: 0,
                 staged: 0,
+                not_sent_rows: Html::default(),
+                staging_strip: Html::default(),
+                busy_line: Html::default(),
                 busy: false,
                 append: (0, String::new()),
                 take: 0,
@@ -2093,7 +2289,12 @@ mod tests {
             in_thread: false,
             focus: 0,
             attach: Html::default(),
+            stickers: Html::default(),
+            ask_assistant: 0,
             staged: 0,
+            not_sent_rows: Html::default(),
+            staging_strip: Html::default(),
+            busy_line: Html::default(),
             busy: false,
             append: (0, String::new()),
             take: 0,
@@ -2408,13 +2609,21 @@ mod tests {
             mounted.gone();
         }
 
-        // A thread's box is not changed (S1.3): today's Send, a word.
+        // A thread's box (#106, 2.1, superseding S1.3's "unchanged"): the
+        // same Send disc, never a microphone, disabled while blank.
         let mounted = Mounted::with(slot_props(&heard, None)).await;
-        let button = mounted.slot();
-        assert!(!button.class_list().contains("slot"));
-        assert_eq!(button.text_content().as_deref(), Some("Send"));
-        assert!(button.has_attribute("disabled"));
-        assert!(button.get_attribute("aria-label").is_none());
+        assert_eq!(
+            seen(&mounted),
+            Seen {
+                label: "Send".into(),
+                word: "Send".into(),
+                glyph: "send".into(),
+                disabled: true,
+                dimmed: false,
+                reason: None,
+                title: None,
+            }
+        );
         mounted.gone();
     }
 
@@ -3324,6 +3533,293 @@ mod tests {
         gloo_timers::future::TimeoutFuture::new(20).await;
         assert_eq!(heard.stopped.get(), 1, "Esc is Stop");
         assert_eq!(heard.activated.get(), 0, "and nothing else");
+        mounted.gone();
+    }
+
+    /// THE ASSISTANT FIRST (#106; docs/protocol.md, "Mentioning a member",
+    /// amended 2026-10-20): typing `@` in the family chat lists it above the
+    /// members, under its name, narrowed by that name and by `ai`; picking
+    /// it writes `@ai ` — never `@Helper` — and it is offered only where
+    /// `@ai` may be written at all: the family chat, on a server that names
+    /// who answers.
+    #[wasm_bindgen_test]
+    async fn typing_at_offers_the_assistant_first() {
+        let helper = |processor: Option<&str>| Assistant {
+            user_id: 2,
+            display_name: "Helper".into(),
+            mention: Some("@ai".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: Vec::new(),
+            greeting_weather: false,
+            draw: Some("/draw".into()),
+            vision: false,
+            images: false,
+            processor: processor.map(str::to_string),
+        };
+        let offered = |mounted: &Mounted| -> Vec<String> {
+            let found = mounted
+                .root
+                .query_selector_all(".suggestions [role=option]")
+                .unwrap();
+            (0..found.length())
+                .map(|index| {
+                    found
+                        .item(index)
+                        .unwrap()
+                        .text_content()
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        };
+        let mount = |family: bool, processor: Option<&'static str>| {
+            let heard = Rc::new(Heard::default());
+            let mut props = slot_props(&heard, None);
+            props.is_family_chat = family;
+            props.members = vec![member(9, "Anna"), member(11, "Bob")];
+            props.assistant = Some(helper(processor));
+            Mounted::with(props)
+        };
+
+        let mounted = mount(true, Some("Microsoft — Azure OpenAI")).await;
+        mounted.type_in("@").await;
+        assert_eq!(
+            offered(&mounted),
+            ["Helper @ai", "Anna @anna", "Bob @bob"],
+            "the assistant first, then the members"
+        );
+        mounted.type_in("@he").await;
+        assert_eq!(offered(&mounted), ["Helper @ai"], "by its name");
+        mounted.type_in("@A").await;
+        assert_eq!(
+            offered(&mounted),
+            ["Helper @ai", "Anna @anna"],
+            "by `ai`, as Anna by hers"
+        );
+        mounted.type_in("@ai").await;
+        assert_eq!(offered(&mounted), ["Helper @ai"]);
+        mounted.type_in("@bo").await;
+        assert_eq!(
+            offered(&mounted),
+            ["Bob @bob"],
+            "and not where neither fits"
+        );
+
+        // Picked — by the mouse, or by Enter on the first line — it is the
+        // token that goes in, never the name.
+        mounted.type_in("so @he").await;
+        let option = mounted
+            .root
+            .query_selector(".suggestions [role=option].is-assistant")
+            .unwrap()
+            .expect("the assistant's line");
+        let init = web_sys::MouseEventInit::new();
+        init.set_bubbles(true);
+        option
+            .dispatch_event(
+                &web_sys::MouseEvent::new_with_mouse_event_init_dict("mousedown", &init).unwrap(),
+            )
+            .unwrap();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let area: HtmlTextAreaElement = mounted
+            .root
+            .query_selector("textarea")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(area.value(), "so @ai ");
+        mounted.type_in("@").await;
+        key(&area, "Enter", false);
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(
+            area.value(),
+            "@ai ",
+            "Enter takes the highlighted first line"
+        );
+        mounted.gone();
+
+        // Nowhere else: a direct chat, or a server that names nobody.
+        for (family, processor) in [(false, Some("Microsoft — Azure OpenAI")), (true, None)] {
+            let mounted = mount(family, processor).await;
+            mounted.type_in("@").await;
+            assert!(
+                !offered(&mounted)
+                    .iter()
+                    .any(|line| line.starts_with("Helper")),
+                "family {family}, processor {processor:?}"
+            );
+            mounted.gone();
+        }
+    }
+
+    /// WHAT STACKS ABOVE THE ROW (#106, doc 2.4): one order on every
+    /// client, top to bottom — the notices · the voice messages not sent ·
+    /// the reply banner · the staged strip · the mention suggestions · the
+    /// busy line · THE ROW — in the page's order, which is a screen reader's,
+    /// and on the screen, where the mention list hangs just above the busy
+    /// line (over the strips above it), not from the composer's top.
+    #[wasm_bindgen_test]
+    async fn what_stacks_above_the_row_is_in_the_one_order() {
+        crate::layout_tests::install_stylesheet();
+        let heard = Rc::new(Heard::default());
+        let mut props = slot_props(&heard, None);
+        props.members = vec![member(9, "Anna"), member(11, "Bob")];
+        props.assistant = Some(Assistant {
+            user_id: 2,
+            display_name: "Helper".into(),
+            mention: Some("@ai".into()),
+            draw: Some("/draw".into()),
+            vision: false,
+            images: false,
+            processor: Some("Microsoft — Azure OpenAI".into()),
+            transcribe: false,
+            transcribe_max_bytes: None,
+            lookups: Vec::new(),
+            greeting_weather: false,
+        });
+        props.agreed_to_assistant = false;
+        props.replying = Some(Replying {
+            message_id: 1,
+            name: "Anna".into(),
+            excerpt: "Dinner?".into(),
+        });
+        props.not_sent_rows = html! { <div class="not-sent">{ "Not sent 0:04" }</div> };
+        props.staging_strip = html! { <div class="staging">{ "photo.jpg" }</div> };
+        props.busy_line = html! { <p class="composer-notice media-notice">{ "Preparing…" }</p> };
+        let mounted = Mounted::with(props).await;
+        // `@ai` raises the consent strip and offers the assistant at once.
+        mounted.type_in("@ai").await;
+        let order = [
+            ".consent-notice",
+            ".not-sent",
+            ".composer-banner",
+            ".staging",
+            ".suggestions",
+            ".media-notice",
+            ".composer",
+        ];
+        let found = mounted.root.query_selector_all(&order.join(", ")).unwrap();
+        let seen: Vec<&str> = (0..found.length())
+            .filter_map(|index| found.item(index))
+            .filter_map(|node| node.dyn_into::<web_sys::Element>().ok())
+            .filter_map(|element| {
+                order
+                    .iter()
+                    .copied()
+                    .find(|selector| element.matches(selector).unwrap_or(false))
+            })
+            .collect();
+        assert_eq!(seen, order, "top to bottom, the row last");
+        let rect = |selector: &str| {
+            mounted
+                .root
+                .query_selector(selector)
+                .unwrap()
+                .unwrap()
+                .get_bounding_client_rect()
+        };
+        let (list, busy, row) = (
+            rect(".suggestions"),
+            rect(".media-notice"),
+            rect(".composer"),
+        );
+        assert!(
+            (list.bottom() - busy.top()).abs() < 1.0,
+            "the list ends where the busy line starts: {} vs {}",
+            list.bottom(),
+            busy.top()
+        );
+        assert!(
+            rect(".staging").top() < busy.top() && busy.bottom() <= row.top() + 0.5,
+            "the busy line directly above the row"
+        );
+        mounted.gone();
+    }
+
+    /// "Ask the Assistant" from the paperclip's menu (#106): each time the
+    /// count moves, `@ai ` goes onto the end of the draft — once, however
+    /// often it is asked.
+    #[wasm_bindgen_test]
+    async fn asking_the_assistant_puts_the_token_in_the_draft() {
+        #[derive(Properties, PartialEq)]
+        struct AskingProps {
+            asked: u32,
+        }
+        #[function_component(Asking)]
+        fn asking(props: &AskingProps) -> Html {
+            let heard = Rc::new(Heard::default());
+            let mut composer = slot_props(&heard, None);
+            composer.initial = "dinner at six?".into();
+            composer.ask_assistant = props.asked;
+            html! { <Composer ..composer /> }
+        }
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let handle =
+            yew::Renderer::<Asking>::with_root_and_props(root.clone(), AskingProps { asked: 0 })
+                .render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let area = || -> HtmlTextAreaElement {
+            root.query_selector("textarea")
+                .unwrap()
+                .unwrap()
+                .dyn_into()
+                .unwrap()
+        };
+        assert_eq!(area().value(), "dinner at six?");
+        let mut handle = handle;
+        handle.update(AskingProps { asked: 1 });
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(area().value(), "dinner at six? @ai ");
+        handle.update(AskingProps { asked: 2 });
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(area().value(), "dinner at six? @ai ", "never twice");
+        handle.destroy();
+        root.remove();
+    }
+
+    /// A THREAD'S BOX (#106, 2.1): the main composer's field and Send disc —
+    /// never a microphone, disabled while blank — with "Reply in thread"
+    /// on the screen while it is empty.
+    #[wasm_bindgen_test]
+    async fn a_threads_box_has_the_send_disc_and_says_what_it_is_for() {
+        let heard = Rc::new(Heard::default());
+        let mut props = slot_props(&heard, None);
+        props.in_thread = true;
+        let mounted = Mounted::with(props).await;
+        let area = mounted
+            .root
+            .query_selector(".field > textarea")
+            .unwrap()
+            .expect("the field");
+        assert_eq!(
+            area.get_attribute("placeholder").as_deref(),
+            Some("Reply in thread")
+        );
+        assert_eq!(
+            area.get_attribute("aria-label").as_deref(),
+            Some("Reply in thread")
+        );
+        let slot = mounted.slot();
+        assert!(slot.class_list().contains("is-send"), "the disc, an arrow");
+        assert_eq!(slot.get_attribute("aria-label").as_deref(), Some("Send"));
+        assert!(slot.has_attribute("disabled"), "nothing to send");
+        mounted.type_in("   ").await;
+        assert!(mounted.slot().has_attribute("disabled"), "blank is nothing");
+        mounted.type_in("on my way").await;
+        assert!(!mounted.slot().has_attribute("disabled"));
+        mounted.slot().click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert_eq!(heard.sent.borrow().len(), 1);
+        assert!(
+            mounted.slot().has_attribute("disabled"),
+            "emptied by the send"
+        );
         mounted.gone();
     }
 }

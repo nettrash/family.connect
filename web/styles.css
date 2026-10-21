@@ -25,6 +25,22 @@
     --mine-wave-off: #8fb1e3;
     --tint-soft: #dceafd;
     --shadow: 0 6px 18px rgb(20 24 40 / 16%);
+    /* THE CONVERSATION COLUMN (#106, docs/composer-and-wide-layout-2026-10-20.md
+     * 2.2): the messages are one column, min(pane − 32, 1024) wide and
+     * centred — this is the space either side of it. A percentage, so it is
+     * the pane's wherever it is used on a box as wide as the pane (the list,
+     * the strips between it and the composer); in a thread's narrow panel it
+     * is the 16 px it always was. */
+    --column-gutter: max(16px, calc((100% - 1024px) / 2));
+    /* THE COMPOSER is NOT in the column on the web (the owner's call,
+     * 2026-10-21, after living with #106): the row and everything stacked
+     * on it — notices, staged items, the not-sent rows, the @ list, the
+     * sticker panel, "… is typing" — span the whole pane with the 16 px
+     * margin they had before #106. The apps keep the column rule. */
+    --composer-gutter: 16px;
+    /* A bubble is at most min(column − 48, 560): the 48 is the other side's
+     * spacer, the 560 a readable line on a wide screen. */
+    --bubble-max: min(calc(100% - 48px), 560px);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -183,23 +199,54 @@ button.link, .link {
     overflow: hidden;
 }
 
-/* A thread or the open polls open BESIDE the chat, not over it. */
+/* A thread or the open polls open BESIDE the chat, not over it — where
+ * there is room for both. */
 .split.with-panel { grid-template-columns: minmax(220px, 300px) 1fr minmax(280px, 380px); }
 
-/* One column on a phone: the list above, the chat below, and still the
- * same rule — each scrolls on its own and the composer never leaves. A
- * panel, there, takes the chat's place. */
+/* Between the phone and the desk (721–1024 px, an iPad upright) there is
+ * not: beside it the chat was squeezed to ~154 px and its composer cut off.
+ * There the panel opens OVER the conversation, from its trailing edge, and
+ * the conversation keeps its width under it (#106, section 3). */
+@media (min-width: 720.02px) and (max-width: 1024px) {
+    .split { position: relative; }
+    .split.with-panel { grid-template-columns: minmax(220px, 300px) 1fr; }
+    .split.with-panel > .thread-panel {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        right: 0;
+        z-index: 3;
+        width: min(380px, calc(100% - 220px));
+        box-shadow: -8px 0 24px rgb(0 0 0 / 18%);
+    }
+}
+
+/* One column on a phone: ONE surface at a time (#106, section 3) — the
+ * list, or the conversation it opened, which has the way back in its
+ * header; never the list as a band over a chat that showed three bubbles.
+ * The board and the panes still have the list above them, which is their
+ * way out. Each scrolls on its own and the composer never leaves; a thread
+ * takes the chat's place. */
 @media (max-width: 720px) {
     .split, .split.with-panel {
         grid-template-columns: 1fr;
         grid-template-rows: minmax(0, 35%) minmax(0, 1fr);
     }
+    .split.is-reading, .split.is-listing { grid-template-rows: minmax(0, 1fr); }
+    .split.is-reading > .chat-list,
+    .split.is-listing > .conversation.empty { display: none; }
     .split.with-panel > .conversation { display: none; }
     .chat-list {
         border-right: 0;
         border-bottom: 1px solid var(--line);
     }
 }
+/* The way back to the list, where the list is not beside the chat. */
+.back-to-chats { display: none; flex: none; background: transparent; color: var(--tint); padding: 6px 8px 6px 0; min-height: 44px; }
+@media (max-width: 720px) {
+    .back-to-chats { display: inline-flex; align-items: center; }
+}
+.thread-panel:focus { outline: none; }
 
 .chat-list {
     border-right: 1px solid var(--line);
@@ -296,7 +343,9 @@ button.link, .link {
      * — Safari has no scroll anchoring, and where a browser does have it,
      * both adjusting would move the reader twice. */
     overflow-anchor: none;
-    padding: 16px;
+    /* The column (#106): the list scrolls the whole pane — its scrollbar
+     * at the pane's edge — and draws its rows in the centred column. */
+    padding: 16px var(--column-gutter);
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -332,10 +381,17 @@ button.link, .link {
 .load-more { align-self: center; background: transparent; color: var(--tint); }
 .empty-note { color: var(--muted); text-align: center; }
 
+/* The way back to the newest, on a strip of its own under the list at the
+ * column's trailing edge — over the list, it covered the end of the last
+ * bubble, where my own end (#106). */
+.jump-strip {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px var(--column-gutter);
+}
 .jump-newest {
     position: relative;
-    align-self: flex-end;
-    margin: -48px 16px 8px 0;
     width: 36px;
     height: 36px;
     border-radius: 50%;
@@ -343,13 +399,14 @@ button.link, .link {
     box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
     flex: none;
 }
+.jump-newest::after { content: ""; position: absolute; inset: -4px; }
 
 /* --- one message ---------------------------------------------------------- */
 
 .bubble {
     position: relative;
     flex: none;
-    max-width: min(72ch, 78%);
+    max-width: var(--bubble-max);
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -1068,7 +1125,8 @@ button.mention { cursor: pointer; }
     position: absolute;
     z-index: 5;
     bottom: 100%;
-    left: 16px;
+    /* Under the sticker button, at the field's trailing edge (#106). */
+    right: var(--composer-gutter);
     margin-bottom: 6px;
     width: min(348px, calc(100% - 32px));
     max-height: min(320px, 50vh);
@@ -1134,7 +1192,7 @@ button.pack-cell:disabled { cursor: default; }
 
 /* --- the composer --------------------------------------------------------- */
 
-.typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
+.typing { flex: none; margin: 0 var(--composer-gutter); color: var(--muted); font-size: 13px; }
 
 .composer-wrap { flex: none; border-top: 1px solid var(--line); background: var(--panel); position: relative; }
 /* Under the video recorder (#79, decision 41): not drawn at all — hidden,
@@ -1146,39 +1204,111 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: flex;
     gap: 8px;
-    padding: 12px 16px;
+    padding: 12px var(--composer-gutter);
     align-items: flex-end;
+}
+
+/* THE FIELD (#106, 2.1): one capsule — the words, and at its trailing edge
+ * the sticker button (always), then the video button while it is empty or
+ * the assistant chat's paintbrush. It takes what the paperclip and the slot
+ * leave, and may shrink: without `min-width: 0` a flex item is never
+ * narrower than its content, and on a phone the microphone was pushed ~31
+ * px off the screen. Its outline is a shadow, so the box inside is exactly
+ * as tall as the slot beside it. */
+.composer .field {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding-inline-end: 4px;
+    background: var(--bg);
+    border-radius: 20px;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+.composer .field[hidden] { display: none; }
+.composer .field:has(> textarea:focus-visible) { box-shadow: inset 0 0 0 2px var(--tint); }
+/* High-contrast colours draw no shadows: the field's edge and its focus
+ * ring become outlines there, which take no room either. */
+@media (forced-colors: active) {
+    .composer .field { outline: 1px solid CanvasText; outline-offset: -1px; }
+    .composer .field:has(> textarea:focus-visible) { outline: 2px solid Highlight; outline-offset: -2px; }
 }
 
 /* One line tall, growing with what is typed to five lines and no further
  * (the Mac's `.lineLimit(1...5)`). The height itself is fitted in script —
  * `field-sizing: content` is not in every browser yet — so what is here is
  * the line it is measured in and the ceiling it stops at: five lines plus
- * the padding and borders of the box. */
+ * the padding of the box. Its border and its focus ring are the field's. */
 .composer textarea {
+    flex: 1;
+    min-width: 0;
+    width: auto;
     resize: none;
     line-height: 1.25;
+    padding: 10px 4px 10px 14px;
+    border: 0;
+    border-radius: 20px;
+    background: transparent;
+    outline: none;
+    /* As tall as the slot and the paperclip beside it, at any font size. */
+    min-height: 40px;
     max-height: calc(1.25em * 5 + 20px);
     overflow-y: auto;
 }
-.composer .tool { background: transparent; color: var(--tint); padding: 8px; }
+/* Visible while the box is empty — the label alone is heard, not seen. */
+.composer textarea::placeholder { color: var(--muted); opacity: 1; }
+
+/* The row's buttons: line icons in the accent colour, a 44-px target on
+ * every pointer (#106, 2.1) without the row growing — the paperclip is 40
+ * and reaches 2 px past itself, the field's buttons are 36 and reach 4 px,
+ * into the gaps on either side. */
+.composer .tool {
+    position: relative;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--tint);
+}
+.composer .tool::after { content: ""; position: absolute; inset: -2px; }
+.composer .field .tool { width: 36px; height: 36px; margin: 2px 0; }
+.composer .field .tool::after { inset: -4px; }
+.composer .tool-icon { width: 22px; height: 22px; display: block; }
+.composer .tool:hover { background: var(--soft); }
+
+/* Under ~340 px the paperclip, the field's buttons and the slot leave no
+ * room for words: the field takes a line of its own above them (2.1). */
+@media (max-width: 339.98px) {
+    .composer { flex-wrap: wrap; }
+    .composer .field { order: -1; flex-basis: 100%; }
+    .composer .slot-wrap { margin-inline-start: auto; }
+}
 
 .composer-banner {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 16px 0;
+    padding: 6px var(--composer-gutter) 0;
     font-size: 13px;
     color: var(--muted);
 }
 .composer-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.composer-notice { padding: 4px 16px 0; font-size: 12px; color: var(--muted); }
-.picture-notice { margin: 0; padding: 6px 16px 0; font-size: 12px; color: var(--muted); }
+.composer-notice { padding: 4px var(--composer-gutter) 0; font-size: 12px; color: var(--muted); }
+.picture-notice { margin: 0; padding: 6px var(--composer-gutter) 0; font-size: 12px; color: var(--muted); }
+/* The consent notice heads the stack (#106, doc 2.4) and keeps the composer's gutter like the notices under it — it
+   had none, so on a phone the ✋ touched the screen edge. */
+.composer-wrap .consent-notice { margin: 0; padding: 6px var(--composer-gutter) 0; }
 
-/* The media notices, the staged strip and the recording bar sit between the
- * messages and the composer, and like the composer never scroll away. */
-.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+/* The media notices, the staged strip and the voice messages not sent are
+ * drawn inside the composer, in the order of #106 (doc 2.4), and like the
+ * row never scroll away. */
+.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px var(--composer-gutter); border-top: 1px solid var(--line); background: var(--panel); }
 .media-notice .link { margin-left: auto; }
 
 .attach { position: relative; flex: none; }
@@ -1200,7 +1330,7 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: flex;
     gap: 8px;
-    padding: 8px 16px;
+    padding: 8px var(--composer-gutter);
     overflow-x: auto;
     border-top: 1px solid var(--line);
     background: var(--panel);
@@ -1244,6 +1374,9 @@ button.pack-cell:disabled { cursor: default; }
     touch-action: manipulation;
 }
 .composer .slot.is-dimmed { opacity: .5; }
+/* A 44-px target on EVERY pointer since #106: the hit area reaches 2 px
+ * past the 40-px disc, into the gap beside it. */
+.composer .slot::after { content: ""; position: absolute; inset: -2px; }
 .composer .slot svg { width: 22px; height: 22px; display: block; }
 /* Send ↔ microphone: a 150 ms cross-fade, none under reduced motion. */
 .slot-icon { animation: slot-in 150ms ease-out; }
@@ -1375,7 +1508,7 @@ button.pack-cell:disabled { cursor: default; }
     flex: none;
     display: grid;
     gap: 4px;
-    padding: 8px 16px;
+    padding: 8px var(--composer-gutter);
     border-top: 1px solid var(--line);
     background: var(--panel);
     font-size: 13px;
@@ -1399,9 +1532,8 @@ button.pack-cell:disabled { cursor: default; }
  * pointer) — the hit area grows, the row does not. */
 @media (pointer: coarse) {
     .not-sent .link { position: relative; }
-    /* The slot, the recording row's buttons and a recording's ▶ and ✕ take
-     * a 44-px finger without growing: the hit area reaches past them. */
-    .composer .slot::after,
+    /* The recording row's buttons and a recording's ▶ and ✕ take a 44-px
+     * finger without growing: the hit area reaches past them. */
     .recording button.secondary::after,
     .local-play::after,
     .not-sent .link::after,
@@ -1435,10 +1567,14 @@ button.pack-cell:disabled { cursor: default; }
 /* A drag over the pane: an accent border, as the Mac draws one. */
 .conversation.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
 
+/* The mention list hangs from a line of its own just above the busy line
+ * and the row (#106, doc 2.4) — nearest the field, over the notices, the
+ * reply and the staged strip above it — not from the composer's top. */
+.suggestions-anchor { position: relative; }
 .suggestions {
     position: absolute;
     bottom: 100%;
-    left: 16px;
+    left: var(--composer-gutter);
     z-index: 6;
     min-width: 220px;
     max-height: 240px;
@@ -2173,17 +2309,16 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 /* --- the video message: the way in, and the recorder (#79, S1.4, S3) ------ */
 
 /* THE VIDEO BUTTON, inside the empty field at its trailing edge, centred on
- * its one line: a 22-px glyph, its box as tall as the slot beside it, so the
- * row never grows. The field leaves it room, so a placeholder never runs
- * under it. On a coarse pointer the hit area reaches 44 (S1.1). */
-.composer textarea.has-door { padding-right: 44px; padding-inline-end: 44px; }
+ * its one line: a 22-px glyph in a 36-px box, as the sticker button beside
+ * it, so the row never grows. It is the field's own item since #106, so a
+ * placeholder never runs under it. Its hit area reaches 44 on every
+ * pointer (S1.1, #106). */
 .composer .video-door {
     flex: none;
     position: relative;
-    z-index: 1;
-    width: 40px;
-    height: 40px;
-    margin-inline-start: -48px;
+    width: 36px;
+    height: 36px;
+    margin: 2px 0;
     padding: 0;
     display: grid;
     place-items: center;
@@ -2197,12 +2332,10 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 }
 .composer .video-door.is-dimmed { opacity: .5; }
 .composer .video-door svg { width: 22px; height: 22px; display: block; }
-@media (pointer: coarse) {
-    .composer .video-door::after {
-        content: "";
-        position: absolute;
-        inset: min(0px, calc((100% - 44px) / 2));
-    }
+.composer .video-door::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
 }
 
 /* THE RECORDER (S3.3): the whole window, taking all input. Revised

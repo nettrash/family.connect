@@ -62,6 +62,23 @@ class AssistantConsentTest {
     }
 
     /**
+     * #106: `@ai` is OFFERED — the `@` strip's chip, the paperclip's "Ask the
+     * assistant" — in the family chat only, and only when the server has an
+     * assistant AND names its processor. Android used to ask only the first,
+     * and offered an `@ai` that every use of ended in a refusal.
+     */
+    @Test
+    fun `the mention is offered in the family chat of a server whose assistant is named`() {
+        assertThat(AssistantConsent.offersMention("family", hasAssistant = true, processor = processor)).isTrue()
+        assertThat(AssistantConsent.offersMention("family", hasAssistant = true, processor = null)).isFalse()
+        assertThat(AssistantConsent.offersMention("family", hasAssistant = true, processor = " ")).isFalse()
+        assertThat(AssistantConsent.offersMention("family", hasAssistant = false, processor = processor)).isFalse()
+        assertThat(AssistantConsent.offersMention("direct", hasAssistant = true, processor = processor)).isFalse()
+        assertThat(AssistantConsent.offersMention("ai", hasAssistant = true, processor = processor)).isFalse()
+        assertThat(AssistantConsent.offersMention(null, hasAssistant = true, processor = processor)).isFalse()
+    }
+
+    /**
      * A server that HAS an assistant but names nobody: consent cannot be
      * asked for, so the message is held back rather than sent.
      */

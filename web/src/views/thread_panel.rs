@@ -14,6 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fc_text::i18n::{t, tn};
+use wasm_bindgen::JsCast;
+use web_sys::{HtmlElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::actions::Action;
@@ -76,12 +78,30 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
         let on_action = props.on_action.clone();
         Callback::from(move |_: MouseEvent| on_action.emit(Action::CloseThread))
     };
+    // Esc closes the thread — but never over a draft (#106, 2.3): closing
+    // would lose it, so with words in the box the first Esc only leaves the
+    // box, onto the panel, and a second closes it.
+    let panel_ref = use_node_ref();
     let on_key = {
         let on_action = props.on_action.clone();
+        let panel_ref = panel_ref.clone();
         Callback::from(move |event: KeyboardEvent| {
-            if event.key() == "Escape" {
-                on_action.emit(Action::CloseThread);
+            if event.key() != "Escape" {
+                return;
             }
+            let drafted = event
+                .target()
+                .and_then(|target| target.dyn_into::<HtmlTextAreaElement>().ok())
+                .filter(|area| !area.value().trim().is_empty());
+            if let Some(area) = drafted {
+                event.prevent_default();
+                let _ = area.blur();
+                if let Some(panel) = panel_ref.cast::<HtmlElement>() {
+                    let _ = panel.focus();
+                }
+                return;
+            }
+            on_action.emit(Action::CloseThread);
         })
     };
     // Every send from here answers the root.
@@ -96,8 +116,9 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
     // (views/conversation.rs): by a send — words, or a sticker — that
     // would reach the model before this member has agreed.
     let consent_open = use_state(|| false);
-    // The sticker button, wherever the chat has one — every chat on a
-    // server that has packs, the assistant's included. One click sends,
+    // The sticker button, inside the field as in the chat (#106), wherever
+    // the chat has one — every chat on a server that has packs, the
+    // assistant's included. One click sends,
     // and what it sends answers the root like everything else here. In a
     // thread of the assistant's chat it goes through the consent question
     // and never round it, by the chat's own test (`pack::send_gate`);
@@ -227,7 +248,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
     let member_ids: Rc<HashSet<i64>> =
         Rc::new(props.members.iter().map(|member| member.id).collect());
     html! {
-        <aside class="thread-panel" aria-label={t("Thread")} onkeydown={on_key}>
+        <aside ref={panel_ref} class="thread-panel" aria-label={t("Thread")} tabindex="-1" onkeydown={on_key}>
             <header class="thread-bar">
                 <h2>{ tn("%lld replies", replies as i64) }</h2>
                 <button class="link" onclick={close} aria-label={t("Close the thread")}>{ "✕" }</button>
@@ -302,7 +323,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                 on_typing={props.on_action.reform(move |_: ()| Action::Typing { chat_id })}
                 on_draft={Callback::from(|_: String| {})}
                 in_thread={true}
-                attach={sticker_menu.unwrap_or_default()}
+                stickers={sticker_menu.unwrap_or_default()}
                 focus={*focus}
                 {pictures}
             />

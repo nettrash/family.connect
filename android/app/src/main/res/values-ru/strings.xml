@@ -719,6 +719,7 @@
     <string name="s_assistant_transcripts_explanation">Когда это включено, участники могут попросить текст голосовых сообщений, аудио и видео других участников в семейном чате, и тогда звук этой записи отправляется в %1$s. Он уходит только по чьей-то просьбе и только если отправивший его участник согласился на ассистента. Текст своих записей каждый может получить и без этого. Выключено, пока ты это не включишь.</string>
     <string name="s_assistant_transcripts_no_server">Здесь недоступно: этот сервер не умеет превращать записи в текст.</string>
     <string name="s_consent_transcript_sound_sent">Если вы попросите текст голосового сообщения, аудиофайла или видео, его звук будет отправлен в %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">В личном чате собеседник может попросить текст ваших голосовых сообщений, аудиофайлов и видео — тогда их звук будет отправлен в %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Не удалось изменить настройку</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Поиск сведений</string>

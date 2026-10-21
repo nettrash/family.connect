@@ -73,13 +73,14 @@ struct TranscriptDoorTests {
         }
     }
 
-    @Test("somebody else's: the family chat only, and only with the owner's switch on")
+    @Test("somebody else's: the other person's in a direct chat; the family chat only with the owner's switch on")
     func othersRecording() {
         #expect(F.door(chatKind: "family", familyAllowsTranscripts: true) == .open)
         #expect(F.door(chatKind: "family", familyAllowsTranscripts: false) == .absent)
-        // A direct chat: never, whatever the switch says.
-        #expect(F.door(chatKind: "direct", familyAllowsTranscripts: true) == .absent)
-        #expect(F.door(chatKind: "direct", familyAllowsTranscripts: false) == .absent)
+        // A direct chat: offered whatever the switch says — the server asks
+        // the sender's consent, and the owner's switch does not reach it.
+        #expect(F.door(chatKind: "direct", familyAllowsTranscripts: true) == .open)
+        #expect(F.door(chatKind: "direct", familyAllowsTranscripts: false) == .open)
         // An unknown or unheld chat is not the family chat.
         #expect(F.door(chatKind: nil) == .absent)
         #expect(F.door(chatKind: "something-new") == .absent)
@@ -92,7 +93,8 @@ struct TranscriptDoorTests {
     }
 
     /// Without a known user id (-1 before the session settles) nothing is
-    /// "mine", so only the family-chat rule can open the door.
+    /// "mine" and nobody is "the other person", so only the family-chat
+    /// rule can open the door.
     @Test("an unknown reader owns nothing")
     func unknownReader() {
         #expect(F.door(chatKind: "direct", senderID: -1, currentUserID: -1) == .absent)
@@ -133,10 +135,11 @@ struct TranscriptDoorTests {
         #expect(F.door(attachment: F.audio(kind: "photo", mime: "image/jpeg")) == .absent)
         #expect(F.door(attachment: F.audio(kind: "file", mime: "audio/mp4")) == .absent)
         #expect(F.door(attachment: F.audio(kind: "location", mime: "")) == .absent)
-        // A video is still under the rules: another member's in a direct
-        // chat is never offered.
-        #expect(F.door(attachment: F.audio(kind: "video", mime: "video/mp4"), chatKind: "direct")
-            == .absent)
+        // A video is still under the rules: another member's in the family
+        // chat waits for the owner's switch.
+        #expect(F.door(
+            attachment: F.audio(kind: "video", mime: "video/mp4"), chatKind: "family",
+            familyAllowsTranscripts: false) == .absent)
         #expect(F.door(
             attachment: F.audio(kind: "video", mime: "video/mp4"), chatKind: "direct",
             senderID: F.me) == .open)
@@ -431,9 +434,12 @@ struct TranscriptWireTests {
             processor: p, familyHistory: true, familyVision: false, transcribes: true)
         let without = AssistantConsent.disclosure(
             processor: p, familyHistory: true, familyVision: false, transcribes: false)
-        #expect(with.count == without.count + 1)
-        let line = with.first { !without.contains($0) }
-        #expect(line?.contains(p) == true)
+        // Two lines: the asker's own asking, and — since 2026-10-21 — the
+        // direct-chat partner's, which this consent now also covers.
+        let added = with.filter { !without.contains($0) }
+        #expect(added.count == 2)
+        #expect(added.allSatisfy { $0.contains(p) })
+        #expect(added.last?.hasPrefix("In a direct chat, the other person") == true)
     }
 }
 

@@ -10,6 +10,7 @@
 //! Record Voice Message  — not in the assistant chat
 //! Record Video Message  — where round video is offered
 //! ──────────────
+//! Ask the Assistant     — the family chat, with an assistant (#106)
 //! Location
 //! Poll                  — the family chat only
 //! ```
@@ -17,6 +18,11 @@
 //! The web has no "Camera" item: there is no system camera to hand off to
 //! (S1.5 of docs/audio-video-messages-2026-10-04.md). A group that would be
 //! empty is left out, so no separator is ever drawn around nothing.
+//!
+//! "Ask the Assistant" is the composer row's `@ai` button, moved here by
+//! #106 (docs/composer-and-wide-layout-2026-10-20.md): it puts `@ai ` into
+//! the draft as the button did, and heads the last group because what it
+//! makes is a message to the family, as a location and a poll are.
 use crate::i18n::t;
 
 /// One line of the paperclip's menu.
@@ -32,6 +38,8 @@ pub enum AttachItem {
     Paste,
     RecordVoice,
     RecordVideo,
+    /// `@ai ` into the draft — the row's old `@ai` button (#106).
+    AskAssistant,
     Location,
     Poll,
 }
@@ -46,6 +54,7 @@ impl AttachItem {
             AttachItem::Paste => t("Paste"),
             AttachItem::RecordVoice => t("Record Voice Message"),
             AttachItem::RecordVideo => t("Record Video Message"),
+            AttachItem::AskAssistant => t("Ask the Assistant"),
             AttachItem::Location => t("Location"),
             AttachItem::Poll => t("Poll"),
         }
@@ -54,7 +63,8 @@ impl AttachItem {
     /// The emoji drawn before the label — decoration only, the label is
     /// what a screen reader says (the web's counterpart of the apps' SF
     /// Symbols `photo.on.rectangle` / `photo`, `doc`, `doc.on.clipboard`,
-    /// `mic`, `video.circle`, `mappin.and.ellipse`, `chart.bar`).
+    /// `mic`, `video.circle`, `sparkles`, `mappin.and.ellipse`,
+    /// `chart.bar`).
     pub fn icon(self) -> &'static str {
         match self {
             AttachItem::PhotoOrVideo | AttachItem::AssistantPhoto => "🖼️",
@@ -62,6 +72,7 @@ impl AttachItem {
             AttachItem::Paste => "📋",
             AttachItem::RecordVoice => "🎙️",
             AttachItem::RecordVideo => "📹",
+            AttachItem::AskAssistant => "✨",
             AttachItem::Location => "📍",
             AttachItem::Poll => "📊",
         }
@@ -80,6 +91,10 @@ pub struct AttachOffers {
     pub record_voice: bool,
     /// "Record Video Message" is offered (`round_video::offers_video_entry`).
     pub record_video: bool,
+    /// "Ask the Assistant" is offered — the family chat, on a server that
+    /// has an assistant and names who answers (docs/protocol.md,
+    /// "Mentioning a member", amended 2026-10-20).
+    pub ask_assistant: bool,
     /// "Poll" is offered — the family chat, never a thread.
     pub poll: bool,
 }
@@ -103,7 +118,11 @@ pub fn attach_menu(offers: AttachOffers) -> Vec<Vec<AttachItem>> {
         record.push(AttachItem::RecordVideo);
     }
 
-    let mut share = vec![AttachItem::Location];
+    let mut share = Vec::new();
+    if offers.ask_assistant {
+        share.push(AttachItem::AskAssistant);
+    }
+    share.push(AttachItem::Location);
     if offers.poll {
         share.push(AttachItem::Poll);
     }
@@ -125,6 +144,7 @@ mod tests {
             assistant_pictures: false,
             record_voice: true,
             record_video: true,
+            ask_assistant: true,
             poll: true,
         }
     }
@@ -136,14 +156,32 @@ mod tests {
             vec![
                 vec![PhotoOrVideo, File, Paste],
                 vec![RecordVoice, RecordVideo],
-                vec![Location, Poll],
+                vec![AskAssistant, Location, Poll],
             ]
         );
+    }
+
+    /// #106: the row's `@ai` button is this line now — first in the last
+    /// group, and only where the button was.
+    #[test]
+    fn ask_the_assistant_heads_the_last_group_and_only_where_offered() {
+        let menu = attach_menu(family());
+        assert_eq!(
+            menu.last().and_then(|group| group.first()),
+            Some(&AskAssistant)
+        );
+        let without = AttachOffers {
+            ask_assistant: false,
+            ..family()
+        };
+        assert_eq!(attach_menu(without)[2], vec![Location, Poll]);
+        assert_eq!(AskAssistant.label(), "Ask the Assistant");
     }
 
     #[test]
     fn a_direct_chat_has_no_poll() {
         let direct = AttachOffers {
+            ask_assistant: false,
             poll: false,
             ..family()
         };
@@ -173,6 +211,7 @@ mod tests {
             assistant_pictures: true,
             record_voice: false,
             record_video: false,
+            ask_assistant: false,
             poll: false,
         };
         assert_eq!(
@@ -192,13 +231,14 @@ mod tests {
 
     #[test]
     fn no_group_is_ever_empty() {
-        for bits in 0..32u8 {
+        for bits in 0..64u8 {
             let offers = AttachOffers {
                 assistant_chat: bits & 1 != 0,
                 assistant_pictures: bits & 2 != 0,
                 record_voice: bits & 4 != 0,
                 record_video: bits & 8 != 0,
                 poll: bits & 16 != 0,
+                ask_assistant: bits & 32 != 0,
             };
             let menu = attach_menu(offers);
             assert!(menu.iter().all(|group| !group.is_empty()), "{offers:?}");
@@ -223,6 +263,7 @@ mod tests {
             Paste,
             RecordVoice,
             RecordVideo,
+            AskAssistant,
             Location,
             Poll,
         ] {

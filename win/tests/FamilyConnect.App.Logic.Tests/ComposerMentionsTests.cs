@@ -1,3 +1,4 @@
+using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using Xunit;
 
@@ -56,5 +57,54 @@ public sealed class ComposerMentionsTests
         Assert.False(ComposerMentions.OpensChat(13, Roster, Me, BobBlocked));
         Assert.False(ComposerMentions.OpensChat(14, Roster, Me, BobBlocked));
         Assert.False(ComposerMentions.OpensChat(99, Roster, Me, BobBlocked));
+    }
+
+    private static readonly AssistantDto Helper = new(99, "Helper", "@ai", Processor: "Microsoft — Azure OpenAI");
+
+    /// <summary>
+    /// #106 (docs/protocol.md, "Mentioning a member", amended 2026-10-20): the assistant FIRST, above the members, under its
+    /// display name — narrowed by that name and by "ai" — and a pick writes "@ai ", never "@Helper ".
+    /// </summary>
+    [Fact]
+    public void TheAssistantIsOfferedFirstAndWritesTheAiToken()
+    {
+        var all = ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: true, editing: false, Helper);
+        Assert.Equal(["Helper", "Anna", "Anna Lee"], all.Select(choice => choice.Name));
+        Assert.Null(all[0].Member);
+        Assert.Equal("ai", all[0].Writes);
+        Assert.Equal("@ai", all[0].Handle);
+        Assert.Equal("dinner @ai ", Mentions.Accept("dinner @He", all[0].Writes));
+        Assert.Equal(11L, all[1].Member!.Id);
+        Assert.Equal("Anna", all[1].Writes);
+        Assert.Equal("@anna", all[1].Handle);
+
+        Assert.Equal(["Helper"], ComposerMentions.Choices("@he", Roster, Me, BobBlocked, true, false, Helper).Select(choice => choice.Name));
+        // Narrowed by "ai" as well as by its name: "@ai" finds an assistant called Robin, and "@ro" does too.
+        var robin = Helper with { DisplayName = "Robin" };
+        Assert.Equal(["Robin"], ComposerMentions.Choices("@ai", Roster, Me, BobBlocked, true, false, robin).Select(choice => choice.Name));
+        Assert.Equal(["Robin"], ComposerMentions.Choices("@Ro", Roster, Me, BobBlocked, true, false, robin).Select(choice => choice.Name));
+        Assert.Equal(["Robin", "Anna", "Anna Lee"], ComposerMentions.Choices("@a", Roster, Me, BobBlocked, true, false, robin).Select(choice => choice.Name));
+        Assert.Equal(["Anna", "Anna Lee"], ComposerMentions.Choices("@An", Roster, Me, BobBlocked, true, false, Helper).Select(choice => choice.Name));
+    }
+
+    /// <summary>Only where @ai may be written: the family chat, not editing, on a server whose assistant names who answers.</summary>
+    [Fact]
+    public void TheAssistantIsOfferedOnlyWhereItCanBeAsked()
+    {
+        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: false, editing: false, Helper));
+        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: true, editing: true, Helper));
+        Assert.Empty(ComposerMentions.Choices("no at", Roster, Me, BobBlocked, true, false, Helper));
+        Assert.All(ComposerMentions.Choices("@", Roster, Me, BobBlocked, true, false, Helper with { Processor = null }), choice => Assert.NotNull(choice.Member));
+        Assert.All(ComposerMentions.Choices("@", Roster, Me, BobBlocked, true, false, null), choice => Assert.NotNull(choice.Member));
+    }
+
+    /// <summary>The assistant's own account, should the roster carry it, is never offered as a member.</summary>
+    [Fact]
+    public void TheAssistantsAccountIsNeverAMemberLine()
+    {
+        MemberDto[] roster = [.. Roster, new(99, "helper", "Helper")];
+        var choices = ComposerMentions.Choices("@H", roster, Me, BobBlocked, true, false, Helper);
+        Assert.Single(choices);
+        Assert.Null(choices[0].Member);
     }
 }

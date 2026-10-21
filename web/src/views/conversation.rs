@@ -763,6 +763,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let media_notice = use_state(|| Option::<String>::None);
     let append = use_state(|| (0u32, String::new()));
     let take = use_state(|| 0u32);
+    // Moves each time "Ask the Assistant" is chosen from the paperclip's
+    // menu: the composer puts `@ai ` into its draft (#106).
+    let ask = use_state(|| 0u32);
     // The location waiting for the draft to be its caption.
     let pending = use_mut_ref(|| Option::<Prepared>::None);
     // A hunt for a fix — the permission prompt included — so a second click
@@ -1342,8 +1345,23 @@ pub fn conversation(props: &ConversationProps) -> Html {
     } else {
         None
     };
+    // "Ask the Assistant" — the row's old `@ai` button, now a line of the
+    // paperclip's menu — where `@ai` may be written at all: the family
+    // chat, on a server with an assistant that names who answers
+    // (docs/protocol.md, "Mentioning a member", amended 2026-10-20).
+    let offers_assistant = is_family
+        && props
+            .assistant
+            .as_ref()
+            .and_then(|assistant| assistant.processor.as_deref())
+            .is_some_and(|processor| !processor.trim().is_empty());
     let attach_menu = html! {
         <AttachMenu
+            {offers_assistant}
+            on_assistant={{
+                let ask = ask.clone();
+                Callback::from(move |_: ()| ask.set(*ask + 1))
+            }}
             offers_video={offers_video}
             video_dimmed={video_dimmed}
             on_video={open_recorder.clone()}
@@ -1365,10 +1383,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
             on_busy={notice.clone()}
         />
     };
-    // THE STICKER BUTTON, beside the paperclip, in EVERY chat a message can
-    // be sent in, wherever this server has packs: the family chat, a
-    // one-to-one chat, and the assistant's own. One click sends: its own
-    // message, no caption, answering whatever the box was answering.
+    // THE STICKER BUTTON, inside the field at its trailing edge (#106), in
+    // EVERY chat a message can be sent in, wherever this server has packs:
+    // the family chat, a one-to-one chat, and the assistant's own. One
+    // click sends: its own message, no caption, answering whatever the box
+    // was answering.
     //
     // In the assistant's chat a sticker is a photograph shown to the model
     // (docs/protocol.md, "Sending one"), so the click goes through the
@@ -1422,7 +1441,6 @@ pub fn conversation(props: &ConversationProps) -> Html {
             />
         }
     });
-    let attach_menu = html! { <>{ attach_menu }{ sticker_menu.unwrap_or_default() }</> };
     // The composer's attachment guard — S1.2's **busy**, which dims the
     // microphone (row 8) and holds a Send back. A recording is not it: the
     // recording row has the field's place while one runs. A note being
@@ -1763,6 +1781,69 @@ pub fn conversation(props: &ConversationProps) -> Html {
         .as_ref()
         .is_some_and(|text| voice.announcement.0 > 0 && voice.announcement.1 == *text);
 
+    // What stacks above the row, handed to the composer to place (#106, doc
+    // 2.4): one order on every client, the nearest to the field being what
+    // is being written — notices · voice messages not sent · reply or edit
+    // banner · staged · mention suggestions · the busy line · THE ROW. They
+    // were drawn here, above the whole composer, which put the staged strip
+    // and the voice messages not sent above the notices and the reply.
+    let not_sent_rows = html! {
+        <>
+        { for props.not_sent.iter().map(|row| html! {
+            <NotSentRow
+                key={row.id}
+                row={row.clone()}
+                quote={quote_of(row.reply_to_message_id)}
+                on_send={send_not_sent.clone()}
+                on_delete={delete_not_sent.clone()}
+                recording={recording_on}
+                on_explain={notice.clone()}
+            />
+        }) }
+        </>
+    };
+    let staging_strip = html! {
+        <StagingStrip
+            items={props.staged.clone()}
+            on_remove={{
+                let on_action = props.on_action.clone();
+                let changed = voice.changed.clone();
+                Callback::from(move |index| {
+                    on_action.emit(Action::Unstage { chat_id, index });
+                    // Taken off by the person: never guarded (S1.1).
+                    changed.emit(());
+                })
+            }}
+            recording={recording_on}
+            on_explain={notice.clone()}
+        />
+    };
+    let busy_line = match (*media_notice).clone() {
+        // Quiet while a recording runs, as every live region here is
+        // but the one that says what the recording does (S6).
+        Some(text) => html! {
+            <p class="composer-notice media-notice"
+               role={(!recording_on).then_some("status")}
+               aria-live={recording_on.then_some("off")}>
+                if notice_said {
+                    <span aria-hidden="true">{ text }</span>
+                } else {
+                    { text }
+                }
+                if *preparing {
+                    // Not a notice to dismiss but work to call off.
+                    <button class="link" onclick={cancel_preparing}>{ t("Cancel") }</button>
+                } else {
+                    <button class="link" aria-label={t("Dismiss")}
+                            onclick={let media_notice = media_notice.clone(); Callback::from(move |_: MouseEvent| media_notice.set(None))}>
+                        { "✕" }
+                    </button>
+                }
+            </p>
+        },
+        None => Html::default(),
+    };
+
     let divider_count = anchor.map(|(_, count)| count).unwrap_or(0);
     let member_count = props.members.len();
     let avatar_versions: HashMap<i64, i64> = props
@@ -1789,6 +1870,14 @@ pub fn conversation(props: &ConversationProps) -> Html {
             ondrop={on_drop}
         >
             <header class="conversation-bar">
+                // Below the two panes the conversation is the whole window,
+                // and this is the way back to the list of chats (#106,
+                // section 3). The stylesheet hides it where the list is
+                // beside the chat.
+                <button type="button" class="back-to-chats"
+                        onclick={props.on_action.reform(|_: MouseEvent| Action::CloseChat)}>
+                    <span aria-hidden="true">{ "‹ " }</span>{ t("Chats") }
+                </button>
                 <h2 class="conversation-title">{ title }</h2>
                 // A call lives in a direct chat: the family chat has nobody
                 // in particular to ring, and the assistant has no ears
@@ -1899,63 +1988,22 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 }) }
                 </>
             </div>
+            // On a strip of its own under the list, not floating over it: a
+            // disc over the list covered the end of the last bubble — my own,
+            // which ends where it stood (#106). The list is shorter by the
+            // strip while it shows; what the reader is looking at stays put.
             if !*at_newest {
-                <button class="jump-newest" onclick={jump_to_newest} aria-label={t("Jump to the newest message")}>{ "↓" }</button>
+                <div class="jump-strip">
+                    <button class="jump-newest" onclick={jump_to_newest} aria-label={t("Jump to the newest message")}>{ "↓" }</button>
+                </div>
             }
             if !props.typing.is_empty() {
                 // Quiet while a recording runs: "… is typing" must never be
                 // spoken into a note (S6).
                 <p class="typing" aria-live={if recording_on { "off" } else { "polite" }}>{ typing_line(&props.typing) }</p>
             }
-            <StagingStrip
-                items={props.staged.clone()}
-                on_remove={{
-                    let on_action = props.on_action.clone();
-                    let changed = voice.changed.clone();
-                    Callback::from(move |index| {
-                        on_action.emit(Action::Unstage { chat_id, index });
-                        // Taken off by the person: never guarded (S1.1).
-                        changed.emit(());
-                    })
-                }}
-                recording={recording_on}
-                on_explain={notice.clone()}
-            />
-            <>
-            { for props.not_sent.iter().map(|row| html! {
-                <NotSentRow
-                    key={row.id}
-                    row={row.clone()}
-                    quote={quote_of(row.reply_to_message_id)}
-                    on_send={send_not_sent.clone()}
-                    on_delete={delete_not_sent.clone()}
-                    recording={recording_on}
-                    on_explain={notice.clone()}
-                />
-            }) }
-            </>
-            if let Some(text) = (*media_notice).clone() {
-                // Quiet while a recording runs, as every live region here is
-                // but the one that says what the recording does (S6).
-                <p class="composer-notice media-notice"
-                   role={(!recording_on).then_some("status")}
-                   aria-live={recording_on.then_some("off")}>
-                    if notice_said {
-                        <span aria-hidden="true">{ text }</span>
-                    } else {
-                        { text }
-                    }
-                    if *preparing {
-                        // Not a notice to dismiss but work to call off.
-                        <button class="link" onclick={cancel_preparing}>{ t("Cancel") }</button>
-                    } else {
-                        <button class="link" aria-label={t("Dismiss")}
-                                onclick={let media_notice = media_notice.clone(); Callback::from(move |_: MouseEvent| media_notice.set(None))}>
-                            { "✕" }
-                        </button>
-                    }
-                </p>
-            }
+            // The voice messages not sent, the staged strip and the busy line
+            // are drawn BY the composer, in the one order of #106 (doc 2.4).
             <Composer
                 key={format!("composer-{chat_id}")}
                 {chat_id}
@@ -1996,7 +2044,12 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     }))
                 }}
                 attach={attach_menu}
+                stickers={sticker_menu.unwrap_or_default()}
+                ask_assistant={*ask}
                 staged={props.staged.len()}
+                {not_sent_rows}
+                {staging_strip}
+                {busy_line}
                 busy={composer_busy}
                 append={(*append).clone()}
                 take={*take}

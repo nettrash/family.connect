@@ -200,8 +200,11 @@ final class ConversationScrollUITests: XCTestCase {
             app.terminate()
             app.launchArguments = ["-v1.serverURL", server]
             app.launch()
+            // The empty detail's own words — "No conversation selected"
+            // until the detail became the family card ("Pick a chat from
+            // the sidebar.").
             XCTAssertTrue(
-                app.staticTexts["No conversation selected"].waitForExistence(timeout: 20),
+                app.staticTexts["Pick a chat from the sidebar."].waitForExistence(timeout: 20),
                 "[split] a launch must land on the chat list with no chat selected")
         } else {
             app.navigationBars.buttons.firstMatch.tap()

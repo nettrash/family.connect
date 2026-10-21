@@ -230,7 +230,7 @@ public static class AnimationRender
     }
 
     /// <summary>For each of <paramref name="to"/> target pixels, the source pixels it covers and how much of it each makes up.</summary>
-    private static (int From, float Weight)[][] Weights(int from, int to)
+    internal static (int From, float Weight)[][] Weights(int from, int to)
     {
         var weights = new (int, float)[to][];
         var step = (double)from / to;
@@ -367,5 +367,116 @@ public sealed class AnimationFrames(
         }
         next++;
         return AnimationRender.Scale(AnimationRender.OnWhite(canvas.Pixels), canvas.Width, canvas.Height, plan.Width, plan.Height);
+    }
+}
+
+/// <summary>
+/// An animated sticker's frames as they are drawn in a chat: every frame of the file composited by this client — the
+/// <see cref="FrameCanvas"/> #96 composites an animation with — kept TRANSPARENT, and scaled to the size the sticker is drawn at.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>WHY NOT WINDOWS IMAGING'S FRAMES.</b> Asked for an animated sticker's frames, Windows hands out one frame for an APNG
+/// (PNG's decoder has never read <c>acTL</c>) and, for an animated WebP, one frame or the file's raw sub-rectangles,
+/// depending on the WebP extension installed — and every one of those outcomes was drawn as frame zero. So on Windows an
+/// animated sticker was, in practice, a still one. The frames' own bytes are walked here instead, as the GIF → video path
+/// walks them, and Windows is asked only to decode a single standalone still at a time, which it does for both formats.
+/// </para>
+/// <para>
+/// <b>PREMULTIPLIED, AND SCALED IN PREMULTIPLIED SPACE.</b> A <c>SoftwareBitmapSource</c> takes premultiplied BGRA, and
+/// averaging straight-alpha pixels lets the colour of a fully transparent pixel bleed into the sticker's edge as a dark or
+/// coloured fringe; averaging premultiplied ones cannot.
+/// </para>
+/// </remarks>
+public static class StickerFrames
+{
+    /// <summary>
+    /// Every frame of <paramref name="layout"/>, composited in order and drawn at <paramref name="toWidth"/> ×
+    /// <paramref name="toHeight"/> as premultiplied BGRA — or null when any frame's pixels could not be had.
+    /// </summary>
+    /// <param name="pixelsOf">Source frame <c>n</c>'s own rectangle as straight BGRA, as <see cref="AnimationFrames"/> takes it.</param>
+    public static async Task<IReadOnlyList<byte[]>?> ComposeAsync(
+        AnimationLayout layout,
+        Func<int, CancellationToken, Task<byte[]?>> pixelsOf,
+        int toWidth,
+        int toHeight,
+        CancellationToken cancel = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(toWidth);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(toHeight);
+        var canvas = new FrameCanvas(layout.Width, layout.Height);
+        var drawn = new List<byte[]>(layout.Frames.Count);
+        for (var at = 0; at < layout.Frames.Count; at++)
+        {
+            cancel.ThrowIfCancellationRequested();
+            var frame = layout.Frames[at];
+            var pixels = await pixelsOf(at, cancel).ConfigureAwait(false);
+            if (pixels is null || pixels.Length != frame.Width * frame.Height * 4)
+            {
+                return null;
+            }
+            canvas.Draw(frame, pixels);
+            drawn.Add(Premultiplied(canvas.Pixels, canvas.Width, canvas.Height, toWidth, toHeight));
+        }
+        return drawn;
+    }
+
+    /// <summary>
+    /// Straight BGRA from <paramref name="width"/> × <paramref name="height"/> to premultiplied BGRA at <paramref name="toWidth"/>
+    /// × <paramref name="toHeight"/>, by the same area averaging as <see cref="AnimationRender.Scale"/> — alpha included.
+    /// </summary>
+    public static byte[] Premultiplied(ReadOnlySpan<byte> straight, int width, int height, int toWidth, int toHeight)
+    {
+        var premultiplied = new float[width * height * 4];
+        for (var at = 0; at + 3 < straight.Length && at + 3 < premultiplied.Length; at += 4)
+        {
+            float alpha = straight[at + 3];
+            premultiplied[at] = straight[at] * alpha / 255f;
+            premultiplied[at + 1] = straight[at + 1] * alpha / 255f;
+            premultiplied[at + 2] = straight[at + 2] * alpha / 255f;
+            premultiplied[at + 3] = alpha;
+        }
+        var across = AnimationRender.Weights(width, toWidth);
+        var down = AnimationRender.Weights(height, toHeight);
+        var rows = new float[height * toWidth * 4];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < toWidth; x++)
+            {
+                var into = ((y * toWidth) + x) * 4;
+                foreach (var (from, weight) in across[x])
+                {
+                    var at = ((y * width) + from) * 4;
+                    for (var channel = 0; channel < 4; channel++)
+                    {
+                        rows[into + channel] += premultiplied[at + channel] * weight;
+                    }
+                }
+            }
+        }
+        var scaled = new byte[toWidth * toHeight * 4];
+        for (var y = 0; y < toHeight; y++)
+        {
+            for (var x = 0; x < toWidth; x++)
+            {
+                var into = ((y * toWidth) + x) * 4;
+                for (var channel = 0; channel < 4; channel++)
+                {
+                    float value = 0;
+                    foreach (var (from, weight) in down[y])
+                    {
+                        value += rows[(((from * toWidth) + x) * 4) + channel] * weight;
+                    }
+                    scaled[into + channel] = (byte)Math.Clamp((int)MathF.Round(value), 0, 255);
+                }
+                // Rounding can leave a colour a hair above its alpha, which premultiplied BGRA does not allow.
+                var alpha = scaled[into + 3];
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    scaled[into + channel] = Math.Min(scaled[into + channel], alpha);
+                }
+            }
+        }
+        return scaled;
     }
 }

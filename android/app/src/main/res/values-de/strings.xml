@@ -661,6 +661,7 @@
     <string name="s_assistant_transcripts_explanation">Wenn das an ist, können Mitglieder im Familienchat den Text der Sprachnachrichten, Audios und Videos anderer Mitglieder abrufen, und der Ton dieser Aufnahme wird dann an %1$s gesendet. Er wird nur gesendet, wenn jemand danach fragt, und nur, wenn das Mitglied, das sie geschickt hat, dem Assistenten zugestimmt hat. Den Text der eigenen Aufnahmen kann jeder auch ohne diese Einstellung abrufen. Es ist aus, solange du es nicht einschaltest.</string>
     <string name="s_assistant_transcripts_no_server">Hier nicht verfügbar: Dieser Server kann Aufnahmen nicht in Text umwandeln.</string>
     <string name="s_consent_transcript_sound_sent">Wenn du den Text einer Sprachnachricht, einer Audiodatei oder eines Videos abrufst, wird der Ton an %1$s gesendet.</string>
+    <string name="s_consent_transcript_direct_chat">In einem Direktchat kann die andere Person den Text deiner Sprachnachrichten, Audiodateien und Videos abrufen; ihr Ton wird dann an %1$s gesendet.</string>
     <string name="e_change_assistant_transcripts_failed">Einstellung konnte nicht geändert werden</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Nachschlagen</string>

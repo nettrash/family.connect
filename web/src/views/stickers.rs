@@ -30,6 +30,7 @@ use crate::actions::Action;
 use crate::media::{use_media, MediaLoader, Variant};
 use crate::model::{Attachment, PackItem};
 use crate::pack::Limits;
+use crate::views::composer::Tool;
 use crate::views::dialog::{Confirm, Modal};
 use crate::views::quiet::LiveRegion;
 
@@ -204,7 +205,9 @@ pub struct MenuProps {
     pub on_busy: Callback<String>,
 }
 
-/// The composer's sticker button, and the panel it opens above the box.
+/// The composer's sticker button, and the panel it opens above the box. The
+/// button sits INSIDE the field, at its trailing edge, empty or typing
+/// (#106, 2.1).
 #[function_component(StickerMenu)]
 pub fn sticker_menu(props: &MenuProps) -> Html {
     let open = use_state(|| false);
@@ -262,9 +265,9 @@ pub fn sticker_menu(props: &MenuProps) -> Html {
     }
     html! {
         <div class="attach pack-menu">
-            <button class="tool" title={t("Stickers")} aria-label={t("Stickers")}
+            <button type="button" class="tool" title={t("Stickers")} aria-label={t("Stickers")}
                     aria-haspopup="dialog" aria-expanded={(*open).to_string()} onclick={toggle}>
-                { "🙂" }
+                { Tool::Smile.draw() }
             </button>
             if *open {
                 // A click anywhere else closes it — on a touch screen there

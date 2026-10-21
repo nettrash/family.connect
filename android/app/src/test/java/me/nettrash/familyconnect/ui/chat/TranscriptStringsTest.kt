@@ -38,11 +38,16 @@ class TranscriptStringsTest {
         "s_assistant_transcripts_explanation",
         "s_assistant_transcripts_no_server",
         "s_consent_transcript_sound_sent",
+        "s_consent_transcript_direct_chat",
         "e_change_assistant_transcripts_failed",
     )
 
-    /** The two that say WHERE the sound goes: `%1$s` is `assistant.processor`. */
-    private val namingTheProcessor = setOf("s_assistant_transcripts_explanation", "s_consent_transcript_sound_sent")
+    /** The three that say WHERE the sound goes: `%1$s` is `assistant.processor`. */
+    private val namingTheProcessor = setOf(
+        "s_assistant_transcripts_explanation",
+        "s_consent_transcript_sound_sent",
+        "s_consent_transcript_direct_chat",
+    )
 
     private fun strings(locale: String): Map<String, String> {
         val file = File("src/main/res/$locale/strings.xml").canonicalFile

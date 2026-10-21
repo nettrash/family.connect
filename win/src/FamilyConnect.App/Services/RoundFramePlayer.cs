@@ -167,6 +167,9 @@ internal sealed class RoundFramePlayer : IDisposable
 
     public void Pause() => Do(player.Pause, "pausing");
 
+    /// <summary>Back to the start, for a clip played again from its beginning.</summary>
+    public void Rewind() => Do(() => player.PlaybackSession.Position = TimeSpan.Zero, "rewinding");
+
     private void OnOpened(MediaPlayer sender, object args)
     {
         // The clip's own frame rate, which the copies keep to (and never more than 30).

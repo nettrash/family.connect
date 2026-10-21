@@ -43,11 +43,14 @@ namespace FamilyConnect.App.Views;
 /// <para>
 /// <b>AND IT IS THE ONE PLACE THAT KNOWS WHAT IS ON SCREEN</b>, which is what decides how a picture
 /// may give its frames back: one no image here is drawing is released whole, one that is being
-/// drawn is put back on frame zero first and then made still (<see cref="StickerShelf{TPicture}"/>
-/// asks; <see cref="IsShowing"/>, <see cref="MakeStill"/> and <see cref="Release"/> answer). A frame
-/// disposed under an image that is showing it is a hole in the conversation, so after a tick has
-/// FAILED — when this no longer knows which image shows what — nothing is disposed at all, and the
-/// frames go when the collector says.
+/// drawn is put back on frame zero and then made still (<see cref="StickerShelf{TPicture}"/>
+/// asks; <see cref="IsShowing"/>, <see cref="MakeStill"/> and <see cref="Release"/> answer). After a
+/// tick has FAILED — when this no longer knows which image shows what — every picture counts as shown.
+/// </para>
+/// <para>
+/// <b>A FRAME IS DRAWN INTO THE PICTURE'S ONE SURFACE</b> (<see cref="StickerPicture.Draw"/>), never
+/// put up as a new <c>Source</c>: WinUI draws an image empty for a frame whenever its source changes,
+/// and a sticker swapped that way blinked on every frame.
 /// </para>
 /// </remarks>
 internal sealed class StickerAnimator
@@ -66,8 +69,6 @@ internal sealed class StickerAnimator
 
         /// <summary>When this image was handed over, which is what "never drawn" is counted from.</summary>
         public long Made { get; } = made;
-
-        public int Shown { get; set; }
 
         public bool WasLoaded { get; set; }
 
@@ -158,31 +159,18 @@ internal sealed class StickerAnimator
     /// </summary>
     public void MakeStill(StickerPicture picture)
     {
-        if (lostTrack)
-        {
-            // Some image may be showing any of its frames: they are left for the collector.
-            picture.MakeStill(dispose: false);
-            return;
-        }
+        Drop(entry => ReferenceEquals(entry.Picture, picture));
         try
         {
-            foreach (var entry in playing)
-            {
-                if (ReferenceEquals(entry.Picture, picture))
-                {
-                    entry.Image.Source = picture.First;
-                }
-            }
+            // Every image of it shows its one surface, which is put back on frame zero.
+            picture.MakeStill();
         }
         catch (Exception e)
         {
+            // The surface keeps whichever frame it had — a frame of the sticker — and the bytes still go.
             Diagnostics.Write($"stilling a sticker: {e.GetType().Name}");
-            Drop(entry => ReferenceEquals(entry.Picture, picture));
-            picture.MakeStill(dispose: false);
-            return;
+            picture.Release();
         }
-        Drop(entry => ReferenceEquals(entry.Picture, picture));
-        picture.MakeStill(dispose: true);
     }
 
     /// <summary>That picture is kept nowhere any more: its frames are given back, unless an image here still draws them.</summary>
@@ -237,6 +225,8 @@ internal sealed class StickerAnimator
             var now = clock.ElapsedMilliseconds;
             // The soonest a frame on screen is due — or a turn for an image not in the window yet, which is asked about at once.
             var soonest = long.MaxValue;
+            // Every image of a picture shows its one surface: it is drawn once a tick, by the newest image's clock.
+            var drawn = new HashSet<StickerPicture>(ReferenceEqualityComparer.Instance);
             for (var at = playing.Count - 1; at >= 0; at--)
             {
                 var entry = playing[at];
@@ -256,7 +246,7 @@ internal sealed class StickerAnimator
                     soonest = Math.Min(soonest, StickerAnimation.FastestTickMs);
                     continue;
                 }
-                if (entry.Picture is not { Frames: { } frames, Clock: { } durations })
+                if (entry.Picture is not { Frames: { } frames, Clock: { } durations } picture)
                 {
                     Unwatch(entry);
                     playing.RemoveAt(at);
@@ -267,11 +257,10 @@ internal sealed class StickerAnimator
                     // Scrolled away: not drawn to. Its clock runs on, so it comes back on the frame that is due.
                     continue;
                 }
-                var due = Math.Min(StickerAnimation.FrameAt(durations, now - entry.Started), frames.Count - 1);
-                if (due != entry.Shown)
+                if (drawn.Add(picture))
                 {
-                    entry.Shown = due;
-                    entry.Image.Source = frames[due];
+                    // Into the surface the image already shows — never a new Source, which WinUI draws empty for a frame.
+                    picture.Draw(Math.Min(StickerAnimation.FrameAt(durations, now - entry.Started), frames.Count - 1));
                 }
                 // A millisecond past the change, so a timer that fires on the dot does not find the old frame still up.
                 var until = StickerAnimation.UntilNext(durations, now - entry.Started);

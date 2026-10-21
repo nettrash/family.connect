@@ -10,11 +10,10 @@
 //  assistant's provider, so it is the asker's consent the server checks,
 //  the way a `/draw` checks the drawer's. Whose VOICE it is matters too:
 //  a member's own recording may be asked about in any chat they are in;
-//  somebody else's only in the family chat (its threads are the same
-//  chat), only while the owner's `ai_transcripts` is on — and, a check this
-//  client cannot make, only when that sender has agreed to the assistant
-//  themselves. Never another member's in a direct chat, never the
-//  assistant's own.
+//  the other person's in a direct chat; somebody else's in the family chat
+//  (its threads are the same chat) only while the owner's `ai_transcripts`
+//  is on — and, a check this client cannot make, only when that sender has
+//  agreed to the assistant themselves. Never the assistant's own.
 //
 //  One rule for the phone's bubble and the Mac's row, so the two cannot
 //  come to disagree, and a test can pin every row with no view on screen.
@@ -124,8 +123,10 @@ nonisolated enum TranscriptDoor: Equatable {
     /// The protocol's "who may ask", as far as this client can know it.
     ///
     /// - Your own message: in any chat you are in, direct chats included.
-    /// - Another member's: only in the family chat (threads included —
-    ///   they are messages of the same chat) and only while the owner's
+    /// - The other person's in a direct chat: yes — no owner's switch
+    ///   reaches a direct chat (amended 2026-10-21; until then never).
+    /// - Another member's in the family chat (threads included — they are
+    ///   messages of the same chat): only while the owner's
     ///   `ai_transcripts` is on.
     /// - The assistant's own messages: never.
     ///
@@ -142,6 +143,8 @@ nonisolated enum TranscriptDoor: Equatable {
     ) -> Bool {
         if let assistantUserID, senderID == assistantUserID { return false }
         if senderID == currentUserID, currentUserID > 0 { return chatKind != nil }
+        // "The other person" needs a reader who is known.
+        if chatKind == "direct" { return currentUserID > 0 }
         return chatKind == "family" && familyAllowsTranscripts
     }
 

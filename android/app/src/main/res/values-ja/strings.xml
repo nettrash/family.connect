@@ -632,6 +632,7 @@
     <string name="s_assistant_transcripts_explanation">これをオンにすると、家族のチャットでメンバーがほかのメンバーのボイスメッセージ、オーディオ、ビデオのテキストを求められるようになり、そのときその録音の音声が %1$s に送られます。送られるのは誰かが求めたときだけで、送ったメンバー本人がアシスタントに同意している場合に限ります。自分の録音のテキストは、これがなくても誰でも見られます。オンにしない限りオフのままです。</string>
     <string name="s_assistant_transcripts_no_server">ここでは使えません。このサーバーは録音をテキストにできません。</string>
     <string name="s_consent_transcript_sound_sent">ボイスメッセージ、オーディオファイル、ビデオのテキストを求めると、その音声が %1$s に送られます。</string>
+    <string name="s_consent_transcript_direct_chat">個別チャットでは、相手があなたのボイスメッセージ、オーディオファイル、ビデオのテキストを求めることができ、そのときその音声が %1$s に送られます。</string>
     <string name="e_change_assistant_transcripts_failed">設定を変更できませんでした</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">調べもの</string>

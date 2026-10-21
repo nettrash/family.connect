@@ -48,6 +48,42 @@ nonisolated struct MentionDTO: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// One entry of the `@` strip: the assistant, or a member
+/// (`MemberMentions.suggestions`).
+nonisolated enum MentionSuggestion: Equatable, Hashable, Sendable {
+    /// The family chat's assistant, under its display name.
+    case assistant(name: String)
+    case member(MentionDTO)
+
+    /// What goes after the `@` when it is picked: the member's name, or
+    /// `ai` — the token "Mentioning the assistant in the family chat"
+    /// defines, never `@<display_name>`, which would mention nobody and ask
+    /// nothing.
+    var insertedName: String {
+        switch self {
+        case .assistant: String(AssistantMention.token.dropFirst())
+        case .member(let member): member.name
+        }
+    }
+
+    /// The name the strip shows and a screen reader says.
+    var shownName: String {
+        switch self {
+        case .assistant(let name): name
+        case .member(let member): member.name
+        }
+    }
+
+    /// A stable identity for a `ForEach`: a member's id, and one the
+    /// assistant cannot share (user ids are positive).
+    var id: Int64 {
+        switch self {
+        case .assistant: -1
+        case .member(let member): member.userID
+        }
+    }
+}
+
 nonisolated enum MemberMentions {
     /// The private scheme a highlighted name carries as its `.link`, so a
     /// tap on it reaches the member through the bubble's own link
@@ -194,6 +230,39 @@ nonisolated enum MemberMentions {
             !excluding.contains(member.userID)
                 && (needle.isEmpty || member.name.lowercased().hasPrefix(needle))
         }
+    }
+
+    /// What the `@` strip offers for the prefix being typed: the ASSISTANT
+    /// first, then the members `candidates` offers, in roster order
+    /// (docs/protocol.md, "Mentioning a member", amended 2026-10-20, #106).
+    ///
+    /// The assistant is there because its button left the composer row, and
+    /// typing `@` is the natural way to look for it — but it is not a member
+    /// for anything else: never a mention target, never in
+    /// `mention_user_ids`, never marked in a bubble as a member is. So it is
+    /// a case of its own here rather than a `MentionDTO` with an invented
+    /// id that `resolve` might one day be handed.
+    ///
+    /// - Parameter assistantName: its `display_name`, or nil where it is not
+    ///   offered at all. The caller decides that by the same rule that
+    ///   decides whether `@ai` may be written (the family chat, a server
+    ///   that advertises an `assistant` with a `processor`), so this never
+    ///   second-guesses it. Narrowed by that name AND by `ai`, the way a
+    ///   member is narrowed by theirs: `@As` and `@a` find "Assistant",
+    ///   `@ai` finds it whatever it is called.
+    static func suggestions(
+        in roster: [MentionDTO], matching query: String, excluding: Set<Int64>,
+        assistantName: String?
+    ) -> [MentionSuggestion] {
+        let members = candidates(in: roster, matching: query, excluding: excluding)
+            .map(MentionSuggestion.member)
+        guard let assistantName else { return members }
+        let needle = query.lowercased()
+        let token = String(AssistantMention.token.dropFirst()) // "ai"
+        let matches = needle.isEmpty
+            || assistantName.lowercased().hasPrefix(needle)
+            || token.hasPrefix(needle)
+        return matches ? [.assistant(name: assistantName)] + members : members
     }
 
     /// The names in a note that CANNOT be doors: every member it says who

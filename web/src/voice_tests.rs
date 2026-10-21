@@ -1167,9 +1167,10 @@ async fn an_interruption_under_a_second_keeps_nothing() {
     root.remove();
 }
 
-/// A THREAD'S BOX IS NOT CHANGED (S1.3): no microphone, today's Send.
+/// A THREAD'S BOX HAS NO MICROPHONE (S1.3) — and since #106 the main
+/// composer's Send disc, disabled while blank, in place of a text "Send".
 #[wasm_bindgen_test]
-async fn a_threads_box_keeps_todays_send() {
+async fn a_threads_box_has_no_microphone_and_the_send_disc() {
     use crate::views::thread_panel::{ThreadPanel, ThreadPanelProps};
     let root = pane();
     let props = ThreadPanelProps {
@@ -1197,11 +1198,15 @@ async fn a_threads_box_keeps_todays_send() {
         yew::Renderer::<ThreadPanel>::with_root_and_props(root.clone().into(), props).render();
     TimeoutFuture::new(50).await;
     assert!(
-        root.query_selector(".slot").unwrap().is_none(),
+        root.query_selector(".slot.is-microphone")
+            .unwrap()
+            .is_none(),
         "no microphone"
     );
-    let send = query(&root, ".composer > button");
-    assert_eq!(send.text_content().as_deref(), Some("Send"));
+    let send = query(&root, ".composer .slot");
+    assert!(send.class_list().contains("is-send"));
+    assert_eq!(send.get_attribute("aria-label").as_deref(), Some("Send"));
+    assert!(send.query_selector("svg").unwrap().is_some(), "an icon");
     assert!(send.has_attribute("disabled"));
     handle.destroy();
     root.remove();

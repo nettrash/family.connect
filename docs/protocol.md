@@ -2255,7 +2255,10 @@ Two things did NOT widen with it, and neither of them is a setting anybody can t
   no OTHER conversation reads. The one thing that can ever lift a line out of a direct chat is the
   person who received it, deliberately, by reporting it: that excerpt reaches the family owner — or,
   when the report names the owner, the operator's log instead — and nobody else, and it is frozen
-  there (see "Reporting a member").
+  there (see "Reporting a member"). (A RECORDING in a direct chat is a separate matter: its sound may
+  go to `processor` when the member it was sent to asks for its text and its sender has agreed to
+  the assistant — see "Transcripts on request". That is not the assistant reading the chat: no
+  conversation is consulted, and the text goes back only to the member who asked.)
 
 Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
 too. The server:
@@ -2462,8 +2465,10 @@ typed: the recorded SOUND of a voice note, an audio file or a video's audio, whe
 text (see "Transcripts on request"). It goes to the same provider and to nobody else, it goes only
 when the member asks, one recording at a time, and it is the ASKER's consent that is asked —
 exactly as a `/draw` asks the drawer's — and refused the same way, `assistant_consent_required`.
-A recording somebody ELSE sent goes only under two more keys: the family owner's `ai_transcripts`,
-and that SENDER's own consent. The second is the rule two paragraphs down about history, applied
+A recording somebody ELSE sent in the family chat goes only under two more keys: the family owner's
+`ai_transcripts`, and that SENDER's own consent; one the other person sent in a direct chat goes
+under the second alone (*amended 2026-10-21*, see "Transcripts on request"). The second is the rule
+two paragraphs down about history, applied
 to a voice instead of a line of text: declining protects a member's words wherever they are, and
 not only when they are the one asking — a switch the owner flips cannot speak for them, and neither
 can the member who wants to read what they said. Because this is a new KIND of thing leaving the
@@ -2472,6 +2477,12 @@ that asking for the text of a recording sends that recording's sound to `process
 say anything that contradicts it. A member who agreed before the line existed agreed to their
 messages going to `processor`; a voice note is one of their messages, so their consent stands, and
 a client that has not yet added the line is incomplete rather than untrue.
+
+*Amended 2026-10-21:* since a direct-chat partner may now ask for the text of a member's recording on
+that member's consent alone, a client also says, in one more line of its own shown wherever the
+first one is, that in a direct chat the other person can ask for the text of the member's voice
+notes, audio files and videos, and that their sound is then sent to `processor`. A member who agreed
+before this line existed agreed to their messages going to `processor`, as above.
 
 *Amended 2026-10-03 (#72):* the sentence at the top of this section — the assistant is the only
 place a person's words leave the server they chose — now has a second half, and it is not
@@ -2638,8 +2649,16 @@ reader sets it (unless they are looking, which reads it at once); reading clears
 own `read` frame from another device clears it there too; and the next `GET /chats` overwrites it.
 
 **What a client shows**, all three clients: typing `@` in the family chat's composer offers the
-roster — every current member but the reader, the blocked and the assistant — narrowed as the
-name is typed; picking one puts `@Name ` into the text. At send the client resolves the mentions
+roster — every current member but the reader and the blocked — narrowed as the name is typed;
+picking one puts `@Name ` into the text. **The assistant is offered too, FIRST, above the members**
+(*amended 2026-10-20, #106*: it used to be left out of the list, and was reached by a button of its
+own in the composer row, which the row no longer has — see `docs/composer-and-wide-layout-2026-10-20.md`).
+It is offered exactly where `@ai` may be written at all — the family chat, on a server that
+advertises `assistant` (with its `processor`) — under its `display_name`, narrowed by that name and
+by `ai` as a member is by theirs, and picking it puts **`@ai `** into the text: the token
+"Mentioning the assistant in the family chat" defines, never `@<display_name>`. It is not a member
+for anything below — it is never a mention target, never in `mention_user_ids`, never marked in a
+bubble as a member is. At send the client resolves the mentions
 FROM THE TEXT against the roster, so a name typed by hand mentions too, a name deleted after
 picking does not, and a draft parked across screens loses nothing. Names are tried longest first, and among
 equally long names the LOWER `user_id` first; a token once claimed is not offered again. So
@@ -2647,7 +2666,7 @@ equally long names the LOWER `user_id` first; a token once claimed is not offere
 without the claim both would be named and both woken — and in a family with two members called
 Anna, one `@Anna` names the one with the lower id on every platform rather than whichever the
 roster happened to list first. A bubble marks the tokens by the same rule. The list rides on the pending row, so
-a retry re-sends it. The web client does all of it too; Windows is not asked to yet.
+a retry re-sends it. The web and Windows clients do all of it too.
 
 ### Mentioning the assistant in the family chat
 
@@ -4340,10 +4359,11 @@ as the provider spells it (`ru`, or a name such as `russian` from some deploymen
 show it and must not depend on it.
 
 **Who may ask — the whole rule, in one sentence:** a member may ask for the text of an attachment on
-a message THEY sent, in any chat they are in, direct chats included; of a message ANOTHER member
-sent only in the family chat (its threads included, which are the same chat), only while the
-family's `ai_transcripts` is on, and only when that sender has themselves agreed to the assistant;
-never of another member's message in a direct chat, and never of the assistant's own messages.
+a message THEY sent, in any chat they are in, direct chats included; of a message the OTHER person
+sent in a direct chat only when that sender has themselves agreed to the assistant; of a message
+another member sent in the family chat (its threads included, which are the same chat) only while
+the family's `ai_transcripts` is on, and only when that sender has agreed to the assistant; and
+never of the assistant's own messages.
 
 - **Your own recordings need only your consent**, wherever you sent them, because the voice is
   yours and you are the one sending it — the same reason a member's own question needs nobody
@@ -4355,10 +4375,18 @@ never of another member's message in a direct chat, and never of the assistant's
   carries is filtered by each sender's consent: declining protects a member's words wherever they
   are, not only when they are the one asking (see "Consenting to the assistant"). A refusal for
   that reason is the same `transcript_not_allowed` as a refusal for the switch.
-- **A direct chat: your own messages only.** The other person's voice in a one-to-one chat stays
-  under the rule that nothing reads a direct chat — written for the assistant, and its reason, that
-  two people talking one-to-one are the conversation nothing else reads, applies unchanged to a
-  speech model on the same provider. No setting lifts it.
+- **A direct chat: the other person's voice needs only THEIR consent.** *Amended 2026-10-21 —
+  until then it was "your own messages only", and no setting lifted it.* A member who has agreed to
+  the assistant has agreed that their messages may go to `processor`; in a one-to-one chat the only
+  person who can ask for the text of their recording is the one they sent it to, and that person's
+  own consent is asked as always. No owner's switch applies: a direct chat is two people's, not the
+  family's, and the owner does not decide for them. The rule that nothing reads a direct chat still
+  holds for everything ELSE — the assistant never consults one, by a mention, a private thread or a
+  transcript of its history — and the answer goes only to the member who asked, as everywhere. A
+  sender who has not agreed is refused `transcript_not_allowed`, exactly as in the family chat, and
+  a client cannot tell beforehand, so it draws that as "Not available for this message.". Because
+  the consent now reaches further than the member's own asking, a client says so on the consent
+  screen in a line of its own (see "Consenting to the assistant").
 - **The assistant's own messages are never transcribed.** It sends no sound, its account has no
   consent to give, and in a member's `ai` chat it is the other party.
 
@@ -6036,7 +6064,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
 | `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; another member's only in the family chat (threads included), only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never another member's in a direct chat, never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
+| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; the other person's in a direct chat only when that sender has agreed to the assistant; another member's in the family chat (threads included) only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
 
 ### Devices
 

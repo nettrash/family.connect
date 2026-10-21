@@ -103,7 +103,7 @@ public static class RoundVideoRules
     /// T3 — the square pass writes a 480 × 480 H.264 file with 64 kbit/s AAC that Faststart puts <c>moov</c>-first.
     /// Flip it to true to run them; leave it true only once they pass.
     /// </summary>
-    public const bool RecordingEnabled = false;
+    public const bool RecordingEnabled = true;
 
     /// <summary>
     /// Trial T1's second answer: whether Windows shows the microphone in use while the recorder only previews. When it does,

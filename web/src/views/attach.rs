@@ -22,6 +22,7 @@ use crate::awake::ScreenAwake;
 use crate::recorder::{self, Meter};
 use crate::staged::Prepared;
 use crate::store::NotSent;
+use crate::views::composer::Tool;
 use crate::views::dialog::Confirm;
 
 /// "You can play this after recording." — what a play control says while a
@@ -103,6 +104,13 @@ pub struct MenuProps {
     pub offers_pictures: bool,
     #[prop_or_default]
     pub on_pictures: Callback<Vec<File>>,
+    /// "Ask the Assistant" is offered — the family chat, on a server with an
+    /// assistant that names who answers: the row's old `@ai` button (#106).
+    #[prop_or_default]
+    pub offers_assistant: bool,
+    /// It was chosen: `@ai ` goes into the draft.
+    #[prop_or_default]
+    pub on_assistant: Callback<()>,
 }
 
 /// The paperclip, and what it offers.
@@ -260,6 +268,7 @@ pub fn attach_menu(props: &MenuProps) -> Html {
         assistant_pictures: props.offers_pictures,
         record_voice: props.offers_record,
         record_video: props.offers_video,
+        ask_assistant: props.offers_assistant,
         poll: props.offers_poll,
     });
     let line = |item: AttachItem| match item {
@@ -283,14 +292,15 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                 .clone()
                 .map(|reason| (reason, (*video_reason_id).clone())),
         ),
+        AttachItem::AskAssistant => row(item, props.on_assistant.clone(), None),
         AttachItem::Location => row(item, props.on_location.clone(), None),
         AttachItem::Poll => row(item, props.on_poll.clone(), None),
     };
     html! {
         <div class="attach">
-            <button class="tool" title={t("Attach a photo, video or file")} aria-label={t("Attach")}
+            <button type="button" class="tool" title={t("Attach a photo, video or file")} aria-label={t("Attach")}
                     aria-haspopup="menu" aria-expanded={(*open).to_string()} onclick={toggle}>
-                { "📎" }
+                { Tool::Paperclip.draw() }
             </button>
             <input ref={picker} type="file" multiple=true class="hidden-picker" onchange={picked.clone()}
                    aria-hidden="true" tabindex="-1" />

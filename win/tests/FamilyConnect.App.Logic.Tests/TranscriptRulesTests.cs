@@ -40,8 +40,9 @@ public sealed class TranscriptRulesTests
     }
 
     /// <summary>
-    /// SOMEBODY ELSE'S: the family chat (and its threads, which are the same chat) while the owner allows it — never a
-    /// direct chat, at any setting.
+    /// SOMEBODY ELSE'S: the family chat (and its threads, which are the same chat) while the owner allows it; the other
+    /// person's in a direct chat at any setting, since the owner's switch does not reach one and the server asks the
+    /// sender's consent (amended 2026-10-21).
     /// </summary>
     [Fact]
     public void AnotherMembersRecordingNeedsTheFamilyChatAndTheOwnersSwitch()
@@ -49,7 +50,9 @@ public sealed class TranscriptRulesTests
         Assert.True(TranscriptRules.MayAsk("family", Anna, Me, Assistant, SwitchOn));
         Assert.False(TranscriptRules.MayAsk("family", Anna, Me, Assistant, SwitchOff));
         Assert.False(TranscriptRules.MayAsk("family", Anna, Me, Assistant, null));
-        Assert.False(TranscriptRules.MayAsk("direct", Anna, Me, Assistant, SwitchOn));
+        Assert.True(TranscriptRules.MayAsk("direct", Anna, Me, Assistant, SwitchOn));
+        Assert.True(TranscriptRules.MayAsk("direct", Anna, Me, Assistant, SwitchOff));
+        Assert.True(TranscriptRules.MayAsk("direct", Anna, Me, Assistant, null));
         Assert.False(TranscriptRules.MayAsk("ai", Anna, Me, Assistant, SwitchOn));
         Assert.False(TranscriptRules.MayAsk(null, Anna, Me, Assistant, SwitchOn));
     }
@@ -124,7 +127,7 @@ public sealed class TranscriptRulesTests
         Assert.False(TranscriptRules.Offers(Transcribes with { Processor = "  " }, SwitchOn, "family", Me, Me, Voice()));
         // The rule.
         Assert.False(TranscriptRules.Offers(Transcribes, SwitchOff, "family", Anna, Me, Voice()));
-        Assert.False(TranscriptRules.Offers(Transcribes, SwitchOn, "direct", Anna, Me, Voice()));
+        Assert.True(TranscriptRules.Offers(Transcribes, SwitchOff, "direct", Anna, Me, Voice()));
         Assert.False(TranscriptRules.Offers(Transcribes, SwitchOn, "ai", Assistant, Me, Voice()));
         // The form, on a device that cannot make the sound itself: the stored copy or nothing.
         Assert.False(TranscriptRules.Offers(Transcribes, SwitchOn, "family", Me, Me, Voice("audio/ogg")));
@@ -197,7 +200,7 @@ public sealed class TranscriptRulesTests
 
     /// <summary>
     /// "Show text" ON VIDEOS AND UNSUPPORTED AUDIO, under exactly the same rule as a voice note: your own anywhere;
-    /// another member's in the family chat with the owner's switch on; never another's in a direct chat, never the
+    /// another member's in the family chat with the owner's switch on; the other person's in a direct chat; never the
     /// assistant's.
     /// </summary>
     [Fact]
@@ -208,7 +211,7 @@ public sealed class TranscriptRulesTests
             Assert.True(TranscriptRules.Offers(Transcribes, SwitchOff, "direct", Me, Me, attachment, extracts: true));
             Assert.True(TranscriptRules.Offers(Transcribes, SwitchOn, "family", Anna, Me, attachment, extracts: true));
             Assert.False(TranscriptRules.Offers(Transcribes, SwitchOff, "family", Anna, Me, attachment, extracts: true));
-            Assert.False(TranscriptRules.Offers(Transcribes, SwitchOn, "direct", Anna, Me, attachment, extracts: true));
+            Assert.True(TranscriptRules.Offers(Transcribes, SwitchOff, "direct", Anna, Me, attachment, extracts: true));
             Assert.False(TranscriptRules.Offers(Transcribes, SwitchOn, "ai", Assistant, Me, attachment, extracts: true));
             Assert.False(TranscriptRules.Offers(Transcribes with { Transcribe = false }, SwitchOn, "family", Me, Me, attachment, extracts: true));
         }
