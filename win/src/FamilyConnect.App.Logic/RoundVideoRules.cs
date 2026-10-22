@@ -80,9 +80,9 @@ public sealed record RoundSendPlan(bool Round, bool FromSquare, string? Notice);
 /// <summary>The rules of recording a video message on Windows that need no camera (the plan's S3, S3.6, S8.6, the profile).</summary>
 /// <remarks>
 /// <para>
-/// <b>BUILT, AND SWITCHED OFF</b> (<see cref="RecordingEnabled"/>). Nothing at run time can be checked on a Mac or in CI —
-/// CI builds the MSIX and never runs it — so Windows records no video message until the owner has run trials T1–T3 on a
-/// real machine (Blocked 1, Decision 28). With the switch off the video button, the paperclip's and the microphone menu's
+/// <b>BUILT, AND SWITCHED ON</b> (<see cref="RecordingEnabled"/>, 2026-10-21). Nothing at run time can be checked on a Mac
+/// or in CI — CI builds the MSIX and never runs it — so trials T1–T3 on a real machine are still owed (Blocked 1,
+/// Decision 28); switch it back off if one fails. With the switch off the video button, the paperclip's and the microphone menu's
 /// "Record Video Message" and the microphone's Narrator hint are never drawn, and nothing here touches a camera: a build
 /// that can only RECEIVE circles shows no way of recording one (Decision 40). win/README.md says how to switch it on.
 /// </para>
@@ -95,13 +95,13 @@ public sealed record RoundSendPlan(bool Round, bool FromSquare, string? Notice);
 public static class RoundVideoRules
 {
     /// <summary>
-    /// THE SWITCH. False until the owner's trials pass on a real Windows machine (Blocked 1):
+    /// THE SWITCH. On since 2026-10-21, ahead of the owner's trials on a real Windows machine (Blocked 1):
     /// T1 — the <c>MediaFrameSource</c> preview shows the webcam's picture, and whether <c>MediaCapture</c> initialised for
     /// <c>AudioAndVideo</c> holds the microphone in PREVIEW (then <see cref="MicrophoneOnInPreview"/> is set true);
     /// T2 — <c>CornerRadius = D/2</c> clips the <c>MediaPlayerElement</c>, else the composition ellipse, else the mask
     /// (<see cref="Clip"/>);
     /// T3 — the square pass writes a 480 × 480 H.264 file with 64 kbit/s AAC that Faststart puts <c>moov</c>-first.
-    /// Flip it to true to run them; leave it true only once they pass.
+    /// Set it back to false if any of them fails.
     /// </summary>
     public const bool RecordingEnabled = true;
 

@@ -8209,8 +8209,8 @@ public sealed partial class ChatsView : UserControl
     //
     // Phase 3d (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3, S4, S8.6): the video button inside the empty field,
     // "Record Video Message" in the paperclip's menu and the microphone's, and the recorder they open over the window. All of
-    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, off until the
-    // owner's trials T1–T3), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
+    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, on since
+    // 2026-10-21; the owner's trials T1–T3 still to run), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
     // circles shows no way of recording one (Decision 40).
 
     /// <summary>The video button's glyph: Segoe Fluent E714, a video camera (S1.4).</summary>

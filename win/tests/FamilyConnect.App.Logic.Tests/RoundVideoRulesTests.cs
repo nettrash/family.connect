@@ -17,14 +17,14 @@ public sealed class RoundVideoRulesTests
     // ---- the switch (Blocked 1, Decision 40) ----------------------------------------------------------------
 
     /// <summary>
-    /// SWITCHED OFF until the owner's trials T1–T3 pass on a real machine: no way in is drawn, whatever the server and the
-    /// machine offer. Flipping it is a deliberate act (win/README.md), and this test is what says so.
+    /// SWITCHED ON (2026-10-21), ahead of the owner's trials T1–T3 on a real machine: the way in is drawn wherever the server
+    /// and the machine offer it. Switching it back off is a deliberate act (win/README.md), and this test is what says so.
     /// </summary>
     [Fact]
-    public void RecordingIsSwitchedOffUntilTheTrials()
+    public void RecordingIsSwitchedOn()
     {
-        Assert.False(RoundVideoRules.RecordingEnabled);
-        Assert.False(RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, Limits, hasCamera: true));
+        Assert.True(RoundVideoRules.RecordingEnabled);
+        Assert.True(RoundVideoRules.Available(RoundVideoRules.RecordingEnabled, Limits, hasCamera: true));
     }
 
     /// <summary>S1.2's round available: this build records, the server named the limits, and there is a camera — all three.</summary>
@@ -37,17 +37,17 @@ public sealed class RoundVideoRulesTests
         Assert.False(RoundVideoRules.Available(true, Limits, hasCamera: false));
     }
 
-    /// <summary>With the switch off, the video button stays hidden however the composer stands (Decision 40).</summary>
+    /// <summary>With the switch on the video button is shown in an empty field; with it off it stays hidden (Decision 40).</summary>
     [Fact]
     public void TheVideoButtonFollowsTheSwitch()
     {
         var empty = new SlotInputs(
             RecorderOpen: false, Recording: Recording.None, Editing: false, DraftBlank: true, Staged: false,
             AssistantChat: false, CanRecord: true, Call: false, Busy: false, NotSent: false);
-        var off = new DoorInputs(empty, FamilyOrDirectChat: true, ServerOffersRound: true, HasCamera: true,
+        var on = new DoorInputs(empty, FamilyOrDirectChat: true, ServerOffersRound: true, HasCamera: true,
             EncoderProbePasses: true, RecordsRoundVideo: RoundVideoRules.RecordingEnabled);
-        Assert.Equal(DoorKind.Hidden, ComposerButton.VideoDoor(off).Kind);
-        Assert.Equal(DoorKind.Shown, ComposerButton.VideoDoor(off with { RecordsRoundVideo = true }).Kind);
+        Assert.Equal(DoorKind.Shown, ComposerButton.VideoDoor(on).Kind);
+        Assert.Equal(DoorKind.Hidden, ComposerButton.VideoDoor(on with { RecordsRoundVideo = false }).Kind);
     }
 
     /// <summary>59.5 s and 50 s at the server's 60 000 — the shared module's arithmetic, from the discovery key.</summary>
