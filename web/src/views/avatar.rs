@@ -1,11 +1,12 @@
 //! A person's picture, or their initials when they have none; the family's
-//! house (ios Views/InitialsAvatar.swift).
+//! house; a group's people (ios Views/InitialsAvatar.swift).
 //!
 //! The initials draw at once and the picture replaces them when it lands, so
 //! a row never waits on the network to render. A picture is fetched only for
 //! a real `avatar_version` — 0 is "none" — and is cached under the version,
 //! which the protocol never reuses for another picture.
 
+use fc_text::i18n::t;
 use yew::prelude::*;
 
 use crate::media::{use_media, Variant};
@@ -17,6 +18,12 @@ pub struct AvatarProps {
     /// The family's circle: a house rather than initials.
     #[prop_or_default]
     pub family: bool,
+    /// A group's circle: two people rather than initials, and — the one
+    /// circle that is not decorative — named "Group", because beside a
+    /// group's name nothing else says it is one (docs/protocol.md,
+    /// "Groups").
+    #[prop_or_default]
+    pub group: bool,
     /// Whose picture — with `version` above 0, it replaces the initials.
     #[prop_or_default]
     pub user_id: Option<i64>,
@@ -29,7 +36,7 @@ pub struct AvatarProps {
 
 #[function_component(Avatar)]
 pub fn avatar(props: &AvatarProps) -> Html {
-    let wanted = props.user_id.is_some() && props.version > 0 && !props.family;
+    let wanted = props.user_id.is_some() && props.version > 0 && !props.family && !props.group;
     let picture = use_media(
         props.user_id.unwrap_or_default(),
         Variant::Avatar(props.version),
@@ -40,15 +47,21 @@ pub fn avatar(props: &AvatarProps) -> Html {
     // it: a screen reader hearing "AS, Anna Smith" learns nothing twice.
     html! {
         <span
-            class={classes!("avatar", props.family.then_some("is-family"))}
+            class={classes!("avatar", props.family.then_some("is-family"), props.group.then_some("is-group"))}
             style={format!("width:{size}px;height:{size}px;font-size:{:.1}px;", f64::from(size) * 0.36)}
-            aria-hidden="true"
+            aria-hidden={(!props.group).then_some("true")}
+            role={props.group.then_some("img")}
+            aria-label={props.group.then(|| t("Group"))}
         >
             if let Some(url) = picture.filter(|_| wanted) {
                 <img src={url} alt="" draggable="false" />
             } else if props.family {
                 <svg viewBox="0 0 24 24" width={format!("{:.0}", f64::from(size) * 0.46)} height={format!("{:.0}", f64::from(size) * 0.46)}>
                     <path fill="currentColor" d="M12 2.7 1.8 11.6a.9.9 0 0 0 1.2 1.3L4 12v8.1c0 .9.7 1.6 1.6 1.6h4.2v-6h4.4v6h4.2c.9 0 1.6-.7 1.6-1.6V12l1 .9a.9.9 0 0 0 1.2-1.3Z" />
+                </svg>
+            } else if props.group {
+                <svg viewBox="0 0 24 24" width={format!("{:.0}", f64::from(size) * 0.52)} height={format!("{:.0}", f64::from(size) * 0.52)}>
+                    <path fill="currentColor" d="M9 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.5-.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM9 13c-3.3 0-6.5 1.6-6.5 4.2V19h13v-1.8C15.5 14.6 12.3 13 9 13Zm7.5-.2c-.6 0-1.2.1-1.7.2 1.3.9 2.2 2.2 2.2 4.2V19h4.5v-1.6c0-2.6-2.6-4.6-5-4.6Z" />
                 </svg>
             } else {
                 { fc_text::avatar::initials(&props.title) }

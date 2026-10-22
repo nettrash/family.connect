@@ -415,16 +415,17 @@ interface MessageDao {
      * Every message in one chat, for a chat that is going.
      *
      * The only reason a chat is ever deleted is that the server no longer
-     * has it — a peer deleted their account, which takes the direct chat
-     * with them, both halves (docs/protocol.md, "Deleting an account").
-     * Nothing else in this protocol can make a chat vanish, and leaving a
-     * family explicitly does not: that history is retained and resurfaces
-     * on rejoin.
+     * has it — or no longer shows it to this reader: a peer deleted their
+     * account, which takes the direct chat with them, both halves
+     * (docs/protocol.md, "Deleting an account"), or a GROUP was left,
+     * removed from or deleted (docs/protocol.md, "Groups"). Leaving a
+     * family explicitly does not delete the family chat: that history is
+     * retained and resurfaces on rejoin.
      *
      * Paired with [ChatDao.deleteById] and never called on its own — a
      * chat row whose messages are gone is a chat that opens empty, and
      * messages whose chat row is gone are rows nothing will ever read
-     * again. See ChatRepository.deleteDirectChat, which owns the order.
+     * again. See ChatRepository.deleteChat, which owns the order.
      */
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     suspend fun deleteByChat(chatId: Long)

@@ -703,6 +703,10 @@ mod tests {
             ("family", "/draw a cat @ai", false, true, true),
             ("family", "@ai /draw a cat", true, true, false),
             ("family", "@ai /draw a cat", false, false, false),
+            // A group, as the family chat (docs/protocol.md, "Groups").
+            ("group", "@ai /draw a cat", false, true, true),
+            ("group", "/draw a cat", false, true, false),
+            ("group", "@ai /draw a cat", true, true, false),
             // A direct chat never reaches the assistant.
             ("direct", "/draw a cat", false, true, false),
             ("direct", "@ai /draw a cat", false, true, false),

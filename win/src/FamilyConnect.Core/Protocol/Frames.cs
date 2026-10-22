@@ -64,6 +64,18 @@ public abstract record ServerFrame
 
     public sealed record MemberBlocked(long UserId, bool Blocked) : ServerFrame;
 
+    /// <summary>
+    /// A GROUP as it now stands — created, renamed, or its members or admin changed — sent to every member, one just added
+    /// included, which is how a group appears on their devices at once (docs/protocol.md, "Groups").
+    /// </summary>
+    public sealed record ChatUpdated(ChatDto Chat) : ServerFrame;
+
+    /// <summary>
+    /// A GROUP this reader is no longer in: they left or were removed, or it was deleted. Drop it, its messages and
+    /// anything being drafted there (docs/protocol.md, "Groups").
+    /// </summary>
+    public sealed record ChatRemoved(long ChatId) : ServerFrame;
+
     /// <summary>The assistant, mid-reply.</summary>
     public sealed record AiDelta(long ChatId, long MessageId, string Text) : ServerFrame;
 
@@ -141,6 +153,8 @@ public abstract record ServerFrame
             "member_deleted" => Decode<MemberDto>(frame["member"]) is { } member
                 ? new MemberDeleted(Optional(frame["family_id"]), member) : null,
             "family_owner" => new FamilyOwner(Optional(frame["family_id"]), Number(frame["user_id"])),
+            "chat_updated" => Decode<ChatDto>(frame["chat"]) is { Id: > 0 } updated ? new ChatUpdated(updated) : null,
+            "chat_removed" => Number(frame["chat_id"]) is > 0 and var removed ? new ChatRemoved(removed) : null,
             "member_blocked" => new MemberBlocked(
                 Number(frame["user_id"]), frame["blocked"]?.GetValue<bool>() ?? false),
             "ai_delta" => new AiDelta(

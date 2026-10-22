@@ -1415,8 +1415,9 @@ pub async fn leave_family(
         if let Some(new_owner_user_id) = successor {
             // Ownership is committed together with the departure, so no
             // reader ever sees a family owned by somebody who has left.
-            remove_membership(&mut tx, family_id, auth.user_id).await?;
+            let group_exits = remove_membership(&mut tx, family_id, auth.user_id).await?;
             tx.commit().await?;
+            crate::handlers_group::announce_exits(&state, auth.user_id, group_exits).await;
 
             // The successor is told FIRST, so no client momentarily holds a
             // family whose `owner_user_id` names nobody in `members`.
@@ -1503,8 +1504,9 @@ pub async fn leave_family(
     // the family at all: `delete_account` could take the family row in it,
     // read a roster that still listed this member, and hand them the family
     // they were in the middle of leaving. See `remove_membership`.
-    remove_membership(&mut tx, family_id, auth.user_id).await?;
+    let group_exits = remove_membership(&mut tx, family_id, auth.user_id).await?;
     tx.commit().await?;
+    crate::handlers_group::announce_exits(&state, auth.user_id, group_exits).await;
 
     events::log_fanout_error(
         "member_left",
@@ -1630,8 +1632,9 @@ pub async fn remove_member(
         ));
     }
 
-    remove_membership(&mut tx, family.id, target_user_id).await?;
+    let group_exits = remove_membership(&mut tx, family.id, target_user_id).await?;
     tx.commit().await?;
+    crate::handlers_group::announce_exits(&state, target_user_id, group_exits).await;
 
     events::log_fanout_error(
         "member_left",
@@ -1859,11 +1862,16 @@ pub(crate) async fn delete_family_in_tx(
 /// handed them the family on their way out of it. A family owned by
 /// somebody who is not in it has no working owner endpoint and nothing
 /// repairs it, so the write and the lock have to be the same transaction.
+///
+/// It also takes the member out of every GROUP of the family, with each
+/// group's admin hand-off, BEFORE the membership rows go; what that did is
+/// returned so the caller can announce it once the transaction commits
+/// (protocol.md, "Groups": a rejoin does not put them back).
 async fn remove_membership(
     tx: &mut PgConnection,
     family_id: i64,
     user_id: i64,
-) -> Result<(), ApiError> {
+) -> Result<Vec<crate::handlers_group::GroupExit>, ApiError> {
     // `familyless_since` starts AGAIN here (0034): whatever the account's
     // age, somebody leaving or removed today has the full grace to be let
     // back in before the sweep takes the account (docs/protocol.md,
@@ -1885,6 +1893,7 @@ async fn remove_membership(
             "the user no longer belongs to this family",
         ));
     }
+    let group_exits = crate::handlers_group::leave_every_group(&mut *tx, user_id).await?;
     sqlx::query(
         "DELETE FROM chat_members cm
          USING chats c
@@ -1894,7 +1903,7 @@ async fn remove_membership(
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
-    Ok(())
+    Ok(group_exits)
 }
 
 fn member_role(user_id: i64, owner_user_id: i64) -> &'static str {

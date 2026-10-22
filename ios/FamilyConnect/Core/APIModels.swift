@@ -626,16 +626,28 @@ nonisolated struct AssistantReportResponse: Codable, Equatable, Sendable {
 
 nonisolated struct ChatDTO: Codable, Equatable, Sendable {
     let id: Int64
-    /// "family" | "direct"
+    /// "family" | "direct" | "ai" | "group"
     let kind: String
+    /// The family's name, the peer's display name, the assistant's name —
+    /// or, for a group, the name its admin last gave it.
     let title: String
     let peerUserID: Int64?
+    /// A GROUP's members, the caller included, in the order they joined
+    /// (docs/protocol.md, "Groups", 2026-10-22). Absent on every other
+    /// kind, and so nil — never an empty list, which would be a group of
+    /// nobody.
+    var memberIDs: [Int64]? = nil
+    /// A GROUP's admin: the one member who may rename it, add and remove
+    /// members, and delete it. Absent on every other kind.
+    var adminUserID: Int64? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
         case kind
         case title
         case peerUserID = "peer_user_id"
+        case memberIDs = "member_ids"
+        case adminUserID = "admin_user_id"
     }
 }
 

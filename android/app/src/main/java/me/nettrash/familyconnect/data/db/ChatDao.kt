@@ -48,23 +48,17 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE id = :id")
     fun observeById(id: Long): Flow<ChatEntity?>
 
+    /**
+     * Every chat this device holds — the candidates `GET /chats` prunes.
+     *
+     * Every kind, since groups (docs/protocol.md, resync step 2): a group
+     * can disappear while this device sleeps — left, removed from, or
+     * deleted by its admin — and "a client drops every chat that leaves
+     * `GET /chats`, of any kind". Until then only a DIRECT chat could
+     * vanish (a deleted account takes its direct chats with it).
+     */
     @Query("SELECT id FROM chats")
     suspend fun allChatIds(): List<Long>
-
-    /**
-     * The direct chats this device holds.
-     *
-     * Scoped to `direct` because that is the only kind that can
-     * DISAPPEAR: a deleted account takes its direct chats with it, both
-     * halves, and its private assistant thread with them
-     * (docs/protocol.md, "Deleting an account"). The family chat lives as
-     * long as the family and MY assistant chat as long as my account, so
-     * neither is ever missing from a `GET /chats` this client made — and
-     * pruning on their absence would only ever be a bug destroying
-     * history.
-     */
-    @Query("SELECT id FROM chats WHERE kind = 'direct'")
-    suspend fun directChatIds(): List<Long>
 
     /**
      * The direct chat(s) with one peer. A list, not a single id: the
@@ -78,8 +72,8 @@ interface ChatDao {
      * Drop one chat row, and with it everything keyed to a chat that
      * lives ON the row — the unread badge, both read markers and all
      * three catch-up cursors. Its messages go through
-     * [MessageDao.deleteByChat]; see ChatRepository.deleteDirectChat,
-     * which is the only caller of either.
+     * [MessageDao.deleteByChat]; see ChatRepository.deleteChat, which is
+     * the only caller of either.
      */
     @Query("DELETE FROM chats WHERE id = :chatId")
     suspend fun deleteById(chatId: Long)

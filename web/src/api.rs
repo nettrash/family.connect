@@ -316,6 +316,22 @@ struct DirectRequest {
     user_id: i64,
 }
 
+#[derive(Debug, Serialize)]
+struct NewGroup<'a> {
+    title: &'a str,
+    member_ids: &'a [i64],
+}
+
+#[derive(Debug, Serialize)]
+struct GroupTitle<'a> {
+    title: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct GroupMembers<'a> {
+    user_ids: &'a [i64],
+}
+
 /// `GET /families/mine/board`: the whole wall, and the high-water mark read
 /// before it (docs/protocol.md, "Board").
 #[derive(Debug, Clone, Deserialize)]
@@ -863,6 +879,72 @@ pub async fn direct_chat(token: &str, user_id: i64) -> Result<Chat, ApiError> {
     )
     .await?;
     Ok(response.chat)
+}
+
+/// `POST /chats/groups` — a new group, its admin the caller, `member_ids`
+/// the others (docs/protocol.md, "Groups").
+pub async fn create_group(token: &str, title: &str, member_ids: &[i64]) -> Result<Chat, ApiError> {
+    let response: ChatResponse = with_body(
+        Request::post(&path("/chats/groups")),
+        token,
+        &NewGroup { title, member_ids },
+    )
+    .await?;
+    Ok(response.chat)
+}
+
+/// `PATCH /chats/{id}` — a group's new name. Its admin only.
+pub async fn rename_group(token: &str, chat_id: i64, title: &str) -> Result<Chat, ApiError> {
+    let response: ChatResponse = with_body(
+        Request::patch(&path(&format!("/chats/{chat_id}"))),
+        token,
+        &GroupTitle { title },
+    )
+    .await?;
+    Ok(response.chat)
+}
+
+/// `POST /chats/{id}/members` — members into a group. Its admin only.
+pub async fn add_group_members(
+    token: &str,
+    chat_id: i64,
+    user_ids: &[i64],
+) -> Result<Chat, ApiError> {
+    let response: ChatResponse = with_body(
+        Request::post(&path(&format!("/chats/{chat_id}/members"))),
+        token,
+        &GroupMembers { user_ids },
+    )
+    .await?;
+    Ok(response.chat)
+}
+
+/// `DELETE /chats/{id}/members/{user_id}` naming somebody else — the admin
+/// removing them, answered with the group as it now stands.
+pub async fn remove_group_member(
+    token: &str,
+    chat_id: i64,
+    user_id: i64,
+) -> Result<Chat, ApiError> {
+    let request = bearer(
+        Request::delete(&path(&format!("/chats/{chat_id}/members/{user_id}"))),
+        token,
+    );
+    let response: ChatResponse = read(request.send().await.map_err(network)?).await?;
+    Ok(response.chat)
+}
+
+/// `DELETE /chats/{id}/members/{me}` — leaving a group, any member: `204`.
+pub async fn leave_group(token: &str, chat_id: i64, my_user_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/chats/{chat_id}/members/{my_user_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
+/// `DELETE /chats/{id}` — a group and everything in it, for every member.
+/// Its admin only.
+pub async fn delete_group(token: &str, chat_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/chats/{chat_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
 }
 
 /// `GET /chats/{id}/messages` — the newest page, or the page before

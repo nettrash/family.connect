@@ -164,4 +164,19 @@ public class NotificationRulesTests : IDisposable
         chats.Apply(Message(1339), SeqRoute.LiveFrame);
         Assert.Equal("(2) Family Connect", rules.WindowTitle("Family Connect"));
     }
+
+    /// <summary>
+    /// A GROUP is titled by its own name in place of the family's — "<c>&lt;Group&gt; — &lt;Sender&gt;</c>", and "… mentioned
+    /// you" for a member it names (docs/protocol.md, "Push notifications", 2026-10-22).
+    /// </summary>
+    [Fact]
+    public void AGroupNamesTheGroupFirst()
+    {
+        chats.Upsert(new ChatDto(77, "group", "Cousins", MemberIds: [Me, 11], AdminUserId: 11));
+
+        Assert.Equal("Cousins — Bob", rules.ForMessage(Message(1500, chat: 77))!.Title);
+        Assert.Equal("Cousins — Bob mentioned you",
+            rules.ForMessage(Message(1501, chat: 77, body: "@Anna 7?", mentions: [new MentionDto(Me, "Anna")]))!.Title);
+        Assert.Equal("chat-77", rules.ForMessage(Message(1502, chat: 77))!.Tag);
+    }
 }

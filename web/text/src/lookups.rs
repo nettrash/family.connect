@@ -64,7 +64,7 @@ pub fn names(providers: &[String]) -> String {
 pub fn disclosure_line(named: &str, family_history: bool) -> String {
     if family_history {
         t1(
-            "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to %@, and its answer then lists its sources.",
+            "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat or a group, possibly from recent messages too — to %@, and its answer then lists its sources.",
             named,
         )
     } else {

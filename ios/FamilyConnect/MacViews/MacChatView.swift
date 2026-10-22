@@ -155,6 +155,14 @@ struct MacChatView: View {
                 }
             }
             ToolbarItem {
+                // A new group (docs/protocol.md, "Groups", 2026-10-22): the
+                // Mac's door to what the phone offers in its New Chat sheet.
+                // Its own view with its own sheet; the group it creates is
+                // selected, as a chat opened from the Family sheet is.
+                NewGroupToolbarButton { selectedChatID = $0 }
+                    .disabled(recorderOpen)
+            }
+            ToolbarItem {
                 Button {
                     showingFamily = true
                 } label: {
@@ -326,6 +334,25 @@ struct MacChatView: View {
     }
 }
 
+/// The toolbar's New Group button and the sheet it opens.
+private struct NewGroupToolbarButton: View {
+    let onCreate: (Int64) -> Void
+
+    @State private var showsNewGroup = false
+
+    var body: some View {
+        Button {
+            showsNewGroup = true
+        } label: {
+            Label("New Group", systemImage: "person.3")
+        }
+        .help(Text("New Group"))
+        .sheet(isPresented: $showsNewGroup) {
+            NewGroupView(onCreate: onCreate)
+        }
+    }
+}
+
 /// One sidebar row: who, the last thing said, when, and what is unread.
 private struct MacChatRow: View {
     @Environment(ChatSyncCoordinator.self) private var coordinator
@@ -356,6 +383,7 @@ private struct MacChatRow: View {
             InitialsAvatar(
                 title: chat.title,
                 isFamily: chat.kind == "family",
+                isGroup: chat.kind == ChatRules.group,
                 userID: chat.peerUserID,
                 avatarVersion: peerAvatarVersion,
                 size: 34)
@@ -364,10 +392,11 @@ private struct MacChatRow: View {
                     Text(chat.title)
                         .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
                         // The family chat's title is the family's NAME,
-                        // the one title here that is not a person's, and
-                        // a sidebar column cuts a long one; it gets a
-                        // second line (the iPad's rule).
-                        .lineLimit(chat.kind == "family" ? 2 : 1)
+                        // and a group's is the group's — the titles here
+                        // that are not a person's — and a sidebar column
+                        // cuts a long one; they get a second line (the
+                        // iPad's rule).
+                        .lineLimit(ChatRules.isFamilyOrGroup(chat.kind) ? 2 : 1)
                     Spacer(minLength: 0)
                     if let date = chat.lastMessageDate {
                         // Relative, and short: a sidebar column is narrow

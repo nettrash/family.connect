@@ -15,20 +15,23 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.util.GroupRules
+
 object AssistantConsent {
 
     /**
      * Would a message with this body, in this chat, be sent to the model?
      *
      * The member's own `ai` chat, where everything goes, and the family
-     * chat, where only an `@ai` does. `/draw` needs no case of its own:
-     * in the family chat it is `@ai /draw`, a mention, and in the
-     * assistant's own chat it is that chat.
+     * chat or a GROUP (since 2026-10-22, docs/protocol.md, "Groups"),
+     * where only an `@ai` does. `/draw` needs no case of its own: in the
+     * family chat it is `@ai /draw`, a mention, and in the assistant's own
+     * chat it is that chat.
      */
     fun reachesTheModel(chatKind: String?, body: String): Boolean =
-        when (chatKind) {
-            "ai" -> true
-            "family" -> AssistantMention.mentions(body)
+        when {
+            chatKind == GroupRules.AI -> true
+            GroupRules.answersAssistantMention(chatKind) -> AssistantMention.mentions(body)
             else -> false
         }
 
@@ -43,8 +46,8 @@ object AssistantConsent {
 
     /**
      * May `@ai` be OFFERED here — the `@` strip's assistant chip and the
-     * paperclip's "Ask the assistant" (#106)? The family chat only, on a
-     * server that advertises an assistant AND names who processes what is
+     * paperclip's "Ask the assistant" (#106)? The family chat or a group
+     * only, on a server that advertises an assistant AND names who processes what is
      * typed: iOS has always asked both, and Android used to ask only the
      * first, so a server that named nobody got an `@ai` button whose every
      * use ended in "this assistant cannot be used" — an affordance offered
@@ -52,7 +55,7 @@ object AssistantConsent {
      * composer then says why it goes nowhere ([isWithheldFromAnUnnamedAssistant]).
      */
     fun offersMention(chatKind: String?, hasAssistant: Boolean, processor: String?): Boolean =
-        chatKind == "family" && hasAssistant && isAvailable(processor)
+        GroupRules.answersAssistantMention(chatKind) && hasAssistant && isAvailable(processor)
 
     /** Must this member be asked before this message is sent? */
     fun isRequired(

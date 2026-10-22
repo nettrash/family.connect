@@ -85,9 +85,7 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
         var mentioned = (message.Mentions ?? []).Any(mention => mention.UserId == me);
         return new Toast(
             ChatTag(message.ChatId),
-            NotifyText.Title(
-                chat.Chat.Kind == "family" ? FamilyName : null, NameOf(message.SenderId),
-                mentioned, say),
+            NotifyText.Title(Prefix(chat.Chat), NameOf(message.SenderId), mentioned, say),
             NotifyText.NewMessage(say),
             message.ChatId);
     }
@@ -124,6 +122,18 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
     /// </summary>
     public static string ChatTag(long chatId) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"chat-{chatId}");
+
+    /// <summary>
+    /// What goes before the sender in a title (docs/protocol.md, "Push notifications"): the family's name in the family
+    /// chat, the GROUP's name in a group — "<c>&lt;Group&gt; — &lt;Sender&gt;</c>" — and nothing in a direct chat, whose
+    /// title is the sender alone. A group whose name arrived empty is titled by the sender alone too, rather than " — Anna".
+    /// </summary>
+    private string? Prefix(ChatDto chat) => chat.Kind switch
+    {
+        ChatKinds.Family => FamilyName,
+        ChatKinds.Group => chat.Title is { Length: > 0 } title ? title : null,
+        _ => null,
+    };
 
     /// <summary>Whether anything is worth saying at all.</summary>
     private bool Speaking => Wanted && !InFront;

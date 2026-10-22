@@ -214,10 +214,10 @@
         <item quantity="other">%1$d enregistrements transcrits</item>
     </plurals>
     <string name="s_family_language">Langue de la famille</string>
-    <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
+    <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale ou un groupe. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
     <string name="s_not_set">Non défini</string>
     <string name="s_assistant_history">L’assistant voit l’historique récent</string>
-    <string name="s_assistant_history_explanation">Quand quelqu’un mentionne l’assistant dans la conversation familiale, le dernier mois de cette conversation part avec la question, pour qu’il puisse répondre sur ce qui a été dit. Désactivé, seul le message qui le mentionne part.</string>
+    <string name="s_assistant_history_explanation">Quand quelqu’un mentionne l’assistant dans la conversation familiale ou un groupe, le dernier mois de cette conversation part avec la question, pour qu’il puisse répondre sur ce qui a été dit. Désactivé, seul le message qui le mentionne part.</string>
     <string name="s_birthday">Anniversaire</string>
     <string name="s_birthday_for">Anniversaire de %1$s</string>
     <string name="s_day_and_month_no_year">Un jour et un mois. Pas d’année, pas d’âge.</string>
@@ -469,10 +469,10 @@
     <string name="s_assistant_answer_failed">L’assistant n’a pas pu terminer cette réponse. Redemandez.</string>
     <string name="s_assistant_provider_refused">Le fournisseur de l\'assistant a refusé. Essaie de le formuler autrement.</string>
     <string name="s_assistant_vision">L’assistant peut regarder les photos</string>
-    <string name="s_assistant_vision_explanation">Quand quelqu’un joint une photo à une question dans sa propre discussion avec l’assistant, la joint à un message qui mentionne l’assistant dans le chat familial, ou répond à une photo en le mentionnant, cette photo part vers le modèle avec la question — 4 au maximum par question. Une photo que personne n’a montrée à l’assistant n’est jamais envoyée, pas même depuis un message plus ancien sauf si « L’assistant voit les photos récentes » est activé, et les vidéos, fichiers, audios et positions non plus. Désactivé tant que vous ne l’activez pas ; désactivé, aucune photo n’est jamais envoyée.</string>
+    <string name="s_assistant_vision_explanation">Quand quelqu’un joint une photo à une question dans sa propre discussion avec l’assistant, la joint à un message qui mentionne l’assistant dans le chat familial ou un groupe, ou répond à une photo en le mentionnant, cette photo part vers le modèle avec la question — 4 au maximum par question. Une photo que personne n’a montrée à l’assistant n’est jamais envoyée, pas même depuis un message plus ancien sauf si « L’assistant voit les photos récentes » est activé, et les vidéos, fichiers, audios et positions non plus. Désactivé tant que vous ne l’activez pas ; désactivé, aucune photo n’est jamais envoyée.</string>
     <string name="e_change_assistant_vision_failed">Impossible de modifier ce réglage</string>
     <string name="s_assistant_history_photos">L’assistant voit les photos récentes</string>
-    <string name="s_assistant_history_photos_explanation">Quand quelqu’un mentionne l’assistant dans la conversation familiale, les photos les plus récentes de cette conversation — jusqu’à 4, de n’importe qui, que personne n’a montrées à l’assistant — partent aussi vers le modèle avec la question, après les photos du message lui-même ou de celui auquel il répond. Presque chaque mention envoie alors des images, et cela coûte plus cher. Nécessite « L’assistant peut regarder les photos » et « L’assistant voit l’historique récent » ; désactivé tant que vous ne l’activez pas.</string>
+    <string name="s_assistant_history_photos_explanation">Quand quelqu’un mentionne l’assistant dans la conversation familiale ou un groupe, les photos les plus récentes de cette conversation — jusqu’à 4, de n’importe qui, que personne n’a montrées à l’assistant — partent aussi vers le modèle avec la question, après les photos du message lui-même ou de celui auquel il répond. Presque chaque mention envoie alors des images, et cela coûte plus cher. Nécessite « L’assistant peut regarder les photos » et « L’assistant voit l’historique récent » ; désactivé tant que vous ne l’activez pas.</string>
     <string name="s_assistant_history_photos_no_deployment">Indisponible ici : l’assistant de ce serveur ne peut pas regarder les images.</string>
     <string name="s_assistant_history_photos_needs_vision">Activez d’abord « L’assistant peut regarder les photos » — le serveur refuse ceci tant que c’est désactivé.</string>
     <string name="s_assistant_history_photos_needs_history">Tant que « L’assistant voit l’historique récent » est désactivé, ceci ne fait rien : l’historique de la conversation n’est pas envoyé, donc aucune photo qui en vient non plus.</string>
@@ -482,7 +482,7 @@
     <string name="s_assistant_greeting_no_server">Indisponible ici : ce serveur ne publie pas de salutations quotidiennes.</string>
     <string name="e_change_assistant_greeting_failed">Impossible de modifier ce réglage</string>
     <string name="s_assistant_faces">L’assistant voit les visages des membres</string>
-    <string name="s_assistant_faces_explanation">Quand quelqu’un mentionne l’assistant dans la discussion familiale, les photos de profil des membres cités dans l’historique récent de cette discussion — jusqu’à 4 — sont aussi envoyées au modèle avec la question, pour qu’il sache qui est qui. Ce sont les images que les membres ont choisies pour eux-mêmes, pas des photos jointes ; jamais un membre parti, et jamais quelqu’un d’extérieur à cette famille. La plupart des mentions envoient alors des images, ce qui coûte plus. Nécessite « L’assistant peut regarder les photos » et « L’assistant voit l’historique récent » ; désactivé tant que vous ne l’activez pas, et tant que c’est désactivé aucun visage n’est jamais envoyé.</string>
+    <string name="s_assistant_faces_explanation">Quand quelqu’un mentionne l’assistant dans la discussion familiale ou un groupe, les photos de profil des membres cités dans l’historique récent de cette discussion — jusqu’à 4 — sont aussi envoyées au modèle avec la question, pour qu’il sache qui est qui. Ce sont les images que les membres ont choisies pour eux-mêmes, pas des photos jointes ; jamais un membre parti, et jamais quelqu’un d’extérieur à cette famille. La plupart des mentions envoient alors des images, ce qui coûte plus. Nécessite « L’assistant peut regarder les photos » et « L’assistant voit l’historique récent » ; désactivé tant que vous ne l’activez pas, et tant que c’est désactivé aucun visage n’est jamais envoyé.</string>
     <string name="s_assistant_faces_needs_history">Tant que « L’assistant voit l’historique récent » est désactivé, ceci ne fait rien : aucun nom n’est envoyé, donc aucun visage non plus.</string>
     <string name="e_change_assistant_faces_failed">Impossible de modifier ce réglage</string>
     <string name="s_open_polls">Sondages en cours</string>
@@ -627,8 +627,8 @@
     <string name="s_the_assistant">L’assistant</string>
     <string name="s_before_the_assistant_answers">Avant que l’assistant réponde</string>
     <string name="s_consent_words_leave_for_processor">Ce que vous écrivez à l’assistant quitte le serveur de cette famille et part vers %1$s.</string>
-    <string name="s_consent_family_history_travels">Dans la discussion familiale, seul un message contenant @ai part — et avec lui les 30 derniers jours de cette discussion, jusqu’à 200 messages, y compris ce qu’ont écrit les autres, leurs noms et les heures.</string>
-    <string name="s_consent_family_mention_alone">Dans la discussion familiale, seul un message contenant @ai part, et rien d’autre de cette discussion ne l’accompagne.</string>
+    <string name="s_consent_family_history_travels">Dans la discussion familiale ou un groupe, seul un message contenant @ai part — et avec lui les 30 derniers jours de cette discussion, jusqu’à 200 messages, y compris ce qu’ont écrit les autres, leurs noms et les heures.</string>
+    <string name="s_consent_family_mention_alone">Dans la discussion familiale ou un groupe, seul un message contenant @ai part, et rien d’autre de cette discussion ne l’accompagne.</string>
     <string name="s_consent_photo_only_when_attached">Une photo n’est envoyée que si vous la joignez à un message pour l’assistant, et seulement tant que votre famille l’autorise.</string>
     <string name="s_consent_answer_lands_in_the_chat">La réponse revient sous forme de message dans cette discussion, où tous ses participants peuvent la lire.</string>
     <string name="s_consent_can_stop_in_settings">Vous pouvez arrêter à tout moment dans les Réglages. Ce qui est déjà parti ne peut pas être repris.</string>
@@ -690,13 +690,13 @@
     <string name="s_assistant_transcripts_explanation">Avec ceci activé, les membres peuvent demander le texte des messages vocaux, audios et vidéos des autres membres dans la discussion familiale, et le son de cet enregistrement est alors envoyé à %1$s. Il n’est envoyé que si quelqu’un le demande, et seulement si le membre qui l’a envoyé a accepté l’assistant. Chacun peut obtenir le texte de ses propres enregistrements sans cela. C’est désactivé tant que vous ne l’activez pas.</string>
     <string name="s_assistant_transcripts_no_server">Indisponible ici : ce serveur ne peut pas transcrire les enregistrements.</string>
     <string name="s_consent_transcript_sound_sent">Si vous demandez le texte d’un message vocal, d’un fichier audio ou d’une vidéo, le son est envoyé à %1$s.</string>
-    <string name="s_consent_transcript_direct_chat">Dans une conversation directe, l’autre personne peut demander le texte de vos messages vocaux, fichiers audio et vidéos, et leur son est alors envoyé à %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">Dans une conversation directe ou un groupe, les autres participants peuvent demander le texte de vos messages vocaux, fichiers audio et vidéos, et leur son est alors envoyé à %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Impossible de modifier ce réglage</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Recherches</string>
     <string name="s_assistant_lookups">Peut faire des recherches</string>
     <string name="s_assistant_lookups_explanation">Avec ceci activé, l’assistant peut faire des recherches quand une question le demande — la météo, l’actualité, un fait dont il n’est pas sûr — auprès de %1$s. Seule une courte requête ou un nom de lieu que l’assistant rédige à partir de la question leur est envoyé, jamais la conversation elle-même, et seulement si le membre qui pose la question l’a accepté. Les réponses citent alors leurs sources. C’est désactivé tant que vous ne l’activez pas.</string>
-    <string name="s_consent_lookups_with_history">Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de votre question — dans la discussion familiale, peut-être aussi à partir des messages récents — et sa réponse cite alors ses sources.</string>
+    <string name="s_consent_lookups_with_history">Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de votre question — dans la discussion familiale ou un groupe, peut-être aussi à partir des messages récents — et sa réponse cite alors ses sources.</string>
     <string name="s_consent_lookups_alone">Si le propriétaire de votre famille active les recherches, l’assistant peut envoyer à %1$s une courte requête ou un nom de lieu qu’il rédige à partir de votre question, et sa réponse cite alors ses sources.</string>
     <string name="s_agree_with_lookups">Accepter avec les recherches</string>
     <string name="s_agree_without_lookups">Accepter sans les recherches</string>
@@ -787,4 +787,26 @@
     <string name="s_not_sent">Non envoyé</string>
     <string name="s_switch">Changer</string>
     <string name="s_stop">Arrêter</string>
+    <!-- Groups (#107; docs/protocol.md, "Groups") -->
+    <string name="s_new_group">Nouveau groupe</string>
+    <string name="s_group_name">Nom du groupe</string>
+    <string name="s_create_group">Créer le groupe</string>
+    <string name="s_group_info">Infos du groupe</string>
+    <string name="s_add_members">Ajouter des membres</string>
+    <string name="s_rename_group">Renommer le groupe</string>
+    <string name="s_remove_from_group">Retirer du groupe</string>
+    <string name="s_leave_group">Quitter le groupe</string>
+    <string name="s_delete_group">Supprimer le groupe</string>
+    <string name="s_group_admin">Admin</string>
+    <string name="s_group">Groupe</string>
+    <string name="s_group_members_count">Membres : %1$d</string>
+    <string name="s_delete_group_confirm">Supprimer « %1$s » ? Ses messages sont supprimés pour tout le monde.</string>
+    <string name="s_leave_group_confirm">Quitter « %1$s » ? Tu ne pourras revenir que si son admin t’ajoute à nouveau.</string>
+    <string name="e_group_choose_member">Choisis au moins un membre.</string>
+    <string name="e_group_name_length">Le nom d’un groupe fait de 1 à 64 caractères.</string>
+    <string name="e_too_many_groups">Ta famille a déjà 50 groupes.</string>
+    <string name="e_not_group_admin">Seul l’admin du groupe peut faire cela.</string>
+    <string name="e_create_group_failed">Impossible de créer le groupe.</string>
+    <string name="e_change_group_failed">Impossible de modifier le groupe.</string>
+    <string name="s_everyone_already_in_group">Toute la famille est déjà dans ce groupe.</string>
 </resources>

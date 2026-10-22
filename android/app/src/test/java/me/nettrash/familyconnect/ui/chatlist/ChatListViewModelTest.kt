@@ -25,6 +25,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MemberEntity
@@ -36,6 +37,7 @@ import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.repo.GroupRepository
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
@@ -43,6 +45,7 @@ import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeConnectivityObserver
 import me.nettrash.familyconnect.testutil.FakeFamilyApi
+import me.nettrash.familyconnect.testutil.FakeGroupApi
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
@@ -71,6 +74,7 @@ class ChatListViewModelTest {
     private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var chatApi: FakeChatApi
+    private val groupApi = FakeGroupApi()
     private lateinit var chatRepository: ChatRepository
     private val socket = FakeChatSocket()
     private val settings = FakeSettingsRepository(
@@ -124,6 +128,7 @@ class ChatListViewModelTest {
             settings = settings,
             connectivity = FakeConnectivityObserver(),
             socket = socket,
+            groupRepository = GroupRepository(groupApi, chatRepository),
         )
     }
 
@@ -228,5 +233,113 @@ class ChatListViewModelTest {
         val stored = db.chatDao().getById(1L)!!
         assertThat(stored.unreadCount).isEqualTo(4)
         assertThat(stored.title).isEqualTo("The Smiths")
+    }
+
+    // -- New Group (#107; docs/protocol.md, "Groups") ------------------------------
+
+    /**
+     * Everyone still in the family but me — and, unlike the direct-chat
+     * picker, the blocked too: a block is never a reason to refuse an add.
+     */
+    @Test
+    fun groupCandidatesAreTheActiveFamilyButMeBlockedIncluded() = runTest(dispatcher) {
+        settings.setBlockedUserIds(setOf(PEER))
+        db.memberDao().upsertAll(
+            listOf(
+                MemberEntity(ME, "anna", "Anna", "owner"),
+                MemberEntity(PEER, "ben", "Ben", "member"),
+                MemberEntity(11, "cleo", "Cleo", "member"),
+                MemberEntity(12, "dan", "Dan", "member", hasLeft = true),
+            ),
+        )
+        val viewModel = newViewModel()
+        val subscriptions = listOf(
+            repoScope.launch { viewModel.groupCandidates.collect {} },
+            repoScope.launch { viewModel.pickableMembers.collect {} },
+        )
+        runCurrent()
+
+        assertThat(viewModel.groupCandidates.value.map { it.userId }).containsExactly(PEER, 11L)
+        assertThat(viewModel.pickableMembers.value.map { it.userId }).containsExactly(11L)
+        subscriptions.forEach { it.cancel() }
+    }
+
+    @Test
+    fun aNameThatIsBlankOrTooLongIsNeverSent() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.createGroup("   ", setOf(PEER))
+        runCurrent()
+        assertThat(viewModel.groupError.value).isNotNull()
+
+        viewModel.createGroup("x".repeat(65), setOf(PEER))
+        runCurrent()
+        assertThat(viewModel.groupError.value).isNotNull()
+        assertThat(groupApi.created).isEmpty()
+    }
+
+    @Test
+    fun aGroupWithNobodyElseIsNeverSent() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.createGroup("Cousins", emptySet())
+        runCurrent()
+
+        assertThat(viewModel.groupError.value).isNotNull()
+        assertThat(groupApi.created).isEmpty()
+    }
+
+    @Test
+    fun aCreatedGroupIsStoredAndOpened() = runTest(dispatcher) {
+        groupApi.createResult = ApiResult.Ok(
+            ChatResponse(
+                ChatDto(id = 90, kind = "group", title = "Cousins", memberIds = listOf(ME, PEER), adminUserId = ME),
+            ),
+        )
+        val viewModel = newViewModel()
+        val navigated = async { viewModel.navigateToChat.first() }
+        runCurrent()
+
+        viewModel.createGroup("  Cousins  ", setOf(PEER))
+        runCurrent()
+
+        // Sent trimmed, with the others named (the server adds the creator).
+        assertThat(groupApi.created).containsExactly("Cousins" to listOf(PEER))
+        assertThat(navigated.await()).isEqualTo(90L)
+        val stored = db.chatDao().getById(90L)!!
+        assertThat(stored.kind).isEqualTo("group")
+        assertThat(stored.memberIds).containsExactly(ME, PEER).inOrder()
+        assertThat(stored.adminUserId).isEqualTo(ME)
+        assertThat(viewModel.groupError.value).isNull()
+    }
+
+    @Test
+    fun theFamilysFiftiethGroupIsSaidSo() = runTest(dispatcher) {
+        groupApi.createResult = ApiResult.HttpError(409, "too_many_groups", "50")
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.createGroup("Cousins", setOf(PEER))
+        runCurrent()
+
+        assertThat(viewModel.groupError.value)
+            .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_too_many_groups))
+        assertThat(viewModel.creatingGroup.value).isFalse()
+    }
+
+    /** A failure that says nothing about the request is not a refusal. */
+    @Test
+    fun aTransientFailureIsNotSaidAsARefusal() = runTest(dispatcher) {
+        groupApi.createResult = ApiResult.HttpError(503, null, null)
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.createGroup("Cousins", setOf(PEER))
+        runCurrent()
+
+        assertThat(viewModel.groupError.value)
+            .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_unreachable))
     }
 }

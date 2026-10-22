@@ -125,6 +125,9 @@ nonisolated enum TranscriptDoor: Equatable {
     /// - Your own message: in any chat you are in, direct chats included.
     /// - The other person's in a direct chat: yes — no owner's switch
     ///   reaches a direct chat (amended 2026-10-21; until then never).
+    /// - Another member's in a GROUP, threads included: as in a direct chat
+    ///   — the owner's switch is about the family chat and does not reach a
+    ///   group (amended 2026-10-22, D4; docs/protocol.md, "Groups").
     /// - Another member's in the family chat (threads included — they are
     ///   messages of the same chat): only while the owner's
     ///   `ai_transcripts` is on.
@@ -143,9 +146,12 @@ nonisolated enum TranscriptDoor: Equatable {
     ) -> Bool {
         if let assistantUserID, senderID == assistantUserID { return false }
         if senderID == currentUserID, currentUserID > 0 { return chatKind != nil }
+        switch ChatRules.transcriptRule(chatKind) {
         // "The other person" needs a reader who is known.
-        if chatKind == "direct" { return currentUserID > 0 }
-        return chatKind == "family" && familyAllowsTranscripts
+        case .sendersConsent: return currentUserID > 0
+        case .ownersSwitch: return familyAllowsTranscripts
+        case .never: return false
+        }
     }
 
     /// The whole door, from every fact it turns on.

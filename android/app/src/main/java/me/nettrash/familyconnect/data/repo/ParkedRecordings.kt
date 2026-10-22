@@ -97,6 +97,17 @@ data class ParkedRecording(
     }
 }
 
+/**
+ * What a chat that leaves this device takes with it besides its rows: the
+ * voice messages recorded there and never sent — the one draft this app
+ * keeps past the screen (docs/protocol.md, "Groups": a client drops a
+ * removed group's chat, "its messages and anything it was drafting
+ * there"). An interface so ChatRepository's tests can default it away.
+ */
+fun interface ChatDrafts {
+    suspend fun forgetChat(chatId: Long)
+}
+
 @Singleton
 class ParkedRecordings internal constructor(
     private val settings: SettingsRepository,
@@ -108,7 +119,7 @@ class ParkedRecordings internal constructor(
      * and another test's store sweeping it would take this one's files.
      */
     private val root: File,
-) {
+) : ChatDrafts {
 
     @Inject
     constructor(
@@ -208,6 +219,18 @@ class ParkedRecordings internal constructor(
         val entry = settings.state.first().parkedRecordings.firstOrNull { it.id == id }
         settings.updateParkedRecordings { entries -> entries.filterNot { it.id == id } }
         if (entry != null) withContext(Dispatchers.IO) { file(entry).delete() }
+    }
+
+    /**
+     * Forget every recording parked in [chatId], and their files — the
+     * chat has left this device, and nothing could ever open them again.
+     */
+    override suspend fun forgetChat(chatId: Long): Unit = lock.withLock {
+        val gone = settings.state.first().parkedRecordings.filter { it.chatId == chatId }
+        if (gone.isEmpty()) return@withLock
+        val ids = gone.mapTo(HashSet()) { it.id }
+        settings.updateParkedRecordings { entries -> entries.filterNot { it.id in ids } }
+        withContext(Dispatchers.IO) { gone.forEach { file(it).delete() } }
     }
 
     /**

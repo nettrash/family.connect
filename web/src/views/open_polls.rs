@@ -1,4 +1,4 @@
-//! The family chat's open polls, as they stand — a surface of its own
+//! The open polls of the family chat or a group, as they stand — a surface of its own
 //! rather than a banner in the scroll, because a decision nobody can find is
 //! a decision nobody makes (docs/protocol.md, "Finding the open ones").
 //!
@@ -22,6 +22,10 @@ pub struct OpenPollsProps {
     pub names: HashMap<i64, String>,
     pub blocked: HashSet<i64>,
     pub revealed: HashSet<i64>,
+    /// The kind of the chat they are in: the family chat or a group, the
+    /// two that have polls (docs/protocol.md, "Polls", amended 2026-10-22).
+    pub chat_kind: AttrValue,
+    /// Who the chat's polls count — the family's members, or the group's.
     pub member_count: usize,
     pub member_ids: HashSet<i64>,
     pub assistant_user_id: Option<i64>,
@@ -76,8 +80,7 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
                                 awaited={false}
                                 ai_failed={None::<AiFailure>}
                                 failed={None::<String>}
-                                is_family_chat={true}
-                                is_ai_chat={false}
+                                chat_kind={props.chat_kind.clone()}
                                 assistant_user_id={props.assistant_user_id}
                                 in_thread={true}
                                 can_reply={false}

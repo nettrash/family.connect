@@ -22,7 +22,7 @@ public sealed class TimelineTests
     [Fact]
     public void EachLocalDayStartsASectionWithItsOwnPill()
     {
-        var rows = Timeline.Rows([Row(1, Anna, At(9, 10)), Row(2, Anna, At(9, 11)), Row(3, Anna, At(10, 9))], familyChat: true, Me, null, Utc);
+        var rows = Timeline.Rows([Row(1, Anna, At(9, 10)), Row(2, Anna, At(9, 11)), Row(3, Anna, At(10, 9))], sharedChat: true, Me, null, Utc);
 
         Assert.Equal(new DateOnly(2026, 9, 9), rows[0].DayAbove);
         Assert.Null(rows[1].DayAbove);
@@ -52,9 +52,9 @@ public sealed class TimelineTests
             Row(1, Anna, At(9, 10)), Row(2, Anna, At(9, 10)), Row(3, Me, At(9, 10)), Row(4, Bob, At(9, 10), hidden: true),
             Row(5, Anna, At(9, 10)),
         ];
-        var rows = Timeline.Rows(bubbles, familyChat: true, Me, null, Utc);
+        var rows = Timeline.Rows(bubbles, sharedChat: true, Me, null, Utc);
         Assert.Equal([true, false, false, false, true], rows.Select(row => row.ShowsSender));
-        Assert.DoesNotContain(Timeline.Rows(bubbles, familyChat: false, Me, null, Utc), row => row.ShowsSender);
+        Assert.DoesNotContain(Timeline.Rows(bubbles, sharedChat: false, Me, null, Utc), row => row.ShowsSender);
 
         Assert.Equal([true, false, true, true, true], rows.Select(row => row.RunStart));
         Assert.Equal([false, true, true, true, true], rows.Select(row => row.RunEnd));

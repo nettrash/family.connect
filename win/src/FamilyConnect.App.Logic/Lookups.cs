@@ -83,7 +83,7 @@ public static class Lookups
     public static string ConsentLine(IReadOnlyList<string> names, bool familyHistory, IStringCatalog say) =>
         familyHistory
             ? say.Format(
-                "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to %@, and its answer then lists its sources.",
+                "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat or a group, possibly from recent messages too — to %@, and its answer then lists its sources.",
                 Names(names, say))
             : say.Format(
                 "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question to %@, and its answer then lists its sources.",

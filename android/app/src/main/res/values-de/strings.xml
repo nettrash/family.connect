@@ -209,10 +209,10 @@
         <item quantity="other">%1$d Aufnahmen als Text</item>
     </plurals>
     <string name="s_family_language">Sprache der Familie</string>
-    <string name="s_family_language_explanation">Die Sprache, in der euer Assistent antwortet, wenn er im Familienchat gefragt wird. Die Sprache dieser App ändert sich dadurch nicht. Ohne Auswahl antwortet er in der Sprache der Frage.</string>
+    <string name="s_family_language_explanation">Die Sprache, in der euer Assistent antwortet, wenn er im Familienchat oder in einer Gruppe gefragt wird. Die Sprache dieser App ändert sich dadurch nicht. Ohne Auswahl antwortet er in der Sprache der Frage.</string>
     <string name="s_not_set">Nicht festgelegt</string>
     <string name="s_assistant_history">Assistent sieht den letzten Verlauf</string>
-    <string name="s_assistant_history_explanation">Erwähnt jemand den Assistenten im Familienchat, geht der letzte Monat dieses Chats mit der Frage mit, damit er zu früher Gesagtem antworten kann. Ist das aus, geht nur die Nachricht mit der Erwähnung raus.</string>
+    <string name="s_assistant_history_explanation">Erwähnt jemand den Assistenten im Familienchat oder in einer Gruppe, geht der letzte Monat dieses Chats mit der Frage mit, damit er zu früher Gesagtem antworten kann. Ist das aus, geht nur die Nachricht mit der Erwähnung raus.</string>
     <string name="s_birthday">Geburtstag</string>
     <string name="s_birthday_for">Geburtstag von %1$s</string>
     <string name="s_day_and_month_no_year">Ein Tag und ein Monat. Kein Jahr, kein Alter.</string>
@@ -454,10 +454,10 @@
     <string name="s_assistant_answer_failed">Der Assistent konnte diese Antwort nicht abschließen. Frag noch einmal.</string>
     <string name="s_assistant_provider_refused">Der Anbieter des Assistenten hat das abgelehnt. Versuch es anders zu formulieren.</string>
     <string name="s_assistant_vision">Assistent darf Fotos ansehen</string>
-    <string name="s_assistant_vision_explanation">Wenn jemand in seinem eigenen Chat mit dem Assistenten ein Foto an eine Frage anhängt, im Familienchat ein Foto an eine Nachricht hängt, die den Assistenten erwähnt, oder mit einer Erwähnung des Assistenten auf ein Foto antwortet, wird dieses Foto mit der Frage an das Modell gesendet — höchstens 4 pro Frage. Ein Foto, das niemand dem Assistenten gezeigt hat, wird nie gesendet, auch nicht aus einer früheren Nachricht — außer „Assistent sieht aktuelle Fotos“ ist an —, und Videos, Dateien, Audio und Standorte ebenso wenig. Standardmäßig aus; ist es aus, wird nie ein Foto gesendet.</string>
+    <string name="s_assistant_vision_explanation">Wenn jemand in seinem eigenen Chat mit dem Assistenten ein Foto an eine Frage anhängt, im Familienchat oder in einer Gruppe ein Foto an eine Nachricht hängt, die den Assistenten erwähnt, oder mit einer Erwähnung des Assistenten auf ein Foto antwortet, wird dieses Foto mit der Frage an das Modell gesendet — höchstens 4 pro Frage. Ein Foto, das niemand dem Assistenten gezeigt hat, wird nie gesendet, auch nicht aus einer früheren Nachricht — außer „Assistent sieht aktuelle Fotos“ ist an —, und Videos, Dateien, Audio und Standorte ebenso wenig. Standardmäßig aus; ist es aus, wird nie ein Foto gesendet.</string>
     <string name="e_change_assistant_vision_failed">Einstellung konnte nicht geändert werden</string>
     <string name="s_assistant_history_photos">Assistent sieht aktuelle Fotos</string>
-    <string name="s_assistant_history_photos_explanation">Erwähnt jemand den Assistenten im Familienchat, gehen auch die neuesten Fotos aus diesem Chat — bis zu 4, von wem auch immer, die niemand dem Assistenten gezeigt hat — mit der Frage an das Modell, nach den Fotos an der Nachricht selbst oder an der, auf die sie antwortet. Fast jede Erwähnung sendet dann Bilder, und das kostet mehr. Braucht „Assistent darf Fotos ansehen“ und „Assistent sieht den letzten Verlauf“; aus, bis du es einschaltest.</string>
+    <string name="s_assistant_history_photos_explanation">Erwähnt jemand den Assistenten im Familienchat oder in einer Gruppe, gehen auch die neuesten Fotos aus diesem Chat — bis zu 4, von wem auch immer, die niemand dem Assistenten gezeigt hat — mit der Frage an das Modell, nach den Fotos an der Nachricht selbst oder an der, auf die sie antwortet. Fast jede Erwähnung sendet dann Bilder, und das kostet mehr. Braucht „Assistent darf Fotos ansehen“ und „Assistent sieht den letzten Verlauf“; aus, bis du es einschaltest.</string>
     <string name="s_assistant_history_photos_no_deployment">Hier nicht verfügbar: Der Assistent auf diesem Server kann keine Bilder ansehen.</string>
     <string name="s_assistant_history_photos_needs_vision">Schalte zuerst „Assistent darf Fotos ansehen“ ein — solange das aus ist, lehnt der Server dies ab.</string>
     <string name="s_assistant_history_photos_needs_history">Solange „Assistent sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Der Verlauf des Chats wird nicht gesendet, also auch kein Foto daraus.</string>
@@ -467,7 +467,7 @@
     <string name="s_assistant_greeting_no_server">Hier nicht verfügbar: Dieser Server verschickt keine täglichen Grüße.</string>
     <string name="e_change_assistant_greeting_failed">Einstellung konnte nicht geändert werden</string>
     <string name="s_assistant_faces">Assistent sieht Gesichter der Mitglieder</string>
-    <string name="s_assistant_faces_explanation">Wenn jemand den Assistenten im Familienchat erwähnt, werden auch die Profilbilder der Mitglieder, die im jüngsten Verlauf dieses Chats genannt werden — bis zu 4 — mit der Frage an das Modell gesendet, damit es die Mitglieder auseinanderhalten kann. Es sind die Bilder, die die Mitglieder für sich selbst gewählt haben, keine angehängten Fotos; nie ein Mitglied, das gegangen ist, und nie jemand außerhalb dieser Familie. Die meisten Erwähnungen senden dann Bilder, was mehr kostet. Braucht „Assistent darf Fotos ansehen“ und „Assistent sieht den letzten Verlauf“; aus, bis du es einschaltest — und solange es aus ist, wird nie ein Gesicht gesendet.</string>
+    <string name="s_assistant_faces_explanation">Wenn jemand den Assistenten im Familienchat oder in einer Gruppe erwähnt, werden auch die Profilbilder der Mitglieder, die im jüngsten Verlauf dieses Chats genannt werden — bis zu 4 — mit der Frage an das Modell gesendet, damit es die Mitglieder auseinanderhalten kann. Es sind die Bilder, die die Mitglieder für sich selbst gewählt haben, keine angehängten Fotos; nie ein Mitglied, das gegangen ist, und nie jemand außerhalb dieser Familie. Die meisten Erwähnungen senden dann Bilder, was mehr kostet. Braucht „Assistent darf Fotos ansehen“ und „Assistent sieht den letzten Verlauf“; aus, bis du es einschaltest — und solange es aus ist, wird nie ein Gesicht gesendet.</string>
     <string name="s_assistant_faces_needs_history">Solange „Assistent sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Es werden keine Namen gesendet, also auch keine Gesichter.</string>
     <string name="e_change_assistant_faces_failed">Einstellung konnte nicht geändert werden</string>
     <string name="s_open_polls">Offene Umfragen</string>
@@ -599,8 +599,8 @@
     <string name="s_the_assistant">Der Assistent</string>
     <string name="s_before_the_assistant_answers">Bevor der Assistent antwortet</string>
     <string name="s_consent_words_leave_for_processor">Was du dem Assistenten schreibst, verlässt den Server dieser Familie und geht an %1$s.</string>
-    <string name="s_consent_family_history_travels">Im Familienchat geht nur eine Nachricht raus, in der @ai steht – und mit ihr die letzten 30 Tage dieses Chats, bis zu 200 Nachrichten, samt dem, was andere geschrieben haben, ihren Namen und den Uhrzeiten.</string>
-    <string name="s_consent_family_mention_alone">Im Familienchat geht nur eine Nachricht raus, in der @ai steht – sonst nichts aus diesem Chat.</string>
+    <string name="s_consent_family_history_travels">Im Familienchat oder in einer Gruppe geht nur eine Nachricht raus, in der @ai steht – und mit ihr die letzten 30 Tage dieses Chats, bis zu 200 Nachrichten, samt dem, was andere geschrieben haben, ihren Namen und den Uhrzeiten.</string>
+    <string name="s_consent_family_mention_alone">Im Familienchat oder in einer Gruppe geht nur eine Nachricht raus, in der @ai steht – sonst nichts aus diesem Chat.</string>
     <string name="s_consent_photo_only_when_attached">Ein Foto geht nur mit, wenn du es an eine Nachricht für den Assistenten anhängst – und nur, solange deine Familie das erlaubt.</string>
     <string name="s_consent_answer_lands_in_the_chat">Die Antwort kommt als Nachricht in diesem Chat zurück, wo alle im Chat sie lesen können.</string>
     <string name="s_consent_can_stop_in_settings">Du kannst das jederzeit in den Einstellungen stoppen. Was schon gesendet wurde, lässt sich nicht zurückholen.</string>
@@ -661,13 +661,13 @@
     <string name="s_assistant_transcripts_explanation">Wenn das an ist, können Mitglieder im Familienchat den Text der Sprachnachrichten, Audios und Videos anderer Mitglieder abrufen, und der Ton dieser Aufnahme wird dann an %1$s gesendet. Er wird nur gesendet, wenn jemand danach fragt, und nur, wenn das Mitglied, das sie geschickt hat, dem Assistenten zugestimmt hat. Den Text der eigenen Aufnahmen kann jeder auch ohne diese Einstellung abrufen. Es ist aus, solange du es nicht einschaltest.</string>
     <string name="s_assistant_transcripts_no_server">Hier nicht verfügbar: Dieser Server kann Aufnahmen nicht in Text umwandeln.</string>
     <string name="s_consent_transcript_sound_sent">Wenn du den Text einer Sprachnachricht, einer Audiodatei oder eines Videos abrufst, wird der Ton an %1$s gesendet.</string>
-    <string name="s_consent_transcript_direct_chat">In einem Direktchat kann die andere Person den Text deiner Sprachnachrichten, Audiodateien und Videos abrufen; ihr Ton wird dann an %1$s gesendet.</string>
+    <string name="s_consent_transcript_direct_chat">In einem Direktchat oder einer Gruppe können die anderen darin den Text deiner Sprachnachrichten, Audiodateien und Videos abrufen; ihr Ton wird dann an %1$s gesendet.</string>
     <string name="e_change_assistant_transcripts_failed">Einstellung konnte nicht geändert werden</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Nachschlagen</string>
     <string name="s_assistant_lookups">Kann nachschlagen</string>
     <string name="s_assistant_lookups_explanation">Wenn das an ist, kann der Assistent nachschlagen, wenn eine Frage es braucht – das Wetter, die Nachrichten, eine Tatsache, bei der er unsicher ist –, und zwar bei %1$s. An sie geht nur eine kurze Suchanfrage oder ein Ortsname, den der Assistent aus der Frage formuliert, nie das Gespräch selbst, und nur, wenn das fragende Mitglied dem zugestimmt hat. Antworten nennen dann ihre Quellen. Es ist aus, solange du es nicht einschaltest.</string>
-    <string name="s_consent_lookups_with_history">Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert – im Familienchat womöglich auch aus den letzten Nachrichten –, an %1$s senden; seine Antwort nennt dann ihre Quellen.</string>
+    <string name="s_consent_lookups_with_history">Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert – im Familienchat oder in einer Gruppe womöglich auch aus den letzten Nachrichten –, an %1$s senden; seine Antwort nennt dann ihre Quellen.</string>
     <string name="s_consent_lookups_alone">Wenn der Eigentümer deiner Familie das Nachschlagen einschaltet, kann der Assistent eine kurze Suchanfrage oder einen Ortsnamen, den er aus deiner Frage formuliert, an %1$s senden; seine Antwort nennt dann ihre Quellen.</string>
     <string name="s_agree_with_lookups">Mit Nachschlagen zustimmen</string>
     <string name="s_agree_without_lookups">Ohne Nachschlagen zustimmen</string>
@@ -757,4 +757,26 @@
     <string name="s_not_sent">Nicht gesendet</string>
     <string name="s_switch">Wechseln</string>
     <string name="s_stop">Stopp</string>
+    <!-- Groups (#107; docs/protocol.md, "Groups") -->
+    <string name="s_new_group">Neue Gruppe</string>
+    <string name="s_group_name">Gruppenname</string>
+    <string name="s_create_group">Gruppe erstellen</string>
+    <string name="s_group_info">Gruppeninfo</string>
+    <string name="s_add_members">Mitglieder hinzufügen</string>
+    <string name="s_rename_group">Gruppe umbenennen</string>
+    <string name="s_remove_from_group">Aus der Gruppe entfernen</string>
+    <string name="s_leave_group">Gruppe verlassen</string>
+    <string name="s_delete_group">Gruppe löschen</string>
+    <string name="s_group_admin">Admin</string>
+    <string name="s_group">Gruppe</string>
+    <string name="s_group_members_count">Mitglieder: %1$d</string>
+    <string name="s_delete_group_confirm">„%1$s“ löschen? Die Nachrichten werden für alle gelöscht.</string>
+    <string name="s_leave_group_confirm">„%1$s“ verlassen? Du kommst nur zurück, wenn dich der Admin wieder hinzufügt.</string>
+    <string name="e_group_choose_member">Wähle mindestens ein Mitglied.</string>
+    <string name="e_group_name_length">Ein Gruppenname hat 1 bis 64 Zeichen.</string>
+    <string name="e_too_many_groups">Deine Familie hat schon 50 Gruppen.</string>
+    <string name="e_not_group_admin">Das kann nur der Admin der Gruppe.</string>
+    <string name="e_create_group_failed">Die Gruppe konnte nicht erstellt werden.</string>
+    <string name="e_change_group_failed">Die Gruppe konnte nicht geändert werden.</string>
+    <string name="s_everyone_already_in_group">Alle aus der Familie sind schon in dieser Gruppe.</string>
 </resources>

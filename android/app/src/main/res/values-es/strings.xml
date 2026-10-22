@@ -214,10 +214,10 @@
         <item quantity="other">%1$d grabaciones a texto</item>
     </plurals>
     <string name="s_family_language">Idioma de la familia</string>
-    <string name="s_family_language_explanation">El idioma en el que el asistente responde cuando se le pregunta en el chat familiar. No cambia el idioma en el que se muestra esta app. Sin ninguno elegido, responde en el idioma de quien pregunte.</string>
+    <string name="s_family_language_explanation">El idioma en el que el asistente responde cuando se le pregunta en el chat familiar o en un grupo. No cambia el idioma en el que se muestra esta app. Sin ninguno elegido, responde en el idioma de quien pregunte.</string>
     <string name="s_not_set">Sin definir</string>
     <string name="s_assistant_history">El asistente ve el historial reciente</string>
-    <string name="s_assistant_history_explanation">Cuando alguien menciona al asistente en el chat familiar, el último mes de ese chat se envía junto con la pregunta para que pueda responder sobre lo que se dijo. Desactivado, solo se envía el mensaje que lo menciona.</string>
+    <string name="s_assistant_history_explanation">Cuando alguien menciona al asistente en el chat familiar o en un grupo, el último mes de ese chat se envía junto con la pregunta para que pueda responder sobre lo que se dijo. Desactivado, solo se envía el mensaje que lo menciona.</string>
     <string name="s_birthday">Cumpleaños</string>
     <string name="s_birthday_for">Cumpleaños de %1$s</string>
     <string name="s_day_and_month_no_year">Un día y un mes. Sin año y sin edad.</string>
@@ -469,10 +469,10 @@
     <string name="s_assistant_answer_failed">El asistente no pudo terminar esta respuesta. Vuelve a preguntar.</string>
     <string name="s_assistant_provider_refused">El proveedor del asistente lo rechazó. Prueba a decirlo de otra manera.</string>
     <string name="s_assistant_vision">El asistente puede mirar fotos</string>
-    <string name="s_assistant_vision_explanation">Cuando alguien adjunta una foto a una pregunta en su propio chat con el asistente, la adjunta a un mensaje que menciona al asistente en el chat familiar, o responde a una foto mencionándolo, esa foto se envía al modelo junto con la pregunta: como máximo 4 por pregunta. Una foto que nadie le haya señalado al asistente nunca se envía, ni siquiera desde un mensaje anterior salvo que «El asistente ve las fotos recientes» esté activado, y tampoco los vídeos, archivos, audios ni ubicaciones. Desactivado salvo que lo actives; desactivado, no se envía ninguna foto.</string>
+    <string name="s_assistant_vision_explanation">Cuando alguien adjunta una foto a una pregunta en su propio chat con el asistente, la adjunta a un mensaje que menciona al asistente en el chat familiar o en un grupo, o responde a una foto mencionándolo, esa foto se envía al modelo junto con la pregunta: como máximo 4 por pregunta. Una foto que nadie le haya señalado al asistente nunca se envía, ni siquiera desde un mensaje anterior salvo que «El asistente ve las fotos recientes» esté activado, y tampoco los vídeos, archivos, audios ni ubicaciones. Desactivado salvo que lo actives; desactivado, no se envía ninguna foto.</string>
     <string name="e_change_assistant_vision_failed">No se pudo cambiar ese ajuste</string>
     <string name="s_assistant_history_photos">El asistente ve las fotos recientes</string>
-    <string name="s_assistant_history_photos_explanation">Cuando alguien menciona al asistente en el chat familiar, las fotos más recientes de ese chat —hasta 4, de cualquiera, que nadie le haya señalado al asistente— también se envían al modelo con la pregunta, después de las fotos del propio mensaje o del mensaje al que responde. Casi cada mención envía entonces imágenes, y eso cuesta más. Requiere «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado salvo que lo actives.</string>
+    <string name="s_assistant_history_photos_explanation">Cuando alguien menciona al asistente en el chat familiar o en un grupo, las fotos más recientes de ese chat —hasta 4, de cualquiera, que nadie le haya señalado al asistente— también se envían al modelo con la pregunta, después de las fotos del propio mensaje o del mensaje al que responde. Casi cada mención envía entonces imágenes, y eso cuesta más. Requiere «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado salvo que lo actives.</string>
     <string name="s_assistant_history_photos_no_deployment">No disponible aquí: el asistente de este servidor no puede mirar imágenes.</string>
     <string name="s_assistant_history_photos_needs_vision">Activa primero «El asistente puede mirar fotos»: el servidor rechaza esto mientras eso esté desactivado.</string>
     <string name="s_assistant_history_photos_needs_history">Mientras «El asistente ve el historial reciente» esté desactivado, esto no hace nada: el historial del chat no se envía, así que tampoco ninguna foto de él.</string>
@@ -482,7 +482,7 @@
     <string name="s_assistant_greeting_no_server">No disponible aquí: este servidor no envía saludos diarios.</string>
     <string name="e_change_assistant_greeting_failed">No se pudo cambiar ese ajuste</string>
     <string name="s_assistant_faces">El asistente ve las caras de los miembros</string>
-    <string name="s_assistant_faces_explanation">Cuando alguien menciona al asistente en el chat familiar, las fotos de perfil de los miembros nombrados en el historial reciente de ese chat — hasta 4 — también se envían al modelo con la pregunta, para que sepa quién es quién. Son las fotos que los miembros eligieron para sí mismos, no fotos que alguien adjuntó; nunca un miembro que se haya ido, y nunca nadie de fuera de esta familia. La mayoría de las menciones envían entonces imágenes, lo que cuesta más. Necesita «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado hasta que lo actives, y con esto desactivado nunca se envía ninguna cara.</string>
+    <string name="s_assistant_faces_explanation">Cuando alguien menciona al asistente en el chat familiar o en un grupo, las fotos de perfil de los miembros nombrados en el historial reciente de ese chat — hasta 4 — también se envían al modelo con la pregunta, para que sepa quién es quién. Son las fotos que los miembros eligieron para sí mismos, no fotos que alguien adjuntó; nunca un miembro que se haya ido, y nunca nadie de fuera de esta familia. La mayoría de las menciones envían entonces imágenes, lo que cuesta más. Necesita «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado hasta que lo actives, y con esto desactivado nunca se envía ninguna cara.</string>
     <string name="s_assistant_faces_needs_history">Mientras «El asistente ve el historial reciente» esté desactivado, esto no hace nada: no se envían nombres, así que tampoco caras.</string>
     <string name="e_change_assistant_faces_failed">No se pudo cambiar ese ajuste</string>
     <string name="s_open_polls">Encuestas abiertas</string>
@@ -627,8 +627,8 @@
     <string name="s_the_assistant">El asistente</string>
     <string name="s_before_the_assistant_answers">Antes de que el asistente responda</string>
     <string name="s_consent_words_leave_for_processor">Lo que escribes al asistente sale del servidor de esta familia y se envía a %1$s.</string>
-    <string name="s_consent_family_history_travels">En el chat familiar solo se envía un mensaje que diga @ai, y con él los últimos 30 días de ese chat, hasta 200 mensajes, incluido lo que escribieron otras personas, sus nombres y las horas.</string>
-    <string name="s_consent_family_mention_alone">En el chat familiar solo se envía un mensaje que diga @ai, y nada más de ese chat va con él.</string>
+    <string name="s_consent_family_history_travels">En el chat familiar o en un grupo solo se envía un mensaje que diga @ai, y con él los últimos 30 días de ese chat, hasta 200 mensajes, incluido lo que escribieron otras personas, sus nombres y las horas.</string>
+    <string name="s_consent_family_mention_alone">En el chat familiar o en un grupo solo se envía un mensaje que diga @ai, y nada más de ese chat va con él.</string>
     <string name="s_consent_photo_only_when_attached">Una foto solo se envía cuando la adjuntas a un mensaje para el asistente, y solo mientras tu familia lo permita.</string>
     <string name="s_consent_answer_lands_in_the_chat">La respuesta vuelve como un mensaje en ese chat, donde todos los del chat pueden leerla.</string>
     <string name="s_consent_can_stop_in_settings">Puedes detenerlo cuando quieras en Ajustes. Lo que ya se envió no se puede recuperar.</string>
@@ -690,13 +690,13 @@
     <string name="s_assistant_transcripts_explanation">Con esto activado, los miembros pueden pedir el texto de las notas de voz, audios y vídeos de otros miembros en el chat familiar, y el sonido de esa grabación se envía entonces a %1$s. Solo se envía cuando alguien lo pide, y solo si el miembro que la envió ha aceptado el asistente. Cualquiera puede obtener el texto de sus propias grabaciones sin esto. Está desactivado a menos que lo actives.</string>
     <string name="s_assistant_transcripts_no_server">No disponible aquí: este servidor no puede pasar grabaciones a texto.</string>
     <string name="s_consent_transcript_sound_sent">Si pides el texto de una nota de voz, un archivo de audio o un vídeo, su sonido se envía a %1$s.</string>
-    <string name="s_consent_transcript_direct_chat">En un chat directo, la otra persona puede pedir el texto de tus notas de voz, archivos de audio y vídeos, y su sonido se envía entonces a %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">En un chat directo o en un grupo, los demás pueden pedir el texto de tus notas de voz, archivos de audio y vídeos, y su sonido se envía entonces a %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">No se pudo cambiar ese ajuste</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Búsqueda de información</string>
     <string name="s_assistant_lookups">Puede buscar información</string>
     <string name="s_assistant_lookups_explanation">Con esto activado, el asistente puede buscar información cuando una pregunta lo necesite —el tiempo, las noticias, un dato del que no esté seguro— en %1$s. Solo se les envía una breve consulta de búsqueda o un nombre de lugar que el asistente escribe a partir de la pregunta, nunca la conversación en sí, y solo cuando el miembro que pregunta lo ha aceptado. Las respuestas indican entonces sus fuentes. Está desactivado a menos que lo actives.</string>
-    <string name="s_consent_lookups_with_history">Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta (en el chat familiar, quizá también a partir de mensajes recientes), y su respuesta indicará entonces sus fuentes.</string>
+    <string name="s_consent_lookups_with_history">Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta (en el chat familiar o en un grupo, quizá también a partir de mensajes recientes), y su respuesta indicará entonces sus fuentes.</string>
     <string name="s_consent_lookups_alone">Si el propietario de tu familia activa las búsquedas, el asistente puede enviar a %1$s una breve consulta de búsqueda o un nombre de lugar que escribe a partir de tu pregunta, y su respuesta indicará entonces sus fuentes.</string>
     <string name="s_agree_with_lookups">Aceptar con búsquedas</string>
     <string name="s_agree_without_lookups">Aceptar sin búsquedas</string>
@@ -787,4 +787,26 @@
     <string name="s_not_sent">No enviado</string>
     <string name="s_switch">Cambiar</string>
     <string name="s_stop">Detener</string>
+    <!-- Groups (#107; docs/protocol.md, "Groups") -->
+    <string name="s_new_group">Nuevo grupo</string>
+    <string name="s_group_name">Nombre del grupo</string>
+    <string name="s_create_group">Crear grupo</string>
+    <string name="s_group_info">Información del grupo</string>
+    <string name="s_add_members">Añadir miembros</string>
+    <string name="s_rename_group">Cambiar nombre del grupo</string>
+    <string name="s_remove_from_group">Quitar del grupo</string>
+    <string name="s_leave_group">Salir del grupo</string>
+    <string name="s_delete_group">Eliminar grupo</string>
+    <string name="s_group_admin">Administrador</string>
+    <string name="s_group">Grupo</string>
+    <string name="s_group_members_count">Miembros: %1$d</string>
+    <string name="s_delete_group_confirm">¿Eliminar «%1$s»? Sus mensajes se eliminan para todos.</string>
+    <string name="s_leave_group_confirm">¿Salir de «%1$s»? Solo podrás volver si su administrador te añade de nuevo.</string>
+    <string name="e_group_choose_member">Elige al menos un miembro.</string>
+    <string name="e_group_name_length">El nombre de un grupo puede tener de 1 a 64 caracteres.</string>
+    <string name="e_too_many_groups">Tu familia ya tiene 50 grupos.</string>
+    <string name="e_not_group_admin">Solo el administrador del grupo puede hacer esto.</string>
+    <string name="e_create_group_failed">No se pudo crear el grupo.</string>
+    <string name="e_change_group_failed">No se pudo cambiar el grupo.</string>
+    <string name="s_everyone_already_in_group">Todos los de la familia ya están en este grupo.</string>
 </resources>

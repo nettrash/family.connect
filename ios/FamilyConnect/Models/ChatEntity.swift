@@ -25,9 +25,14 @@
 //      max_reaction_seq (GET /chats) to decide whether a reaction
 //      catch-up loop is needed.
 //
-//  `pinRank` (0 family / 1 direct) exists so the chat list can sort
-//  "family chat always first, then direct chats by recency" with a plain
-//  two-key sort instead of special-casing the family chat in the view.
+//  `pinRank` (0 family / 1 everything else) exists so the chat list can
+//  sort "family chat always first, then the other chats by recency" with a
+//  plain two-key sort instead of special-casing the family chat in the view.
+//
+//  A GROUP (docs/protocol.md, "Groups", 2026-10-22) adds two columns, both
+//  additive with defaults, so a store that predates them migrates
+//  lightweight: who is in it and who is its admin. Every other kind leaves
+//  them empty.
 //
 
 import Foundation
@@ -37,10 +42,11 @@ import SwiftData
 final class ChatEntity {
     /// Server chat id — the natural key; upserts match on it.
     @Attribute(.unique) var chatID: Int64
-    /// "family" | "direct" (mirrors the wire values; kept as String so an
-    /// unknown future kind round-trips instead of crashing a decode).
+    /// "family" | "direct" | "ai" | "group" (mirrors the wire values; kept
+    /// as String so an unknown future kind round-trips instead of crashing
+    /// a decode).
     var kind: String
-    /// 0 = family chat (always pinned on top), 1 = direct chat.
+    /// 0 = family chat (always pinned on top), 1 = any other chat.
     var pinRank: Int
     /// The other participant for direct chats; nil for the family chat.
     var peerUserID: Int64?
@@ -83,6 +89,20 @@ final class ChatEntity {
     /// it, the reader's own read from another device clears it at zero,
     /// and `GET /chats` overwrites it.
     var hasUnreadMention: Bool = false
+    /// A group's `member_ids`, in the server's order (the order they
+    /// joined), as decimal ids joined by commas — "" for every other kind.
+    /// A string rather than an array column for the reason every list on
+    /// these entities is one: a plain attribute migrates and compares
+    /// without a transformer. Read it through `groupMemberIDs`.
+    var groupMemberIDsText: String = ""
+    /// A group's `admin_user_id`; nil for every other kind.
+    var groupAdminUserID: Int64?
+
+    /// The group's members, the reader included; [] for any other kind.
+    var groupMemberIDs: [Int64] {
+        get { groupMemberIDsText.split(separator: ",").compactMap { Int64($0) } }
+        set { groupMemberIDsText = newValue.map(String.init).joined(separator: ",") }
+    }
 
     init(
         chatID: Int64,

@@ -89,7 +89,16 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(71, ErrorCodes.All.Length);
+        Assert.Equal(73, ErrorCodes.All.Length);
+        // Groups' two (docs/protocol.md, "Groups", 2026-10-22): refusals, with their status or without it.
+        foreach (var (code, status) in new[] { (ErrorCodes.NotGroupAdmin, 403), (ErrorCodes.TooManyGroups, 409) })
+        {
+            Assert.Contains(code, ErrorCodes.All);
+            Assert.False(new ApiError(code, "x", status).Transient);
+            Assert.False(new ApiError(code, "x").Transient);
+        }
+        Assert.Equal("not_group_admin", ErrorCodes.NotGroupAdmin);
+        Assert.Equal("too_many_groups", ErrorCodes.TooManyGroups);
         // The sticker pack's four, as the document lists them.
         Assert.Contains(ErrorCodes.PackFull, ErrorCodes.All);
         Assert.Contains(ErrorCodes.PackItemTooLarge, ErrorCodes.All);

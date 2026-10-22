@@ -37,7 +37,7 @@ public static class Timeline
 
     /// <summary>Lay a chat's bubbles (oldest first) out as rows.</summary>
     public static IReadOnlyList<TimelineRow> Rows(
-        IReadOnlyList<Bubble> bubbles, bool familyChat, long me, long? firstUnreadId, TimeZoneInfo zone)
+        IReadOnlyList<Bubble> bubbles, bool sharedChat, long me, long? firstUnreadId, TimeZoneInfo zone)
     {
         // A row whose stamp does not parse belongs to the day it sits at the end of.
         var days = new DateOnly?[bubbles.Count];
@@ -65,7 +65,8 @@ public static class Timeline
             var previous = at > 0 && !newDay ? bubbles[at - 1].Message : null;
             var next = at + 1 < bubbles.Count && days[at + 1] == section ? bubbles[at + 1].Message : null;
             // A hidden row still counts as its sender's run, so the next visible sender keeps their caption.
-            var showsSender = familyChat
+            // Names over bubbles in the family chat or a group (ChatKinds.IsShared): more than one other person to tell apart.
+            var showsSender = sharedChat
                 && message.SenderId != me
                 && !bubble.Hidden
                 && (previous is null || previous.SenderId != message.SenderId);

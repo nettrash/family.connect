@@ -59,8 +59,8 @@ impl Server<'_> {
 /// Who asks about whose message, and where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Asking<'a> {
-    /// `family` | `direct` | `ai` — a thread's replies live in the chat of
-    /// their root, so a family-chat thread is `family`.
+    /// `family` | `direct` | `ai` | `group` — a thread's replies live in the
+    /// chat of their root, so a family-chat thread is `family`.
     pub chat_kind: &'a str,
     pub sender_id: i64,
     pub my_user_id: i64,
@@ -83,8 +83,11 @@ pub struct Recording<'a> {
 ///
 /// A member may ask about a message they sent themselves, in any chat they
 /// are in, direct chats included; about the other person's in a direct chat
-/// (amended 2026-10-21 — no owner's switch reaches a direct chat); about
-/// another member's message in the family chat (its threads included) only
+/// (amended 2026-10-21 — no owner's switch reaches a direct chat), and about
+/// another member's in a GROUP by the same rule (amended 2026-10-22, D4 of
+/// docs/groups-2026-10-21.md — the owner's switch is about the family chat
+/// and does not reach a group); about another member's message in the
+/// family chat (its threads included) only
 /// while the family's `ai_transcripts` is on; never about the assistant's
 /// own. The server also asks whether the SENDER has agreed to the
 /// assistant, which no client can see — it answers `transcript_not_allowed`
@@ -99,7 +102,8 @@ pub fn may_ask(asking: &Asking) -> bool {
     if asking.sender_id == asking.my_user_id {
         return true;
     }
-    asking.chat_kind == "direct" || (asking.chat_kind == "family" && asking.family_allows)
+    matches!(asking.chat_kind, "direct" | "group")
+        || (asking.chat_kind == "family" && asking.family_allows)
 }
 
 /// Whether the server sends this attachment's STORED bytes as they are: a
@@ -415,8 +419,15 @@ mod tests {
             // The assistant's own: never.
             ("family", AI, true, false),
             ("ai", AI, true, false),
+            // Another member's in a group: the direct chat's rule — the
+            // sender's consent alone, whatever the owner's switch says
+            // (2026-10-22, D4). Your own there, as anywhere.
+            ("group", ANNA, true, true),
+            ("group", ANNA, false, true),
+            ("group", ME, false, true),
+            ("group", AI, true, false),
             // A chat kind from a newer server is not the family chat.
-            ("group", ANNA, true, false),
+            ("channel", ANNA, true, false),
         ] {
             assert_eq!(
                 may_ask(&asking(chat, sender, switch)),

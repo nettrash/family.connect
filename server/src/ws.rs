@@ -252,6 +252,17 @@ pub enum ServerFrame {
         message_id: i64,
         text: String,
     },
+    /// A group was created, renamed, or its members or admin changed — the
+    /// group as it now is, to every member, one just added included
+    /// (protocol.md, "Groups").
+    ChatUpdated {
+        chat: crate::models::Chat,
+    },
+    /// A group this connection's user is no longer in: they left or were
+    /// removed, or it was deleted. The client drops it.
+    ChatRemoved {
+        chat_id: i64,
+    },
     /// The reply stopped early. Whatever text arrived is already on the
     /// row; the member can ask again.
     AiError {

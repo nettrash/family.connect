@@ -24,7 +24,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,11 +38,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.util.GroupRules
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
 
@@ -48,6 +54,7 @@ class OpenPollsViewModel @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val chatApi: ChatApi,
     memberDao: MemberDao,
+    private val chatDao: ChatDao,
     private val settings: SettingsRepository,
 ) : ViewModel() {
 
@@ -79,19 +86,29 @@ class OpenPollsViewModel @Inject constructor(
         .map { it.resolvedDisplayNames(appContext) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
+    /** The chat whose polls these are, once [start] names it. */
+    private val chatIdFlow = MutableStateFlow<Long?>(null)
+
     /**
      * How many people a poll could hear from — the live roster, neither the
      * people who have left nor the accounts that were deleted: a tally must
-     * not go on counting somebody who no longer exists.
+     * not go on counting somebody who no longer exists. In a GROUP, the
+     * group's members (docs/protocol.md, "Groups": "4 of 5 voted" counts
+     * the group's members).
      */
-    val memberCount: StateFlow<Int> = memberDao.observeActiveMembers()
-        .map { it.size }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val memberCount: StateFlow<Int> = combine(
+        memberDao.observeActiveMembers(),
+        chatIdFlow.flatMapLatest { id -> if (id == null) flowOf(null) else chatDao.observeById(id) },
+    ) { active, chat ->
+        GroupRules.pollAudience(chat?.kind, chat?.memberIds.orEmpty(), active.size)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     private var chatId: Long = 0
 
     fun start(chatId: Long) {
         this.chatId = chatId
+        chatIdFlow.value = chatId
         load()
     }
 

@@ -330,6 +330,86 @@ async fn mentioning_the_assistant_in_the_family_chat_answers_the_whole_family() 
     );
 }
 
+/// `@ai` in a GROUP is answered in the group, from THAT group's history
+/// alone, and the model is told which chat it is in (protocol.md, "Groups").
+/// The family chat's words are not in the request — and the family's
+/// `ai_history` switch, on by default, is what lets the group's be.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_in_a_group_reads_that_group_and_nothing_else() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (junior, _) = ts.register("junior", "Junior").await;
+    let (gran, gran_id) = ts.register("gran", "Gran").await;
+    ts.join(&junior, &code, "joined").await;
+    ts.join(&gran, &code, "joined").await;
+
+    let family_chat = ts.family_chat_id(&owner).await;
+    say(
+        &ts,
+        &owner,
+        family_chat,
+        "FAMILY-ONLY: the surprise party is Saturday",
+    )
+    .await;
+    let group: Value = ts
+        .post(
+            &junior,
+            "/chats/groups",
+            json!({"title": "Cousins", "member_ids": [gran_id]}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let group = group["chat"]["id"].as_i64().expect("group id");
+    say(&ts, &gran, group, "GROUP-ONLY: bring the cake at five").await;
+
+    let asked = say(&ts, &junior, group, "@ai when do we bring the cake?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+    let reply = wait_for_assistant_message(&ts, &gran, group, asked_id).await;
+    assert_eq!(reply["reply_to"]["message_id"].as_i64(), Some(asked_id));
+    assert!(
+        wait_for_assistant_message_in(&ts, &owner, family_chat)
+            .await
+            .is_none(),
+        "nothing is answered in the family chat"
+    );
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(&family_connect::handlers_ai::group_note("Cousins")),
+        "the model is told it is in the group: {system}"
+    );
+    assert!(call.raw.contains("GROUP-ONLY"), "the group's history goes");
+    assert!(
+        !call.raw.contains("FAMILY-ONLY"),
+        "the family chat's never does"
+    );
+}
+
+/// The newest message the assistant sent in a chat, if any — read once, for
+/// a test asserting that nothing was answered there.
+async fn wait_for_assistant_message_in(ts: &TestServer, token: &str, chat: i64) -> Option<Value> {
+    let assistant = assistant_id(ts).await;
+    let body: Value = ts
+        .get(token, &format!("/chats/{chat}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["sender_id"].as_i64() == Some(assistant))
+        .cloned()
+}
+
 /// The assistant's answer does NOT wake a member who blocked the asker.
 ///
 /// This is the one case the second push gate exists for (protocol.md,

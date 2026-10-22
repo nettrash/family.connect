@@ -13,14 +13,15 @@ use crate::{assistant, lookups};
 
 /// Would a message with this body, in this chat, be sent to the model?
 ///
-/// The member's own `ai` chat, where everything goes, and the family chat,
-/// where only an `@ai` does. `/draw` needs no case of its own: in the
-/// family chat it is `@ai /draw`, a mention, and in the assistant's own
-/// chat it is that chat.
+/// The member's own `ai` chat, where everything goes, and the family chat
+/// or a group, where only an `@ai` does (a group is the family chat's
+/// surface with fewer people — docs/protocol.md, "Groups"). `/draw` needs
+/// no case of its own: in the family chat it is `@ai /draw`, a mention, and
+/// in the assistant's own chat it is that chat.
 pub fn reaches_the_model(chat_kind: &str, body: &str) -> bool {
     match chat_kind {
         "ai" => true,
-        "family" => assistant::mentions(body),
+        "family" | "group" => assistant::mentions(body),
         _ => false,
     }
 }
@@ -99,12 +100,12 @@ pub fn disclosure(
     )];
     lines.push(if family_history {
         t1(
-            "In the family chat only a message that says %@ is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times.",
+            "In the family chat or a group, only a message that says %@ is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times.",
             assistant::TOKEN,
         )
     } else {
         t1(
-            "In the family chat only a message that says %@ is sent, and nothing else from that chat goes with it.",
+            "In the family chat or a group, only a message that says %@ is sent, and nothing else from that chat goes with it.",
             assistant::TOKEN,
         )
     });
@@ -120,7 +121,7 @@ pub fn disclosure(
             processor,
         ));
         lines.push(t1(
-            "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
+            "In a direct chat or a group, the others in it can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
             processor,
         ));
     }
@@ -170,6 +171,33 @@ mod tests {
         assert!(!reaches_the_model("family", "dinner at 7?"));
         assert!(!reaches_the_model("family", "write to anna@ai.example"));
         assert!(!reaches_the_model("family", "@aiden said so"));
+    }
+
+    /// A group is the family chat's surface with fewer people: an `@ai`
+    /// there goes to the model, and nothing else does (docs/protocol.md,
+    /// "Groups").
+    #[test]
+    fn a_group_reaches_it_only_on_a_mention_as_the_family_chat_does() {
+        for body in [
+            "@ai when is dinner?",
+            "hey @AI",
+            "@ai /draw a cat",
+            "/draw a cat",
+            "dinner at 7?",
+            "write to anna@ai.example",
+            "@aiden said so",
+        ] {
+            assert_eq!(
+                reaches_the_model("group", body),
+                reaches_the_model("family", body),
+                "{body:?}"
+            );
+        }
+        assert!(is_required("group", "@ai hi", Some("Azure OpenAI"), false));
+        assert!(!is_required("group", "hi", Some("Azure OpenAI"), false));
+        assert!(is_withheld_from_an_unnamed_assistant(
+            "group", "@ai hi", true, None
+        ));
     }
 
     #[test]
@@ -287,12 +315,13 @@ mod tests {
 
     /// Where the server can turn a recording into text, the person is told
     /// before they agree that a recording's sound goes to the processor —
-    /// their own asking, and since 2026-10-21 a direct-chat partner's — and
+    /// their own asking, and since 2026-10-21 a direct-chat partner's (and
+    /// since 2026-10-22 another member of a group's) — and
     /// not told it where nothing of the kind can happen.
     #[test]
     fn the_disclosure_names_recordings_only_where_they_can_go() {
         let line = "If you ask for the text of a voice note, audio file or video, its sound is sent to Azure OpenAI.";
-        let partner = "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to Azure OpenAI.";
+        let partner = "In a direct chat or a group, the others in it can ask for the text of your voice notes, audio files and videos, and their sound is then sent to Azure OpenAI.";
         let with = disclosure("Azure OpenAI", true, false, true, &[]);
         assert!(with.iter().any(|said| said == line), "{with:?}");
         assert!(with.iter().any(|said| said == partner), "{with:?}");

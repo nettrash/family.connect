@@ -23,7 +23,7 @@ public sealed class AttachMenuTests
     public void AFamilyChatHasEveryLineInThreeGroups()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: true, roundAvailable: true, assistantAvailable: false),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, sharedChat: true, roundAvailable: true, assistantAvailable: false),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice, AttachItem.RecordVideo],
             [AttachItem.Location, AttachItem.Poll]);
@@ -33,7 +33,7 @@ public sealed class AttachMenuTests
     public void ADirectChatHasNoPollAndNoVideoMessageWhereNoneCanBeRecorded()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, sharedChat: false, roundAvailable: false, assistantAvailable: true),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice],
             [AttachItem.Location]);
@@ -44,7 +44,7 @@ public sealed class AttachMenuTests
     {
         // Never both lines, and no recording group — so no empty group for a separator to sit around.
         Menu(
-            AttachMenu.Groups(assistantChat: true, offersPictureAttach: true, familyChat: false, roundAvailable: true, assistantAvailable: true),
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: true, sharedChat: false, roundAvailable: true, assistantAvailable: true),
             [AttachItem.AssistantPhoto, AttachItem.File, AttachItem.Paste],
             [AttachItem.Location]);
     }
@@ -53,7 +53,7 @@ public sealed class AttachMenuTests
     public void AnAssistantThatCannotSeeOffersNoPhotoLineAtAll()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: false),
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, sharedChat: false, roundAvailable: false, assistantAvailable: false),
             [AttachItem.File, AttachItem.Paste],
             [AttachItem.Location]);
     }
@@ -92,17 +92,17 @@ public sealed class AttachMenuTests
     public void AskTheAssistantOpensTheFamilyChatsLastGroup()
     {
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: true, roundAvailable: false, assistantAvailable: true),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, sharedChat: true, roundAvailable: false, assistantAvailable: true),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice],
             [AttachItem.AskAssistant, AttachItem.Location, AttachItem.Poll]);
         Menu(
-            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
+            AttachMenu.Groups(assistantChat: false, offersPictureAttach: false, sharedChat: false, roundAvailable: false, assistantAvailable: true),
             [AttachItem.PhotoOrVideo, AttachItem.File, AttachItem.Paste],
             [AttachItem.RecordVoice],
             [AttachItem.Location]);
         Menu(
-            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, familyChat: false, roundAvailable: false, assistantAvailable: true),
+            AttachMenu.Groups(assistantChat: true, offersPictureAttach: false, sharedChat: false, roundAvailable: false, assistantAvailable: true),
             [AttachItem.File, AttachItem.Paste],
             [AttachItem.Location]);
     }

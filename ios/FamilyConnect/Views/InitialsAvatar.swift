@@ -16,6 +16,10 @@ import SwiftUI
 struct InitialsAvatar: View {
     let title: String
     var isFamily = false
+    /// A group (docs/protocol.md, "Groups"): a people glyph in the family
+    /// circle's style, and the one avatar that SAYS something to a screen
+    /// reader — "Group" — because its title alone reads like a person's.
+    var isGroup = false
     /// Who this circle stands for. Given both, the profile picture
     /// replaces the initials once it has been fetched; without them (or
     /// before it lands) the initials are what shows, so a row never
@@ -37,7 +41,7 @@ struct InitialsAvatar: View {
         return avatars.image(userID: userID, version: avatarVersion)
     }
 
-    var body: some View {
+    private var circle: some View {
         ZStack {
             Circle()
                 .fill(.tint.opacity(0.2))
@@ -49,6 +53,10 @@ struct InitialsAvatar: View {
                 Image(systemName: "house.fill")
                     .font(.system(size: size * 0.41))
                     .foregroundStyle(.tint)
+            } else if isGroup {
+                Image(systemName: "person.3.fill")
+                    .font(.system(size: size * 0.32))
+                    .foregroundStyle(.tint)
             } else {
                 Text(initials)
                     .font(.system(size: size * 0.36, weight: .semibold))
@@ -57,5 +65,15 @@ struct InitialsAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+    }
+
+    var body: some View {
+        if isGroup {
+            circle
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text("Group"))
+        } else {
+            circle
+        }
     }
 }

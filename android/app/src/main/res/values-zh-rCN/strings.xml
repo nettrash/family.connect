@@ -204,10 +204,10 @@
         <item quantity="other">录音转文字 %1$d 次</item>
     </plurals>
     <string name="s_family_language">家庭语言</string>
-    <string name="s_family_language_explanation">在家庭对话里向助手提问时，它回答所用的语言。这不会改变这个 app 的界面语言。未选择时，它用提问者的语言回答。</string>
+    <string name="s_family_language_explanation">在家庭对话或群组里向助手提问时，它回答所用的语言。这不会改变这个 app 的界面语言。未选择时，它用提问者的语言回答。</string>
     <string name="s_not_set">未设置</string>
     <string name="s_assistant_history">助手可以查看最近的历史记录</string>
-    <string name="s_assistant_history_explanation">当有人在家庭对话里提到助手时，会把这个对话最近一个月的内容连同问题一起发送，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。</string>
+    <string name="s_assistant_history_explanation">当有人在家庭对话或群组里提到助手时，会把这个对话最近一个月的内容连同问题一起发送，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。</string>
     <string name="s_birthday">生日</string>
     <string name="s_birthday_for">%1$s 的生日</string>
     <string name="s_day_and_month_no_year">只有月和日。没有年份，也没有年龄。</string>
@@ -439,10 +439,10 @@
     <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
     <string name="s_assistant_provider_refused">助手的服务提供方拒绝了这个请求。换个说法试试。</string>
     <string name="s_assistant_vision">允许助手查看照片</string>
-    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
+    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天或群组中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
     <string name="e_change_assistant_vision_failed">无法更改该设置</string>
     <string name="s_assistant_history_photos">助手可以查看最近的照片</string>
-    <string name="s_assistant_history_photos_explanation">当有人在家庭聊天里提到助手时，这个聊天里最近的照片——最多 4 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，随问题一起发送给模型。此后几乎每次提到它都会发送图片，费用更高。需要打开“允许助手查看照片”和“助手可以查看最近的历史记录”；默认关闭，除非你打开它。</string>
+    <string name="s_assistant_history_photos_explanation">当有人在家庭聊天或群组里提到助手时，这个聊天里最近的照片——最多 4 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，随问题一起发送给模型。此后几乎每次提到它都会发送图片，费用更高。需要打开“允许助手查看照片”和“助手可以查看最近的历史记录”；默认关闭，除非你打开它。</string>
     <string name="s_assistant_history_photos_no_deployment">此处不可用：这个服务器上的助手无法查看图片。</string>
     <string name="s_assistant_history_photos_needs_vision">请先打开“允许助手查看照片”——它关闭时，服务器会拒绝这项设置。</string>
     <string name="s_assistant_history_photos_needs_history">“助手可以查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。</string>
@@ -452,7 +452,7 @@
     <string name="s_assistant_greeting_no_server">此处不可用：这个服务器不发送每日问候。</string>
     <string name="e_change_assistant_greeting_failed">无法更改该设置</string>
     <string name="s_assistant_faces">助手可看到成员的面孔</string>
-    <string name="s_assistant_faces_explanation">当有人在家庭聊天中提到助手时，该聊天近期记录中提到的成员的头像（最多 4 张）也会随问题一起发送给模型，以便它分清谁是谁。这些是成员为自己选择的图片，而不是任何人附加的照片；从不发送已离开成员或本家庭之外任何人的头像。此后大多数提及都会发送图片，费用更高。需要“允许助手查看照片”和“助手可以查看最近的历史记录”；除非你打开，否则处于关闭状态，关闭时绝不会发送任何面孔。</string>
+    <string name="s_assistant_faces_explanation">当有人在家庭聊天或群组中提到助手时，该聊天近期记录中提到的成员的头像（最多 4 张）也会随问题一起发送给模型，以便它分清谁是谁。这些是成员为自己选择的图片，而不是任何人附加的照片；从不发送已离开成员或本家庭之外任何人的头像。此后大多数提及都会发送图片，费用更高。需要“允许助手查看照片”和“助手可以查看最近的历史记录”；除非你打开，否则处于关闭状态，关闭时绝不会发送任何面孔。</string>
     <string name="s_assistant_faces_needs_history">在“助手可以查看最近的历史记录”关闭时，此项不起作用：不发送姓名，也就不发送面孔。</string>
     <string name="e_change_assistant_faces_failed">无法更改该设置</string>
     <string name="s_open_polls">进行中的投票</string>
@@ -571,8 +571,8 @@
     <string name="s_the_assistant">助手</string>
     <string name="s_before_the_assistant_answers">在助手回答之前</string>
     <string name="s_consent_words_leave_for_processor">你写给助手的内容会离开这个家庭的服务器，发给 %1$s。</string>
-    <string name="s_consent_family_history_travels">在家庭对话里，只有写了 @ai 的消息才会发出——并且会带上这个对话最近 30 天、最多 200 条的内容，包括别人写的话、他们的名字和时间。</string>
-    <string name="s_consent_family_mention_alone">在家庭对话里，只有写了 @ai 的消息才会发出，这个对话里的其他内容不会跟着发。</string>
+    <string name="s_consent_family_history_travels">在家庭对话或群组里，只有写了 @ai 的消息才会发出——并且会带上这个对话最近 30 天、最多 200 条的内容，包括别人写的话、他们的名字和时间。</string>
+    <string name="s_consent_family_mention_alone">在家庭对话或群组里，只有写了 @ai 的消息才会发出，这个对话里的其他内容不会跟着发。</string>
     <string name="s_consent_photo_only_when_attached">只有当你把照片附在给助手的消息上时才会发送，而且只在你的家庭允许时。</string>
     <string name="s_consent_answer_lands_in_the_chat">回答会作为一条消息回到那个对话里，对话里的每个人都能看到。</string>
     <string name="s_consent_can_stop_in_settings">你随时可以在设置里停止。已经发出去的收不回来。</string>
@@ -632,13 +632,13 @@
     <string name="s_assistant_transcripts_explanation">打开后，成员可以在家庭聊天中获取其他成员的语音消息、音频和视频的文字，届时该录音的声音会发送给 %1$s。只有在有人请求时才会发送，而且只在发送者本人已同意使用助手时。每个人无需此开关也能获取自己录音的文字。除非你打开，否则它是关闭的。</string>
     <string name="s_assistant_transcripts_no_server">此处不可用：这个服务器无法把录音转成文字。</string>
     <string name="s_consent_transcript_sound_sent">如果你请求获取语音消息、音频文件或视频的文字，它的声音会发送给 %1$s。</string>
-    <string name="s_consent_transcript_direct_chat">在私聊中，对方可以请求获取你的语音消息、音频文件和视频的文字，届时它们的声音会发送给 %1$s。</string>
+    <string name="s_consent_transcript_direct_chat">在私聊或群组中，其他成员可以请求获取你的语音消息、音频文件和视频的文字，届时它们的声音会发送给 %1$s。</string>
     <string name="e_change_assistant_transcripts_failed">无法更改该设置</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">查资料</string>
     <string name="s_assistant_lookups">可以查资料</string>
     <string name="s_assistant_lookups_explanation">打开后，当问题需要时（比如天气、新闻、它不确定的事实），助手可以在 %1$s 中查资料。发送给它们的只有助手根据问题写出的简短搜索词或地名，绝不会是对话本身，而且只在提问的成员已同意时才会发送。回答会列出信息来源。除非你打开，否则它是关闭的。</string>
-    <string name="s_consent_lookups_with_history">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s（在家庭对话里，也可能参考最近的消息），之后它的回答会列出信息来源。</string>
+    <string name="s_consent_lookups_with_history">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s（在家庭对话或群组里，也可能参考最近的消息），之后它的回答会列出信息来源。</string>
     <string name="s_consent_lookups_alone">如果家庭拥有者打开了查资料，助手可能会把它根据你的问题写出的简短搜索词或地名发送给 %1$s，之后它的回答会列出信息来源。</string>
     <string name="s_agree_with_lookups">同意，包括查资料</string>
     <string name="s_agree_without_lookups">同意，但不查资料</string>
@@ -727,4 +727,26 @@
     <string name="s_not_sent">未发送</string>
     <string name="s_switch">切换</string>
     <string name="s_stop">停止</string>
+    <!-- Groups (#107; docs/protocol.md, "Groups") -->
+    <string name="s_new_group">新建群组</string>
+    <string name="s_group_name">群组名称</string>
+    <string name="s_create_group">创建群组</string>
+    <string name="s_group_info">群组信息</string>
+    <string name="s_add_members">添加成员</string>
+    <string name="s_rename_group">重命名群组</string>
+    <string name="s_remove_from_group">移出群组</string>
+    <string name="s_leave_group">退出群组</string>
+    <string name="s_delete_group">删除群组</string>
+    <string name="s_group_admin">管理员</string>
+    <string name="s_group">群组</string>
+    <string name="s_group_members_count">成员：%1$d</string>
+    <string name="s_delete_group_confirm">删除“%1$s”？其中的消息会为所有人删除。</string>
+    <string name="s_leave_group_confirm">退出“%1$s”？只有管理员再次添加你，你才能回来。</string>
+    <string name="e_group_choose_member">请至少选择一名成员。</string>
+    <string name="e_group_name_length">群组名称为 1 到 64 个字符。</string>
+    <string name="e_too_many_groups">你的家庭已经有 50 个群组。</string>
+    <string name="e_not_group_admin">只有群组管理员可以这样做。</string>
+    <string name="e_create_group_failed">无法创建群组。</string>
+    <string name="e_change_group_failed">无法更改群组。</string>
+    <string name="s_everyone_already_in_group">家里的每个人都已在这个群组中。</string>
 </resources>

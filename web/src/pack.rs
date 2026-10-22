@@ -50,10 +50,11 @@ pub enum Gate {
 /// photograph shown to the model — and there it goes through the question
 /// any message there does, never around it: the same two tests the
 /// composer makes of a typed body (views/composer.rs), asked of a message
-/// with no words. Anywhere else a sticker reaches no model: it has no body
-/// to say `@ai` in.
-pub fn send_gate(is_ai_chat: bool, assistant: Option<&Assistant>, agreed: bool) -> Gate {
-    let kind = if is_ai_chat { "ai" } else { "direct" };
+/// with no words. Anywhere else — the family chat, a direct chat, a group —
+/// a sticker reaches no model: it has no body to say `@ai` in. `chat_kind`
+/// is the chat's own, as sent: the consent rule decides, not a guess here.
+pub fn send_gate(chat_kind: &str, assistant: Option<&Assistant>, agreed: bool) -> Gate {
+    let kind = chat_kind;
     let processor = assistant.and_then(|assistant| assistant.processor.as_deref());
     if assistant_consent::is_required(kind, "", processor, agreed) {
         Gate::Ask
@@ -329,23 +330,26 @@ mod tests {
     /// A STICKER IN THE ASSISTANT'S CHAT GOES THROUGH THE CONSENT QUESTION,
     /// never around it: asked while this member has not agreed, sent once
     /// they have, and held back entirely where the server names nobody.
-    /// Everywhere else — the family chat, a one-to-one chat, a thread of
-    /// either — it is sent at once: a sticker has no words to say `@ai` in.
+    /// Everywhere else — the family chat, a one-to-one chat, a group, a
+    /// thread of any — it is sent at once: a sticker has no words to say `@ai` in.
     #[wasm_bindgen_test]
     fn a_sticker_to_the_assistant_is_asked_about_first() {
         let named = assistant(Some("Microsoft — Azure OpenAI"));
-        assert_eq!(send_gate(true, Some(&named), false), Gate::Ask);
-        assert_eq!(send_gate(true, Some(&named), true), Gate::Send);
+        assert_eq!(send_gate("ai", Some(&named), false), Gate::Ask);
+        assert_eq!(send_gate("ai", Some(&named), true), Gate::Send);
         let unnamed = assistant(None);
         for agreed in [false, true] {
-            assert_eq!(send_gate(true, Some(&unnamed), agreed), Gate::Withheld);
+            assert_eq!(send_gate("ai", Some(&unnamed), agreed), Gate::Withheld);
             assert_eq!(
-                send_gate(true, Some(&assistant(Some("  "))), agreed),
+                send_gate("ai", Some(&assistant(Some("  "))), agreed),
                 Gate::Withheld
             );
-            // Between people nothing is asked, whatever the server has.
+            // Between people nothing is asked, whatever the server has —
+            // a group included (docs/protocol.md, "Groups").
             for assistant in [None, Some(&named), Some(&unnamed)] {
-                assert_eq!(send_gate(false, assistant, agreed), Gate::Send);
+                for kind in ["family", "direct", "group"] {
+                    assert_eq!(send_gate(kind, assistant, agreed), Gate::Send, "{kind}");
+                }
             }
         }
     }

@@ -161,8 +161,10 @@ pub struct BubbleProps {
     pub ai_failed: Option<AiFailure>,
     /// Why a send of mine failed, if it did.
     pub failed: Option<String>,
-    pub is_family_chat: bool,
-    pub is_ai_chat: bool,
+    /// The chat's kind as the server sent it — `family`, `direct`, `ai` or
+    /// `group` — which decides the seen tick (fc_text::groups::offers) and
+    /// whose recordings "Show text" is offered for (fc_text::transcript).
+    pub chat_kind: AttrValue,
     pub assistant_user_id: Option<i64>,
     /// Drawn on the thread surface: no editing, no reporting, no thread chip.
     pub in_thread: bool,
@@ -227,8 +229,8 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let id = message.id;
     let mine = message.sender_id == me;
     let acked = id != 0;
-    let is_assistant =
-        Some(message.sender_id) == props.assistant_user_id || (props.is_ai_chat && !mine);
+    let is_assistant = Some(message.sender_id) == props.assistant_user_id
+        || (&*props.chat_kind == fc_text::groups::AI && !mine);
     let is_other_member = !mine && !is_assistant;
     let emit = |action: Action| {
         let on_action = props.on_action.clone();
@@ -497,13 +499,9 @@ pub fn bubble(props: &BubbleProps) -> Html {
     // this client can know it, and whatever this device already holds
     // drawn either way (docs/protocol.md, "Transcripts on request").
     let transcribing = {
-        let chat_kind = if props.is_family_chat {
-            crate::model::Chat::FAMILY
-        } else if props.is_ai_chat {
-            crate::model::Chat::AI
-        } else {
-            crate::model::Chat::DIRECT
-        };
+        // The kind as sent — a group follows the direct chat's rule — and
+        // nothing guessed for one this client does not know.
+        let chat_kind = fc_text::groups::known(&props.chat_kind);
         let offered = props
             .transcription
             .as_ref()
@@ -799,7 +797,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
             <span class="meta">
                 { time::clock(&message.created_at) }
                 if message.is_edited() { <span class="edited">{ " · " }{ t("edited") }</span> }
-                if mine && !props.is_family_chat {
+                if mine && fc_text::groups::offers(&props.chat_kind).seen {
                     <span class={classes!("tick", props.seen.then_some("is-seen"))}
                           aria-label={if props.seen { t("Seen") } else { t("Sent") }}>
                         { if props.seen { " ✓✓" } else { " ✓" } }
@@ -1045,8 +1043,7 @@ mod tests {
             awaited: false,
             ai_failed: None,
             failed: None,
-            is_family_chat: true,
-            is_ai_chat: false,
+            chat_kind: "family".into(),
             assistant_user_id: Some(2),
             in_thread: false,
             can_reply: true,
@@ -1670,7 +1667,7 @@ mod tests {
         ] {
             // Still waiting for its first word: the streaming row.
             let mut waiting = props(message(101, 2, ""), Rc::new(RefCell::new(Vec::new())));
-            waiting.is_ai_chat = true;
+            waiting.chat_kind = "ai".into();
             waiting.awaited = true;
             waiting.ai_failed = Some(failure);
             let (root, handle) = render(waiting).await;
@@ -1685,7 +1682,7 @@ mod tests {
                 message(102, 2, "Half an"),
                 Rc::new(RefCell::new(Vec::new())),
             );
-            partial.is_ai_chat = true;
+            partial.chat_kind = "ai".into();
             partial.ai_failed = Some(failure);
             let (root, handle) = render(partial).await;
             assert_eq!(failed_line(&root), vec![says.to_string()], "{failure:?}");
@@ -1699,7 +1696,7 @@ mod tests {
             message(103, 2, "All of it."),
             Rc::new(RefCell::new(Vec::new())),
         );
-        fine.is_ai_chat = true;
+        fine.chat_kind = "ai".into();
         let (root, handle) = render(fine).await;
         assert!(failed_line(&root).is_empty(), "{}", text(&root));
         handle.destroy();
@@ -1760,40 +1757,44 @@ mod tests {
     /// attachment, with the metadata the device path needs.
     #[wasm_bindgen_test]
     async fn show_text_is_offered_by_the_rule_and_asks_for_its_attachment() {
-        let with = |sender: i64, family: bool, allows: bool, attachments| {
+        let with = |sender: i64, kind: &'static str, allows: bool, attachments| {
             let actions = Rc::new(RefCell::new(Vec::new()));
             let mut message = message(1338, sender, "");
             message.attachments = Some(attachments);
             let mut props = props(message, actions.clone());
-            props.is_family_chat = family;
+            props.chat_kind = kind.into();
             props.transcription = Some(transcription(allows));
             (props, actions)
         };
-        // (sender, family chat, switch, offered)
-        for (sender, family, allows, offered) in [
-            (ME, false, false, true),
-            (ME, true, false, true),
-            (ANNA, true, true, true),
-            (ANNA, true, false, false),
-            // Not the family chat and not the assistant's: a direct chat.
-            (ANNA, false, true, true),
-            (ANNA, false, false, true),
-            (2, true, true, false),
+        // (sender, chat, switch, offered)
+        for (sender, kind, allows, offered) in [
+            (ME, "direct", false, true),
+            (ME, "family", false, true),
+            (ANNA, "family", true, true),
+            (ANNA, "family", false, false),
+            (ANNA, "direct", true, true),
+            (ANNA, "direct", false, true),
+            // A group follows the direct chat's rule (2026-10-22, D4).
+            (ANNA, "group", true, true),
+            (ANNA, "group", false, true),
+            (ME, "group", false, true),
+            (2, "family", true, false),
+            (2, "group", true, false),
         ] {
-            let (props, _) = with(sender, family, allows, vec![recording(34, "audio/mp4")]);
+            let (props, _) = with(sender, kind, allows, vec![recording(34, "audio/mp4")]);
             let (root, handle) = render(props).await;
             assert_eq!(
                 show_buttons(&root).len(),
                 usize::from(offered),
-                "sender {sender}, family {family}, switch {allows}"
+                "sender {sender}, {kind}, switch {allows}"
             );
             handle.destroy();
             root.remove();
         }
 
         // In the assistant's chat nobody else's message is ever offered.
-        let (mut props, _) = with(ANNA, false, true, vec![recording(34, "audio/mp4")]);
-        props.is_ai_chat = true;
+        let (mut props, _) = with(ANNA, "direct", true, vec![recording(34, "audio/mp4")]);
+        props.chat_kind = "ai".into();
         let (root, handle) = render(props).await;
         assert!(show_buttons(&root).is_empty(), "the assistant's chat");
         handle.destroy();
@@ -1803,7 +1804,7 @@ mod tests {
         // and each button asks for its own recording.
         let (props, actions) = with(
             ME,
-            true,
+            "family",
             false,
             vec![recording(33, "audio/ogg"), recording(34, "audio/mp4")],
         );
@@ -1837,7 +1838,7 @@ mod tests {
         root.remove();
 
         // No transcription deployment: nothing offered at all.
-        let (mut props, _) = with(ME, true, true, vec![recording(34, "audio/mp4")]);
+        let (mut props, _) = with(ME, "family", true, vec![recording(34, "audio/mp4")]);
         props.transcription = None;
         let (root, handle) = render(props).await;
         assert!(show_buttons(&root).is_empty());
@@ -2004,7 +2005,7 @@ mod tests {
             let mut message = message(1338, sender, "");
             message.attachments = Some(attachments);
             let mut props = props(message, actions.clone());
-            props.is_family_chat = true;
+            props.chat_kind = "family".into();
             props.transcription = Some(transcription(allows));
             (props, actions)
         };
@@ -2349,8 +2350,7 @@ mod tests {
                 awaited: self.awaited,
                 ai_failed: self.ai_failed,
                 failed: self.failed.clone(),
-                is_family_chat: self.is_family_chat,
-                is_ai_chat: self.is_ai_chat,
+                chat_kind: self.chat_kind.clone(),
                 assistant_user_id: self.assistant_user_id,
                 in_thread: self.in_thread,
                 can_reply: self.can_reply,
@@ -2384,7 +2384,7 @@ mod tests {
         let mut voice = message(1601, ANNA, "");
         voice.attachments = Some(vec![recording(96, "audio/mp4")]);
         let mut asked = props(voice, actions.clone());
-        asked.is_family_chat = true;
+        asked.chat_kind = "family".into();
         asked.transcription = Some(transcription(true));
         let (root, handle) = render(asked).await;
         // The speed changed AFTER this bubble was drawn — by a chip on a

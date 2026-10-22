@@ -8,6 +8,11 @@
 //  On success the sheet dismisses and hands the chatID to the caller,
 //  which pushes the conversation onto the navigation path.
 //
+//  Above the people, "New Group" (docs/protocol.md, "Groups", 2026-10-22):
+//  a name and some of the family, opened from here because this is where
+//  the phone and the iPad start every conversation. A group it creates
+//  opens the same way a direct chat does.
+//
 
 // iOS only — the Mac has its own views (MacViews/).
 #if os(iOS)
@@ -41,6 +46,7 @@ struct NewChatView: View {
 
     @State private var isWorking = false
     @State private var errorText: String?
+    @State private var showsNewGroup = false
 
     var body: some View {
         NavigationStack {
@@ -51,31 +57,20 @@ struct NewChatView: View {
                         systemImage: "person.2",
                         description: Text("Direct chats become available once another member joins the family."))
                 } else {
-                    List(selectableMembers) { member in
-                        Button {
-                            open(member)
-                        } label: {
-                            HStack(spacing: 12) {
-                                InitialsAvatar(
-                                    title: member.displayName,
-                                    userID: member.userID,
-                                    avatarVersion: member.avatarVersion)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(member.displayName)
-                                        .foregroundStyle(.primary)
-                                    Text("@\(member.username)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if member.role == "owner" {
-                                    Text("Owner")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                    List {
+                        Section {
+                            Button {
+                                showsNewGroup = true
+                            } label: {
+                                Label("New Group", systemImage: "person.3")
+                            }
+                            .disabled(isWorking)
+                        }
+                        Section {
+                            ForEach(selectableMembers) { member in
+                                memberRow(member)
                             }
                         }
-                        .disabled(isWorking)
                     }
                 }
             }
@@ -98,7 +93,40 @@ struct NewChatView: View {
             } message: {
                 Text(errorText ?? "")
             }
+            .sheet(isPresented: $showsNewGroup) {
+                NewGroupView { chatID in
+                    dismiss()
+                    onOpen(chatID)
+                }
+            }
         }
+    }
+
+    private func memberRow(_ member: MemberEntity) -> some View {
+        Button {
+            open(member)
+        } label: {
+            HStack(spacing: 12) {
+                InitialsAvatar(
+                    title: member.displayName,
+                    userID: member.userID,
+                    avatarVersion: member.avatarVersion)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(member.displayName)
+                        .foregroundStyle(.primary)
+                    Text("@\(member.username)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if member.role == "owner" {
+                    Text("Owner")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .disabled(isWorking)
     }
 
     private func open(_ member: MemberEntity) {

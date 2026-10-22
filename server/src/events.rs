@@ -385,9 +385,13 @@ async fn push_message_to(
     }
 
     // Composition context: the chat kind picks the title rule, the family
-    // and sender names fill it in (protocol.md "Push notifications").
+    // and sender names fill it in (protocol.md "Push notifications"). In a
+    // GROUP the group's name takes the family's place in the title —
+    // `"<Group> — <Sender>"` (protocol.md, "Groups").
     let row = sqlx::query(
-        "SELECT c.kind, f.name AS family_name, u.display_name AS sender_name
+        "SELECT c.kind,
+                CASE WHEN c.kind = 'group' THEN c.title ELSE f.name END AS family_name,
+                u.display_name AS sender_name
          FROM chats c
          JOIN families f ON f.id = c.family_id
          JOIN users u ON u.id = $2
@@ -1041,6 +1045,28 @@ pub async fn deliver_member_blocked(
         .registry
         .send_to_users(&[blocker_user_id], &frame)
         .await;
+    Ok(())
+}
+
+/// `chat_updated` — a group as it now stands, to every one of its members.
+pub async fn deliver_chat_updated(
+    state: &AppState,
+    chat: &crate::models::Chat,
+) -> Result<(), ApiError> {
+    let recipients = chat.member_ids.clone().unwrap_or_default();
+    let frame = ServerFrame::ChatUpdated { chat: chat.clone() };
+    state.registry.send_to_users(&recipients, &frame).await;
+    Ok(())
+}
+
+/// `chat_removed` — a group gone from these users' lists.
+pub async fn deliver_chat_removed(
+    state: &AppState,
+    chat_id: i64,
+    recipients: &[i64],
+) -> Result<(), ApiError> {
+    let frame = ServerFrame::ChatRemoved { chat_id };
+    state.registry.send_to_users(recipients, &frame).await;
     Ok(())
 }
 

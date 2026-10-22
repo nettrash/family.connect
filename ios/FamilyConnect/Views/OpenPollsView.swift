@@ -40,8 +40,9 @@ import SwiftData
 import SwiftUI
 
 struct OpenPollsView: View {
-    /// The family chat. Polls exist nowhere else, so this surface is only
-    /// ever opened from it and always has one.
+    /// The family chat or a group (docs/protocol.md, "Polls", amended
+    /// 2026-10-22). Polls exist nowhere else, so this surface is only ever
+    /// opened from one of them and always has one.
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
@@ -50,6 +51,9 @@ struct OpenPollsView: View {
     /// same source `ConversationView` draws a poll from, so a poll looks the
     /// same on both surfaces.
     @Query private var members: [MemberEntity]
+    /// Every chat this device holds — a handful — for the one this is: a
+    /// group's denominator is its own members, not the family.
+    @Query private var chats: [ChatEntity]
 
     @State private var messages: [MessageDTO] = []
     @State private var isLoading = true
@@ -185,7 +189,11 @@ struct OpenPollsView: View {
     /// not go on counting somebody who no longer exists. The same rule
     /// `ConversationView` uses, so the two surfaces cannot disagree.
     private var familyMemberCount: Int {
-        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
+        let chat = chats.first { $0.chatID == chatID }
+        return ChatRules.pollAudience(
+            kind: chat?.kind,
+            groupMemberIDs: chat?.groupMemberIDs ?? [],
+            liveFamilyMembers: members.filter { !$0.hasLeft && !$0.accountDeleted }.count)
     }
 
     private var memberNames: [Int64: String] {

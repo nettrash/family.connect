@@ -23,14 +23,15 @@ public static class AssistantConsent
 {
     /// <summary>
     /// Would a message with this body, in this chat, be sent to the model? The member's own
-    /// <c>ai</c> chat, where everything goes, and the family chat, where only an <c>@ai</c> does.
+    /// <c>ai</c> chat, where everything goes, and the family chat or a group, where only an <c>@ai</c>
+    /// does — a group is the family chat's surface with fewer people (docs/protocol.md, "Groups").
     /// <c>/draw</c> needs no case of its own: in the family chat it is <c>@ai /draw</c>, a
     /// mention, and in the assistant's own chat it is that chat.
     /// </summary>
     public static bool ReachesTheModel(string? chatKind, string? body) => chatKind switch
     {
-        "ai" => true,
-        "family" => AssistantText.Mentions(body ?? string.Empty),
+        ChatKinds.Assistant => true,
+        ChatKinds.Family or ChatKinds.Group => AssistantText.Mentions(body ?? string.Empty),
         _ => false,
     };
 
@@ -66,7 +67,9 @@ public static class AssistantConsent
     /// <remarks>
     /// The two family-chat lines depend on the owner's <c>ai_history</c>: with it on a mention
     /// takes the chat's recent history with it, and with it off it takes nothing but itself.
-    /// Saying the wrong one of those would be worse than saying neither.
+    /// Saying the wrong one of those would be worse than saying neither. Both say "the family chat
+    /// or a group" since 2026-10-22: the owner's switches apply to a group as they do to the family
+    /// chat (docs/protocol.md, "What a client must say before it asks").
     /// <para>
     /// <paramref name="transcribe"/> is the server's <c>assistant.transcribe</c>: where a member can ask for the text of
     /// a recording, its SOUND goes to the same provider — a new kind of thing leaving the server, so it gets a line of
@@ -89,10 +92,10 @@ public static class AssistantConsent
             say.Format("What you write to the assistant leaves this family's server and is sent to %@.", processor),
             familyHistory
                 ? say.Format(
-                    "In the family chat only a message that says %@ is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times.",
+                    "In the family chat or a group, only a message that says %@ is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times.",
                     AssistantText.Token)
                 : say.Format(
-                    "In the family chat only a message that says %@ is sent, and nothing else from that chat goes with it.",
+                    "In the family chat or a group, only a message that says %@ is sent, and nothing else from that chat goes with it.",
                     AssistantText.Token),
         };
         if (familyVision)
@@ -104,7 +107,7 @@ public static class AssistantConsent
             lines.Add(say.Format(
                 "If you ask for the text of a voice note, audio file or video, its sound is sent to %@.", processor));
             lines.Add(say.Format(
-                "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
+                "In a direct chat or a group, the others in it can ask for the text of your voice notes, audio files and videos, and their sound is then sent to %@.",
                 processor));
         }
         if (lookups is { Count: > 0 })

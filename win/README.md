@@ -32,6 +32,8 @@ win/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
                 ChatList — the rows, their order, and the one line under each name
+                Groups — ChatKinds (what the family chat shares with a group), GroupRules (who may rename, add, remove,
+                                delete and leave; the name; whom the lists offer), GroupText, GroupModel (#107)
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
                 Pack — the family's CHAT stickers: the panel, who may remove what, add, remove, send

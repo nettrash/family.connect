@@ -344,8 +344,21 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 10: GROUPS (docs/protocol.md, "Groups"; issue #107). A group's members and its admin, kept on its chat row so a
+    /// window can draw its info, offer its mentions and decide who may manage it without asking first. Both are the server's
+    /// and are written whole by every list read and every <c>chat_updated</c>; NULL on every other kind. Nothing held is read
+    /// again: a group an older build cached as a plain chat gains its members with the next list read.
+    /// </summary>
+    private static readonly string[] Ten =
+    [
+        // The wire's own array, verbatim and in join order: a list the server owns whole and replaces whole.
+        "ALTER TABLE chats ADD COLUMN member_ids_json TEXT",
+        "ALTER TABLE chats ADD COLUMN admin_user_id INTEGER",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight, Nine];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten];
 }

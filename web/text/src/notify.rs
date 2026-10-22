@@ -22,8 +22,9 @@ pub fn new_note() -> &'static str {
 /// Who a notification is from.
 ///
 /// A direct chat is the sender alone; the family chat names the family
-/// first, because a phone's lock screen shows a list and "Anna" alone does
-/// not say where she said it. A message that names the reader says so in
+/// first, and a group its own name in the family's place (since
+/// 2026-10-22), because a phone's lock screen shows a list and "Anna" alone
+/// does not say where she said it. A message that names the reader says so in
 /// the title — the same notification, a different title, never a second
 /// one.
 pub fn title(family: Option<&str>, sender: &str, mentioned: bool) -> String {

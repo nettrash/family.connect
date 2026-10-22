@@ -1247,4 +1247,69 @@ public class ApiClientTests
         Assert.Equal(4, stats.Members![0].Ai!.Searches);
         Assert.Equal(0, stats.Members[1].Ai!.Searches);
     }
+
+    /// <summary>
+    /// The five group endpoints (docs/protocol.md, "Groups"), each at its path with its body — and LEAVING, a <c>204</c> with
+    /// nothing in it, read as "left" rather than as an answer that could not be read.
+    /// </summary>
+    [Fact]
+    public async Task TheGroupEndpointsAreAskedAsTheProtocolWritesThem()
+    {
+        const string Group = """{"chat": {"id": 77, "kind": "group", "title": "Cousins", "peer_user_id": null, "member_ids": [7, 9, 11], "admin_user_id": 7}}""";
+        var (client, handler) = Client(new Fake()
+            .Then(HttpStatusCode.Created, Group)
+            .Then(HttpStatusCode.OK, Group)
+            .Then(HttpStatusCode.OK, Group)
+            .Then(HttpStatusCode.OK, Group)
+            .Then(HttpStatusCode.NoContent)
+            .Then(HttpStatusCode.NoContent));
+
+        var created = await client.CreateGroup("Cousins", [9, 11]);
+        Assert.True(created.Ok);
+        Assert.Equal(201, created.Status);
+        Assert.Equal([7L, 9L, 11L], created.Value!.Chat.MemberIds!);
+        Assert.Equal(7, created.Value.Chat.AdminUserId);
+        Assert.Null(created.Value.Chat.PeerUserId);
+        Assert.True((await client.RenameGroup(77, "The cousins")).Ok);
+        Assert.True((await client.AddGroupMembers(77, [12])).Ok);
+        var removed = await client.RemoveGroupMember(77, 11);
+        Assert.True(removed.Ok);
+        Assert.False(removed.Value!.Left);
+        Assert.Equal(77, removed.Value.Chat!.Id);
+        var left = await client.RemoveGroupMember(77, 7);
+        Assert.True(left.Ok);
+        Assert.True(left.Value!.Left);
+        Assert.True((await client.DeleteGroup(77)).Ok);
+
+        Assert.Equal(
+            [
+                (HttpMethod.Post, "https://chat.example.com/api/v1/chats/groups"),
+                (HttpMethod.Patch, "https://chat.example.com/api/v1/chats/77"),
+                (HttpMethod.Post, "https://chat.example.com/api/v1/chats/77/members"),
+                (HttpMethod.Delete, "https://chat.example.com/api/v1/chats/77/members/11"),
+                (HttpMethod.Delete, "https://chat.example.com/api/v1/chats/77/members/7"),
+                (HttpMethod.Delete, "https://chat.example.com/api/v1/chats/77"),
+            ],
+            handler.Sent.Select(request => (request.Method, request.RequestUri!.ToString())));
+        Assert.Equal(
+            ["{\"title\":\"Cousins\",\"member_ids\":[9,11]}", "{\"title\":\"The cousins\"}", "{\"user_ids\":[12]}", null, null, null],
+            handler.Bodies);
+    }
+
+    /// <summary>The two codes groups added arrive as the refusals they are, never as something worth trying again.</summary>
+    [Fact]
+    public async Task AGroupRefusalCarriesItsCode()
+    {
+        var (client, _) = Client(new Fake()
+            .Then(HttpStatusCode.Forbidden, """{"error": {"code": "not_group_admin", "message": "only the group's admin may do that"}}""")
+            .Then(HttpStatusCode.Conflict, """{"error": {"code": "too_many_groups", "message": "the family already has 50 groups"}}"""));
+
+        var renamed = await client.RenameGroup(77, "Cousins");
+        Assert.False(renamed.Ok);
+        Assert.Equal(ErrorCodes.NotGroupAdmin, renamed.Error!.Code);
+        Assert.False(renamed.Error.Transient);
+        var created = await client.CreateGroup("Cousins", [9]);
+        Assert.Equal(ErrorCodes.TooManyGroups, created.Error!.Code);
+        Assert.False(created.Error.Transient);
+    }
 }

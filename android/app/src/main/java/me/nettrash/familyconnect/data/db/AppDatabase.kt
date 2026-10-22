@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 32.
+ * Room database, version 34.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -47,7 +47,7 @@ fun interface LocalDataWiper {
         GonePackItemEntity::class,
         TranscriptEntity::class,
     ],
-    version = 33,
+    version = 34,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -578,6 +578,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v34: groups (#107; docs/protocol.md, "Groups"). Two nullable
+         * columns with no DEFAULT — MIGRATION_3_4's shape — because every
+         * row already here is a family, direct or assistant chat, and for
+         * those "no member list" and "no admin" are the truth, not a
+         * placeholder. The entity declares both without @ColumnInfo, so a
+         * migrated and a fresh schema validate identically.
+         */
+        val MIGRATION_33_34: Migration = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chats ADD COLUMN memberIdsJson TEXT")
+                db.execSQL("ALTER TABLE chats ADD COLUMN adminUserId INTEGER")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -678,6 +693,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_30_31,
                 MIGRATION_31_32,
                 MIGRATION_32_33,
+                MIGRATION_33_34,
             )
         }
     }

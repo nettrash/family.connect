@@ -138,7 +138,10 @@ public readonly record struct Door(DoorKind Kind, Dimmed? Reason = null)
 }
 
 /// <summary>What the video button needs to know besides the slot (S1.4, S1.2).</summary>
-/// <param name="FamilyOrDirectChat">The chat's main composer, in a family or a direct chat — never the assistant's, never a thread.</param>
+/// <param name="FamilyOrDirectChat">
+/// The chat's main composer, in a family, direct or GROUP chat (<see cref="ChatKinds.TakesVideoMessages"/>; a group since
+/// #107) — never the assistant's, never a thread. The name is the shared vectors' <c>family_or_direct_chat</c>.
+/// </param>
 /// <param name="ServerOffersRound">The server sends <c>max_round_video_ms</c> on <c>GET /families/mine</c>.</param>
 /// <param name="HasCamera">The device has a camera.</param>
 /// <param name="EncoderProbePasses">The web's encoder probe; true everywhere else.</param>

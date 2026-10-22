@@ -1073,13 +1073,13 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                         }) }
                     </select>
                 </label>
-                <p class="footnote">{ t1("The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.", &token) }</p>
+                <p class="footnote">{ t1("The language %@ answers in when it is asked in the family chat or a group. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.", &token) }</p>
                 <label class="setting-row toggle">
                     <span>{ t("Sees recent history") }</span>
                     <input type="checkbox" role="switch" checked={family.ai_history}
                         onchange={switch(|on| FamilyPatch { ai_history: Some(on), ..FamilyPatch::default() })} />
                 </label>
-                <p class="footnote">{ t1("With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.", &token) }</p>
+                <p class="footnote">{ t1("With this on, mentioning %@ in the family chat or a group sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.", &token) }</p>
             </section>
             <section class="group" aria-labelledby="assistant-pictures">
                 <h3 id="assistant-pictures">{ t("Pictures") }</h3>
@@ -1089,7 +1089,7 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                         <input type="checkbox" role="switch" checked={family.ai_vision}
                             onchange={switch(|on| FamilyPatch { ai_vision: Some(on), ..FamilyPatch::default() })} />
                     </label>
-                    <p class="footnote">{ t2("With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.", &token, &token) }</p>
+                    <p class="footnote">{ t2("With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat or a group, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.", &token, &token) }</p>
                 }
                 <label class="setting-row toggle">
                     <span>{ t("Recent photos") }</span>
@@ -1097,7 +1097,7 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                         onchange={switch(|on| FamilyPatch { ai_history_photos: Some(on), ..FamilyPatch::default() })} />
                 </label>
                 <p class="footnote">
-                    { t2("With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.", &token, &limit.to_string()) }
+                    { t2("With this on, whenever anyone mentions %@ in the family chat or a group, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.", &token, &limit.to_string()) }
                     if let Some(note) = photos_note {
                         { format!(" {note}") }
                     }
@@ -1108,7 +1108,7 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                         onchange={switch(|on| FamilyPatch { ai_faces: Some(on), ..FamilyPatch::default() })} />
                 </label>
                 <p class="footnote">
-                    { t2("With this on, whenever anyone mentions %@ in the family chat, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.", &token, &limit.to_string()) }
+                    { t2("With this on, whenever anyone mentions %@ in the family chat or a group, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.", &token, &limit.to_string()) }
                     if let Some(note) = faces_note {
                         { format!(" {note}") }
                     }

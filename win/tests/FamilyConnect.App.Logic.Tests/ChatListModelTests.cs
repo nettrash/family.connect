@@ -272,4 +272,40 @@ public class ChatListModelTests : IDisposable
 
         Assert.Equal([42L], list.Rows(Now).Select(row => row.Chat.Id));
     }
+
+    /// <summary>
+    /// A GROUP IS A ROW LIKE ANY CHAT, below the family chat and ordered by its last message (docs/protocol.md, "Groups";
+    /// docs/groups-2026-10-21.md, §6): its name is its title, and its circle is the people glyph rather than initials.
+    /// </summary>
+    [Fact]
+    public void AGroupIsListedBelowTheFamilyByItsLastMessage()
+    {
+        chats.Replace([
+            new ChatRowDto(new ChatDto(42, "family", "The Smiths"), LastMessage: Message(1300, at: Now.AddHours(-5))),
+            new ChatRowDto(new ChatDto(43, "direct", "Bob", PeerUserId: 11), LastMessage: Message(1400, chat: 43, at: Now.AddHours(-1))),
+            new ChatRowDto(new ChatDto(77, "group", "Cousins", MemberIds: [Me, 9, 11], AdminUserId: 9),
+                LastMessage: Message(1500, chat: 77, at: Now.AddMinutes(-10)), UnreadCount: 2),
+            new ChatRowDto(new ChatDto(78, "group", "Book club", MemberIds: [Me, 12], AdminUserId: Me)),
+        ]);
+        chats.Apply([
+            Message(1300, at: Now.AddHours(-5)),
+            Message(1400, chat: 43, at: Now.AddHours(-1)),
+            Message(1500, chat: 77, at: Now.AddMinutes(-10)),
+        ]);
+
+        var rows = list.Rows(Now);
+
+        // The busiest chat is a group, and the family chat is still first.
+        Assert.Equal([42L, 77L, 43L, 78L], rows.Select(row => row.Chat.Id));
+        var group = Row(77);
+        Assert.True(group.IsGroup);
+        Assert.False(group.IsFamily || group.IsDirect || group.IsAssistant);
+        Assert.Equal("Cousins", group.Title);
+        Assert.Equal(2, group.Unread);
+        Assert.Equal(ChatFace.People, group.Face);
+        Assert.Equal(ChatFace.House, Row(42).Face);
+        Assert.Equal(ChatFace.Initials, Row(43).Face);
+        // A group with nothing in it yet says so, as any chat does.
+        Assert.Equal("No messages yet", Row(78).Preview);
+    }
 }

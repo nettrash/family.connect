@@ -346,6 +346,9 @@ async fn load(
 /// - the other person's in a direct chat — only when that SENDER has agreed
 ///   to the assistant themselves (amended 2026-10-21; until then never). No
 ///   owner's switch: a direct chat is two people's, not the family's;
+/// - another member's in a GROUP — the direct chat's rule, that sender's
+///   consent alone (protocol.md, "Groups"): the owner cannot see a group
+///   they are not in, and `ai_transcripts` is about the family chat;
 /// - another member's in the family chat (its threads are the same chat) —
 ///   only while the family's `ai_transcripts` is on, and only when that
 ///   SENDER has agreed to the assistant: the history a mention carries is
@@ -365,7 +368,7 @@ async fn allowed(
         return Ok(true);
     }
     let shared = match held.chat_kind.as_str() {
-        "direct" => true,
+        "direct" | "group" => true,
         "family" => switch_on,
         _ => false,
     };

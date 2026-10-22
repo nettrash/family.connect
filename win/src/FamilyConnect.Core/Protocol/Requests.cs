@@ -465,6 +465,17 @@ public sealed record MemberResponse(MemberDto Member);
 
 public sealed record ChatResponse(ChatDto Chat);
 
+/// <summary>
+/// What <c>DELETE /chats/{id}/members/{user_id}</c> answers (docs/protocol.md, "Groups"): the group as it now stands when
+/// its admin removed somebody else, and — <see cref="Chat"/> null — nothing at all when the caller LEFT, which is a
+/// <c>204</c> and not "the answer could not be read".
+/// </summary>
+public sealed record GroupMemberAnswer(ChatDto? Chat = null)
+{
+    /// <summary>The caller left: the group is no longer theirs to hold.</summary>
+    public bool Left => Chat is null;
+}
+
 public sealed record UserResponse(UserDto User);
 
 public sealed record InviteCodeResponse(

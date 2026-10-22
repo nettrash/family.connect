@@ -420,16 +420,24 @@ pub struct JoinRequest {
     pub created_at: OffsetDateTime,
 }
 
-/// `Chat` object. `title` is denormalized server-side (family name or peer
-/// display name) so clients never join locally; `peer_user_id` is `null`
-/// for the family chat, per the protocol example.
+/// `Chat` object. `title` is denormalized server-side (family name, peer
+/// display name, the assistant's name, or a group's own name) so clients
+/// never join locally; `peer_user_id` is `null` for every kind but direct,
+/// per the protocol example.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Chat {
     pub id: i64,
-    /// `"family"` or `"direct"`.
+    /// `"family"`, `"direct"`, `"ai"` or `"group"`.
     pub kind: String,
     pub title: String,
     pub peer_user_id: Option<i64>,
+    /// A group's members, in the order they joined — present only for a
+    /// group (protocol.md, "Groups").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_ids: Option<Vec<i64>>,
+    /// A group's admin — present only for a group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_user_id: Option<i64>,
 }
 
 /// One user's reaction on a message (protocol.md `Reaction`).
@@ -1897,6 +1905,8 @@ mod tests {
                 kind: "family".to_string(),
                 title: "The Smiths".to_string(),
                 peer_user_id: None,
+                member_ids: None,
+                admin_user_id: None,
             },
             last_message: None,
             unread_count: 0,
@@ -1943,6 +1953,8 @@ mod tests {
             kind: "family".to_string(),
             title: "The Smiths".to_string(),
             peer_user_id: None,
+            member_ids: None,
+            admin_user_id: None,
         };
         let json = serde_json::to_value(&chat).expect("serialize");
         assert_eq!(json["peer_user_id"], serde_json::Value::Null);

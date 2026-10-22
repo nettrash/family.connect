@@ -67,11 +67,12 @@ public static class AttachMenu
     /// The menu's lines, group by group, top to bottom. In the assistant's chat, "Show the Assistant a Photo…" stands where
     /// "Photo or Video" does — and only where <paramref name="offersPictureAttach"/> (the server can see and the family
     /// allows it); never both lines. Nothing is recorded for the assistant, where every message is a consented model call;
-    /// a video message only where one can be recorded; "Ask the Assistant" and a poll only in the family chat — the first
-    /// only where <paramref name="assistantAvailable"/>: the server has an assistant and names its processor.
+    /// a video message only where one can be recorded; "Ask the Assistant" and a poll only in the family chat or a group
+    /// (<see cref="ChatKinds.IsShared"/>; docs/protocol.md, "Groups") — the first only where
+    /// <paramref name="assistantAvailable"/>: the server has an assistant and names its processor.
     /// </summary>
     public static IReadOnlyList<IReadOnlyList<AttachItem>> Groups(
-        bool assistantChat, bool offersPictureAttach, bool familyChat, bool roundAvailable, bool assistantAvailable)
+        bool assistantChat, bool offersPictureAttach, bool sharedChat, bool roundAvailable, bool assistantAvailable)
     {
         List<AttachItem> pick = [];
         if (!assistantChat)
@@ -96,12 +97,12 @@ public static class AttachMenu
         }
 
         List<AttachItem> rest = [];
-        if (familyChat && assistantAvailable)
+        if (sharedChat && assistantAvailable)
         {
             rest.Add(AttachItem.AskAssistant);
         }
         rest.Add(AttachItem.Location);
-        if (familyChat)
+        if (sharedChat)
         {
             rest.Add(AttachItem.Poll);
         }

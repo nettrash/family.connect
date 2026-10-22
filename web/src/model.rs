@@ -643,21 +643,68 @@ impl Roster {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct Chat {
     pub id: i64,
-    /// `family` | `direct` | `ai`.
+    /// `family` | `direct` | `ai` | `group`.
     pub kind: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub peer_user_id: Option<i64>,
+    /// A group's members, the caller included, in the order they joined —
+    /// present only for `group` (docs/protocol.md, "Groups").
+    #[serde(default)]
+    pub member_ids: Option<Vec<i64>>,
+    /// The one member who may rename the group, add and remove members, and
+    /// delete it — present only for `group`.
+    #[serde(default)]
+    pub admin_user_id: Option<i64>,
 }
 
 impl Chat {
-    pub const FAMILY: &'static str = "family";
-    pub const DIRECT: &'static str = "direct";
-    pub const AI: &'static str = "ai";
+    pub const FAMILY: &'static str = fc_text::groups::FAMILY;
+    pub const DIRECT: &'static str = fc_text::groups::DIRECT;
+    pub const AI: &'static str = fc_text::groups::AI;
+    pub const GROUP: &'static str = fc_text::groups::GROUP;
+
+    pub fn is_group(&self) -> bool {
+        self.kind == Self::GROUP
+    }
+
+    /// What this chat offers (fc_text::groups::offers): a group is the
+    /// family chat less calls and "seen".
+    pub fn offers(&self) -> fc_text::groups::Offers {
+        fc_text::groups::offers(&self.kind)
+    }
+
+    /// A group's members — empty for every other kind.
+    pub fn group_member_ids(&self) -> &[i64] {
+        self.member_ids
+            .as_deref()
+            .filter(|_| self.is_group())
+            .unwrap_or_default()
+    }
+
+    /// Whom a mention here may name and a poll here counts: the family's
+    /// members, or in a group the group's, in the order they joined
+    /// (docs/protocol.md, "Groups" — "4 of 5 voted" counts the group's).
+    pub fn members_of(&self, family: &[Member]) -> Vec<Member> {
+        if !self.is_group() {
+            return family.to_vec();
+        }
+        self.group_member_ids()
+            .iter()
+            .filter_map(|id| family.iter().find(|member| member.id == *id))
+            .cloned()
+            .collect()
+    }
+
+    /// May `me` do `power` to this chat? Only ever to a group.
+    pub fn may(&self, power: fc_text::groups::Power, me: i64) -> bool {
+        self.is_group()
+            && fc_text::groups::may(power, me, self.admin_user_id, self.group_member_ids())
+    }
 
     pub fn is_family(&self) -> bool {
         self.kind == Self::FAMILY
@@ -680,6 +727,9 @@ impl Chat {
         if let Some(title) = self.title.as_ref().filter(|title| !title.is_empty()) {
             return title.clone();
         }
+        if self.is_group() {
+            return t("Group").to_string();
+        }
         peer_name.unwrap_or_else(|| t("Chat")).to_string()
     }
 }
@@ -690,7 +740,7 @@ impl Chat {
 /// explicitly, and `0` is a real answer meaning "never reported"), so it is
 /// not an Option. `unread_count` likewise. The three `max_*_seq` are
 /// high-water marks, omitted until the first reaction, edit or poll.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ChatListItem {
     pub chat: Chat,
     #[serde(default)]
@@ -1515,6 +1565,7 @@ mod tests {
             kind: "family".into(),
             title: Some("The Smiths".into()),
             peer_user_id: None,
+            ..Chat::default()
         };
         assert_eq!(family.display_title(None), "The Smiths");
         let direct = Chat {
@@ -1522,6 +1573,7 @@ mod tests {
             kind: "direct".into(),
             title: None,
             peer_user_id: Some(9),
+            ..Chat::default()
         };
         assert_eq!(direct.display_title(Some("Anna")), "Anna");
         // A direct chat whose peer is not in the roster yet still draws as
@@ -1534,8 +1586,46 @@ mod tests {
             kind: "direct".into(),
             title: Some(String::new()),
             peer_user_id: Some(9),
+            ..Chat::default()
         };
         assert_eq!(empty.display_title(Some("Anna")), "Anna");
+    }
+
+    /// A group carries its name, its members in the order they joined and
+    /// its admin; every other kind carries neither, and a group's fields on
+    /// another kind mean nothing (docs/protocol.md, "Groups").
+    #[wasm_bindgen_test]
+    fn a_group_reads_its_members_and_its_admin() {
+        let json = r#"{"chat": {"id": 77, "kind": "group", "title": "Cousins",
+                                "peer_user_id": null, "member_ids": [7, 9, 11],
+                                "admin_user_id": 7},
+                       "last_message": null, "unread_count": 0, "last_read_message_id": 0}"#;
+        let item: ChatListItem = serde_json::from_str(json).expect("decodes");
+        let chat = item.chat;
+        assert!(chat.is_group() && !chat.is_family() && !chat.is_direct());
+        assert_eq!(chat.group_member_ids(), &[7, 9, 11]);
+        assert_eq!(chat.admin_user_id, Some(7));
+        assert_eq!(chat.display_title(None), "Cousins");
+        assert!(chat.offers().mentions && !chat.offers().calls && !chat.offers().seen);
+        assert!(chat.may(fc_text::groups::Power::Delete, 7));
+        assert!(!chat.may(fc_text::groups::Power::Delete, 9));
+        assert!(chat.may(fc_text::groups::Power::Leave, 9));
+        assert!(!chat.may(fc_text::groups::Power::Leave, 12));
+        let nameless = Chat {
+            title: None,
+            ..chat.clone()
+        };
+        assert_eq!(nameless.display_title(Some("Anna")), "Group");
+
+        let family: Chat = serde_json::from_str(
+            r#"{"id": 42, "kind": "family", "title": "The Smiths", "member_ids": [7]}"#,
+        )
+        .expect("decodes");
+        assert!(family.group_member_ids().is_empty());
+        assert!(
+            !family.may(fc_text::groups::Power::Leave, 7),
+            "never the family chat"
+        );
     }
 
     #[wasm_bindgen_test]

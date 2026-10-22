@@ -48,14 +48,14 @@ public sealed class BubbleRulesTests
     [Fact]
     public void TheTickIsADirectChatFactAboutMyNumberedMessages()
     {
-        Assert.True(BubbleRules.ShowsTick(From(Me, "hi"), Me, familyChat: false));
-        Assert.False(BubbleRules.ShowsTick(From(Me, "hi"), Me, familyChat: true));
-        Assert.False(BubbleRules.ShowsTick(From(Anna, "hi"), Me, familyChat: false));
-        Assert.False(BubbleRules.ShowsTick(From(Me, "hi", id: 0), Me, familyChat: false));
+        Assert.True(BubbleRules.ShowsTick(From(Me, "hi"), Me, sharedChat: false));
+        Assert.False(BubbleRules.ShowsTick(From(Me, "hi"), Me, sharedChat: true));
+        Assert.False(BubbleRules.ShowsTick(From(Anna, "hi"), Me, sharedChat: false));
+        Assert.False(BubbleRules.ShowsTick(From(Me, "hi", id: 0), Me, sharedChat: false));
 
         Assert.True(BubbleRules.Seen(From(Me, "hi", id: 5), Me, false, peerReadUpTo: 5));
         Assert.False(BubbleRules.Seen(From(Me, "hi", id: 6), Me, false, peerReadUpTo: 5));
-        Assert.False(BubbleRules.Seen(From(Me, "hi", id: 5), Me, familyChat: true, peerReadUpTo: 9));
+        Assert.False(BubbleRules.Seen(From(Me, "hi", id: 5), Me, sharedChat: true, peerReadUpTo: 9));
         Assert.False(BubbleRules.Seen(From(Anna, "hi", id: 5), Me, false, peerReadUpTo: 9));
         Assert.False(BubbleRules.Seen(From(Me, "hi", id: 0), Me, false, peerReadUpTo: 9));
     }

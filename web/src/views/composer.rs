@@ -28,7 +28,7 @@ use std::rc::Rc;
 use fc_text::assistant_pictures::{self, Candidate, MentionNotice, Switches};
 use fc_text::i18n::{t, t1};
 use fc_text::record::{self, Slot};
-use fc_text::{assistant, assistant_consent, composer, media, mentions};
+use fc_text::{assistant, assistant_consent, composer, groups, media, mentions};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{File, HtmlElement, HtmlTextAreaElement};
@@ -312,10 +312,10 @@ pub struct Pictures {
 
 impl Pictures {
     /// What the strip above the box says, if anything: the assistant's own
-    /// chat says it of every staged photo; the family chat of an `@ai`
-    /// draft that carries one or replies to one.
-    pub fn notice(&self, draft: &str, is_ai_chat: bool, is_family_chat: bool) -> Option<String> {
-        if is_ai_chat {
+    /// chat says it of every staged photo; the family chat, or a group, of
+    /// an `@ai` draft that carries one or replies to one.
+    pub fn notice(&self, draft: &str, chat_kind: &str) -> Option<String> {
+        if chat_kind == groups::AI {
             let can_see = assistant_pictures::offers_picture_attach(
                 true,
                 self.server_can_see,
@@ -323,7 +323,7 @@ impl Pictures {
             );
             return assistant_pictures::private_notice(&self.staged, can_see);
         }
-        if !is_family_chat {
+        if !groups::offers(chat_kind).assistant_mention {
             return None;
         }
         MentionNotice::of(
@@ -352,9 +352,13 @@ pub struct Editing {
 #[derive(Properties, PartialEq)]
 pub struct ComposerProps {
     pub chat_id: i64,
-    pub is_family_chat: bool,
-    pub is_ai_chat: bool,
+    /// The chat's kind as the server sent it — `family`, `direct`, `ai` or
+    /// `group` — read through the one table of what each offers
+    /// (fc_text::groups::offers) and handed as it is to the consent rule.
+    pub chat_kind: AttrValue,
     pub my_user_id: i64,
+    /// Whom a mention may name: the family's members, or in a group the
+    /// group's (docs/protocol.md, "Groups").
     pub members: Vec<Member>,
     pub blocked: HashSet<i64>,
     pub assistant: Option<Assistant>,
@@ -445,9 +449,11 @@ pub struct ComposerProps {
 
 /// Who the text names, resolved against the whole live roster at send —
 /// a name typed by hand mentions too, a name deleted after picking does
-/// not — and only in the family chat, where a mention means anything.
-pub fn resolve_mentions(body: &str, members: &[Member], is_family_chat: bool) -> Vec<Mention> {
-    if !is_family_chat {
+/// not — and only where a mention means anything: the family chat, or a
+/// group, whose own members `members` then holds (docs/protocol.md,
+/// "Groups" — the server refuses anybody outside it).
+pub fn resolve_mentions(body: &str, members: &[Member], takes_mentions: bool) -> Vec<Mention> {
+    if !takes_mentions {
         return Vec::new();
     }
     let roster: Vec<mentions::Member> = members
@@ -563,14 +569,21 @@ pub fn composer(props: &ComposerProps) -> Html {
     }
 
     let editing = props.editing.clone();
+    // Which surface this composer is on, in the words the shared rules use
+    // (fc_text::assistant_consent, and `model_surface` on the server) — the
+    // kind as sent, a group included, and nothing guessed for one this
+    // client does not know.
+    let chat_kind = groups::known(&props.chat_kind);
+    let offers = groups::offers(chat_kind);
+    let is_ai_chat = chat_kind == groups::AI;
     let processor = props
         .assistant
         .as_ref()
         .and_then(|assistant| assistant.processor.clone());
     // The assistant, offered where `@ai` may be written at all: the family
-    // chat, on a server with an assistant that names who answers
+    // chat or a group, on a server with an assistant that names who answers
     // (docs/protocol.md, "Mentioning a member", amended 2026-10-20 — #106).
-    let offers_ai = props.is_family_chat
+    let offers_ai = offers.assistant_mention
         && editing.is_none()
         && processor
             .as_deref()
@@ -586,7 +599,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 .filter(|query| mentions::offers_assistant(query, &assistant.display_name))
                 .map(|_| assistant.display_name.clone())
         });
-    let members_offered: Vec<Member> = if props.is_family_chat && editing.is_none() {
+    let members_offered: Vec<Member> = if offers.mentions && editing.is_none() {
         match mentions::query(&text) {
             Some(query) => {
                 let roster: Vec<mentions::Member> = props
@@ -682,7 +695,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         let latest = latest.clone();
         let on_take = props.on_take.clone();
         let members = props.members.clone();
-        let is_family = props.is_family_chat;
+        let takes_mentions = offers.mentions;
         use_effect_with(props.take, move |take| {
             if *take == 0 {
                 return;
@@ -690,7 +703,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             let body = composer::trimmed_for_send(&latest.borrow())
                 .unwrap_or("")
                 .to_string();
-            let mentioned = resolve_mentions(&body, &members, is_family);
+            let mentioned = resolve_mentions(&body, &members, takes_mentions);
             text.set(String::new());
             on_take.emit(Draft {
                 body,
@@ -702,16 +715,6 @@ pub fn composer(props: &ComposerProps) -> Html {
 
     let staged = props.staged;
     let busy = props.busy;
-    // Which of the assistant's surfaces this composer is on, in the words
-    // the shared rule uses (fc_text::assistant_consent, and `model_surface`
-    // on the server).
-    let chat_kind = if props.is_ai_chat {
-        "ai"
-    } else if props.is_family_chat {
-        "family"
-    } else {
-        "direct"
-    };
     let send = {
         let text = text.clone();
         let notice = notice.clone();
@@ -719,7 +722,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         let on_save_edit = props.on_save_edit.clone();
         let on_cancel = props.on_cancel.clone();
         let members = props.members.clone();
-        let is_family = props.is_family_chat;
+        let takes_mentions = offers.mentions;
         let editing = editing.clone();
         let on_review_consent = props.on_review_consent.clone();
         let agreed = props.agreed_to_assistant;
@@ -787,7 +790,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             {
                 return;
             }
-            let mentioned = resolve_mentions(&body, &members, is_family);
+            let mentioned = resolve_mentions(&body, &members, takes_mentions);
             text.set(String::new());
             on_send.emit(Draft {
                 body,
@@ -909,7 +912,7 @@ pub fn composer(props: &ComposerProps) -> Html {
         Callback::from(move |_: MouseEvent| on_cancel.emit(()))
     };
 
-    let can_draw = props.is_ai_chat
+    let can_draw = is_ai_chat
         && props
             .assistant
             .as_ref()
@@ -936,7 +939,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             editing: editing.is_some(),
             draft_blank: blank,
             staged: props.staged > 0,
-            assistant_chat: props.is_ai_chat,
+            assistant_chat: is_ai_chat,
             can_record: records.can_record,
             call: records.call,
             busy: props.busy,
@@ -957,13 +960,15 @@ pub fn composer(props: &ComposerProps) -> Html {
                 editing: editing.is_some(),
                 draft_blank: blank,
                 staged: props.staged > 0,
-                assistant_chat: props.is_ai_chat,
+                assistant_chat: is_ai_chat,
                 can_record: records.can_record,
                 call: records.call,
                 busy: props.busy,
                 not_sent: records.not_sent,
             },
-            family_or_direct_chat: !props.is_ai_chat,
+            // The family chat, a direct chat or a group — never the
+            // assistant's own (fc_text::groups::offers).
+            family_or_direct_chat: offers.video_messages,
             server_offers_round: true,
             has_camera: true,
             encoder_probe_passes: video.records,
@@ -1457,7 +1462,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                     { assistant_consent::unnamed_processor_notice() }
                 </p>
             }
-            if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
+            if let Some(sentence) = props.pictures.notice(&text, chat_kind).filter(|_| editing.is_none()) {
                 <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
             }
             // While a picture is being asked for: the image model's filter
@@ -1771,8 +1776,7 @@ mod tests {
         let saved = Rc::new(RefCell::new(Vec::new()));
         let props = ComposerProps {
             chat_id: 42,
-            is_family_chat: true,
-            is_ai_chat: false,
+            chat_kind: "family".into(),
             my_user_id: 7,
             members: Vec::new(),
             blocked: HashSet::new(),
@@ -1884,7 +1888,7 @@ mod tests {
             family_history: true,
             ..Pictures::default()
         };
-        let family = |draft: &str, pictures: &Pictures| pictures.notice(draft, false, true);
+        let family = |draft: &str, pictures: &Pictures| pictures.notice(draft, "family");
         assert!(family("@ai what is this?", &open)
             .unwrap()
             .starts_with("This goes to the model"));
@@ -1899,17 +1903,23 @@ mod tests {
         };
         assert_eq!(family("@ai what is this?", &shut), None);
         assert_eq!(
-            open.notice("@ai look", false, false),
+            open.notice("@ai look", "direct"),
             None,
             "a direct chat carries none"
         );
+        // A group says what the family chat says (docs/protocol.md,
+        // "Groups").
+        assert_eq!(
+            open.notice("@ai what is this?", "group"),
+            family("@ai what is this?", &open)
+        );
         // The assistant's own chat says it of every staged photo.
         assert!(shut
-            .notice("", true, false)
+            .notice("", "ai")
             .unwrap()
             .starts_with("The assistant on this server can't look at pictures"));
         assert!(open
-            .notice("", true, false)
+            .notice("", "ai")
             .unwrap()
             .ends_with("Nothing else from this chat does."));
     }
@@ -1933,17 +1943,19 @@ mod tests {
         // The assistant's own chat, where every word travels; and the
         // family chat, where only an `@ai` does — the second is the one
         // that must still send ordinary words.
-        for (is_ai, is_family, body, asks) in [
-            (true, false, "are you there?", true),
-            (false, true, "@ai when is dinner?", true),
-            (false, true, "dinner at 7?", false),
+        for (kind, body, asks) in [
+            ("ai", "are you there?", true),
+            ("family", "@ai when is dinner?", true),
+            ("family", "dinner at 7?", false),
+            // A group, as the family chat (docs/protocol.md, "Groups").
+            ("group", "@ai when is dinner?", true),
+            ("group", "dinner at 7?", false),
         ] {
             let sent = Rc::new(RefCell::new(Vec::new()));
             let asked = Rc::new(Cell::new(0));
             let props = ComposerProps {
                 chat_id: 42,
-                is_family_chat: is_family,
-                is_ai_chat: is_ai,
+                chat_kind: kind.into(),
                 my_user_id: 7,
                 members: Vec::new(),
                 blocked: HashSet::new(),
@@ -2055,8 +2067,7 @@ mod tests {
             let recorded = Rc::new(Cell::new(0));
             let props = ComposerProps {
                 chat_id: 42,
-                is_family_chat: true,
-                is_ai_chat: false,
+                chat_kind: "family".into(),
                 my_user_id: 7,
                 members: Vec::new(),
                 blocked: HashSet::new(),
@@ -2137,18 +2148,19 @@ mod tests {
         const HINT: &str =
             "Describe people and things in general words — real names and brands are often refused.";
         // (ai chat, family chat, images, draft, shows)
-        for (is_ai, is_family, images, draft, shows) in [
-            (true, false, true, "/draw a cat", true),
-            (true, false, true, "hello", false),
-            (true, false, false, "/draw a cat", false),
-            (false, true, true, "@ai /draw a cat", true),
-            (false, true, true, "/draw a cat", false),
-            (false, false, true, "/draw a cat", false),
+        for (kind, images, draft, shows) in [
+            ("ai", true, "/draw a cat", true),
+            ("ai", true, "hello", false),
+            ("ai", false, "/draw a cat", false),
+            ("family", true, "@ai /draw a cat", true),
+            ("family", true, "/draw a cat", false),
+            ("group", true, "@ai /draw a cat", true),
+            ("group", true, "/draw a cat", false),
+            ("direct", true, "/draw a cat", false),
         ] {
             let props = ComposerProps {
                 chat_id: 42,
-                is_family_chat: is_family,
-                is_ai_chat: is_ai,
+                chat_kind: kind.into(),
                 my_user_id: 7,
                 members: Vec::new(),
                 blocked: HashSet::new(),
@@ -2200,11 +2212,7 @@ mod tests {
                 yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
             gloo_timers::future::TimeoutFuture::new(20).await;
             let hint = root.query_selector(".picture-hint").unwrap();
-            assert_eq!(
-                hint.is_some(),
-                shows,
-                "{draft:?} ai={is_ai} images={images}"
-            );
+            assert_eq!(hint.is_some(), shows, "{draft:?} {kind} images={images}");
             if let Some(hint) = hint {
                 assert_eq!(hint.text_content().unwrap_or_default(), HINT);
                 // Said, not only shown: it appears as the member types.
@@ -2213,7 +2221,7 @@ mod tests {
 
             // In the assistant's own chat on a server that draws, an empty
             // box gains the hint the moment 🎨 has typed `/draw `.
-            if is_ai && images && !shows {
+            if kind == "ai" && images && !shows {
                 let area: web_sys::HtmlTextAreaElement = root
                     .query_selector("textarea")
                     .unwrap()
@@ -2267,8 +2275,7 @@ mod tests {
     fn slot_props(heard: &Rc<Heard>, records: Option<Records>) -> ComposerProps {
         ComposerProps {
             chat_id: 42,
-            is_family_chat: true,
-            is_ai_chat: false,
+            chat_kind: "family".into(),
             my_user_id: 7,
             members: Vec::new(),
             blocked: HashSet::new(),
@@ -2508,8 +2515,7 @@ mod tests {
                 "row 6: the assistant's chat",
                 Some(records()),
                 Box::new(|props| {
-                    props.is_ai_chat = true;
-                    props.is_family_chat = false;
+                    props.chat_kind = "ai".into();
                 }),
                 send(true),
             ),
@@ -3575,16 +3581,16 @@ mod tests {
                 })
                 .collect()
         };
-        let mount = |family: bool, processor: Option<&'static str>| {
+        let mount = |kind: &'static str, processor: Option<&'static str>| {
             let heard = Rc::new(Heard::default());
             let mut props = slot_props(&heard, None);
-            props.is_family_chat = family;
+            props.chat_kind = kind.into();
             props.members = vec![member(9, "Anna"), member(11, "Bob")];
             props.assistant = Some(helper(processor));
             Mounted::with(props)
         };
 
-        let mounted = mount(true, Some("Microsoft — Azure OpenAI")).await;
+        let mounted = mount("family", Some("Microsoft — Azure OpenAI")).await;
         mounted.type_in("@").await;
         assert_eq!(
             offered(&mounted),
@@ -3643,17 +3649,36 @@ mod tests {
         mounted.gone();
 
         // Nowhere else: a direct chat, or a server that names nobody.
-        for (family, processor) in [(false, Some("Microsoft — Azure OpenAI")), (true, None)] {
-            let mounted = mount(family, processor).await;
+        for (kind, processor) in [
+            ("direct", Some("Microsoft — Azure OpenAI")),
+            ("family", None),
+        ] {
+            let mounted = mount(kind, processor).await;
             mounted.type_in("@").await;
             assert!(
                 !offered(&mounted)
                     .iter()
                     .any(|line| line.starts_with("Helper")),
-                "family {family}, processor {processor:?}"
+                "{kind}, processor {processor:?}"
             );
             mounted.gone();
         }
+
+        // A GROUP offers what the family chat does — the assistant first,
+        // then the members it is handed, which in a group are the group's
+        // (docs/protocol.md, "Groups"); and a mention resolves there.
+        let mounted = mount("group", Some("Microsoft — Azure OpenAI")).await;
+        mounted.type_in("@").await;
+        assert_eq!(offered(&mounted), ["Helper @ai", "Anna @anna", "Bob @bob"]);
+        mounted.gone();
+        assert_eq!(
+            resolve_mentions("@Anna dinner?", &[member(9, "Anna")], true),
+            vec![Mention {
+                user_id: 9,
+                name: "Anna".into()
+            }]
+        );
+        assert!(resolve_mentions("@Anna dinner?", &[member(9, "Anna")], false).is_empty());
     }
 
     /// WHAT STACKS ABOVE THE ROW (#106, doc 2.4): one order on every

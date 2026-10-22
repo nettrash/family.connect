@@ -79,6 +79,9 @@ import me.nettrash.familyconnect.data.net.DefaultBoardApi
 import me.nettrash.familyconnect.data.net.DefaultPackApi
 import me.nettrash.familyconnect.data.net.PackApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
+import me.nettrash.familyconnect.data.net.DefaultGroupApi
+import me.nettrash.familyconnect.data.net.GroupApi
+import me.nettrash.familyconnect.data.repo.ChatDrafts
 import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
@@ -174,6 +177,15 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindChatApi(impl: DefaultChatApi): ChatApi
+
+    // Groups (#107): their own five endpoints, their own seam.
+    @Binds
+    abstract fun bindGroupApi(impl: DefaultGroupApi): GroupApi
+
+    // What a chat leaving this device takes with it besides its rows: the
+    // voice messages parked there (docs/protocol.md, "Groups").
+    @Binds
+    abstract fun bindChatDrafts(impl: ParkedRecordings): ChatDrafts
 
     @Binds
     abstract fun bindConnectivityObserver(impl: AndroidConnectivityObserver): ConnectivityObserver

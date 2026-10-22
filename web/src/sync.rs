@@ -432,6 +432,24 @@ pub fn put_away_panes(state: &mut AppState) {
     state.panel = None;
 }
 
+/// A group gone from this member — left, removed from, deleted, on this
+/// device or another (docs/protocol.md, "Groups"): everything held for it
+/// goes, and the pane showing it closes.
+pub fn drop_chat(state: &mut AppState, chat_id: i64) {
+    state.store.remove_chat(chat_id);
+    close_if_open(state, chat_id);
+}
+
+/// The chat in front of the reader is gone: back to the list, as Close
+/// would, with nothing of it left to read.
+fn close_if_open(state: &mut AppState, chat_id: i64) {
+    if state.open_chat == Some(chat_id) {
+        state.open_chat = None;
+        state.at_newest = false;
+        state.opening = None;
+    }
+}
+
 /// Whether the tab is in front of somebody: what decides whether a message
 /// is news to be notified about, or something they are watching arrive.
 fn in_front() -> bool {
@@ -466,11 +484,18 @@ fn notify_message(live: &Live, session: u64, message: &crate::model::Message) {
             return None;
         }
         let item = store.item(message.chat_id)?;
-        let family = item
-            .chat
-            .is_family()
-            .then(|| store.family.as_ref().map(|family| family.name.clone()))
-            .flatten();
+        // Where it was said, before who said it: the family's name for the
+        // family chat, the group's for a group (docs/protocol.md, "Push
+        // notifications" — titles, amended 2026-10-22), nothing for a
+        // direct chat.
+        let family = if item.chat.is_group() {
+            Some(item.chat.display_title(None))
+        } else {
+            item.chat
+                .is_family()
+                .then(|| store.family.as_ref().map(|family| family.name.clone()))
+                .flatten()
+        };
         let sender = store
             .names
             .get(&message.sender_id)
@@ -615,14 +640,19 @@ pub async fn sync_pack(live: &Live, session: u64, token: &str, server_max: i64, 
 }
 
 /// The chat list, as the server has it now — MERGED into what is held
-/// (`Store::merge_chats`), then the chat being read reported read, because
+/// (`Store::merge_chats_from`), then the chat being read reported read, because
 /// the list may say it has unread messages this reader is looking at.
 /// Answers whether it was read.
 pub async fn refresh_chats(live: &Live, session: u64, token: &str, expired: &Rc<dyn Fn()>) -> bool {
+    // Taken as the request starts: what changes the list after this is
+    // newer than its answer (`Store::merge_chats_from`).
+    let began = live.read(|state| state.store.chat_changes);
     match api::chats(token).await {
         Ok(chats) => {
             live.update(session, |state| {
-                state.store.merge_chats(chats);
+                for chat_id in state.store.merge_chats_from(chats, began) {
+                    close_if_open(state, chat_id);
+                }
                 state.failure = None;
             });
             report_read(live, session, token).await;
@@ -1257,6 +1287,20 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             }
             None
         }
+        ServerFrame::ChatUpdated { chat } => {
+            live.update(session, |state| {
+                let chat_id = chat.id;
+                state.store.upsert_chat(chat);
+                if state.store.item(chat_id).is_none() {
+                    close_if_open(state, chat_id);
+                }
+            });
+            None
+        }
+        ServerFrame::ChatRemoved { chat_id } => {
+            live.update(session, |state| drop_chat(state, chat_id));
+            None
+        }
         ServerFrame::BoardNote { note } => {
             let author = note.author_id;
             let news = live.update(session, |state| {
@@ -1373,6 +1417,36 @@ async fn sweep_typing(live: Live, session: u64) {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    /// A group gone from this member closes the pane showing it, and only
+    /// that one (docs/protocol.md, "Groups").
+    #[wasm_bindgen_test]
+    fn a_group_gone_closes_its_pane_and_no_other() {
+        let group = crate::model::ChatListItem {
+            chat: crate::model::Chat {
+                id: 77,
+                kind: "group".into(),
+                member_ids: Some(vec![7, 9]),
+                admin_user_id: Some(9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut state = AppState {
+            open_chat: Some(77),
+            at_newest: true,
+            ..AppState::default()
+        };
+        state.store.my_user_id = 7;
+        state.store.chats.push(group);
+        state.store.drafts.insert(77, "half".into());
+        drop_chat(&mut state, 42);
+        assert_eq!(state.open_chat, Some(77), "another chat's removal");
+        drop_chat(&mut state, 77);
+        assert_eq!(state.open_chat, None);
+        assert!(!state.at_newest && state.opening.is_none());
+        assert!(state.store.item(77).is_none() && state.store.drafts.is_empty());
+    }
 
     /// Only a catch-up for the connection that is up NOW may let its frames
     /// move the cursors it caught up: not the one that ran before any socket

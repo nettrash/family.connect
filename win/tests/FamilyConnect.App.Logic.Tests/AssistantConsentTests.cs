@@ -123,16 +123,36 @@ public sealed class AssistantConsentTests
             $"If you ask for the text of a voice note, audio file or video, its sound is sent to {Processor}.", with);
         // And, since 2026-10-21, what a direct-chat partner may ask of the member's own recordings.
         Assert.Contains(
-            $"In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to {Processor}.",
+            $"In a direct chat or a group, the others in it can ask for the text of your voice notes, audio files and videos, and their sound is then sent to {Processor}.",
             with);
         Assert.DoesNotContain(without, line => line.Contains("voice note", StringComparison.Ordinal));
         // Its own line, after what a photo does and before where the answer lands and how to stop.
         var both = AssistantConsent.Disclosure(Processor, familyHistory: true, familyVision: true, say, transcribe: true);
         var photo = both.ToList().FindIndex(line => line.StartsWith("A photo", StringComparison.Ordinal));
         var sound = both.ToList().FindIndex(line => line.Contains("its sound is sent", StringComparison.Ordinal));
-        var partner = both.ToList().FindIndex(line => line.StartsWith("In a direct chat", StringComparison.Ordinal));
+        var partner = both.ToList().FindIndex(line => line.StartsWith("In a direct chat or a group", StringComparison.Ordinal));
         Assert.Equal(photo + 1, sound);
         Assert.Equal(sound + 1, partner);
         Assert.Equal(both.Count - 3, partner);
+    }
+
+    /// <summary>
+    /// A GROUP IS THE FAMILY CHAT'S SURFACE (docs/protocol.md, "Groups"): only an <c>@ai</c> there reaches the model, so only
+    /// that asks — and the disclosure says "the family chat or a group" in both of its family-chat lines.
+    /// </summary>
+    [Fact]
+    public void AGroupReachesTheModelOnlyByAMention()
+    {
+        Assert.True(AssistantConsent.ReachesTheModel("group", "@ai when is dinner?"));
+        Assert.False(AssistantConsent.ReachesTheModel("group", "when is dinner?"));
+        Assert.True(AssistantConsent.IsRequired("group", "@ai hi", Processor, null));
+        Assert.False(AssistantConsent.IsRequired("group", "hi", Processor, null));
+        Assert.True(AssistantConsent.IsWithheldFromAnUnnamedAssistant("group", "@ai hi", hasAssistant: true, processor: null));
+
+        var say = EnglishCatalog.Instance;
+        Assert.Contains(AssistantConsent.Disclosure(Processor, familyHistory: true, familyVision: false, say),
+            line => line.StartsWith("In the family chat or a group, only a message that says @ai is sent — and with it", StringComparison.Ordinal));
+        Assert.Contains(AssistantConsent.Disclosure(Processor, familyHistory: false, familyVision: false, say),
+            line => line.StartsWith("In the family chat or a group, only a message that says @ai is sent, and nothing else", StringComparison.Ordinal));
     }
 }

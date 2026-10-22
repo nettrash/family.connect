@@ -419,6 +419,13 @@ struct FamilyConnectApp: App {
                 RoundVideoPlays.voiceNotes.removeAll()
             }
             coordinator.bind(attachmentStore: attachments)
+            // A chat this device drops (a group left, removed from or
+            // deleted — docs/protocol.md, "Groups") takes its not-sent voice
+            // notes with it: they could never be sent anywhere now.
+            coordinator.onChatDropped = { chatID in
+                let parked = ParkedRecordings.shared
+                for entry in parked.entries(for: chatID) { parked.remove(entry) }
+            }
             // Logout wipes the store; faces must go with it, or the next
             // account inherits this one's.
             session.clearAvatarCache = {

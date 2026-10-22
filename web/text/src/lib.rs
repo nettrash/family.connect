@@ -69,6 +69,10 @@
 //! - [`lookups`] — the assistant looking things up (#72): which providers a
 //!   client names and how, what the consent screen asks, and where the
 //!   server's sources footer starts under an answer.
+//! - [`groups`] — groups inside a family (#107): what a chat of each kind
+//!   offers (a group is the family chat less calls and "seen"), who in a
+//!   group may rename, add, remove, delete and leave, the name's bounds, and
+//!   what each refusal is told as.
 //! - [`greeting_places`] — the places the owner names for today's weather
 //!   in the daily greeting (#72): when the field is offered, and what a name
 //!   may be, by the server's own rules.
@@ -98,6 +102,7 @@ pub mod emoji;
 pub mod emoji_typing;
 pub mod excerpt;
 pub mod greeting_places;
+pub mod groups;
 pub mod i18n;
 pub mod links;
 pub mod lookups;

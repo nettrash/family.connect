@@ -12,7 +12,7 @@
 //  something, not having said it.
 //
 //  The list is every chat a file may land in: the family chat pinned
-//  first, direct chats by recency — the chat list's own order — and
+//  first, direct chats and groups by recency — the chat list's own order — and
 //  never the assistant's chat, which takes no attachments
 //  (ShareImport.isEligible; the server would refuse the send).
 //
@@ -60,6 +60,7 @@ struct ShareTargetPicker: View {
                         InitialsAvatar(
                             title: chat.title,
                             isFamily: chat.kind == "family",
+                            isGroup: chat.kind == ChatRules.group,
                             userID: chat.peerUserID,
                             avatarVersion: chat.peerUserID
                                 .flatMap { avatarVersions[$0] } ?? 0)

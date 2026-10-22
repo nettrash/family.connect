@@ -613,6 +613,43 @@ public sealed class ApiClient(HttpClient http, Uri baseUrl, ITokenStore tokens)
         Send<ChatResponse>(HttpMethod.Post, "/chats/direct", new { user_id = userId }, ct: ct);
 
     /// <summary>
+    /// A new GROUP (docs/protocol.md, <c>POST /chats/groups</c>): the caller is added and becomes its admin, and
+    /// <paramref name="memberIds"/> names the others. <c>validation</c> for a name that is empty or over 64 characters once
+    /// trimmed, or nobody else named; <c>not_same_family</c>; <c>too_many_groups</c> past the family's 50.
+    /// </summary>
+    public Task<ApiResult<ChatResponse>> CreateGroup(
+        string title, IReadOnlyList<long> memberIds, CancellationToken ct = default) =>
+        Send<ChatResponse>(HttpMethod.Post, "/chats/groups", new { title, member_ids = memberIds }, ct: ct);
+
+    /// <summary>A group renamed — its admin only, <c>not_group_admin</c> for anybody else (<c>PATCH /chats/{id}</c>).</summary>
+    public Task<ApiResult<ChatResponse>> RenameGroup(long chatId, string title, CancellationToken ct = default) =>
+        Send<ChatResponse>(HttpMethod.Patch, $"/chats/{chatId}", new { title }, ct: ct);
+
+    /// <summary>
+    /// Members added to a group — its admin only; an id already in it is ignored, and each one added starts with the
+    /// group's newest message read (<c>POST /chats/{id}/members</c>).
+    /// </summary>
+    public Task<ApiResult<ChatResponse>> AddGroupMembers(
+        long chatId, IReadOnlyList<long> userIds, CancellationToken ct = default) =>
+        Send<ChatResponse>(HttpMethod.Post, $"/chats/{chatId}/members", new { user_ids = userIds }, ct: ct);
+
+    /// <summary>
+    /// A member out of a group: the admin removing somebody else (<c>200 {chat}</c>), or — with the caller's OWN id — any
+    /// member LEAVING, which is a <c>204</c> with no body (<c>DELETE /chats/{id}/members/{user_id}</c>). An admin who
+    /// leaves hands the group on, and the last one out deletes it; both are the server's to do.
+    /// </summary>
+    public Task<ApiResult<GroupMemberAnswer>> RemoveGroupMember(
+        long chatId, long userId, CancellationToken ct = default) =>
+        Send(HttpMethod.Delete, $"/chats/{chatId}/members/{userId}", noContent: new GroupMemberAnswer(), ct: ct);
+
+    /// <summary>
+    /// A group deleted with everything in it, for every member — its admin only (<c>DELETE /chats/{id}</c>). Never the
+    /// family chat, a direct chat or an <c>ai</c> chat: those answer <c>validation</c>.
+    /// </summary>
+    public Task<ApiResult<Nothing>> DeleteGroup(long chatId, CancellationToken ct = default) =>
+        Send<Nothing>(HttpMethod.Delete, $"/chats/{chatId}", ct: ct);
+
+    /// <summary>
     /// A note patch as the wire takes it. Absent means "leave alone" and every null is left out — so an
     /// event's end taken OFF has to be written in by hand, as the null the protocol says clears it.
     /// </summary>

@@ -51,7 +51,7 @@ public static class TranscriptRules
     /// <summary>
     /// The rule: may this reader ask about a recording on a message this sender sent, in a chat of this kind?
     /// </summary>
-    /// <param name="chatKind">The chat's kind — a thread is its chat's, so a family thread is <c>family</c>.</param>
+    /// <param name="chatKind">The chat's kind — a thread is its chat's, so a family thread is <c>family</c> and a group's <c>group</c>.</param>
     /// <param name="senderId">Who sent the message the recording is on.</param>
     /// <param name="reader">Who is asking; 0 while unknown, which is nobody's own message.</param>
     /// <param name="assistantId">The assistant's account, whose messages are never asked about.</param>
@@ -67,14 +67,16 @@ public static class TranscriptRules
             // Your own voice, wherever you sent it: only your own consent, which the server asks for.
             return true;
         }
-        // The other person's in a direct chat: their consent alone, which the server asks for. "The other person" needs
-        // a reader who is known.
-        if (chatKind == "direct")
+        // The other person's in a direct chat — or another member's in a GROUP, which follows the direct chat's rule
+        // (docs/protocol.md, "Transcripts on request", amended 2026-10-22; D4 in docs/groups-2026-10-21.md): their consent
+        // alone, which the server asks for. The owner's `ai_transcripts` is the family chat's and does not reach a group.
+        // "The other person" needs a reader who is known.
+        if (chatKind is ChatKinds.Direct or ChatKinds.Group)
         {
             return reader > 0;
         }
         // Somebody else's in the family chat: only while the owner allows it.
-        return chatKind == "family" && family?.AiTranscripts == true;
+        return chatKind == ChatKinds.Family && family?.AiTranscripts == true;
     }
 
     /// <summary>

@@ -57,7 +57,7 @@ struct MessageGroupingTests {
         let blocked: Set<Int64> = [11]
         let shows = { (i: Int) in
             MessagePresentation.showsSenderName(
-                at: i, in: section, isFamilyChat: true, currentUserID: 7,
+                at: i, in: section, isFamilyOrGroup: true, currentUserID: 7,
                 blockedUserIDs: blocked)
         }
         #expect(shows(0), "first bubble of the section names its sender")
@@ -154,7 +154,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:5", serverID: 5, senderID: 11, at: "2026-08-19T08:04:00Z"),
         ]
         let shows = section.indices.map {
-            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyChat: true, currentUserID: 7, blockedUserIDs: [])
+            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyOrGroup: true, currentUserID: 7, blockedUserIDs: [])
         }
         #expect(shows == [true, false, true, false, true])
     }
@@ -166,7 +166,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:2", serverID: 2, senderID: 7, at: "2026-08-19T08:01:00Z"),
         ]
         for index in section.indices {
-            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyChat: false, currentUserID: 7, blockedUserIDs: []))
+            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyOrGroup: false, currentUserID: 7, blockedUserIDs: []))
         }
     }
 
@@ -175,15 +175,15 @@ struct MessageGroupingTests {
     @Test("read = confirmed and covered by the others' marker")
     func readPredicate() {
         let confirmed = Self.snapshot(localID: "s:10", serverID: 10, senderID: 7, at: "2026-08-19T08:00:00Z")
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: false))
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: false))
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9, isFamilyChat: false))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyOrGroup: false))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyOrGroup: false))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9, isFamilyOrGroup: false))
     }
 
     @Test("pending messages are never read (no serverID yet)")
     func pendingNeverRead() {
         let pending = Self.snapshot(localID: "c:x", serverID: nil, senderID: 7, at: "2026-08-19T08:00:00Z", state: .pending)
-        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max, isFamilyChat: false))
+        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max, isFamilyOrGroup: false))
     }
 
     @Test("the family chat NEVER draws a seen tick, however far the marker ran")
@@ -194,9 +194,9 @@ struct MessageGroupingTests {
         // frame is roster data in a family chat and no bubble draws it
         // (docs/protocol.md, "Frames"), because `othersReadUpTo` is a max
         // over N members and would quietly stop counting a blocked one.
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: true))
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: true))
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: .max, isFamilyChat: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyOrGroup: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyOrGroup: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: .max, isFamilyOrGroup: true))
     }
 
     // MARK: - Reaction chips

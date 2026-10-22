@@ -660,6 +660,49 @@ async fn in_a_direct_chat_a_sender_who_has_not_agreed_is_not_transcribed() {
     assert!(stub.calls().is_empty(), "nothing left the server");
 }
 
+/// A GROUP follows the direct chat's rule (protocol.md, "Groups"): the
+/// other member's voice needs only their consent, the owner's switch stays
+/// off and does not matter — and a sender who has not agreed is refused.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn in_a_group_the_other_members_voice_needs_only_their_consent() {
+    let (stub, addr) = spawn_stub().await;
+    let ts = server(addr).await;
+    let f = family(&ts).await;
+    let (quiet, quiet_id) = ts
+        .register_without_assistant_consent("quinn", "Quinn")
+        .await;
+    let code = invite_code(&ts, &f.owner).await;
+    ts.join(&quiet, &code, "joined").await;
+    let group: Value = ts
+        .post(
+            &f.member,
+            "/chats/groups",
+            json!({"title": "Cousins", "member_ids": [f.owner_id, quiet_id]}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let group = group["chat"]["id"].as_i64().expect("chat id");
+
+    let note = voice_note(&ts, &f.member, 42).await;
+    let message = send(&ts, &f.member, group, note).await;
+    let theirs = transcript_of(ask(&ts, &f.owner, group, message, note).await).await;
+    assert_eq!(theirs["text"], SPOKEN);
+    assert_eq!(stub.calls().len(), 1);
+
+    let unagreed = voice_note(&ts, &quiet, 43).await;
+    let message = send(&ts, &quiet, group, unagreed).await;
+    assert_error(
+        ask(&ts, &f.owner, group, message, unagreed).await,
+        403,
+        "transcript_not_allowed",
+    )
+    .await;
+    assert_eq!(stub.calls().len(), 1, "nothing more left the server");
+}
+
 /// The ASKER's consent, asked first and on its own code — even for their
 /// own recording, and before anything is sent.
 #[tokio::test]

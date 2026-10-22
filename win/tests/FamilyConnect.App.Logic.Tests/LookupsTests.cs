@@ -94,7 +94,7 @@ public sealed class LookupsTests : IDisposable
         Assert.Equal(without.Count + 1, with.Count);
         var line = Assert.Single(with, line => line.Contains("lookups", StringComparison.Ordinal));
         Assert.Equal(
-            "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to Brave Search, Open-Meteo and Wikipedia, and its answer then lists its sources.",
+            "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat or a group, possibly from recent messages too — to Brave Search, Open-Meteo and Wikipedia, and its answer then lists its sources.",
             line);
         // Before where the answer lands and how to stop.
         Assert.Equal(with.Count - 3, with.ToList().IndexOf(line));

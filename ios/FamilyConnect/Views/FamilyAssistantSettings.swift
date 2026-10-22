@@ -237,13 +237,13 @@ struct FamilyAssistantSettings: View {
     /// It is the assistant's language and not the app's, and the app's is
     /// the thing a reader will assume — so the difference is said out loud.
     private var languageExplanation: String {
-        String(localized: "The language \(AssistantMention.token) answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.")
+        String(localized: "The language \(AssistantMention.token) answers in when it is asked in the family chat or a group. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.")
     }
 
     /// Plainly, because this is the setting that decides what leaves the
     /// server.
     private var historyExplanation: String {
-        String(localized: "With this on, mentioning \(AssistantMention.token) in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.")
+        String(localized: "With this on, mentioning \(AssistantMention.token) in the family chat or a group sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.")
     }
 
     /// The one setting on this screen that decides whether PHOTOGRAPHS
@@ -274,7 +274,7 @@ struct FamilyAssistantSettings: View {
     /// turned this on did so under the old sentence; the new switch asks
     /// them a new question instead of quietly re-answering the old one.
     private var visionExplanation: String {
-        String(localized: "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an \(AssistantMention.token) message in the family chat, or replies to a photo with \(AssistantMention.token) — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.")
+        String(localized: "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an \(AssistantMention.token) message in the family chat or a group, or replies to a photo with \(AssistantMention.token) — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.")
     }
 
     /// The third switch's state from the two locks under it — the shared
@@ -294,7 +294,7 @@ struct FamilyAssistantSettings: View {
     /// Then, when the switch is withheld, the reason; and when it is
     /// offered but inert because "Sees recent history" is off, that too.
     private var historyPhotosExplanation: String {
-        var text = String(localized: "With this on, whenever anyone mentions \(AssistantMention.token) in the family chat, the most recent photos in that chat — up to \(AssistantPictureLimits.maxPerQuestion), from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.")
+        var text = String(localized: "With this on, whenever anyone mentions \(AssistantMention.token) in the family chat or a group, the most recent photos in that chat — up to \(AssistantPictureLimits.maxPerQuestion), from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.")
         switch historyPhotosSwitch {
         case .offered:
             if !family.aiHistory {
@@ -366,7 +366,7 @@ struct FamilyAssistantSettings: View {
     /// says out loud what it is for (recognising who is who) and who is never
     /// sent (anyone who has left, anyone outside the family).
     private var facesExplanation: String {
-        var text = String(localized: "With this on, whenever anyone mentions \(AssistantMention.token) in the family chat, the profile pictures of the members named in that chat's recent history — up to \(AssistantPictureLimits.maxPerQuestion) — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.")
+        var text = String(localized: "With this on, whenever anyone mentions \(AssistantMention.token) in the family chat or a group, the profile pictures of the members named in that chat's recent history — up to \(AssistantPictureLimits.maxPerQuestion) — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.")
         switch historyPhotosSwitch {
         case .offered:
             if !family.aiHistory {

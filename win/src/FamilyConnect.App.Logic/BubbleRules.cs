@@ -33,15 +33,16 @@ public static class BubbleRules
         && (assistantChat || message.SenderId == assistantUserId);
 
     /// <summary>
-    /// Whether the reader's own message carries a tick: a numbered one, anywhere but the family chat — where a
-    /// seen state over many members is a row of faces nobody asked for (docs/protocol.md, "read" frames).
+    /// Whether the reader's own message carries a tick: a numbered one, anywhere but the family chat or a group
+    /// (<see cref="ChatKinds.IsShared"/>) — where a seen state over many members is a row of faces nobody asked for
+    /// (docs/protocol.md, "read" frames; "Groups": "Seen" is not drawn, as in the family chat).
     /// </summary>
-    public static bool ShowsTick(MessageDto message, long me, bool familyChat) =>
-        !familyChat && message.SenderId == me && message.Id != 0;
+    public static bool ShowsTick(MessageDto message, long me, bool sharedChat) =>
+        !sharedChat && message.SenderId == me && message.Id != 0;
 
     /// <summary>The tick is the double one: the other person's marker has reached it.</summary>
-    public static bool Seen(MessageDto message, long me, bool familyChat, long peerReadUpTo) =>
-        ShowsTick(message, me, familyChat) && message.Id <= peerReadUpTo;
+    public static bool Seen(MessageDto message, long me, bool sharedChat, long peerReadUpTo) =>
+        ShowsTick(message, me, sharedChat) && message.Id <= peerReadUpTo;
 
     /// <summary>A message may be reported once it is numbered, and only another member's — hidden or not.</summary>
     public static bool MayReport(MessageDto message, long me, bool assistantChat, long? assistantUserId) =>

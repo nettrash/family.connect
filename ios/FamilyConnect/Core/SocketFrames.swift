@@ -463,6 +463,15 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// it outlives either of them leaving.
     case memberBlocked(userID: Int64, blocked: Bool)
     case reaction(ReactionPayload)
+    /// A GROUP as it now stands — created, renamed, or its members or admin
+    /// changed (docs/protocol.md, "Groups", 2026-10-22). Sent to every member,
+    /// one just added included, which is how a group appears on their devices
+    /// at once rather than at the next resync.
+    case chatUpdated(ChatDTO)
+    /// A group gone from this member's list: they left it, were removed, or
+    /// its admin deleted it. The client drops the chat, its messages and
+    /// anything it was drafting there.
+    case chatRemoved(chatID: Int64)
     /// A poll's full current state after a vote, a retraction or a close.
     /// Dispatched exactly like `reaction`, under its own seq guard.
     case poll(PollPayload)
@@ -508,6 +517,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case sdp
         case candidate
         case reason
+        case chat
     }
 
     init(from decoder: Decoder) throws {
@@ -574,6 +584,10 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case "poll":
             // Re-decode from the top so PollPayload owns its keys.
             self = .poll(try PollPayload(from: decoder))
+        case "chat_updated":
+            self = .chatUpdated(try container.decode(ChatDTO.self, forKey: .chat))
+        case "chat_removed":
+            self = .chatRemoved(chatID: try container.decode(Int64.self, forKey: .chatID))
         case "call_offer":
             // Re-decode from the top so CallOfferPayload owns its keys.
             self = .callOffer(try CallOfferPayload(from: decoder))

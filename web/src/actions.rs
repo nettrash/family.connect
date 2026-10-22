@@ -408,6 +408,41 @@ pub enum Action {
         new_password: String,
         done: Done,
     },
+    /// A new group, named, with the members picked (docs/protocol.md,
+    /// "Groups"): `done` hears None once the server has it — and it is then
+    /// the chat open — or the refusal, for the dialog to word.
+    CreateGroup {
+        title: String,
+        member_ids: Vec<i64>,
+        done: Done,
+    },
+    /// The group admin's tools, each heard the same way.
+    RenameGroup {
+        chat_id: i64,
+        title: String,
+        done: Done,
+    },
+    AddGroupMembers {
+        chat_id: i64,
+        user_ids: Vec<i64>,
+        done: Done,
+    },
+    RemoveGroupMember {
+        chat_id: i64,
+        user_id: i64,
+        done: Done,
+    },
+    /// Every member's: out of the group, which goes from this account's
+    /// devices.
+    LeaveGroup {
+        chat_id: i64,
+        done: Done,
+    },
+    /// The admin's: the group and every message in it, for everyone.
+    DeleteGroup {
+        chat_id: i64,
+        done: Done,
+    },
     /// The family's numbers, read afresh on every opening and kept by the
     /// view that asked (ios StatisticsView never caches them either).
     LoadStats {
@@ -1592,6 +1627,73 @@ impl Actions {
                     }
                 });
             }
+            Action::CreateGroup {
+                title,
+                member_ids,
+                done,
+            } => {
+                spawn_local(async move {
+                    match api::create_group(&token, &title, &member_ids).await {
+                        // The answer is the group whole: into the list at
+                        // once rather than waiting for its `chat_updated`,
+                        // and open, as a new direct chat opens.
+                        Ok(chat) => {
+                            let chat_id = chat.id;
+                            if live
+                                .update(session, |state| state.store.upsert_chat(chat))
+                                .is_some()
+                            {
+                                done.emit(None);
+                                this.handle(Action::SelectChat(chat_id));
+                            }
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::RenameGroup {
+                chat_id,
+                title,
+                done,
+            } => {
+                spawn_local(async move {
+                    let changed = api::rename_group(&token, chat_id, &title).await;
+                    this.group_changed(session, chat_id, changed, &done);
+                });
+            }
+            Action::AddGroupMembers {
+                chat_id,
+                user_ids,
+                done,
+            } => {
+                spawn_local(async move {
+                    let changed = api::add_group_members(&token, chat_id, &user_ids).await;
+                    this.group_changed(session, chat_id, changed, &done);
+                });
+            }
+            Action::RemoveGroupMember {
+                chat_id,
+                user_id,
+                done,
+            } => {
+                spawn_local(async move {
+                    let changed = api::remove_group_member(&token, chat_id, user_id).await;
+                    this.group_changed(session, chat_id, changed, &done);
+                });
+            }
+            Action::LeaveGroup { chat_id, done } => {
+                let me = live.read(|state| state.store.my_user_id);
+                spawn_local(async move {
+                    let left = api::leave_group(&token, chat_id, me).await;
+                    this.group_gone(session, chat_id, left, &done);
+                });
+            }
+            Action::DeleteGroup { chat_id, done } => {
+                spawn_local(async move {
+                    let deleted = api::delete_group(&token, chat_id).await;
+                    this.group_gone(session, chat_id, deleted, &done);
+                });
+            }
             Action::ResetMemberPassword {
                 user_id,
                 new_password,
@@ -2033,7 +2135,7 @@ impl Actions {
                         state
                             .store
                             .item(chat_id)
-                            .is_some_and(|item| item.chat.is_ai()),
+                            .map_or("", |item| fc_text::groups::known(&item.chat.kind)),
                         state.store.assistant.as_ref(),
                         state.store.assistant_consent_at().is_some(),
                     )
@@ -2327,6 +2429,59 @@ impl Actions {
             expiry(&self.live, session, &self.sign_out)();
         } else if self.live.is_live(session) {
             done.emit(Some(error));
+        }
+    }
+
+    /// A group admin's change answered: the group as it now stands, into
+    /// the list. `chat_not_found` is a group this member is no longer in —
+    /// removed, or deleted, by a frame that has not landed yet — so it goes
+    /// from here too, and the dialog still hears the refusal: what it asked
+    /// for did not happen (docs/protocol.md, "Groups").
+    fn group_changed(
+        &self,
+        session: u64,
+        chat_id: i64,
+        changed: Result<crate::model::Chat, ApiError>,
+        done: &Done,
+    ) {
+        match changed {
+            Ok(chat) => {
+                if self
+                    .live
+                    .update(session, |state| state.store.upsert_chat(chat))
+                    .is_some()
+                {
+                    done.emit(None);
+                }
+            }
+            Err(error) => {
+                if error.code() == Some("chat_not_found") {
+                    self.live
+                        .update(session, |state| sync::drop_chat(state, chat_id));
+                }
+                self.said(session, error, done);
+            }
+        }
+    }
+
+    /// A leave or a delete answered. `chat_not_found` is the group ALREADY
+    /// gone from this member — deleted, or this device's own earlier request
+    /// went in and its answer was lost — which is what was asked for, and no
+    /// refusal at all.
+    fn group_gone(&self, session: u64, chat_id: i64, gone: Result<(), ApiError>, done: &Done) {
+        match gone {
+            Err(error) if error.code() != Some("chat_not_found") => {
+                self.said(session, error, done);
+            }
+            _ => {
+                if self
+                    .live
+                    .update(session, |state| sync::drop_chat(state, chat_id))
+                    .is_some()
+                {
+                    done.emit(None);
+                }
+            }
         }
     }
 
@@ -2648,6 +2803,7 @@ mod tests {
                     kind: "family".into(),
                     title: None,
                     peer_user_id: None,
+                    ..Chat::default()
                 },
                 last_message: None,
                 unread_count: 0,
