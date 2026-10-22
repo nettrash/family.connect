@@ -54,6 +54,7 @@ import me.nettrash.familyconnect.ui.board.BoardScreen
 import me.nettrash.familyconnect.ui.polls.OpenPollsScreen
 import me.nettrash.familyconnect.ui.thread.ThreadScreen
 import me.nettrash.familyconnect.ui.chat.ChatScreen
+import me.nettrash.familyconnect.ui.group.GroupInfoScreen
 import me.nettrash.familyconnect.ui.chatlist.ChatListDetailPane
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
 import me.nettrash.familyconnect.ui.components.isTwoPaneWindow
@@ -91,6 +92,11 @@ object Routes {
     const val THREAD = "thread/{chatId}/{rootId}"
 
     fun thread(chatId: Long, rootId: Long) = "thread/$chatId/$rootId"
+
+    /** A group's name, members and admin actions (docs/protocol.md, "Groups"). */
+    const val GROUP_INFO = "group_info/{chatId}"
+
+    fun groupInfo(chatId: Long) = "group_info/$chatId"
 }
 
 // Shared-axis X (M3): forward pushes slide in from the right, pops slide
@@ -412,6 +418,19 @@ fun AppNavHost(
                 onOpenPolls = { chatId -> navController.navigate(Routes.openPolls(chatId)) },
                 onOpenThread = { chatId, rootId -> navController.navigate(Routes.thread(chatId, rootId)) },
                 onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
+                onOpenGroupInfo = { chatId -> navController.navigate(Routes.groupInfo(chatId)) },
+            )
+        }
+
+        composable(
+            Routes.GROUP_INFO,
+            arguments = listOf(navArgument("chatId") { type = NavType.LongType }),
+        ) {
+            GroupInfoScreen(
+                onBack = { navController.popBackStack() },
+                // Left or deleted: the chat beneath is gone too, so out to
+                // the list rather than back into an empty conversation.
+                onGroupGone = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
             )
         }
 
@@ -445,6 +464,8 @@ fun AppNavHost(
                 chatId = entry.arguments?.getLong("chatId") ?: 0L,
                 rootId = entry.arguments?.getLong("rootId") ?: 0L,
                 onBack = { navController.popBackStack() },
+                // The chat beneath is gone too: out to the list.
+                onChatGone = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
                 onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
             )
         }

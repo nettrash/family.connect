@@ -361,6 +361,7 @@ import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.OfflineBanner
 import me.nettrash.familyconnect.util.TimeFormat
+import me.nettrash.familyconnect.util.GroupRules
 import kotlin.math.roundToInt
 import androidx.annotation.StringRes
 import androidx.compose.foundation.selection.selectable
@@ -409,6 +410,8 @@ fun ChatScreen(
     onOpenThread: (Long, Long) -> Unit = { _, _ -> },
     /** Open another chat — the one-to-one a tapped mention leads to (docs/protocol.md, "Mentioning a member"). */
     onOpenChat: (Long) -> Unit = {},
+    /** A group's info — its name, members and admin actions (docs/protocol.md, "Groups"). */
+    onOpenGroupInfo: (Long) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
     /**
      * The family's chat stickers: the panel, and the larger view a tap
@@ -1357,7 +1360,19 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    // A group's name is the way into its info, as on the
+                    // other clients — the Info button beside it is the same
+                    // door for whoever does not think to tap a title.
+                    val groupId = chat?.takeIf { GroupRules.isGroup(it.kind) }?.id
+                    Column(
+                        modifier = if (groupId != null) {
+                            Modifier.clickable(onClickLabel = stringResource(R.string.s_group_info)) {
+                                onOpenGroupInfo(groupId)
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ) {
                         Text(
                             text = chat?.title ?: "",
                             style = MaterialTheme.typography.titleMedium,
@@ -1406,7 +1421,7 @@ fun ChatScreen(
                     // a call lives in a direct chat (docs/protocol.md,
                     // "Voice calls"). Hidden, not disabled, on a server
                     // that has calls off.
-                    if (callsEnabled && chat?.kind == "direct") {
+                    if (callsEnabled && GroupRules.offersCalls(chat?.kind)) {
                         // The KIND is chosen here, at placement, and fixed
                         // for the call's life (docs/protocol.md, "Video")
                         // — hence two buttons, never a mid-call switch.
@@ -1424,18 +1439,18 @@ fun ChatScreen(
                         }
                     }
                     // The way back to a decision the family has scrolled past
-                    // (docs/protocol.md, "Finding the open ones"). Family chat
-                    // only, because polls exist nowhere else — which is also
-                    // why this slot was empty there: the whole block above is
-                    // gated on a DIRECT chat, so the family chat carried no
-                    // action at all.
+                    // (docs/protocol.md, "Finding the open ones"). The family
+                    // chat and groups only, because polls exist nowhere else
+                    // — which is also why this slot was empty there: the
+                    // whole block above is gated on a DIRECT chat, so the
+                    // family chat carried no action at all.
                     //
                     // The badge counts open polls THIS READER has not voted in
                     // (util/OpenPollsBadge.kt, mirrored on iOS), not all open
                     // polls: a count that stays lit after you have answered
                     // everything, until somebody else closes them, stops
                     // meaning anything within a day.
-                    if (chat?.kind == "family") {
+                    if (GroupRules.offersPolls(chat?.kind)) {
                         BadgedBox(
                             badge = {
                                 if (openPollsToAnswer > 0) {
@@ -1449,6 +1464,15 @@ fun ChatScreen(
                                     contentDescription = stringResource(R.string.s_open_polls),
                                 )
                             }
+                        }
+                    }
+                    // A group's info (docs/protocol.md, "Groups").
+                    chat?.takeIf { GroupRules.isGroup(it.kind) }?.let { group ->
+                        IconButton(onClick = { onOpenGroupInfo(group.id) }) {
+                            Icon(
+                                Icons.Outlined.Info,
+                                contentDescription = stringResource(R.string.s_group_info),
+                            )
                         }
                     }
                 },
@@ -1547,10 +1571,10 @@ fun ChatScreen(
                                     EmptyState(
                                         icon = Icons.Outlined.Forum,
                                         title = stringResource(R.string.s_no_messages_yet),
-                                        // kind is "family" | "direct" (ChatEntity)
-                                        // — a 1:1 chat is not "your family chat".
+                                        // A 1:1 chat is not "your family chat",
+                                        // and neither is a group.
                                         subtitle = stringResource(
-                                            if (chat?.kind == "direct") {
+                                            if (chat?.kind == GroupRules.DIRECT || GroupRules.isGroup(chat?.kind)) {
                                                 R.string.s_say_hi_direct
                                             } else {
                                                 R.string.s_say_hi_family
@@ -1638,7 +1662,7 @@ fun ChatScreen(
                                             viewModel.vote(serverId, optionId)
                                         },
                                         // Not while recording, like the toolbar's (#79, S1.7).
-                                        onCallBack = if (callsEnabled && chat?.kind == "direct" && !isRecording) {
+                                        onCallBack = if (callsEnabled && GroupRules.offersCalls(chat?.kind) && !isRecording) {
                                             startCall
                                         } else {
                                             null
@@ -1862,7 +1886,9 @@ fun ChatScreen(
                         busy = mediaState.isBusy,
                         notSent = notSent.isNotEmpty(),
                     ),
-                    familyOrDirectChat = chat?.kind == "family" || chat?.kind == "direct",
+                    // Any chat of people — the family chat, a direct chat or
+                    // a group (GroupRules.offersVideoMessages).
+                    familyOrDirectChat = GroupRules.offersVideoMessages(chat?.kind),
                     serverOffersRound = roundVideoOffered,
                     hasCamera = hasCamera,
                     encoderProbePasses = true,
@@ -5385,11 +5411,11 @@ private fun StatusGlyph(
     // Neutral glyphs follow the bubble's content color (same reasoning
     // as the timestamp); READ keeps primary and FAILED keeps error.
     val metaColor = LocalContentColor.current.copy(alpha = 0.72f)
-    // ✓✓ only in direct chats: the family chat has many readers
-    // and one peer marker would lie.
-    val read = chat?.kind == "direct" &&
+    // ✓✓ only in direct chats: the family chat and a group have many
+    // readers and one peer marker would lie (docs/protocol.md, "Groups").
+    val read = GroupRules.drawsSeenTicks(chat?.kind) &&
         entity.serverId != null &&
-        entity.serverId <= (chat.peerLastReadId ?: 0L)
+        entity.serverId <= (chat?.peerLastReadId ?: 0L)
     Crossfade(
         targetState = entity.status to read,
         animationSpec = tween(150),

@@ -667,4 +667,38 @@ public class FrameTests
             ClientFrames.Send(42, "4f9e21c0-ceea-4e17-a91c-0d9f8e7b2a03", "", attachmentIds: [91], round: true)).RootElement;
         Assert.False(round.TryGetProperty("animation", out _));
     }
+
+    /// <summary>
+    /// The two group frames (docs/protocol.md, "Groups"): <c>chat_updated</c> carries the whole chat, members and admin
+    /// included, and <c>chat_removed</c> just the id. One with no chat, or no id, is no frame at all.
+    /// </summary>
+    [Fact]
+    public void TheGroupFramesCarryTheChatAndTheId()
+    {
+        var updated = Assert.IsType<ServerFrame.ChatUpdated>(ServerFrame.Parse(
+            """
+            {"type": "chat_updated", "chat": {"id": 77, "kind": "group", "title": "Cousins", "peer_user_id": null,
+             "member_ids": [7, 9, 11], "admin_user_id": 9}}
+            """));
+        Assert.Equal(77, updated.Chat.Id);
+        Assert.Equal("group", updated.Chat.Kind);
+        Assert.Equal("Cousins", updated.Chat.Title);
+        Assert.Equal([7L, 9L, 11L], updated.Chat.MemberIds!);
+        Assert.Equal(9, updated.Chat.AdminUserId);
+
+        Assert.Equal(77, Assert.IsType<ServerFrame.ChatRemoved>(
+            ServerFrame.Parse("""{"type": "chat_removed", "chat_id": 77}""")).ChatId);
+
+        Assert.Null(ServerFrame.Parse("""{"type": "chat_updated"}"""));
+        Assert.Null(ServerFrame.Parse("""{"type": "chat_removed"}"""));
+    }
+
+    /// <summary>A chat that is not a group carries neither field, and decodes with both null — every chat before groups.</summary>
+    [Fact]
+    public void AChatThatIsNotAGroupHasNoMembersOrAdmin()
+    {
+        var chat = Wire.Decode<ChatDto>("""{"id": 42, "kind": "family", "title": "The Smiths", "peer_user_id": null}""")!;
+        Assert.Null(chat.MemberIds);
+        Assert.Null(chat.AdminUserId);
+    }
 }

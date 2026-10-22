@@ -445,4 +445,80 @@ public class FrameRouterTests : IDisposable
 
         Assert.Equal(0, heard);
     }
+
+    /// <summary>
+    /// <c>chat_updated</c> PUTS A GROUP ON THE LIST, members and admin as stated — which is how a member just added sees it
+    /// at once — and a later one rewrites them whole without touching what is counted (docs/protocol.md, "Groups").
+    /// </summary>
+    [Fact]
+    public void AChatUpdatedFrameUpsertsTheGroup()
+    {
+        var touched = new List<long>();
+        router.ChatChanged += touched.Add;
+
+        router.Hear(new ServerFrame.ChatUpdated(new ChatDto(77, "group", "Cousins", MemberIds: [9, Me], AdminUserId: 9)));
+        router.Hear(new ServerFrame.Message(Message(1500, chat: 77)));
+        router.Hear(new ServerFrame.ChatUpdated(new ChatDto(77, "group", "The cousins", MemberIds: [9, Me, 11], AdminUserId: Me)));
+
+        var group = chats.Chat(77)!;
+        Assert.Equal("The cousins", group.Chat.Title);
+        Assert.Equal([9L, Me, 11L], group.Chat.MemberIds!);
+        Assert.Equal(Me, group.Chat.AdminUserId);
+        Assert.Equal("group", chats.Kind(77));
+        Assert.True(chats.IsListed(77));
+        // The rename counted nothing and cleared nothing: the message that arrived between them is still unread.
+        Assert.Equal(1, group.UnreadCount);
+        Assert.Contains(chats.Chats(), row => row.Chat.Id == 77);
+        Assert.Equal([77L, 77L, 77L], touched);
+    }
+
+    /// <summary>
+    /// <c>chat_removed</c> DROPS THE GROUP, its messages and its queued sends — and is said once, to whoever has it open. A
+    /// frame naming the family chat or a direct chat drops nothing: those never leave this way.
+    /// </summary>
+    [Fact]
+    public void AChatRemovedFrameDropsTheGroupAndNothingElse()
+    {
+        var outbox = new OutboxStore(database);
+        router.Hear(new ServerFrame.ChatUpdated(new ChatDto(77, "group", "Cousins", MemberIds: [9, Me], AdminUserId: 9)));
+        router.Hear(new ServerFrame.Message(Message(1500, chat: 77)));
+        router.Hear(new ServerFrame.Message(Message(1501, chat: 42)));
+        outbox.Queue(new OutboxRow("k77", 77, "Still there?"));
+        outbox.Queue(new OutboxRow("k42", 42, "Dinner at 7?"));
+        var removed = new List<long>();
+        router.ChatRemoved += removed.Add;
+
+        router.Hear(new ServerFrame.ChatRemoved(77));
+        router.Hear(new ServerFrame.ChatRemoved(42));
+        router.Hear(new ServerFrame.ChatRemoved(43));
+        router.Hear(new ServerFrame.ChatRemoved(77));
+
+        Assert.Null(chats.Chat(77));
+        Assert.Null(chats.Message(1500));
+        Assert.Null(chats.Kind(77));
+        Assert.DoesNotContain(chats.Chats(), row => row.Chat.Id == 77);
+        Assert.Equal("k42", Assert.Single(outbox.All()).ClientMsgId);
+        // The family chat and the direct chat are untouched.
+        Assert.NotNull(chats.Message(1501));
+        Assert.NotNull(chats.Chat(42));
+        Assert.NotNull(chats.Chat(43));
+        Assert.Equal([77L], removed);
+    }
+
+    /// <summary>
+    /// "SEEN" IS NOT DRAWN IN A GROUP, as in the family chat: somebody else's read marker there is forwarded nowhere
+    /// (docs/protocol.md, "Groups").
+    /// </summary>
+    [Fact]
+    public void APeersReadMarkerInAGroupIsNotForwarded()
+    {
+        router.Hear(new ServerFrame.ChatUpdated(new ChatDto(77, "group", "Cousins", MemberIds: [9, Me], AdminUserId: 9)));
+        var seen = new List<long>();
+        router.PeerRead += (chat, _, _) => seen.Add(chat);
+
+        router.Hear(new ServerFrame.Read(77, 9, 1500));
+        router.Hear(new ServerFrame.Read(43, 11, 1500));
+
+        Assert.Equal([43L], seen);
+    }
 }

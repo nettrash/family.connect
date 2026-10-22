@@ -76,6 +76,11 @@ pub mod codes {
     /// The disk is nearly full. Says nothing about the request — the same
     /// upload succeeds unchanged once the operator frees something.
     pub const STORAGE_FULL: &str = "storage_full";
+    /// A group member who is not its admin, renaming, adding, removing or
+    /// deleting (protocol.md, "Groups").
+    pub const NOT_GROUP_ADMIN: &str = "not_group_admin";
+    /// A family that already has the most groups it may have.
+    pub const TOO_MANY_GROUPS: &str = "too_many_groups";
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";

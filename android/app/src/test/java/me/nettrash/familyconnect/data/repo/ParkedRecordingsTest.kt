@@ -105,6 +105,26 @@ class ParkedRecordingsTest {
     }
 
     /**
+     * A group this person left, was removed from or saw deleted takes what
+     * was being drafted there with it (docs/protocol.md, "Groups") — and
+     * nothing parked in any other chat.
+     */
+    @Test
+    fun `forgetting a chat takes its recordings and their files, and no other chat's`(): Unit = runBlocking {
+        val store = store()
+        val gone1 = store.park(77, recording(), 1_000, null, "", epoch.current())!!
+        val kept = store.park(42, recording(), 2_000, null, "", epoch.current())!!
+        val gone2 = store.park(77, recording(), 3_000, quote, "late", epoch.current())!!
+
+        store.forgetChat(77)
+
+        assertThat(settings.current.parkedRecordings).containsExactly(kept)
+        assertThat(store.file(gone1).exists()).isFalse()
+        assertThat(store.file(gone2).exists()).isFalse()
+        assertThat(store.file(kept).exists()).isTrue()
+    }
+
+    /**
      * Sign-out deletes everything recorded and not sent — including a park
      * still on its way when the session ended, which must not land in the
      * next account's store.

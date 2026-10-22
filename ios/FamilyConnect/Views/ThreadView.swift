@@ -218,12 +218,19 @@ struct ThreadView: View {
         chats.first { $0.chatID == chatID }
     }
 
-    private var isFamilyChat: Bool { chat?.kind == "family" }
+    /// The family chat or a group — the surface a thread inherits from its
+    /// chat (docs/protocol.md, "Groups"; `ChatRules`).
+    private var isFamilyOrGroup: Bool { ChatRules.isFamilyOrGroup(chat?.kind) }
 
     private var currentUserID: Int64 { AppSettings.currentUserID ?? -1 }
 
+    /// The "of N" under a poll: the family's live roster, or a group's
+    /// members (`ChatRules.pollAudience`).
     private var familyMemberCount: Int {
-        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
+        ChatRules.pollAudience(
+            kind: chat?.kind,
+            groupMemberIDs: chat?.groupMemberIDs ?? [],
+            liveFamilyMembers: members.filter { !$0.hasLeft && !$0.accountDeleted }.count)
     }
 
     private var memberNames: [Int64: String] {
@@ -257,9 +264,9 @@ struct ThreadView: View {
                 coordinator.assistantFailure(messageID: $0)
             },
             isMine: isMine,
-            showsSenderName: !isMine && isFamilyChat,
+            showsSenderName: !isMine && isFamilyOrGroup,
             isRead: MessagePresentation.isRead(
-                message, othersReadUpTo: chat?.othersReadUpTo ?? 0, isFamilyChat: isFamilyChat),
+                message, othersReadUpTo: chat?.othersReadUpTo ?? 0, isFamilyOrGroup: isFamilyOrGroup),
             // Reply from a row is the composer below: whatever the row, a
             // reply from this surface answers the root. Edit and Report are
             // the chat's, and are not offered here rather than offered inert.
@@ -286,12 +293,12 @@ struct ThreadView: View {
             assistantFailure: message.serverID.flatMap {
                 coordinator.assistantFailure(messageID: $0)
             },
-            showsSenderName: !isMine && isFamilyChat,
+            showsSenderName: !isMine && isFamilyOrGroup,
             senderName: memberNames[message.senderID],
             senderID: message.senderID,
             senderAvatarVersion: avatarVersions[message.senderID] ?? 0,
             isRead: MessagePresentation.isRead(
-                message, othersReadUpTo: chat?.othersReadUpTo ?? 0, isFamilyChat: isFamilyChat),
+                message, othersReadUpTo: chat?.othersReadUpTo ?? 0, isFamilyOrGroup: isFamilyOrGroup),
             reactionChips: MessagePresentation.reactionChips(
                 message.reactions, currentUserID: currentUserID),
             reactionDetails: MessagePresentation.reactionDetails(
@@ -355,10 +362,13 @@ struct ThreadView: View {
     // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
 
     /// Everybody a mention may name: the current roster, by the name the
-    /// app calls them.
+    /// app calls them — in a group, only its own members (`ChatRules`).
     private var mentionRoster: [MentionDTO] {
-        members.filter { !$0.hasLeft && !$0.accountDeleted }
-            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        ChatRules.mentionRoster(
+            members.filter { !$0.hasLeft && !$0.accountDeleted }
+                .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) },
+            kind: chat?.kind,
+            groupMemberIDs: chat?.groupMemberIDs ?? [])
     }
 
     /// What the strip offers for the prefix being typed: never the reader
@@ -370,10 +380,10 @@ struct ThreadView: View {
             excluding: coordinator.blockedUserIDs.union([currentUserID]))
     }
 
-    /// The members the text names, resolved at send — family chat only,
-    /// nil when it names nobody so the wire stays as it was.
+    /// The members the text names, resolved at send — the family chat or a
+    /// group only, nil when it names nobody so the wire stays as it was.
     private func resolvedMentions(in body: String) -> [MentionDTO]? {
-        guard isFamilyChat else { return nil }
+        guard isFamilyOrGroup else { return nil }
         let found = MemberMentions.resolve(body: body, roster: mentionRoster)
         return found.isEmpty ? nil : found
     }
@@ -401,7 +411,7 @@ struct ThreadView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isFamilyChat, let query = MemberMentions.query(in: draft) {
+            if isFamilyOrGroup, let query = MemberMentions.query(in: draft) {
                 let candidates = mentionCandidates(matching: query)
                 if !candidates.isEmpty {
                     MentionSuggestions(candidates: candidates) { name in

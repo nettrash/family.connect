@@ -851,10 +851,12 @@ public sealed partial class FamilyView : UserControl
                 return;
             }
             // Into the list first, so the conversation opens with its title: a chat made just now is in no list yet.
+            // Taken before the request, so its answer cannot undo a group changed meanwhile (ChatStore.Replace).
+            var mark = connection.Chats.ListMark;
             var list = await connection.Api.Chats();
             if (list is { Ok: true, Value.Chats: { } rows })
             {
-                connection.Chats.Replace(rows);
+                connection.Chats.Replace(rows, mark);
             }
             openChat(opened.Chat.Id);
         }
@@ -1073,12 +1075,12 @@ public sealed partial class FamilyView : UserControl
         LanguageChoice.SelectedIndex = Math.Max(0, language);
         LanguageChoice.IsEnabled = idle;
         LanguageFootnote.Text = say.Format(
-            "The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.",
+            "The language %@ answers in when it is asked in the family chat or a group. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.",
             token);
         HistorySwitch.IsOn = shown.AiHistory;
         HistorySwitch.IsEnabled = idle;
         HistoryFootnote.Text = say.Format(
-            "With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.",
+            "With this on, mentioning %@ in the family chat or a group sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.",
             token);
 
         // Offered only where this server's assistant can look at pictures at all.
@@ -1086,7 +1088,7 @@ public sealed partial class FamilyView : UserControl
         VisionSwitch.IsOn = shown.AiVision;
         VisionSwitch.IsEnabled = idle;
         VisionFootnote.Text = say.Format(
-            "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.",
+            "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat or a group, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.",
             token, token);
 
         // The two that ride on vision: inert-but-explained until what they draw from is there.
@@ -1095,7 +1097,7 @@ public sealed partial class FamilyView : UserControl
         RecentPhotosSwitch.IsEnabled = idle && picturesOn;
         RecentPhotosFootnote.Text = WithNote(
             say.Format(
-                "With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.",
+                "With this on, whenever anyone mentions %@ in the family chat or a group, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.",
                 token, HouseRules.MaxPicturesPerQuestion),
             HouseRules.PicturesNote(assistant.Vision, shown,
                 say.Get("While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either."), say));
@@ -1103,7 +1105,7 @@ public sealed partial class FamilyView : UserControl
         FacesSwitch.IsEnabled = idle && picturesOn;
         FacesFootnote.Text = WithNote(
             say.Format(
-                "With this on, whenever anyone mentions %@ in the family chat, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.",
+                "With this on, whenever anyone mentions %@ in the family chat or a group, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.",
                 token, HouseRules.MaxPicturesPerQuestion),
             HouseRules.PicturesNote(assistant.Vision, shown,
                 say.Get("While Sees recent history is off this does nothing: no names are sent, so no faces are either."), say));

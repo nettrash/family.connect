@@ -26,18 +26,18 @@ nonisolated enum AssistantConsent {
     /// Would a message with this body, in this chat, be sent to the model?
     ///
     /// The MIRROR of `model_surface` in `server/src/handlers_chat.rs`: the
-    /// member's own `ai` chat, where everything goes, and the family chat,
-    /// where only an `@ai` does. `/draw` needs no case of its own — in the
-    /// family chat it is `@ai /draw`, a mention, and in the assistant's own
-    /// chat it is that chat. If the two ever disagree, a message is either
-    /// refused after it was typed or sent having asked nothing, so they are
-    /// pinned against the same vectors on both sides.
+    /// member's own `ai` chat, where everything goes, and the family chat —
+    /// or, since 2026-10-22, a group, which is the same surface with fewer
+    /// people (docs/protocol.md, "Groups") — where only an `@ai` does.
+    /// `/draw` needs no case of its own — there it is `@ai /draw`, a
+    /// mention, and in the assistant's own chat it is that chat. If the two
+    /// ever disagree, a message is either refused after it was typed or
+    /// sent having asked nothing, so they are pinned against the same
+    /// vectors on both sides.
     static func reachesTheModel(chatKind: String?, body: String) -> Bool {
-        switch chatKind {
-        case "ai": true
-        case "family": AssistantMention.mentions(body)
-        default: false
-        }
+        if chatKind == ChatRules.ai { return true }
+        guard ChatRules.offersAssistantMention(chatKind) else { return false }
+        return AssistantMention.mentions(body)
     }
 
     /// Must this member be asked before this message is sent?
@@ -121,16 +121,16 @@ nonisolated enum AssistantConsent {
             String(localized: "What you write to the assistant leaves this family's server and is sent to \(processor).")
         ]
         if familyHistory {
-            lines.append(String(localized: "In the family chat only a message that says \(AssistantMention.token) is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times."))
+            lines.append(String(localized: "In the family chat or a group, only a message that says \(AssistantMention.token) is sent — and with it the last 30 days of that chat, up to 200 messages, including what other people wrote, their names and the times."))
         } else {
-            lines.append(String(localized: "In the family chat only a message that says \(AssistantMention.token) is sent, and nothing else from that chat goes with it."))
+            lines.append(String(localized: "In the family chat or a group, only a message that says \(AssistantMention.token) is sent, and nothing else from that chat goes with it."))
         }
         if familyVision {
             lines.append(String(localized: "A photo is sent only when you attach one to a message for the assistant, and only while your family allows it."))
         }
         if transcribes {
             lines.append(String(localized: "If you ask for the text of a voice note, audio file or video, its sound is sent to \(processor)."))
-            lines.append(String(localized: "In a direct chat, the other person can ask for the text of your voice notes, audio files and videos, and their sound is then sent to \(processor)."))
+            lines.append(String(localized: "In a direct chat or a group, the others in it can ask for the text of your voice notes, audio files and videos, and their sound is then sent to \(processor)."))
         }
         lines.append(String(localized: "The answer comes back as a message in that chat, where everyone in the chat can read it."))
         lines.append(String(localized: "You can stop this at any time in Settings. What has already been sent cannot be taken back."))
@@ -250,7 +250,7 @@ nonisolated extension AssistantConsent {
     /// be the lie by omission that section forbids.
     static func lookupDisclosure(providers: String, familyHistory: Bool) -> String {
         if familyHistory {
-            return String(localized: "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat, possibly from recent messages too — to \(providers), and its answer then lists its sources.")
+            return String(localized: "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question — in the family chat or a group, possibly from recent messages too — to \(providers), and its answer then lists its sources.")
         }
         return String(localized: "If your family's owner turns on lookups, the assistant may send a short search query or place name it writes from your question to \(providers), and its answer then lists its sources.")
     }

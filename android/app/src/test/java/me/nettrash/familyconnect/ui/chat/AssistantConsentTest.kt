@@ -36,6 +36,24 @@ class AssistantConsentTest {
         assertThat(AssistantConsent.reachesTheModel("family", "@aiden said so")).isFalse()
     }
 
+    /** A group answers `@ai` as the family chat does (docs/protocol.md, "Groups"). */
+    @Test
+    fun `a group reaches it only on a mention, as the family chat does`() {
+        assertThat(AssistantConsent.reachesTheModel("group", "@ai when is dinner?")).isTrue()
+        assertThat(AssistantConsent.reachesTheModel("group", "@ai /draw a cat")).isTrue()
+        assertThat(AssistantConsent.reachesTheModel("group", "/draw a cat")).isFalse()
+        assertThat(AssistantConsent.reachesTheModel("group", "dinner at 7?")).isFalse()
+        assertThat(AssistantConsent.isRequired("group", "@ai hello", processor, null)).isTrue()
+        assertThat(AssistantConsent.isRequired("group", "@ai hello", processor, "2026-09-19T19:34:43Z")).isFalse()
+        assertThat(AssistantConsent.isWithheldFromAnUnnamedAssistant("group", "@ai hi", true, null)).isTrue()
+        assertThat(AssistantConsent.offersMention("group", hasAssistant = true, processor = processor)).isTrue()
+        assertThat(AssistantConsent.offersMention("group", hasAssistant = false, processor = processor)).isFalse()
+        assertThat(AssistantConsent.offersMention("group", hasAssistant = true, processor = null)).isFalse()
+        // A sticker has no body, so it can never say `@ai` there either.
+        assertThat(AssistantConsent.stickerGate("group", hasAssistant = true, processor = processor, agreedAt = null))
+            .isEqualTo(AssistantConsent.StickerGate.SEND)
+    }
+
     @Test
     fun `nowhere else reaches it`() {
         for (kind in listOf("direct", "unknown", null)) {

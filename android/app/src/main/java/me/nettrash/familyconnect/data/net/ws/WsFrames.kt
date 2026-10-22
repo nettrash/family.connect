@@ -10,7 +10,7 @@
  *                 call_offer / call_answer / call_ice / call_end
  *   ServerFrame — ack / message / read / typing / member_joined /
  *                 member_left / member_deleted / family_owner /
- *                 member_blocked /
+ *                 member_blocked / chat_updated / chat_removed /
  *                 reaction / poll / pong / error /
  *                 call_offer / call_ringing / call_answer / call_ice / call_end
  *
@@ -30,6 +30,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
+import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
@@ -300,6 +301,29 @@ sealed interface ServerFrame {
         @SerialName("user_id") val userId: Long,
         val blocked: Boolean,
     ) : ServerFrame
+
+    /**
+     * A GROUP as it now is — created, renamed, or its members or admin
+     * changed — to every member, one just added included, which is how a
+     * group appears on their devices at once (docs/protocol.md, "Groups";
+     * added 2026-10-22). Applied as a state-set over the chat row: the
+     * title, the member list and the admin are the server's, everything
+     * else on the row is this device's and survives. Never notifies.
+     */
+    @Serializable
+    @SerialName("chat_updated")
+    data class ChatUpdated(val chat: ChatDto) : ServerFrame
+
+    /**
+     * A GROUP this reader is no longer in: they left or were removed (to
+     * every device of theirs), or its admin deleted it (to every member).
+     * The client drops the chat, its messages and anything it was drafting
+     * there (docs/protocol.md, "Groups"; added 2026-10-22). `GET /chats`
+     * stays the reconciler for a device that missed it.
+     */
+    @Serializable
+    @SerialName("chat_removed")
+    data class ChatRemoved(@SerialName("chat_id") val chatId: Long) : ServerFrame
 
     /**
      * One board note in whatever state it now has — created, edited, moved,

@@ -24,7 +24,7 @@ public sealed class ComposerMentionsTests
     [Fact]
     public void AHalfTypedAtOffersTheNamesItCouldMean()
     {
-        Assert.Equal([11L, 12L], ComposerMentions.Offered("dinner @An", Roster, Me, BobBlocked, familyChat: true, editing: false).Select(member => member.Id));
+        Assert.Equal([11L, 12L], ComposerMentions.Offered("dinner @An", Roster, Me, BobBlocked, enabled: true, editing: false).Select(member => member.Id));
         Assert.Equal([11L, 12L], ComposerMentions.Offered("@", Roster, Me, BobBlocked, true, false).Select(member => member.Id));
         Assert.Equal([13L], ComposerMentions.Offered("@b", Roster, Me, _ => false, true, false).Select(member => member.Id));
     }
@@ -32,8 +32,8 @@ public sealed class ComposerMentionsTests
     [Fact]
     public void NothingIsOfferedOutsideTheFamilyChatWhileEditingOrMidWord()
     {
-        Assert.Empty(ComposerMentions.Offered("@An", Roster, Me, BobBlocked, familyChat: false, editing: false));
-        Assert.Empty(ComposerMentions.Offered("@An", Roster, Me, BobBlocked, familyChat: true, editing: true));
+        Assert.Empty(ComposerMentions.Offered("@An", Roster, Me, BobBlocked, enabled: false, editing: false));
+        Assert.Empty(ComposerMentions.Offered("@An", Roster, Me, BobBlocked, enabled: true, editing: true));
         Assert.Empty(ComposerMentions.Offered("mail@An", Roster, Me, BobBlocked, true, false));
         Assert.Empty(ComposerMentions.Offered("no at", Roster, Me, BobBlocked, true, false));
     }
@@ -43,10 +43,10 @@ public sealed class ComposerMentionsTests
     public void ASendCarriesTheNamesItsTextSays()
     {
         Assert.Equal([new MentionDto(12, "Anna Lee"), new MentionDto(13, "Bob")],
-            ComposerMentions.ForSend("@Anna Lee and @Bob, 7?", Roster, familyChat: true)!);
-        Assert.Null(ComposerMentions.ForSend("@Anna Lee", Roster, familyChat: false));
-        Assert.Null(ComposerMentions.ForSend("@Annika and @Anneliese", Roster, familyChat: true));
-        Assert.Null(ComposerMentions.ForSend("nobody here", Roster, familyChat: true));
+            ComposerMentions.ForSend("@Anna Lee and @Bob, 7?", Roster, enabled: true)!);
+        Assert.Null(ComposerMentions.ForSend("@Anna Lee", Roster, enabled: false));
+        Assert.Null(ComposerMentions.ForSend("@Annika and @Anneliese", Roster, enabled: true));
+        Assert.Null(ComposerMentions.ForSend("nobody here", Roster, enabled: true));
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public sealed class ComposerMentionsTests
     [Fact]
     public void TheAssistantIsOfferedFirstAndWritesTheAiToken()
     {
-        var all = ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: true, editing: false, Helper);
+        var all = ComposerMentions.Choices("@", Roster, Me, BobBlocked, enabled: true, editing: false, Helper);
         Assert.Equal(["Helper", "Anna", "Anna Lee"], all.Select(choice => choice.Name));
         Assert.Null(all[0].Member);
         Assert.Equal("ai", all[0].Writes);
@@ -91,8 +91,8 @@ public sealed class ComposerMentionsTests
     [Fact]
     public void TheAssistantIsOfferedOnlyWhereItCanBeAsked()
     {
-        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: false, editing: false, Helper));
-        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, familyChat: true, editing: true, Helper));
+        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, enabled: false, editing: false, Helper));
+        Assert.Empty(ComposerMentions.Choices("@", Roster, Me, BobBlocked, enabled: true, editing: true, Helper));
         Assert.Empty(ComposerMentions.Choices("no at", Roster, Me, BobBlocked, true, false, Helper));
         Assert.All(ComposerMentions.Choices("@", Roster, Me, BobBlocked, true, false, Helper with { Processor = null }), choice => Assert.NotNull(choice.Member));
         Assert.All(ComposerMentions.Choices("@", Roster, Me, BobBlocked, true, false, null), choice => Assert.NotNull(choice.Member));
@@ -106,5 +106,47 @@ public sealed class ComposerMentionsTests
         var choices = ComposerMentions.Choices("@H", roster, Me, BobBlocked, true, false, Helper);
         Assert.Single(choices);
         Assert.Null(choices[0].Member);
+    }
+
+    /// <summary>
+    /// IN A GROUP THE NAMES ARE THAT GROUP'S (docs/protocol.md, "Mentioning a member", amended 2026-10-22): the candidates
+    /// are its live members, in the order they joined; the family chat's are the live roster; anywhere else nobody.
+    /// </summary>
+    [Fact]
+    public void AGroupsCandidatesAreItsOwnLiveMembers()
+    {
+        var group = new ChatDto(77, "group", "Cousins", MemberIds: [13, Me, 12, 14], AdminUserId: 13);
+
+        Assert.Equal([13L, Me, 12L], ComposerMentions.Candidates(group, Roster).Select(member => member.Id));
+        Assert.Equal([7L, 11L, 12L, 13L], ComposerMentions.Candidates(new ChatDto(42, "family", "The Smiths"), Roster).Select(member => member.Id));
+        Assert.Empty(ComposerMentions.Candidates(new ChatDto(43, "direct", "Bob", PeerUserId: 13), Roster));
+        Assert.Empty(ComposerMentions.Candidates(new ChatDto(44, "ai", "Assistant"), Roster));
+        Assert.Empty(ComposerMentions.Candidates(null, Roster));
+        // A group whose members this device has not read offers nobody, never the whole family.
+        Assert.Empty(ComposerMentions.Candidates(new ChatDto(78, "group", "Old"), Roster));
+
+        Assert.True(ComposerMentions.Enabled("family"));
+        Assert.True(ComposerMentions.Enabled("group"));
+        Assert.False(ComposerMentions.Enabled("direct"));
+        Assert.False(ComposerMentions.Enabled("ai"));
+    }
+
+    /// <summary>
+    /// The strip and the send in a group: Anna is in the family but not in this group, so she is neither offered nor sent
+    /// — the server would refuse the whole message — while the group's own members are.
+    /// </summary>
+    [Fact]
+    public void AGroupOffersAndSendsOnlyItsMembers()
+    {
+        var candidates = ComposerMentions.Candidates(new ChatDto(77, "group", "Cousins", MemberIds: [Me, 12, 13], AdminUserId: Me), Roster);
+
+        Assert.Equal([12L], ComposerMentions.Offered("@An", candidates, Me, _ => false, enabled: true, editing: false).Select(member => member.Id));
+        Assert.Equal([new MentionDto(12, "Anna Lee")], ComposerMentions.ForSend("@Anna Lee and @Anna", candidates, enabled: true)!);
+        Assert.Null(ComposerMentions.ForSend("@Anna", candidates, enabled: true));
+
+        var choices = ComposerMentions.Choices("@a", candidates, Me, _ => false, enabled: true, editing: false, Helper);
+        Assert.Null(choices[0].Member);
+        Assert.Equal("ai", choices[0].Writes);
+        Assert.Equal([12L], choices.Skip(1).Select(choice => choice.Member!.Id));
     }
 }

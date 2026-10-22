@@ -1134,7 +1134,7 @@ mod tests {
         gloo_timers::future::TimeoutFuture::new(30).await;
         let dialog = root.text_content().unwrap_or_default();
         assert!(
-            dialog.contains("in the family chat, possibly from recent messages too — to Brave Search, Open-Meteo and Wikipedia"),
+            dialog.contains("in the family chat or a group, possibly from recent messages too — to Brave Search, Open-Meteo and Wikipedia"),
             "{dialog}"
         );
         let agree = root.query_selector_all(".dialog-actions button").unwrap();

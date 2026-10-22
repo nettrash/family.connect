@@ -88,6 +88,22 @@ public sealed class Database : IDisposable
     /// <summary>A chat's list row is about to be written. Under <see cref="Hold"/>.</summary>
     internal void ChatsChanged() => ChatsGeneration++;
 
+    /// <summary>
+    /// How many times a chat has been TOUCHED outside a list read — upserted by <c>chat_updated</c> or a group endpoint's
+    /// answer, or removed — and when each was last (see <see cref="ChatStore.ListMark"/>). On the database, like the
+    /// generations, so a second store on the same file sees them; under <see cref="Hold"/> only.
+    /// </summary>
+    internal long ChatTouches { get; private set; }
+
+    private readonly Dictionary<long, long> touchedAt = [];
+
+    /// <summary>This chat changed outside a list read, as of now. Under <see cref="Hold"/>.</summary>
+    internal void Touched(long chatId) => touchedAt[chatId] = ++ChatTouches;
+
+    /// <summary>The chats touched after <paramref name="mark"/>. Under <see cref="Hold"/>.</summary>
+    internal HashSet<long> TouchedSince(long mark) =>
+        [.. touchedAt.Where(touch => touch.Value > mark).Select(touch => touch.Key)];
+
     /// <summary>The cache, held. Disposing it lets the next operation in.</summary>
     public readonly struct Held : IDisposable
     {
@@ -232,6 +248,7 @@ public sealed class Database : IDisposable
         // Whatever a store keeps in memory of these tables goes with them.
         RosterChanged();
         ChatsChanged();
+        touchedAt.Clear();
         using var transaction = connection.BeginTransaction();
         foreach (var table in Tables())
         {

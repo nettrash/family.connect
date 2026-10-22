@@ -660,13 +660,16 @@ struct DeletedAccountChatPruneTests {
         #expect(harness.messageChatIDs() == [1, 2, 42, 43])
     }
 
-    @Test("the family chat and the assistant chat are NEVER pruned")
-    func onlyDirectChatsAreEverPruned() async throws {
-        let host = "prune-only-direct.test"
-        // A response listing neither the family chat nor the assistant
-        // thread — which the server cannot really send, and that is the
-        // point: a client must not act on it if it does. The direct chat
-        // in the same body IS pruned, so this is not just an inert run.
+    @Test("a complete list prunes EVERY absent chat, whatever its kind")
+    func everyAbsentChatIsPruned() async throws {
+        let host = "prune-any-kind.test"
+        // Since 2026-10-22 a client "drops every chat that leaves GET
+        // /chats, of any kind" (docs/protocol.md, resync step 2): a group
+        // can vanish too, and a client that pruned only direct chats would
+        // keep a deleted group forever. The rule is the response, not the
+        // kind — so a list without the family chat and the assistant thread
+        // (which the server never really sends) takes them as well, and a
+        // failed or torn list (above) still takes nothing.
         let harness = try makeHarness(host: host) { request in
             switch request.url.path() {
             case "/api/v1/me": return .json(200, Self.meJSON)
@@ -679,8 +682,8 @@ struct DeletedAccountChatPruneTests {
 
         await harness.coordinator.resync()
 
-        #expect(harness.chatIDs() == [1, 2, 43])
-        #expect(harness.messageChatIDs() == [1, 2, 43])
+        #expect(harness.chatIDs() == [43])
+        #expect(harness.messageChatIDs() == [43])
     }
 
     // MARK: - The frame

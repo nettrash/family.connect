@@ -89,7 +89,10 @@ nonisolated enum ChatNotifier {
         /// (docs/protocol.md, "Mentioning a member").
         namesMe: Bool = false
     ) -> String {
-        guard chatKind == "family" else { return senderName }
+        // A group is titled as the family chat is, with the group's name in
+        // place of the family's (docs/protocol.md, "Push notifications",
+        // 2026-10-22); anything else is one person, named alone.
+        guard ChatRules.isFamilyOrGroup(chatKind) else { return senderName }
         // Localized, as every other word on this banner is: it was the one
         // English sentence a Russian Mac still showed (#84).
         return namesMe

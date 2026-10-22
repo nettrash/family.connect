@@ -1,3 +1,4 @@
+using FamilyConnect.App.Logic;
 using FamilyConnect.App.Services;
 using FamilyConnect.Core;
 using Microsoft.UI.Text;
@@ -13,7 +14,7 @@ using static FamilyConnect.App.Views.Dialogs;
 namespace FamilyConnect.App.Views;
 
 /// <summary>
-/// A person's picture, or their initials when they have none; the family's house (the web client's
+/// A person's picture, or their initials when they have none; the family's house; a group's people (the web client's
 /// <c>Avatar</c>, ios <c>InitialsAvatar</c>): a circle of the accent at a fifth of its strength, the initials or
 /// the house in the accent itself, and the picture over both once it lands.
 /// </summary>
@@ -40,18 +41,22 @@ internal sealed class AvatarFaces(Connection connection)
     /// Told, when a picture is asked for, how to ask whether it came — a conversation builds a row again while it has not,
     /// which is how a face that failed is asked for again (see <c>ChatsView.SettlesWhen</c>).
     /// </param>
-    public FrameworkElement Face(string title, bool family, long? userId, int version, double size, Action<Func<bool>>? settles = null)
+    public FrameworkElement Face(string title, bool family, long? userId, int version, double size, Action<Func<bool>>? settles = null) =>
+        Face(title, family ? ChatFace.House : ChatFace.Initials, userId, version, size, settles);
+
+    /// <summary>A chat's circle, as <see cref="ChatFaces"/> chose it: the house, a group's people, or initials and a picture.</summary>
+    public FrameworkElement Face(string title, ChatFace look, long? userId, int version, double size, Action<Func<bool>>? settles = null)
     {
         var resources = Application.Current.Resources;
         var ink = (Brush)resources["AccentTextFillColorPrimaryBrush"];
         var root = new Grid { Width = size, Height = size, VerticalAlignment = VerticalAlignment.Center };
         root.Children.Add(new Ellipse { Fill = (Brush)resources["AccentFillColorDefaultBrush"], Opacity = 0.2 });
-        if (family)
+        if (look is ChatFace.House or ChatFace.People)
         {
             root.Children.Add(new FontIcon
             {
-                // Home, in Segoe Fluent Icons.
-                Glyph = ((char)0xE80F).ToString(),
+                // Home, or Group (a group, #107 — not People, which is the Family page's own icon), in Segoe Fluent Icons.
+                Glyph = ((char)(look == ChatFace.House ? 0xE80F : 0xE902)).ToString(),
                 FontSize = size * 0.41,
                 Foreground = ink,
             });

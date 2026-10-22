@@ -190,7 +190,7 @@ internal sealed class NoteSheet
         {
             var offered = ComposerMentions.Offered(
                 draft.Text, connection.Chats.Members(), connection.Chats.Reader, connection.Chats.IsBlocked,
-                familyChat: true, editing: false);
+                enabled: true, editing: false);
             names.Children.Clear();
             strip.Visibility = offered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             foreach (var member in offered)

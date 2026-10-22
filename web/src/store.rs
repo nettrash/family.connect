@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::model::{
-    AiFailure, Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction,
-    ReplyParent, ReplyTo, Roster, User,
+    AiFailure, Assistant, Chat, ChatListItem, Me, Member, Mention, Message, Poll, PollOption,
+    Reaction, ReplyParent, ReplyTo, Roster, User,
 };
 use crate::staged::{OutgoingItem, Prepared, StagedBytes};
 
@@ -604,6 +604,15 @@ pub struct Store {
     /// another `/me` — the resync an approval set off — is older than what
     /// is held, and is not taken.
     pub account_reads: u64,
+    /// Bumped by every change this client makes to the chat list itself — a
+    /// group created, changed or removed, by a frame or by this device's own
+    /// answer. A `GET /chats` takes it as it starts
+    /// ([`Store::merge_chats_from`]).
+    pub chat_changes: u64,
+    /// chat → the [`Store::chat_changes`] its last such change was. A list
+    /// that started before it is older than this chat's row, and neither
+    /// drops it nor brings it back.
+    pub chat_touched: HashMap<i64, u64>,
 }
 
 /// How long a `typing` frame stands before it is forgotten, in
@@ -753,9 +762,10 @@ impl Store {
         // person's to keep, and the new family's is read from nothing.
         self.pack = crate::pack::Pack::default();
         // The assistant's chat is the person's, not the family's: leaving
-        // takes the family chat and the direct chats and nothing else
-        // (docs/protocol.md, `POST /families/leave`), so it keeps its
-        // history, its draft and whatever is still on its way.
+        // takes the family chat, the direct chats and every group, and
+        // nothing else (docs/protocol.md, `POST /families/leave` — a rejoin
+        // does not put a member back in a group), so it keeps its history,
+        // its draft and whatever is still on its way.
         let theirs: HashSet<i64> = self
             .chats
             .iter()
@@ -932,6 +942,13 @@ impl Store {
         }
     }
 
+    /// A list asked for just now — the tests' shorthand for
+    /// [`Store::merge_chats_from`].
+    #[cfg(test)]
+    pub fn merge_chats(&mut self, fresh: Vec<ChatListItem>) -> Vec<i64> {
+        self.merge_chats_from(fresh, self.chat_changes)
+    }
+
     /// `GET /chats`, MERGED into what this client holds rather than laid
     /// over it (ios ChatSyncCoordinator: the marker kept monotonic, live
     /// bumps above the list's snapshot added back).
@@ -946,8 +963,45 @@ impl Store {
     ///   read past the snapshot's marker, a recount of what is still above
     ///   it, where the held window covers the marker;
     /// - the preview is whichever last message is newer.
-    pub fn merge_chats(&mut self, fresh: Vec<ChatListItem>) {
+    ///
+    /// A chat that is no longer listed is gone from the list, whatever its
+    /// kind (resync step 2, amended 2026-10-22) — and a GROUP that is no
+    /// longer listed is gone for good, left, removed from or deleted while
+    /// this client slept, so everything held for it goes too
+    /// ([`Store::remove_chat`]). A direct chat is only hidden by a block and
+    /// comes back whole on unblock, so what is held of it stays. Answers the
+    /// groups dropped, for the caller to close one that is open.
+    ///
+    /// `began` is what [`Store::chat_changes`] was when the list was asked
+    /// for. A chat this client added, changed or removed SINCE — a
+    /// group made, a `chat_updated`, a `chat_removed` that landed while the
+    /// list was in flight — is newer than the list's snapshot of it: a group
+    /// added since is kept although the list does not have it, one changed
+    /// since keeps the chat it holds, and one removed since is not brought
+    /// back (the list races the frames as it races the messages).
+    pub fn merge_chats_from(&mut self, mut fresh: Vec<ChatListItem>, began: u64) -> Vec<i64> {
         let me = self.my_user_id;
+        let newer: HashSet<i64> = self
+            .chat_touched
+            .iter()
+            .filter(|(_, at)| **at > began)
+            .map(|(chat_id, _)| *chat_id)
+            .collect();
+        fresh.retain(|item| !newer.contains(&item.chat.id) || self.item(item.chat.id).is_some());
+        let kept: Vec<ChatListItem> = self
+            .chats
+            .iter()
+            .filter(|held| newer.contains(&held.chat.id))
+            .filter(|held| !fresh.iter().any(|item| item.chat.id == held.chat.id))
+            .cloned()
+            .collect();
+        let gone: Vec<i64> = self
+            .chats
+            .iter()
+            .filter(|held| held.chat.is_group() && !newer.contains(&held.chat.id))
+            .filter(|held| !fresh.iter().any(|item| item.chat.id == held.chat.id))
+            .map(|held| held.chat.id)
+            .collect();
         self.listed = fresh
             .iter()
             .map(|item| {
@@ -961,6 +1015,9 @@ impl Store {
                 let Some(held) = self.item(item.chat.id) else {
                     return item;
                 };
+                if newer.contains(&item.chat.id) {
+                    item.chat = held.chat.clone();
+                }
                 let snapshot_last = item.last_message.as_ref().map(|m| m.id).unwrap_or(0);
                 let marker = item.last_read_message_id.max(held.last_read_message_id);
                 let thread = self.threads.get(&item.chat.id);
@@ -1000,6 +1057,11 @@ impl Store {
             })
             .collect();
         self.chats = merged;
+        self.chats.extend(kept);
+        for chat_id in &gone {
+            self.remove_chat(*chat_id);
+        }
+        gone
     }
 
     /// Rows a reload left in the outbox, back in it — each with its bubble,
@@ -1872,6 +1934,79 @@ impl Store {
         }
     }
 
+    /// `chat_updated` — a group created, renamed, or its members or admin
+    /// changed — and the answer to this device's own create or change: the
+    /// chat whole, into the list or over the one held, with everything else
+    /// on its row kept (docs/protocol.md, "Groups"). A group that no longer
+    /// lists this member is one they are out of, and goes.
+    pub fn upsert_chat(&mut self, chat: Chat) {
+        self.touch_chat(chat.id);
+        if chat.is_group() && !chat.group_member_ids().contains(&self.my_user_id) {
+            self.remove_chat(chat.id);
+            return;
+        }
+        match self.item_mut(chat.id) {
+            Some(item) => item.chat = chat,
+            // Nothing unread: a member just added starts with the group's
+            // newest message read, and the creator has written nothing yet.
+            None => self.chats.push(ChatListItem {
+                chat,
+                ..ChatListItem::default()
+            }),
+        }
+    }
+
+    /// `chat_removed` — a group this member left, was removed from, or that
+    /// was deleted — or this device's own leave or delete answered: the
+    /// chat, its messages, its cursors and anything being written there,
+    /// gone (docs/protocol.md, "Groups"). What waits in the outbox for it
+    /// would be refused `chat_not_found`, on a bubble nobody can see any
+    /// more, so it goes with its bytes. Answers whether anything was held.
+    pub fn remove_chat(&mut self, chat_id: i64) -> bool {
+        self.touch_chat(chat_id);
+        let held = self.item(chat_id).is_some() || self.threads.contains_key(&chat_id);
+        self.chats.retain(|item| item.chat.id != chat_id);
+        self.threads.remove(&chat_id);
+        self.cursors.remove(&chat_id);
+        self.listed.remove(&chat_id);
+        self.typing.remove(&chat_id);
+        self.peer_read.remove(&chat_id);
+        self.drafts.remove(&chat_id);
+        self.staged.remove(&chat_id);
+        self.not_sent.remove(&chat_id);
+        let gone: Vec<i64> = self
+            .outbox
+            .iter()
+            .filter(|row| row.chat_id == chat_id)
+            .flat_map(|row| row.items.iter().map(|item| item.provisional_id))
+            .collect();
+        for provisional in gone {
+            self.bytes.remove(&provisional);
+        }
+        self.outbox.retain(|row| row.chat_id != chat_id);
+        if self
+            .thread_view
+            .as_ref()
+            .is_some_and(|view| view.chat_id == chat_id)
+        {
+            self.thread_view = None;
+        }
+        if self
+            .open_polls
+            .as_ref()
+            .is_some_and(|polls| polls.chat_id == chat_id)
+        {
+            self.open_polls = None;
+        }
+        held
+    }
+
+    /// This chat's row changed here, after any list now in flight began.
+    fn touch_chat(&mut self, chat_id: i64) {
+        self.chat_changes += 1;
+        self.chat_touched.insert(chat_id, self.chat_changes);
+    }
+
     pub fn member_joined(&mut self, user: &User) {
         self.roster_changes += 1;
         self.names.insert(user.id, user.display_name.clone());
@@ -2183,6 +2318,7 @@ mod tests {
                 kind: kind.into(),
                 title: Some("The Smiths".into()),
                 peer_user_id: (kind == "direct").then_some(ANNA),
+                ..Chat::default()
             },
             last_message: None,
             unread_count: 0,
@@ -3790,6 +3926,185 @@ mod tests {
         // A voice message that was not sent goes with its chat too (#79).
         assert!(!store.not_sent.contains_key(&42));
         assert_eq!(store.not_sent.get(&50).map(Vec::len), Some(1));
+    }
+
+    fn group(id: i64, members: &[i64], admin: i64) -> Chat {
+        Chat {
+            id,
+            kind: "group".into(),
+            title: Some("Cousins".into()),
+            member_ids: Some(members.to_vec()),
+            admin_user_id: Some(admin),
+            ..Chat::default()
+        }
+    }
+
+    /// `chat_updated` puts a group in the list — a member just added sees
+    /// it at once — and over the one held, keeping what the row knows; a
+    /// group that no longer lists this member is one they are out of
+    /// (docs/protocol.md, "Groups").
+    #[wasm_bindgen_test]
+    fn a_group_frame_adds_the_group_and_changes_it_in_place() {
+        let mut store = store();
+        store.upsert_chat(group(77, &[ANNA, ME], ANNA));
+        let held = store.item(77).expect("listed at once");
+        assert_eq!(held.unread_count, 0);
+        assert_eq!(held.chat.title.as_deref(), Some("Cousins"));
+        store.chats[1].unread_count = 2;
+        let mut renamed = group(77, &[ANNA, ME, 11], ANNA);
+        renamed.title = Some("The cousins".into());
+        store.upsert_chat(renamed);
+        assert_eq!(store.chats.len(), 2, "the same row");
+        let held = store.item(77).expect("still listed");
+        assert_eq!(held.chat.title.as_deref(), Some("The cousins"));
+        assert_eq!(held.chat.group_member_ids(), &[ANNA, ME, 11]);
+        assert_eq!(held.unread_count, 2, "what the row knew stays");
+        // Below the family chat, as every other chat.
+        assert!(store.sorted_chats()[0].chat.is_family());
+
+        store.drafts.insert(77, "see you".into());
+        store.upsert_chat(group(77, &[ANNA, 11], ANNA));
+        assert!(store.item(77).is_none(), "out of it");
+        assert!(!store.drafts.contains_key(&77));
+    }
+
+    /// `chat_removed` takes the group and everything held for it: its
+    /// messages, its cursors, what was being written there and what was on
+    /// its way — which would be refused `chat_not_found` now — and the
+    /// thread or the open polls showing it. Nothing else is touched.
+    #[wasm_bindgen_test]
+    fn a_removed_group_takes_everything_held_for_it() {
+        let mut store = store();
+        store.upsert_chat(group(77, &[ANNA, ME], ME));
+        store.apply_message(
+            Message {
+                chat_id: 77,
+                ..message(500, ANNA, "hello")
+            },
+            None,
+            Via::Frame,
+        );
+        store.queue_send(77, "g".into(), text("to the group"));
+        store.queue_send(42, "f".into(), text("to the family"));
+        store.drafts.insert(77, "half".into());
+        store.drafts.insert(42, "kept".into());
+        store.park(
+            77,
+            Prepared {
+                kind: "audio".into(),
+                duration_ms: Some(3_000),
+                ..Prepared::default()
+            },
+            3_000,
+            None,
+            String::new(),
+        );
+        store.thread_view = Some(ThreadView {
+            chat_id: 77,
+            ..ThreadView::default()
+        });
+        assert!(store.threads.contains_key(&77));
+
+        assert!(store.remove_chat(77));
+        assert!(store.item(77).is_none());
+        assert!(!store.threads.contains_key(&77));
+        assert!(!store.drafts.contains_key(&77) && !store.not_sent.contains_key(&77));
+        let rows: Vec<&str> = store
+            .outbox
+            .iter()
+            .map(|row| row.client_msg_id.as_str())
+            .collect();
+        assert_eq!(rows, vec!["f"]);
+        assert!(store.thread_view.is_none());
+        assert_eq!(store.drafts.get(&42).map(String::as_str), Some("kept"));
+        assert!(!store.remove_chat(77), "nothing left to take");
+    }
+
+    /// `GET /chats` is the reconciler: a group no longer in it is gone for
+    /// good and takes what was held for it, whatever frame was missed; a
+    /// direct chat no longer in it (a block hides it) leaves the list and
+    /// keeps its history for the unblock (docs/protocol.md, resync step 2).
+    #[wasm_bindgen_test]
+    fn a_group_missing_from_the_list_is_gone_and_a_direct_chat_only_hidden() {
+        let mut store = store();
+        store.chats.push(chat(43, "direct"));
+        store.upsert_chat(group(77, &[ANNA, ME], ANNA));
+        for chat_id in [43, 77] {
+            store.apply_message(
+                Message {
+                    chat_id,
+                    ..message(600 + chat_id, ANNA, "hi")
+                },
+                None,
+                Via::Frame,
+            );
+        }
+        let gone = store.merge_chats(vec![chat(42, "family")]);
+        assert_eq!(gone, vec![77]);
+        assert!(store.item(43).is_none() && store.item(77).is_none());
+        assert!(
+            store.threads.contains_key(&43),
+            "a direct chat's history stays"
+        );
+        assert!(!store.threads.contains_key(&77));
+    }
+
+    /// A list asked for BEFORE a group was made, or changed, does not drop
+    /// it or put its old self back when it lands; one asked for before a
+    /// group was removed does not bring it back. A list asked for after
+    /// either is the reconciler again.
+    #[wasm_bindgen_test]
+    fn a_list_older_than_a_group_change_does_not_undo_it() {
+        let mut store = store();
+        let began = store.chat_changes;
+        store.upsert_chat(group(77, &[ANNA, ME], ANNA));
+        let gone = store.merge_chats_from(vec![chat(42, "family")], began);
+        assert!(gone.is_empty());
+        assert!(store.item(77).is_some(), "made while the list was out");
+
+        let began = store.chat_changes;
+        let mut renamed = group(77, &[ANNA, ME], ANNA);
+        renamed.title = Some("The cousins".into());
+        store.upsert_chat(renamed);
+        let mut stale = chat(77, "group");
+        stale.chat = group(77, &[ANNA, ME], ANNA);
+        stale.unread_count = 3;
+        stale.last_message = Some(Message {
+            chat_id: 77,
+            ..message(800, ANNA, "see you")
+        });
+        store.merge_chats_from(vec![chat(42, "family"), stale.clone()], began);
+        let held = store.item(77).expect("kept");
+        assert_eq!(
+            held.chat.title.as_deref(),
+            Some("The cousins"),
+            "the newer chat"
+        );
+        assert_eq!(held.unread_count, 3, "the list's counts");
+
+        let began = store.chat_changes;
+        store.remove_chat(77);
+        store.merge_chats_from(vec![chat(42, "family"), stale.clone()], began);
+        assert!(store.item(77).is_none(), "removed while the list was out");
+
+        // Asked for after the change: the list decides.
+        store.merge_chats(vec![chat(42, "family"), stale]);
+        assert!(store.item(77).is_some());
+        store.merge_chats(vec![chat(42, "family")]);
+        assert!(store.item(77).is_none());
+    }
+
+    /// Leaving the family takes every group too: a rejoin does not put a
+    /// member back in one (docs/protocol.md, `POST /families/leave`).
+    #[wasm_bindgen_test]
+    fn leaving_the_family_takes_its_groups() {
+        let mut store = store();
+        store.chats.push(chat(50, "ai"));
+        store.upsert_chat(group(77, &[ANNA, ME], ME));
+        store.drafts.insert(77, "half".into());
+        store.forget_family();
+        assert!(store.item(77).is_none() && store.item(50).is_some());
+        assert!(!store.drafts.contains_key(&77));
     }
 
     /// The roster is fresher than `/me` about this account's own role — and

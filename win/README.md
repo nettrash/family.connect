@@ -32,6 +32,8 @@ win/
                 AppSession — which screen the app is on, and the three ways a session ends
                 LiveConnection — the socket, the resync, the outbox and the router under one policy
                 ChatList — the rows, their order, and the one line under each name
+                Groups — ChatKinds (what the family chat shares with a group), GroupRules (who may rename, add, remove,
+                                delete and leave; the name; whom the lists offer), GroupText, GroupModel (#107)
                 Conversation — one open chat: the window, paging back, the read marker, typing
                 Board — the wall: the stickers on it, the badge over it, the writes that change it
                 Pack — the family's CHAT stickers: the panel, who may remove what, add, remove, send
@@ -70,7 +72,7 @@ win/
                           MediaStreamSource), LocationFinder, StickerImaging, KeepAwake (the
                           screen on while recording), SessionWatch (lock, screen saver, sleep),
                           ScreenReader (whether one runs, so the microphone waits for it),
-                          VideoMessageRecorder + RoundVideoSetting (a video message's camera, switched off),
+                          VideoMessageRecorder + RoundVideoSetting (a video message's camera),
                           RoundFramePlayer (a received circle's frame-server player) + RoundCrashMark
                           (a build that died playing one in place opens the viewer)
                 Views/    ServerView, SignInView, DoorView, PendingView, OfflineView, ChatsView,
@@ -531,8 +533,9 @@ receive a circle from a phone or the web and check:
 - **Memory**: play a minute-long circle three times and watch Task Manager — the frames are surfaces outside .NET's heap,
   given back when it stops, ends or scrolls away.
 
-**Recording a video message is built and switched off** (docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1,
-Decision 28). `RoundVideoRules.RecordingEnabled` is `false`, and while it is, no build draws a way in: no video button in
+**Recording a video message is built and switched on** (2026-10-21, ahead of trials T1–T3 below;
+docs/audio-video-messages-2026-10-04.md, Phase 3d; Blocked 1, Decision 28). `RoundVideoRules.RecordingEnabled` is `true`;
+set to `false`, no build draws a way in: no video button in
 the empty field, no "Record Video Message" in the paperclip's menu or the microphone's, no "Press Shift+F10 for a video
 message." hint for Narrator — and nothing enumerates or opens a camera. A build that can only RECEIVE circles shows no way
 of recording one (Decision 40). Behind the switch is the whole recorder: the video button (Segoe E714 inside the empty
@@ -561,9 +564,9 @@ clip asks "Delete video message?" in `OnClosing`, and Keep cancels the close. Th
 `max_round_video_ms` and `max_round_video_bytes` on `GET /families/mine` (`RoundVideoLimits`, carried by the pass into the
 session) and a camera on the machine.
 
-**To switch it on**, set `RecordingEnabled = true` in `src/FamilyConnect.App.Logic/RoundVideoRules.cs`, build, and run the
-trials on the ARM64 machine (`RoundVideoRulesTests.RecordingIsSwitchedOffUntilTheTrials` fails while it is on, on
-purpose: flip that assertion too when the trials pass and the switch is meant to ship). Then:
+**The trials.** The switch (`RecordingEnabled` in `src/FamilyConnect.App.Logic/RoundVideoRules.cs`) is on; run these on
+the ARM64 machine, and if one fails set it back to `false` (`RoundVideoRulesTests.RecordingIsSwitchedOn` then fails, on
+purpose: flip that assertion too):
 
 - **T1 — the picture and the microphone.** Open the recorder (the video button in an empty field) on the built-in webcam
   and on any USB one: the circle shows the live picture, mirrored, within a second or two ("Starting camera…" then "Not

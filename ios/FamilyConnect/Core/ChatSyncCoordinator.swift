@@ -199,6 +199,22 @@ final class ChatSyncCoordinator {
     private var isInBackground = false
     private weak var attachmentStore: AttachmentStore?
 
+    /// Told the id of every chat this device drops, after its rows are gone
+    /// — so whatever keeps per-chat state OUTSIDE the store (the parked "not
+    /// sent" voice notes) can let it go too. Wired by the app; a test leaves
+    /// it nil and touches nothing on disk.
+    var onChatDropped: (@MainActor (Int64) -> Void)?
+
+    /// Groups that changed by frame or by this device's own request while a
+    /// `GET /chats` was in flight, and so cannot be judged by that response
+    /// (docs/protocol.md, "Groups", 2026-10-22). The list was built before
+    /// it was sent: a group created or joined since is ABSENT from it and
+    /// must not be pruned for that, and a group left or deleted since is
+    /// still PRESENT in it and must not be brought back. Cleared as each
+    /// request starts; nil while none is running, so nothing collects.
+    private var chatsUpsertedDuringList: Set<Int64>?
+    private var chatsRemovedDuringList: Set<Int64>?
+
     // MARK: - Internals
 
     private var socketTask: Task<Void, Never>?
@@ -769,6 +785,22 @@ final class ChatSyncCoordinator {
                 chat.maxReactionSeq = payload.reactionSeq
                 saveContext()
             }
+
+        case .chatUpdated(let dto):
+            // A group as it now stands — created, renamed, members or admin
+            // changed (docs/protocol.md, "Groups"). Only the chat's own
+            // fields move: the preview, the count and the cursors are the
+            // message pipeline's, and a rename is not a message. A member
+            // just added gets the group from this frame and its history
+            // when they open it, starting with nothing unread.
+            applyChat(dto)
+            saveContext()
+
+        case .chatRemoved(let chatID):
+            // Left, removed, or deleted by its admin: the chat goes, with
+            // its messages and anything drafted there. An open thread is
+            // closed by the list's own vanish hook (ChatListView, MacChatView).
+            dropChat(chatID: chatID)
 
         case .poll(let payload):
             // The reaction case's twin, and deliberately identical: full
@@ -4029,9 +4061,10 @@ final class ChatSyncCoordinator {
             AppSettings.roundVideoMaxBytes = mine.maxRoundVideoBytes
         }
 
-        // 3. Chat list: server unread wins; direct chats the server
-        // dropped go — with their messages and everything else keyed by
-        // their id (see `dropChats`, and `deleteChat` under it).
+        // 3. Chat list: server unread wins; chats the server no longer
+        // lists go, whatever their kind — with their messages and everything
+        // else keyed by their id (see `dropChats`, and `deleteChat` under
+        // it).
         //
         // "Wins" with one correction. `unread_count` is computed on the
         // server BEFORE the response is sent, so a live `message` frame
@@ -4049,9 +4082,18 @@ final class ChatSyncCoordinator {
         // `unread_count` either way; what needs the marker is Notification
         // Center, which would otherwise still be showing banners for
         // messages this person read on their phone while this one was off.
-        guard let chatList = try? await api.chats() else { return }
+        chatsUpsertedDuringList = []
+        chatsRemovedDuringList = []
+        let listed = try? await api.chats()
+        let upsertedSince = chatsUpsertedDuringList ?? []
+        let removedSince = chatsRemovedDuringList ?? []
+        chatsUpsertedDuringList = nil
+        chatsRemovedDuringList = nil
+        guard let chatList = listed else { return }
         var readElsewhere: [Int64: Int64] = [:]
-        for item in chatList.chats {
+        // A group this device has already been told it left is not
+        // re-created from a list built before it did.
+        for item in chatList.chats where !removedSince.contains(item.chat.id) {
             if let marker = upsertChat(
                 item,
                 uncountedLiveMessages: uncountedBumps(in: item),
@@ -4060,7 +4102,7 @@ final class ChatSyncCoordinator {
                 readElsewhere[item.chat.id] = marker
             }
         }
-        dropChats(absentFrom: chatList.chats)
+        dropChats(absentFrom: chatList.chats, keeping: upsertedSince)
         saveContext()
         // After the save, so the icon is already showing the server's number
         // when the banners go.
@@ -4482,6 +4524,66 @@ final class ChatSyncCoordinator {
         return dto.id
     }
 
+    // MARK: - Groups (docs/protocol.md, "Groups", 2026-10-22)
+    //
+    // Every answer that carries the group's Chat is applied at once, so the
+    // device that made a change shows it without waiting for its own
+    // `chat_updated` (which arrives too, and changes nothing the second
+    // time). An answer that ends the group for this member drops it here.
+    // Failures are thrown for the screen to say (`GroupRules.createFailure`
+    // and `changeFailure`); nothing here retries, because a person is
+    // looking at the form and the same tap is the retry.
+
+    /// Create a group and hold it locally; returns its id for navigation.
+    func createGroup(title: String, memberIDs: [Int64]) async throws -> Int64 {
+        let dto = try await api.createGroup(title: title, memberIDs: memberIDs)
+        applyChat(dto)
+        saveContext()
+        return dto.id
+    }
+
+    func renameGroup(chatID: Int64, title: String) async throws {
+        let dto = try await api.renameGroup(chatID: chatID, title: title)
+        applyChat(dto)
+        saveContext()
+    }
+
+    func addGroupMembers(chatID: Int64, userIDs: [Int64]) async throws {
+        let dto = try await api.addGroupMembers(chatID: chatID, userIDs: userIDs)
+        applyChat(dto)
+        saveContext()
+    }
+
+    func removeGroupMember(chatID: Int64, userID: Int64) async throws {
+        let dto = try await api.removeGroupMember(chatID: chatID, userID: userID)
+        applyChat(dto)
+        saveContext()
+    }
+
+    /// Leave: the caller's own id, any member, `204`. A group that is
+    /// already gone (`chat_not_found` — deleted, or this member removed,
+    /// while the screen was open) is the same outcome for this person, so it
+    /// is dropped rather than reported as a failure.
+    func leaveGroup(chatID: Int64) async throws {
+        do {
+            try await api.leaveGroup(chatID: chatID, userID: currentUserID)
+        } catch APIError.notFound(code: "chat_not_found"?) {
+            // Gone already; drop it below.
+        }
+        dropChat(chatID: chatID)
+    }
+
+    /// Delete, for everyone — admin only. Gone already counts as done, for
+    /// the reason `leaveGroup` gives.
+    func deleteGroup(chatID: Int64) async throws {
+        do {
+            try await api.deleteGroup(chatID: chatID)
+        } catch APIError.notFound(code: "chat_not_found"?) {
+            // Gone already; drop it below.
+        }
+        dropChat(chatID: chatID)
+    }
+
     /// How many of this chat's live bumps the response in `item` cannot
     /// have counted — and forget the ones it can.
     ///
@@ -4543,22 +4645,7 @@ final class ChatSyncCoordinator {
         /// the same way (protocol.md, "Mentioning a member").
         uncountedMention: Bool = false
     ) -> Int64? {
-        let dto = item.chat
-        let chat: ChatEntity
-        if let existing = fetchChat(dto.id) {
-            chat = existing
-        } else {
-            chat = ChatEntity(
-                chatID: dto.id,
-                kind: dto.kind,
-                pinRank: dto.kind == "family" ? 0 : 1,
-                title: dto.title)
-            modelContext.insert(chat)
-        }
-        chat.kind = dto.kind
-        chat.pinRank = dto.kind == "family" ? 0 : 1
-        chat.peerUserID = dto.peerUserID
-        chat.title = dto.title
+        let chat = applyChat(item.chat)
         chat.unreadCount = item.unreadCount + max(0, uncountedLiveMessages) // server-authoritative
         // Server-authoritative too, and absent means no — plus what named
         // the reader after the server counted, which is the same message
@@ -4601,15 +4688,49 @@ final class ChatSyncCoordinator {
         return readMarkerAdvanced
     }
 
+    /// The chat's OWN fields — kind, title, peer, and a group's members and
+    /// admin — written onto its row, created if this device has never held
+    /// it. Shared by the chat list (`upsertChat`) and the `chat_updated`
+    /// frame, which carries a Chat and nothing about its messages.
+    @discardableResult
+    func applyChat(_ dto: ChatDTO) -> ChatEntity {
+        let chat: ChatEntity
+        if let existing = fetchChat(dto.id) {
+            chat = existing
+        } else {
+            chat = ChatEntity(
+                chatID: dto.id,
+                kind: dto.kind,
+                pinRank: dto.kind == ChatRules.family ? 0 : 1,
+                title: dto.title)
+            modelContext.insert(chat)
+        }
+        chat.kind = dto.kind
+        // Family first; every other kind — a group included — below it by
+        // recency, the list's own two-key sort.
+        chat.pinRank = dto.kind == ChatRules.family ? 0 : 1
+        chat.peerUserID = dto.peerUserID
+        chat.title = dto.title
+        // Present only on a group; absent clears, so a row can never carry
+        // members it does not have.
+        let members = dto.memberIDs ?? []
+        if chat.groupMemberIDs != members { chat.groupMemberIDs = members }
+        if chat.groupAdminUserID != dto.adminUserID { chat.groupAdminUserID = dto.adminUserID }
+        chatsUpsertedDuringList?.insert(dto.id)
+        return chat
+    }
+
     /// THE local delete-by-chat, and the only one: everything this device
     /// holds that is keyed by a chat id goes here, in one place, so the two
     /// callers below cannot prune half of it each.
     ///
     /// Nothing in this protocol needed it until account deletion. A member
-    /// leaving does NOT take a chat away — that history is retained and
-    /// resurfaces if they rejoin — so the only chat that can genuinely
-    /// vanish is a direct one whose peer deleted their account, and it
-    /// vanishes in BOTH halves (docs/protocol.md, "Deleting an account").
+    /// leaving does NOT take the family chat away — that history is retained
+    /// and resurfaces if they rejoin — so the chats that can genuinely
+    /// vanish are a direct one whose peer deleted their account, which goes
+    /// in BOTH halves (docs/protocol.md, "Deleting an account"), and since
+    /// 2026-10-22 a group this member left, was removed from, or whose admin
+    /// deleted it (docs/protocol.md, "Groups").
     ///
     /// The messages go first and by hand: nothing here is a SwiftData
     /// relationship, so deleting the chat row alone would leave every one
@@ -4640,30 +4761,51 @@ final class ChatSyncCoordinator {
         liveMentionedMessageIDs[chatID] = nil
         readPostsInFlight.remove(chatID)
         pendingReadTargets[chatID] = nil
+        // "…and anything it was drafting there" (docs/protocol.md, "Groups"):
+        // the parked text, and whatever the app keeps beside the store.
+        ComposerDrafts.forget(chatID: chatID)
+        onChatDropped?(chatID)
     }
 
-    /// The GENERAL REPAIR: prune the direct chats a full `GET /chats` did
-    /// not list. This is what heals a device that was asleep when a peer
-    /// deleted their account — the frame that says so was never delivered
-    /// (the socket is a live wire, not a queue), and nothing else would
-    /// ever tell it.
+    /// The IMMEDIATE half for a group: a `chat_removed` frame, or this
+    /// device's own leave or delete answered. A chat this device never held
+    /// is nothing to drop, and is remembered only so a list already in
+    /// flight cannot bring it back.
+    func dropChat(chatID: Int64) {
+        chatsRemovedDuringList?.insert(chatID)
+        chatsUpsertedDuringList?.remove(chatID)
+        guard let chat = fetchChat(chatID) else { return }
+        deleteChat(chat)
+        saveContext()
+    }
+
+    /// The GENERAL REPAIR: prune the chats a full `GET /chats` did not
+    /// list. This is what heals a device that was asleep when a peer
+    /// deleted their account, or when a group it was in was left, emptied
+    /// or deleted — the frame that says so was never delivered (the socket
+    /// is a live wire, not a queue), and nothing else would ever tell it.
     ///
-    /// ONLY DIRECT CHATS, and that is deliberate rather than defensive: a
-    /// direct chat is the only kind that can disappear. The family chat is
-    /// in every response of every member of a family, the assistant thread
-    /// is returned to its owner, and a client that pruned either because a
-    /// response looked thin would be throwing away history the server still
-    /// holds. An unknown future kind is left alone for the same reason.
+    /// EVERY KIND, since 2026-10-22 (docs/protocol.md, resync step 2:
+    /// "a client drops every chat that leaves `GET /chats`, of any kind").
+    /// It used to be direct chats only, on the reasoning that nothing else
+    /// could disappear; a group can, and a client that kept an absent one
+    /// would keep a deleted group with every message in it forever. The
+    /// family chat and the assistant thread are in every complete response,
+    /// so pruning on absence costs them nothing.
+    ///
+    /// `keeping` is the groups that arrived by frame or by this device's own
+    /// request while the list was in flight — absent from a response built
+    /// before they existed here, and not gone.
     ///
     /// The caller runs this ONLY on a response that actually arrived and
     /// was complete — `GET /chats` is unpaginated, so "complete" is the
     /// same thing as "succeeded". On a network failure resync returns
     /// before reaching here, because pruning on a flaky connection would
     /// wipe somebody's history.
-    private func dropChats(absentFrom items: [ChatListItemDTO]) {
-        let serverIDs = Set(items.map { $0.chat.id })
+    private func dropChats(absentFrom items: [ChatListItemDTO], keeping: Set<Int64> = []) {
+        let serverIDs = Set(items.map { $0.chat.id }).union(keeping)
         guard let locals = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return }
-        for chat in locals where chat.kind == "direct" && !serverIDs.contains(chat.chatID) {
+        for chat in locals where !serverIDs.contains(chat.chatID) {
             deleteChat(chat)
         }
     }
@@ -4997,8 +5139,8 @@ final class ChatSyncCoordinator {
 
     // MARK: - Fetch helpers
 
-    /// The kind of a chat this device holds — `"family"`, `"direct"` or
-    /// `"ai"` — or nil when it holds no such chat. For the one rule that
+    /// The kind of a chat this device holds — `"family"`, `"direct"`, `"ai"`
+    /// or `"group"` — or nil when it holds no such chat. For the one rule that
     /// needs it from inside a bubble, which knows its chat only by id:
     /// whether "Show text" is offered under a recording (`TranscriptDoor`).
     func chatKind(of chatID: Int64) -> String? {

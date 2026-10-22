@@ -91,6 +91,7 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.MemberMention
+import me.nettrash.familyconnect.util.GroupRules
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.calls.CallStarter
 import me.nettrash.familyconnect.calls.CallState
@@ -376,7 +377,7 @@ class ChatViewModel @Inject constructor(
     fun startCall(video: Boolean): Boolean {
         val current = chat.value ?: return false
         val peer = current.peerUserId ?: return false
-        if (current.kind != "direct") return false
+        if (!GroupRules.offersCalls(current.kind)) return false
         return callStarter.startCall(current.id, peer, video)
     }
 
@@ -481,13 +482,16 @@ class ChatViewModel @Inject constructor(
         val (memberCount, anchor) = memberCountAndAnchor
         buildChatItems(
             messagesNewestFirst = messages,
-            isFamilyChat = chatEntity?.kind == "family",
+            // Sender names wherever several people write: the family chat
+            // and a group (docs/protocol.md, "Groups").
+            isFamilyChat = GroupRules.showsSenderNames(chatEntity?.kind),
             myUserId = settingsState.myUserId ?: -1L,
             memberNames = members,
             nowMillis = clock.now(),
             assistantUserId = settingsState.assistantUserId,
             assistantName = settingsState.assistantName,
-            familyMemberCount = memberCount,
+            // A poll's "3 of 5" counts the GROUP's members in a group.
+            familyMemberCount = GroupRules.pollAudience(chatEntity?.kind, chatEntity?.memberIds.orEmpty(), memberCount),
             firstUnreadServerId = (anchor as? OpenAnchor.Message)?.serverId,
             newMessageCount = (anchor as? OpenAnchor.Message)?.newCount ?: 0,
             // Rides in on `settings.state`, which is already the third
@@ -610,13 +614,14 @@ class ChatViewModel @Inject constructor(
     /**
      * Whether this chat may hold a poll at all.
      *
-     * The family chat only: a poll is a family deciding something
-     * together, and anywhere else the server answers `invalid_poll`
-     * (docs/protocol.md, "Polls"). The attach menu hides the item rather
-     * than offering an affordance that can only fail.
+     * The family chat or a group: a poll is (some of) a family deciding
+     * something together, and anywhere else the server answers
+     * `invalid_poll` (docs/protocol.md, "Polls", amended 2026-10-22). The
+     * attach menu hides the item rather than offering an affordance that
+     * can only fail.
      */
     val canCreatePoll: StateFlow<Boolean> = chat
-        .map { it?.kind == "family" }
+        .map { GroupRules.offersPolls(it?.kind) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // -- Pictures -----------------------------------------------------------------
@@ -673,9 +678,10 @@ class ChatViewModel @Inject constructor(
     val canAskForPicture: StateFlow<Boolean> =
         combine(chat, settings.state) { chatEntity, settingsState ->
             settingsState.assistantImages &&
-                when (chatEntity?.kind) {
-                    "ai" -> true
-                    "family" -> settingsState.assistantUserId != null
+                when {
+                    chatEntity?.kind == GroupRules.AI -> true
+                    // A group answers `@ai` as the family chat does.
+                    GroupRules.answersAssistantMention(chatEntity?.kind) -> settingsState.assistantUserId != null
                     else -> false
                 }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -708,7 +714,7 @@ class ChatViewModel @Inject constructor(
     fun insertDrawToken() {
         if (!canAskForPicture.value) return
         if (_editTarget.value != null) return
-        val inFamilyChat = chat.value?.kind == "family"
+        val inFamilyChat = GroupRules.answersAssistantMention(chat.value?.kind)
         val rewritten = AssistantMention.withDraw(inputState.text.toString(), inFamilyChat)
         inputState.setTextAndPlaceCursorAtEnd(rewritten)
     }
@@ -1053,9 +1059,10 @@ class ChatViewModel @Inject constructor(
 
     /**
      * What the strip above the composer offers: the assistant FIRST, then
-     * the roster, narrowed to the `@prefix` being typed — never the reader
-     * themself and never the blocked. Empty outside the family chat and
-     * outside a token.
+     * the roster — in a group, THAT GROUP's members only — narrowed to the
+     * `@prefix` being typed, never the reader themself and never the
+     * blocked. Empty outside the family chat and groups, and outside a
+     * token.
      *
      * The assistant is offered since #106 took its button out of the
      * composer row (docs/protocol.md, "Mentioning a member", amended
@@ -1068,12 +1075,12 @@ class ChatViewModel @Inject constructor(
         chat,
         settings.state,
     ) { draft, roster, chatEntity, settingsState ->
-        if (chatEntity?.kind != "family") return@combine emptyList()
+        if (!GroupRules.offersMemberMentions(chatEntity?.kind)) return@combine emptyList()
         MemberMention.suggestions(
             draft = draft,
-            roster = roster,
+            roster = GroupRules.mentionRoster(roster, chatEntity?.kind, chatEntity?.memberIds.orEmpty()),
             excluding = settingsState.blockedUserIds + setOfNotNull(settingsState.myUserId),
-            assistantName = if (offersAssistantMention(chatEntity.kind, settingsState)) {
+            assistantName = if (offersAssistantMention(chatEntity?.kind, settingsState)) {
                 settingsState.assistantName?.takeIf { it.isNotBlank() }
                     ?: appContext.getString(R.string.s_assistant)
             } else {
@@ -1099,10 +1106,16 @@ class ChatViewModel @Inject constructor(
         inputState.setTextAndPlaceCursorAtEnd(MemberMention.accept(inputState.text.toString(), suggestion))
     }
 
-    /** The members the text names, resolved at send — family chat only. */
+    /**
+     * The members the text names, resolved at send — the family chat and
+     * groups only, and in a group only its members: the server refuses
+     * anybody else (docs/protocol.md, "Mentioning a member").
+     */
     private fun resolvedMentions(body: String): List<MentionDto>? {
-        if (chat.value?.kind != "family") return null
-        return MemberMention.resolve(body, mentionRoster.value).takeIf { it.isNotEmpty() }
+        val current = chat.value ?: return null
+        if (!GroupRules.offersMemberMentions(current.kind)) return null
+        val roster = GroupRules.mentionRoster(mentionRoster.value, current.kind, current.memberIds)
+        return MemberMention.resolve(body, roster).takeIf { it.isNotEmpty() }
     }
 
     /**
@@ -1155,7 +1168,7 @@ class ChatViewModel @Inject constructor(
     val mentionPictureNotice: StateFlow<MentionPictureNotice?> =
         combine(chat, draftText, staged, quotedAttachments, settings.state) {
                 chatEntity, draft, items, quoted, settingsState ->
-            if (chatEntity?.kind != "family") {
+            if (!GroupRules.answersAssistantMention(chatEntity?.kind)) {
                 null
             } else {
                 AiPictureNotice.forMention(
@@ -1194,7 +1207,7 @@ class ChatViewModel @Inject constructor(
             PictureDescriptionHint.inComposer(
                 draft = draft,
                 picturesOffered = offered,
-                inFamilyChat = chatEntity?.kind == "family",
+                inFamilyChat = GroupRules.answersAssistantMention(chatEntity?.kind),
                 editing = editing != null,
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -2145,7 +2158,7 @@ class ChatViewModel @Inject constructor(
     /**
      * Whether the video recorder may open from this composer now — asked by
      * every way in (S3.1): the video button, the paperclip, the microphone's
-     * menu and its TalkBack action. Family and direct chats only, never
+     * menu and its TalkBack action. Family and direct chats and groups only, never
      * mid-edit. During a call (row 7) or while an attachment is busy (row 8)
      * it SAYS why instead, in the composer's notice line — dimmed is not
      * disabled (S1.3, S1.4, S1.6). Row 9 (a voice message not sent) opens it:
@@ -2154,7 +2167,7 @@ class ChatViewModel @Inject constructor(
      */
     fun mayOpenVideoRecorder(): Boolean {
         val kind = chat.value?.kind
-        if ((kind != "family" && kind != "direct") || _editTarget.value != null) return false
+        if (!GroupRules.offersVideoMessages(kind) || _editTarget.value != null) return false
         if (callLive.value) {
             notice(R.string.e_record_after_the_call)
             return false

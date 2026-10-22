@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -88,6 +89,7 @@ import me.nettrash.familyconnect.ui.chat.DateSeparatorPill
 import me.nettrash.familyconnect.ui.chat.MessageBubble
 import me.nettrash.familyconnect.ui.chat.NoLinkPreviews
 import me.nettrash.familyconnect.ui.components.LocalMotionHold
+import me.nettrash.familyconnect.util.GroupRules
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
 import me.nettrash.familyconnect.ui.chat.ComposerKeys
@@ -117,6 +119,11 @@ fun ThreadScreen(
     onBack: () -> Unit,
     /** Open another chat — the one-to-one a tapped mention leads to. */
     onOpenChat: (Long) -> Unit = {},
+    /**
+     * The chat itself went (ThreadViewModel.chatGone): leave past it, since
+     * the conversation underneath is gone too. Plain Back by default.
+     */
+    onChatGone: () -> Unit = onBack,
     viewModel: ThreadViewModel = hiltViewModel(),
     /**
      * The family's chat stickers: the panel in this screen's composer, and
@@ -126,6 +133,13 @@ fun ThreadScreen(
     stickerViewModel: StickerViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    // Leave when the chat itself goes — ChatScreen's rule, for a thread of a
+    // group left, removed from or deleted (docs/protocol.md, "Groups").
+    val chatGone by viewModel.chatGone.collectAsStateWithLifecycle()
+    val currentOnChatGone by rememberUpdatedState(onChatGone)
+    LaunchedEffect(chatGone) {
+        if (chatGone) currentOnChatGone()
+    }
     var viewingSticker by remember { mutableStateOf<AttachmentDto?>(null) }
     // Null on a server that predates packs, and then no button is drawn.
     val stickerLimits by stickerViewModel.limits.collectAsStateWithLifecycle()
@@ -138,7 +152,8 @@ fun ThreadScreen(
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
-    val mentionRoster by viewModel.mentionRoster.collectAsStateWithLifecycle()
+    // Narrowed to the group's members in a group (GroupRules.mentionRoster).
+    val mentionRoster by viewModel.nameableRoster.collectAsStateWithLifecycle()
     val mapPreviewsEnabled by viewModel.mapPreviewsEnabled.collectAsStateWithLifecycle()
     // Rows this reader has peeked at: per row, per screen, never stored —
     // the chat's own reveal (protocol.md, "Blocking a member").
@@ -216,8 +231,9 @@ fun ThreadScreen(
                 // The roster, while a member is being named (docs/protocol.md,
                 // "Mentioning a member") — the chat composer's own strip,
                 // members only: a reply in a thread is not where #106 offers
-                // the assistant, which the family chat's composer does.
-                val mentionCandidates = if (chat?.kind == "family") {
+                // the assistant, which the family chat's composer does. In a
+                // group, as in the family chat.
+                val mentionCandidates = if (GroupRules.offersMemberMentions(chat?.kind)) {
                     MemberMention.query(draft.text)?.let { query ->
                         MemberMention.candidates(
                             mentionRoster, query, excluding = blockedUserIds + setOfNotNull(myUserId),

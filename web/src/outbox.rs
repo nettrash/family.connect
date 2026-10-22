@@ -351,6 +351,7 @@ mod tests {
                             kind: "family".into(),
                             title: Some("The Smiths".into()),
                             peer_user_id: None,
+                            ..Chat::default()
                         },
                         last_message: None,
                         unread_count: 0,

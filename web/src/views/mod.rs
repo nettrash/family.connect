@@ -16,6 +16,7 @@ pub mod dialog;
 pub mod emoji_typing;
 pub mod family;
 pub mod gate;
+pub mod group;
 pub mod login;
 pub mod open_polls;
 pub mod password;

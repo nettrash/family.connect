@@ -766,6 +766,67 @@ actor APIClient {
         return response.chat
     }
 
+    // MARK: Groups (docs/protocol.md, "Groups", 2026-10-22)
+
+    private struct CreateGroupRequest: Encodable {
+        let title: String
+        let memberIDs: [Int64]
+        enum CodingKeys: String, CodingKey {
+            case title
+            case memberIDs = "member_ids"
+        }
+    }
+
+    private struct RenameGroupRequest: Encodable {
+        let title: String
+    }
+
+    private struct AddGroupMembersRequest: Encodable {
+        let userIDs: [Int64]
+        enum CodingKeys: String, CodingKey { case userIDs = "user_ids" }
+    }
+
+    /// `POST /chats/groups` → `201 {chat}`. The caller is added and becomes
+    /// the admin; `memberIDs` names the others.
+    func createGroup(title: String, memberIDs: [Int64]) async throws -> ChatDTO {
+        let response: ChatResponse = try await request(
+            "POST", "/chats/groups", body: CreateGroupRequest(title: title, memberIDs: memberIDs))
+        return response.chat
+    }
+
+    /// `PATCH /chats/{id}` `{title}` → `200 {chat}`. Admin only.
+    func renameGroup(chatID: Int64, title: String) async throws -> ChatDTO {
+        let response: ChatResponse = try await request(
+            "PATCH", "/chats/\(chatID)", body: RenameGroupRequest(title: title))
+        return response.chat
+    }
+
+    /// `POST /chats/{id}/members` `{user_ids}` → `200 {chat}`. Admin only.
+    func addGroupMembers(chatID: Int64, userIDs: [Int64]) async throws -> ChatDTO {
+        let response: ChatResponse = try await request(
+            "POST", "/chats/\(chatID)/members", body: AddGroupMembersRequest(userIDs: userIDs))
+        return response.chat
+    }
+
+    /// `DELETE /chats/{id}/members/{user_id}` for SOMEBODY ELSE → `200 {chat}`.
+    /// Admin only. The caller's own id is leaving, which answers `204` and
+    /// is `leaveGroup` — the two are one endpoint with two answers.
+    func removeGroupMember(chatID: Int64, userID: Int64) async throws -> ChatDTO {
+        let response: ChatResponse = try await request("DELETE", "/chats/\(chatID)/members/\(userID)")
+        return response.chat
+    }
+
+    /// `DELETE /chats/{id}/members/{me}` → `204`. Any member.
+    func leaveGroup(chatID: Int64, userID: Int64) async throws {
+        try await requestVoid("DELETE", "/chats/\(chatID)/members/\(userID)")
+    }
+
+    /// `DELETE /chats/{id}` → `204`. Admin only; a group and every message in
+    /// it, for everyone.
+    func deleteGroup(chatID: Int64) async throws {
+        try await requestVoid("DELETE", "/chats/\(chatID)")
+    }
+
     /// History/catch-up pages. `beforeID` XOR `afterID` per protocol.md;
     /// passing both is a caller bug the server would reject.
     func messages(chatID: Int64, beforeID: Int64? = nil, afterID: Int64? = nil, limit: Int = 50) async throws -> [MessageDTO] {

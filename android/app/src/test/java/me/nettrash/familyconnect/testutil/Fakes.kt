@@ -1649,6 +1649,7 @@ fun testChatRepository(
     socket: ChatSocket,
     scope: CoroutineScope,
     settings: SettingsRepository = FakeSettingsRepository(),
+    chatDrafts: me.nettrash.familyconnect.data.repo.ChatDrafts = me.nettrash.familyconnect.data.repo.ChatDrafts { },
 ): ChatRepository = ChatRepository(
     RuntimeEnvironment.getApplication(),
     chatApi,
@@ -1658,6 +1659,7 @@ fun testChatRepository(
     UnreadNotifications(RuntimeEnvironment.getApplication(), chatDao, scope),
     settings,
     scope,
+    chatDrafts,
 )
 
 /**
@@ -1806,5 +1808,54 @@ class FakeVoiceRecorder(private val dir: java.io.File) :
     companion object {
         /** `....ftypM4A ` — the ISO base media header the server's magic check reads. */
         val M4A_HEAD: ByteArray = byteArrayOf(0, 0, 0, 0x20) + "ftypM4A ".toByteArray(Charsets.US_ASCII)
+    }
+}
+
+/**
+ * The five group endpoints (#107; docs/protocol.md, "Groups"), scripted.
+ * Every call is recorded, and each answer defaults to a transport failure
+ * so a test that forgets to script one sees it fail rather than succeed.
+ */
+class FakeGroupApi : me.nettrash.familyconnect.data.net.GroupApi {
+    private val unscripted = ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    var createResult: ApiResult<ChatResponse> = unscripted
+    var renameResult: ApiResult<ChatResponse> = unscripted
+    var addMembersResult: ApiResult<ChatResponse> = unscripted
+    var removeMemberResult: ApiResult<me.nettrash.familyconnect.data.net.dto.ChatDto?> = unscripted
+    var deleteResult: ApiResult<Unit> = unscripted
+
+    val created = mutableListOf<Pair<String, List<Long>>>()
+    val renamed = mutableListOf<Pair<Long, String>>()
+    val added = mutableListOf<Pair<Long, List<Long>>>()
+    val removed = mutableListOf<Pair<Long, Long>>()
+    val deleted = mutableListOf<Long>()
+
+    override suspend fun create(title: String, memberIds: List<Long>): ApiResult<ChatResponse> {
+        created += title to memberIds
+        return createResult
+    }
+
+    override suspend fun rename(chatId: Long, title: String): ApiResult<ChatResponse> {
+        renamed += chatId to title
+        return renameResult
+    }
+
+    override suspend fun addMembers(chatId: Long, userIds: List<Long>): ApiResult<ChatResponse> {
+        added += chatId to userIds
+        return addMembersResult
+    }
+
+    override suspend fun removeMember(
+        chatId: Long,
+        userId: Long,
+    ): ApiResult<me.nettrash.familyconnect.data.net.dto.ChatDto?> {
+        removed += chatId to userId
+        return removeMemberResult
+    }
+
+    override suspend fun delete(chatId: Long): ApiResult<Unit> {
+        deleted += chatId
+        return deleteResult
     }
 }

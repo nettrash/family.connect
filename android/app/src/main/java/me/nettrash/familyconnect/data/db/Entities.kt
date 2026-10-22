@@ -49,7 +49,8 @@ class Converters {
 data class ChatEntity(
     @PrimaryKey val id: Long,
     /**
-     * "family" | "direct" | "ai" — mirrors Chat.kind on the wire. The
+     * "family" | "direct" | "ai" | "group" — mirrors Chat.kind on the wire
+     * ("group" since 2026-10-22, docs/protocol.md, "Groups"). The
      * share target is the first place this app COMPARES against "ai"
      * (see [me.nettrash.familyconnect.ui.share.shareTargets]): the
      * assistant's private thread takes no shared files, so it is
@@ -93,7 +94,39 @@ data class ChatEntity(
      * recount at zero clears it, and `GET /chats` overwrites it.
      */
     @ColumnInfo(defaultValue = "0") val mentionedUnread: Boolean = false,
-)
+    /**
+     * A GROUP's members, the reader included, in the order they joined —
+     * `Chat.member_ids` as a JSON array of ids ([GroupMembersCodec]); null
+     * for every other kind (docs/protocol.md, "Groups"). Server-owned like
+     * [title]: `GET /chats` and the `chat_updated` frame overwrite it, so
+     * it never needs merging. Nullable with no default, matching
+     * MIGRATION_33_34, because "not a group" is the absence of a list.
+     */
+    val memberIdsJson: String? = null,
+    /** A GROUP's admin (`Chat.admin_user_id`); null for every other kind. */
+    val adminUserId: Long? = null,
+) {
+    /** [memberIdsJson], read; empty for every chat that is not a group. */
+    val memberIds: List<Long> get() = GroupMembersCodec.decode(memberIdsJson)
+}
+
+/**
+ * [ChatEntity.memberIdsJson] both ways: `[7,9,11]`.
+ *
+ * Spelled by hand rather than through kotlinx.serialization because the
+ * value is a flat list of numbers that the chat screen reads on every
+ * emission of its row, and a JSON parser for that is all cost. Anything
+ * unreadable reads as no members — the next `GET /chats` rewrites it.
+ */
+object GroupMembersCodec {
+    fun encode(ids: List<Long>?): String? = ids?.joinToString(separator = ",", prefix = "[", postfix = "]")
+
+    fun decode(raw: String?): List<Long> =
+        raw?.trim()?.removePrefix("[")?.removeSuffix("]")
+            ?.split(',')
+            ?.mapNotNull { it.trim().toLongOrNull() }
+            .orEmpty()
+}
 
 /**
  * One attachment of a media send that has not been claimed yet — the

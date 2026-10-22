@@ -18,7 +18,8 @@ public sealed class MemoryAwaitingJoin : IAwaitingJoin
 
 /// <summary>
 /// The composer's two assistant doors (web <c>composer.rs</c> <c>offers_ai</c> and <c>can_draw</c>, the Mac's sparkles and
-/// paintbrush): "Ask the assistant" appends <c>@ai</c> in the family chat of a server that has an assistant; "Ask for a
+/// paintbrush): "Ask the assistant" appends <c>@ai</c> in the family chat or a group (docs/protocol.md, "Groups") of a
+/// server that has an assistant; "Ask for a
 /// picture" puts <c>/draw</c> first in the assistant's own chat when it can draw. Neither while a message is being edited —
 /// an edit rewrites what was said, and a request cannot be added to it.
 /// </summary>
@@ -28,8 +29,8 @@ public static class AssistantButtons
         // A server that names no processor offers no assistant at all: a consent screen with a
         // hole where the recipient goes is not consent (docs/protocol.md, "Consenting to the
         // assistant"), so the doors that would type `@ai` are not there either.
-        (chatKind == "family" && assistant is not null
+        (ChatKinds.IsShared(chatKind) && assistant is not null
             && AssistantConsent.IsAvailable(assistant.Processor) && !editing,
-         chatKind == "ai" && assistant is { Images: true }
+         chatKind == ChatKinds.Assistant && assistant is { Images: true }
             && AssistantConsent.IsAvailable(assistant.Processor) && !editing);
 }

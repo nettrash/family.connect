@@ -227,10 +227,10 @@
     <string name="s_request_declined_explanation">Vlasnik porodice je odbio tvoj zahtev. Možeš da probaš drugi pozivni kod ili da napraviš svoju porodicu.</string>
     <string name="s_waiting_explanation">Odavde nema šta da se otkaže — vlasnik će te ili pustiti unutra ili odbiti zahtev.</string>
     <string name="s_family_language">Jezik porodice</string>
-    <string name="s_family_language_explanation">Jezik na kom asistent odgovara kada ga pitaš u porodičnom razgovoru. Jezik same aplikacije se time ne menja. Ako ništa nije izabrano, odgovor stiže na jeziku pitanja.</string>
+    <string name="s_family_language_explanation">Jezik na kom asistent odgovara kada ga pitaš u porodičnom razgovoru ili grupi. Jezik same aplikacije se time ne menja. Ako ništa nije izabrano, odgovor stiže na jeziku pitanja.</string>
     <string name="s_not_set">Nije podešeno</string>
     <string name="s_assistant_history">Asistent vidi nedavnu istoriju</string>
-    <string name="s_assistant_history_explanation">Kada neko pomene asistenta u porodičnom razgovoru, uz pitanje se šalje i prepiska iz poslednjih mesec dana, pa može da odgovori i na ono što je ranije rečeno. Kada je isključeno, šalje se samo poruka u kojoj se pominje.</string>
+    <string name="s_assistant_history_explanation">Kada neko pomene asistenta u porodičnom razgovoru ili grupi, uz pitanje se šalje i prepiska iz poslednjih mesec dana, pa može da odgovori i na ono što je ranije rečeno. Kada je isključeno, šalje se samo poruka u kojoj se pominje.</string>
     <string name="s_birthday">Rođendan</string>
     <string name="s_birthday_for">Rođendan za %1$s</string>
     <string name="s_day_and_month_no_year">Dan i mesec. Nema godine, pa ni uzrasta.</string>
@@ -462,10 +462,10 @@
     <string name="s_assistant_answer_failed">Asistent nije uspeo da završi ovaj odgovor. Pitajte ponovo.</string>
     <string name="s_assistant_provider_refused">Dobavljač asistenta je to odbio. Pokušaj da to kažeš drugačije.</string>
     <string name="s_assistant_vision">Asistent sme da gleda fotografije</string>
-    <string name="s_assistant_vision_explanation">Kada neko u svom četu s asistentom priloži fotografiju uz pitanje, priloži je uz poruku koja pominje asistenta u porodičnom četu, ili odgovori na fotografiju pominjući ga, ta fotografija ide modelu zajedno s pitanjem — najviše 4 po pitanju. Fotografija na koju asistentu niko nije ukazao ne šalje se nikada, ni iz ranije poruke osim ako je uključeno „Asistent vidi nedavne fotografije“, kao ni video, fajlovi, audio i lokacije. Isključeno dok ga ne uključite; kad je isključeno, nijedna fotografija se ne šalje.</string>
+    <string name="s_assistant_vision_explanation">Kada neko u svom četu s asistentom priloži fotografiju uz pitanje, priloži je uz poruku koja pominje asistenta u porodičnom četu ili grupi, ili odgovori na fotografiju pominjući ga, ta fotografija ide modelu zajedno s pitanjem — najviše 4 po pitanju. Fotografija na koju asistentu niko nije ukazao ne šalje se nikada, ni iz ranije poruke osim ako je uključeno „Asistent vidi nedavne fotografije“, kao ni video, fajlovi, audio i lokacije. Isključeno dok ga ne uključite; kad je isključeno, nijedna fotografija se ne šalje.</string>
     <string name="e_change_assistant_vision_failed">Nije uspela promena podešavanja</string>
     <string name="s_assistant_history_photos">Asistent vidi nedavne fotografije</string>
-    <string name="s_assistant_history_photos_explanation">Kada neko pomene asistenta u porodičnom četu, uz pitanje modelu idu i najnovije fotografije iz tog četa — do 4, od bilo koga, na koje asistentu niko nije ukazao — posle fotografija uz samu poruku ili uz onu na koju odgovara. Skoro svako pominjanje tada šalje slike, a to košta više. Potrebni su „Asistent sme da gleda fotografije“ i „Asistent vidi nedavnu istoriju“; isključeno dok ga ne uključite.</string>
+    <string name="s_assistant_history_photos_explanation">Kada neko pomene asistenta u porodičnom četu ili grupi, uz pitanje modelu idu i najnovije fotografije iz tog četa — do 4, od bilo koga, na koje asistentu niko nije ukazao — posle fotografija uz samu poruku ili uz onu na koju odgovara. Skoro svako pominjanje tada šalje slike, a to košta više. Potrebni su „Asistent sme da gleda fotografije“ i „Asistent vidi nedavnu istoriju“; isključeno dok ga ne uključite.</string>
     <string name="s_assistant_history_photos_no_deployment">Ovde nije dostupno: asistent na ovom serveru ne može da gleda slike.</string>
     <string name="s_assistant_history_photos_needs_vision">Prvo uključite „Asistent sme da gleda fotografije“ — dok je to isključeno, server ovo odbija.</string>
     <string name="s_assistant_history_photos_needs_history">Dok je „Asistent vidi nedavnu istoriju“ isključeno, ovo ne radi ništa: istorija četa se ne šalje, pa ni jedna fotografija iz nje.</string>
@@ -475,7 +475,7 @@
     <string name="s_assistant_greeting_no_server">Ovde nije dostupno: ovaj server ne šalje dnevne pozdrave.</string>
     <string name="e_change_assistant_greeting_failed">Nije uspela promena podešavanja</string>
     <string name="s_assistant_faces">Asistent vidi lica članova</string>
-    <string name="s_assistant_faces_explanation">Kada neko pomene asistenta u porodičnom četu, uz pitanje modelu idu i slike profila članova koji se pominju u nedavnoj istoriji tog četa — do 4 — da bi znao ko je ko. To su slike koje su članovi sami izabrali, a ne priložene fotografije; nikada član koji je otišao i nikada niko van ove porodice. Većina pominjanja tada šalje slike, što košta više. Zahteva „Asistent sme da gleda fotografije“ i „Asistent vidi nedavnu istoriju“; isključeno dok ga ne uključite, a dok je isključeno nijedno lice se ne šalje.</string>
+    <string name="s_assistant_faces_explanation">Kada neko pomene asistenta u porodičnom četu ili grupi, uz pitanje modelu idu i slike profila članova koji se pominju u nedavnoj istoriji tog četa — do 4 — da bi znao ko je ko. To su slike koje su članovi sami izabrali, a ne priložene fotografije; nikada član koji je otišao i nikada niko van ove porodice. Većina pominjanja tada šalje slike, što košta više. Zahteva „Asistent sme da gleda fotografije“ i „Asistent vidi nedavnu istoriju“; isključeno dok ga ne uključite, a dok je isključeno nijedno lice se ne šalje.</string>
     <string name="s_assistant_faces_needs_history">Dok je „Asistent vidi nedavnu istoriju“ isključeno, ovo ništa ne radi: imena se ne šalju, pa ni lica.</string>
     <string name="e_change_assistant_faces_failed">Nije uspela promena podešavanja</string>
     <string name="s_open_polls">Otvorene ankete</string>
@@ -620,8 +620,8 @@
     <string name="s_the_assistant">Asistent</string>
     <string name="s_before_the_assistant_answers">Pre nego što asistent odgovori</string>
     <string name="s_consent_words_leave_for_processor">Ono što napišeš asistentu napušta server ove porodice i ide ka %1$s.</string>
-    <string name="s_consent_family_history_travels">U porodičnom razgovoru šalje se samo poruka u kojoj piše @ai — a s njom i poslednjih 30 dana tog razgovora, do 200 poruka, uključujući ono što su drugi napisali, njihova imena i vreme.</string>
-    <string name="s_consent_family_mention_alone">U porodičnom razgovoru šalje se samo poruka u kojoj piše @ai, i ništa drugo iz tog razgovora ne ide s njom.</string>
+    <string name="s_consent_family_history_travels">U porodičnom razgovoru ili grupi šalje se samo poruka u kojoj piše @ai — a s njom i poslednjih 30 dana tog razgovora, do 200 poruka, uključujući ono što su drugi napisali, njihova imena i vreme.</string>
+    <string name="s_consent_family_mention_alone">U porodičnom razgovoru ili grupi šalje se samo poruka u kojoj piše @ai, i ništa drugo iz tog razgovora ne ide s njom.</string>
     <string name="s_consent_photo_only_when_attached">Fotografija se šalje samo kada je sam zakačiš uz poruku za asistenta, i samo dok tvoja porodica to dozvoljava.</string>
     <string name="s_consent_answer_lands_in_the_chat">Odgovor stiže kao poruka u tom razgovoru, gde mogu da ga pročitaju svi koji su u njemu.</string>
     <string name="s_consent_can_stop_in_settings">Ovo možeš da zaustaviš bilo kada u podešavanjima. Ono što je već poslato ne može da se vrati.</string>
@@ -683,13 +683,13 @@
     <string name="s_assistant_transcripts_explanation">Kada je ovo uključeno, članovi mogu da zatraže tekst glasovnih poruka, audio snimaka i video snimaka drugih članova u porodičnom četu, i tada se zvuk tog snimka šalje ka %1$s. Šalje se samo kada neko zatraži, i samo ako je član koji ga je poslao prihvatio asistenta. Svako može da dobije tekst svojih snimaka i bez ovoga. Isključeno je dok ga ne uključiš.</string>
     <string name="s_assistant_transcripts_no_server">Ovde nije dostupno: ovaj server ne može da pretvori snimke u tekst.</string>
     <string name="s_consent_transcript_sound_sent">Ako zatražiš tekst glasovne poruke, audio datoteke ili videa, zvuk se šalje ka %1$s.</string>
-    <string name="s_consent_transcript_direct_chat">U ličnom razgovoru druga osoba može da zatraži tekst tvojih glasovnih poruka, audio datoteka i videa, i tada se njihov zvuk šalje ka %1$s.</string>
+    <string name="s_consent_transcript_direct_chat">U ličnom razgovoru ili grupi ostali u njemu mogu da zatraže tekst tvojih glasovnih poruka, audio datoteka i videa, i tada se njihov zvuk šalje ka %1$s.</string>
     <string name="e_change_assistant_transcripts_failed">Nije uspela promena podešavanja</string>
     <!-- Looking things up (#72): docs/protocol.md, "Looking things up" -->
     <string name="s_looking_things_up">Traženje podataka</string>
     <string name="s_assistant_lookups">Može da traži podatke</string>
     <string name="s_assistant_lookups_explanation">Kada je ovo uključeno, asistent može da potraži podatke kada pitanje to zahteva — vremensku prognozu, vesti, činjenicu u koju nije siguran — u %1$s. Tamo se šalje samo kratak upit za pretragu ili naziv mesta koji asistent sastavi iz pitanja, nikada sam razgovor, i samo ako je član koji pita to prihvatio. Odgovori tada navode svoje izvore. Isključeno je dok ga ne uključiš.</string>
-    <string name="s_consent_lookups_with_history">Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja — u porodičnom razgovoru možda i iz nedavnih poruka — a njegov odgovor onda navodi izvore.</string>
+    <string name="s_consent_lookups_with_history">Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja — u porodičnom razgovoru ili grupi možda i iz nedavnih poruka — a njegov odgovor onda navodi izvore.</string>
     <string name="s_consent_lookups_alone">Ako vlasnik porodice uključi traženje podataka, asistent može da pošalje ka %1$s kratak upit za pretragu ili naziv mesta koji sastavi iz tvog pitanja, a njegov odgovor onda navodi izvore.</string>
     <string name="s_agree_with_lookups">Prihvati i traženje</string>
     <string name="s_agree_without_lookups">Prihvati bez traženja</string>
@@ -780,4 +780,26 @@
     <string name="s_not_sent">Nije poslato</string>
     <string name="s_switch">Promeni</string>
     <string name="s_stop">Zaustavi</string>
+    <!-- Groups (#107; docs/protocol.md, "Groups") -->
+    <string name="s_new_group">Nova grupa</string>
+    <string name="s_group_name">Naziv grupe</string>
+    <string name="s_create_group">Napravi grupu</string>
+    <string name="s_group_info">O grupi</string>
+    <string name="s_add_members">Dodaj članove</string>
+    <string name="s_rename_group">Preimenuj grupu</string>
+    <string name="s_remove_from_group">Ukloni iz grupe</string>
+    <string name="s_leave_group">Napusti grupu</string>
+    <string name="s_delete_group">Obriši grupu</string>
+    <string name="s_group_admin">Administrator</string>
+    <string name="s_group">Grupa</string>
+    <string name="s_group_members_count">Članova: %1$d</string>
+    <string name="s_delete_group_confirm">Obrisati „%1$s“? Njene poruke se brišu za sve.</string>
+    <string name="s_leave_group_confirm">Napustiti „%1$s“? Možeš da se vratiš samo ako te administrator ponovo doda.</string>
+    <string name="e_group_choose_member">Izaberi bar jednog člana.</string>
+    <string name="e_group_name_length">Naziv grupe može da ima od 1 do 64 znaka.</string>
+    <string name="e_too_many_groups">Tvoja porodica već ima 50 grupa.</string>
+    <string name="e_not_group_admin">Ovo može samo administrator grupe.</string>
+    <string name="e_create_group_failed">Grupa nije napravljena.</string>
+    <string name="e_change_group_failed">Grupa nije promenjena.</string>
+    <string name="s_everyone_already_in_group">Svi iz porodice su već u ovoj grupi.</string>
 </resources>

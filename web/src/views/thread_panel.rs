@@ -38,10 +38,15 @@ pub struct ThreadPanelProps {
     /// The thread's rows, shared with the store (`store::Messages`).
     pub messages: Messages,
     pub my_user_id: i64,
-    pub is_family_chat: bool,
-    pub is_ai_chat: bool,
+    /// The chat's kind as the server sent it — a thread lives in the chat
+    /// of its root, and offers what that chat offers (fc_text::groups).
+    pub chat_kind: AttrValue,
     pub names: HashMap<i64, String>,
+    /// The family's roster, for the faces.
     pub members: Vec<Member>,
+    /// Whom a mention here may name and a poll counts — the family's
+    /// members, or in a group the group's (`Chat::members_of`).
+    pub chat_members: Vec<Member>,
     pub assistant: Option<Assistant>,
     pub blocked: HashSet<i64>,
     pub revealed: HashSet<i64>,
@@ -125,7 +130,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
     // where the server names nobody nothing is sent, and the strip above
     // the box already says so.
     let sticker_gate = crate::pack::send_gate(
-        props.is_ai_chat,
+        fc_text::groups::known(&props.chat_kind),
         props.assistant.as_ref(),
         props.agreed_to_assistant,
     );
@@ -246,7 +251,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
     let names = Rc::new(props.names.clone());
     let blocked = Rc::new(props.blocked.clone());
     let member_ids: Rc<HashSet<i64>> =
-        Rc::new(props.members.iter().map(|member| member.id).collect());
+        Rc::new(props.chat_members.iter().map(|member| member.id).collect());
     html! {
         <aside ref={panel_ref} class="thread-panel" aria-label={t("Thread")} tabindex="-1" onkeydown={on_key}>
             <header class="thread-bar">
@@ -275,18 +280,17 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 quote_round={quoted.round(message)}
                                 quote_animation={quoted.animation(message)}
                                 {hidden}
-                                shows_sender={props.is_family_chat && message.sender_id != props.my_user_id && !hidden}
+                                shows_sender={fc_text::groups::offers(&props.chat_kind).sender_names && message.sender_id != props.my_user_id && !hidden}
                                 sender_avatar_version={props.members.iter().find(|member| member.id == message.sender_id).map_or(0, |member| member.avatar_version)}
                                 run_end={true}
                                 seen={false}
                                 awaited={false}
                                 ai_failed={props.ai_failed.get(&message.id).copied()}
                                 {failed}
-                                is_family_chat={props.is_family_chat}
-                                is_ai_chat={props.is_ai_chat}
+                                chat_kind={props.chat_kind.clone()}
                                 {assistant_user_id}
                                 in_thread={true}
-                                member_count={props.members.len()}
+                                member_count={props.chat_members.len()}
                                 member_ids={member_ids.clone()}
                                 on_action={props.on_action.clone()}
                                 on_reply={on_reply.clone()}
@@ -303,10 +307,9 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
             <Composer
                 key={format!("thread-composer-{root_id}")}
                 {chat_id}
-                is_family_chat={props.is_family_chat}
-                is_ai_chat={props.is_ai_chat}
+                chat_kind={props.chat_kind.clone()}
                 my_user_id={props.my_user_id}
-                members={props.members.clone()}
+                members={props.chat_members.clone()}
                 blocked={props.blocked.clone()}
                 assistant={props.assistant.clone()}
                 agreed_to_assistant={props.agreed_to_assistant}

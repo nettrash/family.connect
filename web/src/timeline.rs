@@ -14,11 +14,13 @@ use crate::time::{self, Day};
 /// Everything the layout depends on that is not the messages themselves.
 pub struct Context<'a> {
     pub my_user_id: i64,
-    /// UNDEFAULTED on purpose, in the apps and here: a new surface that
-    /// forgot to say would otherwise draw the family chat's seen ticks —
-    /// which is exactly how it shipped wrong there once.
-    pub is_family_chat: bool,
-    pub is_ai_chat: bool,
+    /// The chat's kind as the server sent it (`family` | `direct` | `ai` |
+    /// `group`), which decides sender names and seen ticks through the one
+    /// table (fc_text::groups::offers). UNDEFAULTED on purpose, in the apps
+    /// and here: a new surface that forgot to say would otherwise draw the
+    /// family chat's seen ticks — which is exactly how it shipped wrong
+    /// there once.
+    pub chat_kind: &'a str,
     pub assistant_user_id: Option<i64>,
     pub blocked: &'a HashSet<i64>,
     /// The first message the reader had not read when the chat was OPENED —
@@ -68,11 +70,14 @@ pub fn is_awaited_answer(message: &Message, context: &Context) -> bool {
     if !carries_nothing || message.sender_id == context.my_user_id || message.id == 0 {
         return false;
     }
-    context.is_ai_chat || Some(message.sender_id) == context.assistant_user_id
+    context.chat_kind == fc_text::groups::AI || Some(message.sender_id) == context.assistant_user_id
 }
 
 /// Lay a chat's messages (oldest first) out as rows.
 pub fn rows<'a>(messages: &'a [Message], context: &Context) -> Vec<Row<'a>> {
+    // A group draws as the family chat does: names, and no "seen"
+    // (docs/protocol.md, "Groups").
+    let offers = fc_text::groups::offers(context.chat_kind);
     let mut rows = Vec::with_capacity(messages.len());
     let mut current_day: Option<Day> = None;
     let mut divider_placed = false;
@@ -94,7 +99,7 @@ pub fn rows<'a>(messages: &'a [Message], context: &Context) -> Vec<Row<'a>> {
         });
 
         let hidden = is_hidden_by_block(message, context.my_user_id, context.blocked);
-        let shows_sender = context.is_family_chat
+        let shows_sender = offers.sender_names
             && message.sender_id != context.my_user_id
             && !hidden
             && previous.is_none_or(|previous| previous.sender_id != message.sender_id);
@@ -106,7 +111,7 @@ pub fn rows<'a>(messages: &'a [Message], context: &Context) -> Vec<Row<'a>> {
                 .is_some_and(|first| message.id == first);
         divider_placed |= unread_divider_above;
 
-        let seen = !context.is_family_chat
+        let seen = offers.seen
             && message.sender_id == context.my_user_id
             && message.id != 0
             && message.id <= context.peer_read_up_to;
@@ -324,8 +329,7 @@ mod tests {
     fn family<'a>(blocked: &'a HashSet<i64>) -> Context<'a> {
         Context {
             my_user_id: ME,
-            is_family_chat: true,
-            is_ai_chat: false,
+            chat_kind: "family",
             assistant_user_id: Some(ASSISTANT),
             blocked,
             first_unread_id: None,
@@ -370,7 +374,7 @@ mod tests {
         assert!(!rows[2].hidden, "my own message is never hidden");
 
         let direct = Context {
-            is_family_chat: false,
+            chat_kind: "direct",
             ..family(&blocked)
         };
         assert!(
@@ -379,6 +383,16 @@ mod tests {
                 .all(|row| !row.shows_sender),
             "a direct chat has one other person; the name is noise"
         );
+        // A group names its senders exactly as the family chat does.
+        let group = Context {
+            chat_kind: "group",
+            ..family(&blocked)
+        };
+        let in_group: Vec<bool> = super::rows(&messages, &group)
+            .iter()
+            .map(|row| row.shows_sender)
+            .collect();
+        assert_eq!(in_group, names);
     }
 
     #[wasm_bindgen_test]
@@ -475,7 +489,7 @@ mod tests {
         ];
         let blocked = HashSet::new();
         let direct = Context {
-            is_family_chat: false,
+            chat_kind: "direct",
             peer_read_up_to: 1,
             ..family(&blocked)
         };
@@ -490,6 +504,15 @@ mod tests {
             ..family(&blocked)
         };
         assert!(rows(&messages, &in_family).iter().all(|row| !row.seen));
+
+        // A group has many readers, as the family chat does: no "seen",
+        // whatever a marker says (docs/protocol.md, "Groups").
+        let in_group = Context {
+            chat_kind: "group",
+            peer_read_up_to: 99,
+            ..family(&blocked)
+        };
+        assert!(rows(&messages, &in_group).iter().all(|row| !row.seen));
     }
 
     /// The working state is a fact about the message: empty, carrying
@@ -508,8 +531,7 @@ mod tests {
 
         // In its own chat, anything not mine is the assistant's.
         let ai = Context {
-            is_family_chat: false,
-            is_ai_chat: true,
+            chat_kind: "ai",
             assistant_user_id: None,
             ..family(&blocked)
         };

@@ -72,6 +72,9 @@ public class CacheConcurrencyTests : IDisposable
         ["chats.Chat"] = () => chats.Chat(42),
         ["chats.Kind"] = () => chats.Kind(42),
         ["chats.IsListed"] = () => chats.IsListed(42),
+        ["chats.ListMark"] = () => _ = chats.ListMark,
+        ["chats.Upsert"] = () => chats.Upsert(new ChatDto(77, "group", "Cousins", MemberIds: [7, 11], AdminUserId: 7)),
+        ["chats.Remove"] = () => chats.Remove(78),
         ["chats.Unread"] = () => chats.Unread(),
         ["chats.MarkRead"] = () => chats.MarkRead(42, 1),
         ["chats.Advance"] = () => chats.Advance(42, reactionSeq: 3),
@@ -150,7 +153,7 @@ public class CacheConcurrencyTests : IDisposable
 
     private static readonly string[] Names =
     [
-        "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.Kind", "chats.IsListed", "chats.Unread",
+        "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.Kind", "chats.IsListed", "chats.ListMark", "chats.Upsert", "chats.Remove", "chats.Unread",
         "chats.MarkRead", "chats.Advance", "chats.Apply(message)", "chats.Apply(page)",
         "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread", "chats.Refresh", "chats.Polls",
         "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.FlagRepairCandidates", "chats.SettleFlags", "chats.RepairMedia", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",

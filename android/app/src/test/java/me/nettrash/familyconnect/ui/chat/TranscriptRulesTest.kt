@@ -37,7 +37,7 @@ class TranscriptRulesTest {
 
     @Test
     fun `my own recording may be asked about in every kind of chat`() {
-        for (kind in listOf("family", "direct", "ai")) {
+        for (kind in listOf("family", "direct", "ai", "group")) {
             assertThat(mayAsk(kind, ME, familyAllowsOthers = false)).isTrue()
         }
     }
@@ -59,16 +59,32 @@ class TranscriptRulesTest {
         ).isFalse()
     }
 
+    /**
+     * D4 (docs/protocol.md, "Transcripts on request", amended 2026-10-22): a
+     * GROUP follows the direct chat's rule — the sender's consent alone,
+     * which the server asks — and the owner's `ai_transcripts`, which is
+     * about the family chat, does not reach it in either direction.
+     */
+    @Test
+    fun `another member's recording in a group follows the direct chat's rule, not the switch`() {
+        assertThat(mayAsk("group", ANNA, familyAllowsOthers = false)).isTrue()
+        assertThat(mayAsk("group", ANNA, familyAllowsOthers = true)).isTrue()
+        assertThat(
+            TranscriptRules.mayAsk("group", ANNA, myUserId = null, assistantUserId = ASSISTANT, familyAllowsOthers = true),
+        ).isFalse()
+    }
+
     @Test
     fun `the assistant's own messages are never asked about`() {
         assertThat(mayAsk("ai", ASSISTANT, familyAllowsOthers = true)).isFalse()
         assertThat(mayAsk("family", ASSISTANT, familyAllowsOthers = true)).isFalse()
+        assertThat(mayAsk("group", ASSISTANT, familyAllowsOthers = true)).isFalse()
     }
 
     @Test
     fun `an unknown chat kind or an unknown me offers nothing`() {
         assertThat(mayAsk(null, ANNA, familyAllowsOthers = true)).isFalse()
-        assertThat(mayAsk("group", ANNA, familyAllowsOthers = true)).isFalse()
+        assertThat(mayAsk("unknown", ANNA, familyAllowsOthers = true)).isFalse()
         assertThat(
             TranscriptRules.mayAsk("family", ME, myUserId = null, assistantUserId = ASSISTANT, familyAllowsOthers = true),
         ).isFalse()

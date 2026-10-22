@@ -142,6 +142,8 @@ pub fn clamp_limit(requested: Option<i64>, default_limit: i64, max_limit: i64) -
 ///
 /// 404 when the chat does not exist at all, 403 when it exists but the
 /// caller is not in it — a member that left sees 403, not a phantom 404.
+/// A GROUP the caller is not in answers 404 as well: a group is visible
+/// only to its members.
 pub async fn ensure_chat_access(
     state: &AppState,
     chat_id: i64,
@@ -149,6 +151,7 @@ pub async fn ensure_chat_access(
 ) -> Result<(), ApiError> {
     let row = sqlx::query(
         "SELECT (cm.user_id IS NOT NULL) AS is_member,
+                c.kind = 'group' AS is_group,
                 (c.kind = 'direct' AND EXISTS (
                      SELECT 1 FROM member_blocks mb
                       WHERE mb.blocker_user_id = $2
@@ -165,6 +168,12 @@ pub async fn ensure_chat_access(
     .await?;
     match row {
         None => Err(ApiError::not_found(codes::CHAT_NOT_FOUND, "no such chat")),
+        // A group is visible only to its members: to anybody else it does
+        // not exist, and `not_chat_member` would say that it does
+        // (protocol.md, "Groups").
+        Some(row) if !row.get::<bool, _>("is_member") && row.get::<bool, _>("is_group") => {
+            Err(ApiError::not_found(codes::CHAT_NOT_FOUND, "no such chat"))
+        }
         Some(row) if !row.get::<bool, _>("is_member") => Err(ApiError::forbidden(
             codes::NOT_CHAT_MEMBER,
             "you are not a member of this chat",
@@ -407,7 +416,9 @@ pub async fn attach_mentions(
 /// The rules a mention list must pass (protocol.md, "Mentioning a
 /// member"), every refusal `validation`. Membership is ONE query over the
 /// whole list against the chat's family: the assistant (in no family), a
-/// member who left and a scrubbed account all fail the same predicate.
+/// member who left and a scrubbed account all fail the same predicate. In a
+/// GROUP each one must also be a member of that group now — somebody
+/// outside it would not even receive the message (protocol.md, "Groups").
 async fn validate_mentions(
     state: &AppState,
     chat_id: i64,
@@ -416,8 +427,10 @@ async fn validate_mentions(
     mentions: &[Mention],
 ) -> Result<(), ApiError> {
     let refuse = |reason: &str| ApiError::bad_request(codes::VALIDATION, reason);
-    if chat_kind != "family" {
-        return Err(refuse("mentions are only accepted in the family chat"));
+    if chat_kind != "family" && chat_kind != "group" {
+        return Err(refuse(
+            "mentions are only accepted in the family chat and in a group",
+        ));
     }
     if mentions.len() > MAX_MENTIONS_PER_MESSAGE {
         return Err(refuse("a message names at most 20 members"));
@@ -440,10 +453,15 @@ async fn validate_mentions(
         "SELECT count(*) FROM users u
          WHERE u.id = ANY($1)
            AND u.family_id IS NOT NULL
-           AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)",
+           AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)
+           AND ($3 <> 'group' OR EXISTS (
+                   SELECT 1 FROM chat_members cm
+                    WHERE cm.chat_id = $2 AND cm.user_id = u.id
+               ))",
     )
     .bind(&ids)
     .bind(chat_id)
+    .bind(chat_kind)
     .fetch_one(&state.pool)
     .await?;
     if members as usize != ids.len() {
@@ -533,18 +551,20 @@ fn validate_poll_options(state: &AppState, options: &[String]) -> Result<Vec<Str
 enum ModelSurface {
     /// The member's own `ai` chat: everything sent here goes to the model.
     Private,
-    /// The family chat, where only an `@ai` does (protocol.md, "Mentioning
-    /// the assistant in the family chat"). Family only, deliberately: a
-    /// direct chat is two people who each already have a private
-    /// assistant, and an assistant answering inside someone's one-to-one
-    /// is a third party in a conversation that had two.
+    /// The family chat or a group, where only an `@ai` does (protocol.md,
+    /// "Mentioning the assistant in the family chat", "Groups"). Never a
+    /// direct chat, deliberately: it is two people who each already have a
+    /// private assistant, and an assistant answering inside someone's
+    /// one-to-one is a third party in a conversation that had two.
     Mention,
 }
 
 fn model_surface(chat_kind: &str, body: &str) -> Option<ModelSurface> {
     match chat_kind {
         "ai" => Some(ModelSurface::Private),
-        "family" if crate::mentions::mentions_assistant(body) => Some(ModelSurface::Mention),
+        "family" | "group" if crate::mentions::mentions_assistant(body) => {
+            Some(ModelSurface::Mention)
+        }
         _ => None,
     }
 }
@@ -625,14 +645,15 @@ pub async fn create_message(
     }
 
     // Where a poll may live, checked before anything else about it: a poll
-    // is a family deciding something together, and between two people it is
-    // a question whose answer is the next message (protocol.md, "Polls").
-    // The assistant's chat refuses one for the same reason.
+    // is a family — or some of it, in a group — deciding something together,
+    // and between two people it is a question whose answer is the next
+    // message (protocol.md, "Polls"). The assistant's chat refuses one for
+    // the same reason.
     if poll.is_some() {
-        if chat_kind != "family" {
+        if chat_kind != "family" && chat_kind != "group" {
             return Err(ApiError::bad_request(
                 codes::INVALID_POLL,
-                "polls are only allowed in the family chat",
+                "polls are only allowed in the family chat and in a group",
             ));
         }
         if !attachment_ids.is_empty() {
@@ -1623,6 +1644,15 @@ pub async fn list_chats(
     let rows = sqlx::query(&format!(
         "SELECT c.id AS chat_id, c.kind,
                 f.name AS family_name,
+                -- A group's own name, members (in the order they joined)
+                -- and admin (protocol.md, \"Groups\"); NULL for every
+                -- other kind.
+                c.title AS group_title,
+                c.admin_user_id AS group_admin_user_id,
+                CASE WHEN c.kind = 'group' THEN (
+                    SELECT array_agg(gm.user_id ORDER BY gm.joined_at, gm.user_id)
+                    FROM chat_members gm WHERE gm.chat_id = c.id
+                ) END AS group_member_ids,
                 CASE WHEN c.kind = 'direct' THEN {PEER} END AS peer_user_id,
                 pu.display_name AS peer_display_name,
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
@@ -1775,7 +1805,21 @@ pub async fn list_chats(
                 // reserved account is not in the roster, so a lookup would
                 // find nothing anyway.
                 "ai" => state.cfg.ai.title.clone(),
+                "group" => row
+                    .get::<Option<String>, _>("group_title")
+                    .unwrap_or_default(),
                 _ => row.get("peer_display_name"),
+            };
+            let (member_ids, admin_user_id) = if kind == "group" {
+                (
+                    Some(
+                        row.get::<Option<Vec<i64>>, _>("group_member_ids")
+                            .unwrap_or_default(),
+                    ),
+                    row.get::<Option<i64>, _>("group_admin_user_id"),
+                )
+            } else {
+                (None, None)
             };
             let chat_id: i64 = row.get("chat_id");
             let last_message = row.get::<Option<i64>, _>("last_id").map(|last_id| {
@@ -1833,6 +1877,8 @@ pub async fn list_chats(
                     kind,
                     title,
                     peer_user_id,
+                    member_ids,
+                    admin_user_id,
                 },
                 last_message,
                 unread_count: row.get("unread_count"),
@@ -1933,6 +1979,8 @@ pub async fn direct_chat(
         kind: "direct".to_string(),
         title: peer.get("display_name"),
         peer_user_id: Some(req.user_id),
+        member_ids: None,
+        admin_user_id: None,
     };
     Ok((StatusCode::OK, Json(json!({"chat": chat}))).into_response())
 }

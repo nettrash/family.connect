@@ -101,11 +101,23 @@ public sealed record MemberDto(
 /// </remarks>
 public sealed record BirthdayDto(int Month, int Day);
 
+/// <summary>
+/// A chat (docs/protocol.md, "Objects"): <c>family</c>, <c>direct</c>, <c>ai</c> or — since 2026-10-22 — <c>group</c>.
+/// </summary>
+/// <param name="MemberIds">
+/// A GROUP's members, the reader included, in the order they joined (docs/protocol.md, "Groups"). Present only for a group;
+/// null for every other kind, and for a group a server before groups described.
+/// </param>
+/// <param name="AdminUserId">
+/// The one member of a GROUP who may rename it, add and remove members, and delete it. Present only for a group.
+/// </param>
 public sealed record ChatDto(
     long Id,
     string Kind,
     string Title,
-    long? PeerUserId = null);
+    long? PeerUserId = null,
+    long[]? MemberIds = null,
+    long? AdminUserId = null);
 
 public sealed record MentionDto(long UserId, string Name);
 

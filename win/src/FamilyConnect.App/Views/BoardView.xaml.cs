@@ -578,10 +578,12 @@ public sealed partial class BoardView : UserControl
                 return;
             }
             // Into the list first, so the conversation opens with its title: a chat made just now is in no list yet.
+            // Taken before the request, so its answer cannot undo a group changed meanwhile (ChatStore.Replace).
+            var mark = connection.Chats.ListMark;
             var list = await connection.Api.Chats();
             if (list is { Ok: true, Value.Chats: { } rows })
             {
-                connection.Chats.Replace(rows);
+                connection.Chats.Replace(rows, mark);
             }
             openChat(opened.Chat.Id);
         }

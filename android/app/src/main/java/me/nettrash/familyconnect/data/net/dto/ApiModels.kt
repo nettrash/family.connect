@@ -268,12 +268,32 @@ data class JoinRequestDto(
     @SerialName("created_at") val createdAt: String,
 )
 
+/**
+ * A chat as the server describes it (docs/protocol.md, `Chat`).
+ *
+ * [kind] is `"family"`, `"direct"`, `"ai"` or — since 2026-10-22 —
+ * `"group"`. [title] is the family's name, the peer's, the assistant's or
+ * the group's own.
+ */
 @Serializable
 data class ChatDto(
     val id: Long,
     val kind: String,
     val title: String,
     @SerialName("peer_user_id") val peerUserId: Long? = null,
+    /**
+     * Everyone in a GROUP, the caller included, in the order they joined
+     * (docs/protocol.md, "Groups"). Present only for `kind == "group"`, so
+     * nullable with a default: every other chat, and every server before
+     * groups, simply omits it.
+     */
+    @SerialName("member_ids") val memberIds: List<Long>? = null,
+    /**
+     * The one member of a GROUP who may rename it, add and remove members
+     * and delete it — its creator, until a hand-off. Present only for a
+     * group.
+     */
+    @SerialName("admin_user_id") val adminUserId: Long? = null,
 )
 
 @Serializable
@@ -1063,6 +1083,24 @@ data class BirthdayRequest(
 
 @Serializable
 data class CreateDirectChatRequest(@SerialName("user_id") val userId: Long)
+
+/**
+ * `POST /chats/groups` — a new group (docs/protocol.md, "Groups"). The
+ * caller is added and becomes its admin; [memberIds] names the others.
+ */
+@Serializable
+data class CreateGroupRequest(
+    val title: String,
+    @SerialName("member_ids") val memberIds: List<Long>,
+)
+
+/** `PATCH /chats/{id}` — renames a group. Admin only. */
+@Serializable
+data class RenameGroupRequest(val title: String)
+
+/** `POST /chats/{id}/members` — adds members to a group. Admin only. */
+@Serializable
+data class AddGroupMembersRequest(@SerialName("user_ids") val userIds: List<Long>)
 
 @Serializable
 data class SendMessageRequest(

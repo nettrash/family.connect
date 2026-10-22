@@ -266,6 +266,8 @@ fn attachment_summary(message: &Message) -> Option<Text> {
     )
 }
 
+/// `family_name` is the name a title puts before the sender: the family's in
+/// the family chat, the GROUP's in a group (protocol.md, "Groups").
 pub fn message_notification(
     include_message_body: bool,
     chat_kind: &str,
@@ -275,7 +277,7 @@ pub fn message_notification(
     badge: i64,
     chat_unread: i64,
 ) -> Notification {
-    let title = Text::Verbatim(if chat_kind == "family" {
+    let title = Text::Verbatim(if chat_kind == "family" || chat_kind == "group" {
         format!("{family_name} — {sender_name}")
     } else {
         sender_name.to_string()
@@ -305,10 +307,11 @@ pub fn message_notification(
 }
 
 /// The message push for a member the message NAMES: the same push, a
-/// different title — `"<Family> — <Sender> mentioned you"` — and never a
-/// second one (protocol.md, "Mentioning a member"). Family chat only, which
-/// is the only chat a mention is accepted in, so the direct-chat title rule
-/// has no mention form.
+/// different title — `"<Family> — <Sender> mentioned you"`, or the group's
+/// name in a group — and never a second one (protocol.md, "Mentioning a
+/// member"). The family chat and groups are the only chats a mention is
+/// accepted in, so the direct-chat title rule has no mention form; both
+/// read `family_name` as the name before the sender.
 pub fn mention_notification(
     include_message_body: bool,
     family_name: &str,
@@ -790,6 +793,17 @@ mod tests {
         let hidden = mention_notification(false, "The Smiths", "Anna", &message, 3, 1);
         assert_eq!(hidden.body, "New message");
         assert_eq!(hidden.title, "The Smiths — Anna mentioned you");
+    }
+
+    /// A group titles its pushes as the family chat does, with the group's
+    /// name where the family's would be (protocol.md, "Groups").
+    #[test]
+    fn a_group_push_is_titled_with_the_group_s_name() {
+        let message = protocol_message();
+        let note = message_notification(true, "group", "Cousins", "Anna", &message, 3, 1);
+        assert_eq!(note.title, "Cousins — Anna");
+        let direct = message_notification(true, "direct", "Cousins", "Anna", &message, 3, 1);
+        assert_eq!(direct.title, "Anna");
     }
 
     #[test]

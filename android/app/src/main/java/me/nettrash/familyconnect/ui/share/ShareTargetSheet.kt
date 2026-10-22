@@ -54,10 +54,12 @@ import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.EmptyState
+import me.nettrash.familyconnect.ui.group.GroupAvatarMark
+import me.nettrash.familyconnect.util.GroupRules
 import javax.inject.Inject
 
 /**
- * The chats a share may land in: family or direct, NEVER `kind == "ai"` —
+ * The chats a share may land in: family, direct or a group, NEVER `kind == "ai"` —
  * the assistant's private thread takes no shared files, and offering it
  * would offer a send the server refuses. Order is the DAO's (family chat
  * pinned first, then recency), so this only filters. Pure, and pinned by
@@ -169,6 +171,8 @@ fun ShareTargetSheet(
                                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     )
                                 }
+                            } else if (GroupRules.isGroup(chat.kind)) {
+                                GroupAvatarMark()
                             } else {
                                 Avatar(
                                     name = chat.title,

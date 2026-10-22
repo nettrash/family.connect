@@ -778,4 +778,32 @@ class WsFrameSerdeTest {
         )
         assertThat(read).isEqualTo(ServerFrame.Read(chatId = 42, userId = 9, lastReadMessageId = 1338))
     }
+
+    // -- Groups (docs/protocol.md, "Groups"; added 2026-10-22) -----------------
+
+    /** protocol.md's `chat_updated`: the whole group, members and admin included. */
+    @Test
+    fun chatUpdatedFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "chat_updated", "chat": {"id": 77, "kind": "group", "title": "Cousins", "member_ids": [7, 9, 11], "admin_user_id": 7}}""",
+            ServerFrame.ChatUpdated(
+                me.nettrash.familyconnect.data.net.dto.ChatDto(
+                    id = 77,
+                    kind = "group",
+                    title = "Cousins",
+                    memberIds = listOf(7, 9, 11),
+                    adminUserId = 7,
+                ),
+            ),
+        )
+    }
+
+    /** protocol.md's `chat_removed`: the id alone. */
+    @Test
+    fun chatRemovedFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "chat_removed", "chat_id": 77}""",
+            ServerFrame.ChatRemoved(chatId = 77),
+        )
+    }
 }

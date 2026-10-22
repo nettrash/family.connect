@@ -54,7 +54,8 @@ public static class PollText
 
     /// <summary>
     /// The M in "N of M voted": the live roster — neither the people who have left nor accounts that were
-    /// deleted, because a tally must not go on counting somebody who no longer exists.
+    /// deleted, because a tally must not go on counting somebody who no longer exists. In a group, the group's
+    /// members (docs/protocol.md, "Groups"): the caller passes <see cref="ComposerMentions.Candidates"/>.
     /// </summary>
     public static int MemberCount(IEnumerable<MemberDto> members) =>
         members.Count(member => !member.HasLeft && !member.Deleted);

@@ -19,7 +19,10 @@ public sealed record MentionChoice(MemberDto? Member, string Name, string Handle
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>ONLY IN THE FAMILY CHAT</b>, where a mention means anything, and never while a message is being edited.
+/// <b>ONLY IN THE FAMILY CHAT OR A GROUP</b>, where a mention means anything, and never while a message is being edited.
+/// In a group the names are THAT GROUP's members alone (docs/protocol.md, "Mentioning a member", amended 2026-10-22): the
+/// server refuses anybody else, who would not even receive the message — so every rule here takes the chat's
+/// <see cref="Candidates"/> rather than the roster.
 /// </para>
 /// <para>
 /// <b>THE NAMES ARE RESOLVED FROM THE TEXT AT SEND</b>: a name typed by hand mentions too, a name deleted after
@@ -32,18 +35,43 @@ public static class ComposerMentions
     public static IReadOnlyList<MemberDto> Live(IReadOnlyList<MemberDto> members) =>
         [.. members.Where(member => !member.Deleted && !member.IsFormer)];
 
+    /// <summary>Whether a mention means anything in a chat of this kind: the family chat or a group.</summary>
+    public static bool Enabled(string? chatKind) => ChatKinds.IsShared(chatKind);
+
     /// <summary>
-    /// The names a half-typed <c>@</c> could mean, in roster order — never the reader, never somebody they
-    /// blocked. Empty outside the family chat, while editing, and when the draft is not mid-mention.
+    /// Who a name in this chat may name — and who its polls count: the live roster in the family chat; in a group, the live
+    /// members of THAT GROUP, in the order they joined; nobody anywhere else. A group whose members this device has not
+    /// read yet (one an older build cached) offers nobody rather than the whole family.
     /// </summary>
-    public static IReadOnlyList<MemberDto> Offered(
-        string draft, IReadOnlyList<MemberDto> members, long me, Func<long, bool> blocked, bool familyChat, bool editing)
+    public static IReadOnlyList<MemberDto> Candidates(ChatDto? chat, IReadOnlyList<MemberDto> roster)
     {
-        if (!familyChat || editing || Mentions.Query(draft) is not { } query)
+        ArgumentNullException.ThrowIfNull(roster);
+        switch (chat?.Kind)
+        {
+            case ChatKinds.Family:
+                return Live(roster);
+            case ChatKinds.Group:
+                var live = Live(roster).GroupBy(member => member.Id).ToDictionary(group => group.Key, group => group.First());
+                return [.. (chat.MemberIds ?? []).Distinct().Where(live.ContainsKey).Select(id => live[id])];
+            default:
+                return [];
+        }
+    }
+
+    /// <summary>
+    /// The names a half-typed <c>@</c> could mean, in the order of <paramref name="candidates"/> — never the reader, never
+    /// somebody they blocked. Empty where mentions are not <paramref name="enabled"/>, while editing, and when the draft is
+    /// not mid-mention.
+    /// </summary>
+    /// <param name="candidates">The chat's <see cref="Candidates"/>: the roster in the family chat, the group's members in a group.</param>
+    public static IReadOnlyList<MemberDto> Offered(
+        string draft, IReadOnlyList<MemberDto> candidates, long me, Func<long, bool> blocked, bool enabled, bool editing)
+    {
+        if (!enabled || editing || Mentions.Query(draft) is not { } query)
         {
             return [];
         }
-        var roster = Live(members);
+        var roster = Live(candidates);
         var excluding = roster.Where(member => member.Id == me || blocked(member.Id)).Select(member => member.Id).ToHashSet();
         var offered = Mentions.Candidates([.. roster.Select(member => new Named(member.Id, member.DisplayName))], query, excluding)
             .Select(member => member.UserId)
@@ -53,24 +81,24 @@ public static class ComposerMentions
 
     /// <summary>
     /// The strip's lines for a half-typed <c>@</c>: <b>THE ASSISTANT FIRST</b>, above the members (docs/protocol.md,
-    /// "Mentioning a member", amended 2026-10-20, #106) — exactly where <c>@ai</c> may be written at all: the family chat,
-    /// not while editing, on a server whose assistant names who answers — narrowed by its display name and by <c>ai</c> as a
+    /// "Mentioning a member", amended 2026-10-20, #106) — exactly where <c>@ai</c> may be written at all: the family chat or
+    /// a group (amended 2026-10-22), not while editing, on a server whose assistant names who answers — narrowed by its display name and by <c>ai</c> as a
     /// member is by theirs; then <see cref="Offered"/>. The assistant is never a member here: if the roster carries its
     /// account, that row is left out rather than offered as <c>@&lt;display_name&gt;</c>.
     /// </summary>
     public static IReadOnlyList<MentionChoice> Choices(
         string draft,
-        IReadOnlyList<MemberDto> members,
+        IReadOnlyList<MemberDto> candidates,
         long me,
         Func<long, bool> blocked,
-        bool familyChat,
+        bool enabled,
         bool editing,
         AssistantDto? assistant)
     {
-        var people = Offered(draft, members, me, blocked, familyChat, editing)
+        var people = Offered(draft, candidates, me, blocked, enabled, editing)
             .Where(member => assistant is null || member.Id != assistant.UserId)
             .Select(member => new MentionChoice(member, member.DisplayName, member.Username.Length > 0 ? $"@{member.Username}" : string.Empty, member.DisplayName));
-        if (!familyChat || editing || !AttachMenu.AssistantAvailable(assistant) || Mentions.Query(draft) is not { } query)
+        if (!enabled || editing || !AttachMenu.AssistantAvailable(assistant) || Mentions.Query(draft) is not { } query)
         {
             return [.. people];
         }
@@ -80,7 +108,7 @@ public static class ComposerMentions
         return asked ? [new MentionChoice(null, name, AssistantText.Token, token), .. people] : [.. people];
     }
 
-    /// <summary>The names a text carries, resolved against the live roster, at most <see cref="Mentions.MaxPerMessage"/>.</summary>
+    /// <summary>The names a text carries, resolved against the live members given, at most <see cref="Mentions.MaxPerMessage"/>.</summary>
     public static MentionDto[] Resolve(string text, IReadOnlyList<MemberDto> members) =>
     [
         .. Mentions.Resolve(text, [.. Live(members).Select(member => new Named(member.Id, member.DisplayName))])
@@ -88,14 +116,18 @@ public static class ComposerMentions
             .Select(member => new MentionDto(member.UserId, member.Name)),
     ];
 
-    /// <summary>What a send carries: the names in the family chat, and nothing anywhere else or when it names nobody.</summary>
-    public static MentionDto[]? ForSend(string body, IReadOnlyList<MemberDto> members, bool familyChat)
+    /// <summary>
+    /// What a send carries: the names of <paramref name="candidates"/> it says, where mentions are <paramref name="enabled"/>
+    /// — the family chat, or a group with its own members as the candidates — and nothing anywhere else or when it names
+    /// nobody. Resolving against the group's members is what keeps a send from naming somebody the server would refuse.
+    /// </summary>
+    public static MentionDto[]? ForSend(string body, IReadOnlyList<MemberDto> candidates, bool enabled)
     {
-        if (!familyChat)
+        if (!enabled)
         {
             return null;
         }
-        var named = Resolve(body, members);
+        var named = Resolve(body, candidates);
         return named.Length > 0 ? named : null;
     }
 

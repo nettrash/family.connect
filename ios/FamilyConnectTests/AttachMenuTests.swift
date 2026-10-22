@@ -22,19 +22,19 @@ struct AttachMenuTests {
         hasCamera: Bool = true,
         offersVoice: Bool = true,
         roundAvailable: Bool = true,
-        isFamilyChat: Bool = false,
+        isFamilyOrGroup: Bool = false,
         offersAssistant: Bool = false
     ) -> [[I]] {
         AttachMenu.groups(
             isAssistantChat: isAssistantChat, showsPictureAttach: showsPictureAttach,
             hasCamera: hasCamera, offersVoice: offersVoice,
-            roundAvailable: roundAvailable, isFamilyChat: isFamilyChat,
+            roundAvailable: roundAvailable, isFamilyOrGroup: isFamilyOrGroup,
             offersAssistant: offersAssistant)
     }
 
     @Test("the family chat on the phone: the spec's full menu, in three groups")
     func familyChatPhone() {
-        #expect(Self.phone(isFamilyChat: true) == [
+        #expect(Self.phone(isFamilyOrGroup: true) == [
             [.photoOrVideo, .camera, .file, .paste],
             [.voiceMessage, .videoMessage],
             [.location, .poll],
@@ -43,13 +43,13 @@ struct AttachMenuTests {
 
     @Test("the family chat with an assistant: Ask the Assistant leads the last group (#106)")
     func familyChatAsksTheAssistant() {
-        #expect(Self.phone(isFamilyChat: true, offersAssistant: true) == [
+        #expect(Self.phone(isFamilyOrGroup: true, offersAssistant: true) == [
             [.photoOrVideo, .camera, .file, .paste],
             [.voiceMessage, .videoMessage],
             [.askAssistant, .location, .poll],
         ])
         // The Mac's list is the phone's without the camera — the item too.
-        #expect(Self.phone(hasCamera: false, isFamilyChat: true, offersAssistant: true).last
+        #expect(Self.phone(hasCamera: false, isFamilyOrGroup: true, offersAssistant: true).last
             == [.askAssistant, .location, .poll])
     }
 
@@ -63,7 +63,7 @@ struct AttachMenuTests {
             roundAvailable: false, offersAssistant: true
         ).joined().contains(.askAssistant))
         // And in the family chat, only where the assistant is offered.
-        #expect(!Self.phone(isFamilyChat: true).joined().contains(.askAssistant))
+        #expect(!Self.phone(isFamilyOrGroup: true).joined().contains(.askAssistant))
     }
 
     @Test("a direct chat has no poll")
@@ -77,7 +77,7 @@ struct AttachMenuTests {
 
     @Test("the Mac is the phone's list without the camera")
     func macHasNoCamera() {
-        #expect(Self.phone(hasCamera: false, isFamilyChat: true) == [
+        #expect(Self.phone(hasCamera: false, isFamilyOrGroup: true) == [
             [.photoOrVideo, .file, .paste],
             [.voiceMessage, .videoMessage],
             [.location, .poll],
@@ -135,7 +135,7 @@ struct AttachMenuTests {
         let groups = AttachMenu.groups(
             isAssistantChat: bits & 1 != 0, showsPictureAttach: bits & 2 != 0,
             hasCamera: bits & 4 != 0, offersVoice: bits & 8 != 0,
-            roundAvailable: bits & 16 != 0, isFamilyChat: bits & 32 != 0,
+            roundAvailable: bits & 16 != 0, isFamilyOrGroup: bits & 32 != 0,
             offersAssistant: bits & 64 != 0)
         #expect(groups.allSatisfy { !$0.isEmpty })
         let items = Array(groups.joined())

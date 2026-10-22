@@ -62,4 +62,14 @@ public sealed class AssistantButtonsTests
     [Fact]
     public void AnOwnerWhoLeftIsToldWhoHasTheFamilyNow() =>
         Assert.Equal(("Ownership passed on", "Anna is now the owner of the family."), SettingsText.OwnershipPassed("Anna", EnglishCatalog.Instance));
+
+    /// <summary>"Ask the assistant" is offered in a GROUP as in the family chat; the paintbrush stays the assistant's chat's.</summary>
+    [Fact]
+    public void AGroupOffersTheAssistantLikeTheFamilyChat()
+    {
+        Assert.True(AssistantButtons.Offered("group", Talks, editing: false).AskAssistant);
+        Assert.False(AssistantButtons.Offered("group", Talks, editing: true).AskAssistant);
+        Assert.False(AssistantButtons.Offered("group", null, editing: false).AskAssistant);
+        Assert.False(AssistantButtons.Offered("group", Draws, editing: false).AskPicture);
+    }
 }

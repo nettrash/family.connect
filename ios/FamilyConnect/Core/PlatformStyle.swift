@@ -275,6 +275,15 @@ enum MacSheetSize {
     /// The roster's Birthday — its section header carries a display name.
     static let memberBirthday = CGSize(width: 460, height: 440)
 
+    /// New Group (#107) — a name field over the family's members, ticked.
+    /// Hangs from the main window, whose thread alone is at least 420pt
+    /// wide beside a 240pt sidebar, so it has the roster sheet's room.
+    static let newGroup = CGSize(width: 440, height: 520)
+    /// Group Info (#107) — the members with the admin's controls, and the
+    /// rename / add / leave / delete rows under them. Also opened from a
+    /// conversation's own window; its list scrolls when that is short.
+    static let groupInfo = CGSize(width: 440, height: 520)
+
     /// What each sheet's parent offers at its SMALLEST, which is the size the
     /// sheet actually has to fit: Settings is resizable down to its minimum,
     /// and the roster sheet is not resizable at all.

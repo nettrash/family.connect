@@ -159,6 +159,17 @@ pub enum ServerFrame {
     PackItem {
         item: crate::model::PackItem,
     },
+    /// A group created, renamed, or its members or admin changed — to every
+    /// member, one just added included, which is how a group appears on
+    /// their devices at once (docs/protocol.md, "Groups").
+    ChatUpdated {
+        chat: crate::model::Chat,
+    },
+    /// A group this member left or was removed from, or that was deleted:
+    /// drop it, its messages and anything drafted there.
+    ChatRemoved {
+        chat_id: i64,
+    },
     /// Somebody is calling: delivered to every connection the callee has.
     CallOffer {
         call_id: String,
@@ -424,6 +435,21 @@ mod tests {
             decode(r#"{"type": "pack_item", "item": {"id": 5, "deleted": true, "pack_seq": 14}}"#),
             Some(ServerFrame::PackItem { ref item }) if item.deleted
         ));
+        // Groups (docs/protocol.md, "Groups"): the chat whole, and the id
+        // of one to drop.
+        let updated = decode(
+            r#"{"type": "chat_updated", "chat": {"id": 77, "kind": "group", "title": "Cousins",
+                "peer_user_id": null, "member_ids": [7, 9], "admin_user_id": 7}}"#,
+        );
+        assert!(matches!(
+            updated,
+            Some(ServerFrame::ChatUpdated { ref chat })
+                if chat.is_group() && chat.group_member_ids() == [7, 9] && chat.admin_user_id == Some(7)
+        ));
+        assert_eq!(
+            decode(r#"{"type": "chat_removed", "chat_id": 77}"#),
+            Some(ServerFrame::ChatRemoved { chat_id: 77 })
+        );
     }
 
     /// `ai_error`'s optional `reason`: `"refused"` is read, and a reason

@@ -287,4 +287,20 @@ public sealed class TranscriptRulesTests
             Assert.NotEqual(key, russian.Get(key));
         }
     }
+
+    /// <summary>
+    /// A GROUP FOLLOWS THE DIRECT CHAT'S RULE (docs/protocol.md, "Transcripts on request", amended 2026-10-22; D4): another
+    /// member's recording there needs that sender's consent alone, which the server asks — the owner's switch, the family
+    /// chat's, does not reach it either way — and "another member" needs a reader who is known. Your own, as everywhere.
+    /// </summary>
+    [Fact]
+    public void AGroupFollowsTheDirectChatsRule()
+    {
+        Assert.True(TranscriptRules.MayAsk("group", Anna, Me, Assistant, SwitchOn));
+        Assert.True(TranscriptRules.MayAsk("group", Anna, Me, Assistant, SwitchOff));
+        Assert.True(TranscriptRules.MayAsk("group", Anna, Me, Assistant, null));
+        Assert.True(TranscriptRules.MayAsk("group", Me, Me, Assistant, SwitchOff));
+        Assert.False(TranscriptRules.MayAsk("group", Anna, 0, Assistant, SwitchOn));
+        Assert.False(TranscriptRules.MayAsk("group", Assistant, Me, Assistant, SwitchOn));
+    }
 }

@@ -77,12 +77,20 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// "Blocking a member"). Deleting the row would take its messages with it, so an unblock would
     /// hand the reader an empty chat where a conversation used to be.
     /// </remarks>
-    public void Replace(IReadOnlyList<ChatRowDto> rows)
+    /// <para>
+    /// <b>A LIST READ OLDER THAN A CHANGE DOES NOT UNDO IT.</b> <paramref name="since"/> is the <see cref="ListMark"/> taken
+    /// when the request STARTED: a group created, renamed or re-membered after it (<see cref="Upsert"/>) is not hidden for
+    /// being missing from it, and keeps its newer name, members and admin while still taking the answer's counts and
+    /// preview; a group removed after it (<see cref="Remove"/>) is not written back. A later request decides normally.
+    /// Apple, Android and the web keep the same guard. Null — no mark — applies the answer whole.
+    /// </para>
+    public void Replace(IReadOnlyList<ChatRowDto> rows, long? since = null)
     {
         using var serialised = database.Hold();
         database.ChatsChanged();
         using var transaction = database.Connection.BeginTransaction();
-        var keep = rows.Select(row => row.Chat.Id).ToHashSet();
+        var touched = since is { } mark ? database.TouchedSince(mark) : [];
+        var keep = rows.Select(row => row.Chat.Id).Concat(touched).ToHashSet();
         foreach (var id in Ids(transaction).Where(id => !keep.Contains(id)))
         {
             using var hide = database.Connection.CreateCommand();
@@ -91,8 +99,18 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             hide.Parameters.AddWithValue("$id", id);
             hide.ExecuteNonQuery();
         }
-        foreach (var row in rows)
+        foreach (var listed in rows)
         {
+            var row = listed;
+            if (touched.Contains(row.Chat.Id))
+            {
+                // Changed since this answer was taken: gone stays gone, and a newer chat keeps its own fields.
+                if (HeldChat(row.Chat.Id, transaction) is not { } newer)
+                {
+                    continue;
+                }
+                row = row with { Chat = newer };
+            }
             Write(row, transaction);
             if (row.LastMessage is { } preview)
             {
@@ -146,6 +164,104 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.CommandText = "SELECT listed FROM chats WHERE chat_id = $id";
         command.Parameters.AddWithValue("$id", chatId);
         return command.ExecuteScalar() is { } value and not DBNull && Convert.ToInt64(value) == 1;
+    }
+
+    /// <summary>
+    /// The mark a <c>GET /chats</c> request takes as it STARTS, handed back to <see cref="Replace"/> with its answer, so an
+    /// answer older than a change to a chat cannot undo it.
+    /// </summary>
+    public long ListMark
+    {
+        get
+        {
+            using var serialised = database.Hold();
+            return database.ChatTouches;
+        }
+    }
+
+    /// <summary>
+    /// A chat as a <c>chat_updated</c> frame or a group endpoint's answer states it: its name, its members and its admin,
+    /// written whole and put on the list (docs/protocol.md, "Groups"). A chat this device has never held starts with
+    /// nothing unread, as the server starts a member just added; the counts, the marker and the cursors of one it holds are
+    /// not touched — none of them is on a <c>Chat</c>, and the next list read brings the server's.
+    /// </summary>
+    public void Upsert(ChatDto chat)
+    {
+        ArgumentNullException.ThrowIfNull(chat);
+        using var serialised = database.Hold();
+        database.ChatsChanged();
+        using var command = database.Connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id)
+            VALUES ($id, $kind, $title, $peer, $members, $admin)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                kind = excluded.kind, title = excluded.title, peer_user_id = excluded.peer_user_id,
+                member_ids_json = excluded.member_ids_json, admin_user_id = excluded.admin_user_id,
+                listed = 1
+            """;
+        command.Parameters.AddWithValue("$id", chat.Id);
+        command.Parameters.AddWithValue("$kind", chat.Kind);
+        command.Parameters.AddWithValue("$title", chat.Title);
+        command.Parameters.AddWithValue("$peer", chat.PeerUserId ?? (object)DBNull.Value);
+        GroupParameters(command, chat);
+        command.ExecuteNonQuery();
+        database.Touched(chat.Id);
+    }
+
+    /// <summary>
+    /// A GROUP this reader is no longer in — left, removed from, or deleted (docs/protocol.md, <c>chat_removed</c>): the
+    /// chat, its messages and anything still queued for it go. Answers whether anything went.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A GROUP ONLY. The family chat is untouched by everything groups added, and a direct or <c>ai</c> chat never leaves
+    /// this way — so a frame naming one of those drops nothing. A list read that no longer carries a chat HIDES it
+    /// (<see cref="Replace"/>), whatever its kind; this is the frame's stronger statement, that it is gone.
+    /// </para>
+    /// <para>
+    /// Deleted rather than hidden, unlike a blocked direct chat, because nothing brings it back whole: a member the admin
+    /// adds again is handed the group's history by the server, and reads it in as any chat this device never held.
+    /// The outbox rows go too — a send to a chat its sender is no longer in can only be refused — and their staged bytes
+    /// are the caller's to clean up, as a discarded row's are.
+    /// </para>
+    /// </remarks>
+    public bool Remove(long chatId)
+    {
+        using var serialised = database.Hold();
+        database.ChatsChanged();
+        using var transaction = database.Connection.BeginTransaction();
+        using (var kind = database.Connection.CreateCommand())
+        {
+            kind.Transaction = transaction;
+            kind.CommandText = "SELECT kind FROM chats WHERE chat_id = $id";
+            kind.Parameters.AddWithValue("$id", chatId);
+            switch (kind.ExecuteScalar())
+            {
+                case null or DBNull:
+                    // Never held, or already gone: still a fact a list read taken before it must not undo.
+                    database.Touched(chatId);
+                    return false;
+                case not "group":
+                    return false;
+            }
+        }
+        database.Touched(chatId);
+        foreach (var statement in new[]
+                 {
+                     "DELETE FROM outbox WHERE chat_id = $id",
+                     "DELETE FROM messages WHERE chat_id = $id",
+                     "DELETE FROM chats WHERE chat_id = $id",
+                 })
+        {
+            using var command = database.Connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = statement;
+            command.Parameters.AddWithValue("$id", chatId);
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        return true;
     }
 
     /// <summary>How many messages are unread across every chat — the badge.</summary>
@@ -905,7 +1021,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     }
 
     /// <summary>
-    /// A chat's KIND — "family", "direct", "ai" — or null while this device holds no row for it. What
+    /// A chat's KIND — "family", "direct", "ai", "group" — or null while this device holds no row for it. What
     /// <c>Chat(chatId)?.Chat.Kind</c> answers, without reading the row and its newest message to get there: a
     /// conversation asks it of every bubble it draws.
     /// </summary>
@@ -958,14 +1074,16 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.Transaction = transaction;
         command.CommandText =
             """
-            INSERT INTO chats (chat_id, kind, title, peer_user_id, unread_count,
+            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, unread_count,
                                last_read_message_id, mentioned,
                                max_reaction_seq, max_edit_seq, max_poll_seq, last_message_at)
             -- The three cursors start at zero on a chat this device has never held, and a list
             -- read NEVER writes them: see the note below.
-            VALUES ($id, $kind, $title, $peer, $unread, $read, $mentioned, 0, 0, 0, $at)
+            VALUES ($id, $kind, $title, $peer, $members, $admin, $unread, $read, $mentioned, 0, 0, 0, $at)
             ON CONFLICT(chat_id) DO UPDATE SET
                 kind = excluded.kind, title = excluded.title, peer_user_id = excluded.peer_user_id,
+                -- A group's members and admin are the server's, whole, on every read that carries the chat.
+                member_ids_json = excluded.member_ids_json, admin_user_id = excluded.admin_user_id,
                 -- Back on the list: an unblock relists the chat it hid.
                 listed = 1,
                 -- THE SERVER'S NUMBER IS THE AUTHORITY, PLUS WHAT RACED IT. The server counted
@@ -998,6 +1116,7 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.Parameters.AddWithValue("$kind", row.Chat.Kind);
         command.Parameters.AddWithValue("$title", row.Chat.Title);
         command.Parameters.AddWithValue("$peer", row.Chat.PeerUserId ?? (object)DBNull.Value);
+        GroupParameters(command, row.Chat);
         command.Parameters.AddWithValue("$unread", row.UnreadCount);
         command.Parameters.AddWithValue("$me", reader());
         // The newest message the server's own answer carried: the line its count was drawn to.
@@ -1165,6 +1284,25 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.ExecuteNonQuery();
     }
 
+    /// <summary>The chat fields of a row this device holds, or null.</summary>
+    private ChatDto? HeldChat(long chatId, SqliteTransaction transaction)
+    {
+        using var command = database.Connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT * FROM chats WHERE chat_id = $id";
+        command.Parameters.AddWithValue("$id", chatId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadChat(reader).Chat : null;
+    }
+
+    /// <summary>A group's members and admin as parameters — NULL for every other kind, which carries neither.</summary>
+    private static void GroupParameters(SqliteCommand command, ChatDto chat)
+    {
+        command.Parameters.AddWithValue(
+            "$members", chat.MemberIds is { } members ? Wire.Encode(members) : (object)DBNull.Value);
+        command.Parameters.AddWithValue("$admin", chat.AdminUserId ?? (object)DBNull.Value);
+    }
+
     private static ChatRowDto ReadChat(SqliteDataReader reader)
     {
         long? Optional(string column) =>
@@ -1176,7 +1314,13 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                 Title: reader.GetString(reader.GetOrdinal("title")),
                 PeerUserId: reader["peer_user_id"] is DBNull
                     ? null
-                    : Convert.ToInt64(reader["peer_user_id"])),
+                    : Convert.ToInt64(reader["peer_user_id"]),
+                MemberIds: reader["member_ids_json"] is string members
+                    ? Wire.Decode<long[]>(members)
+                    : null,
+                AdminUserId: reader["admin_user_id"] is DBNull
+                    ? null
+                    : Convert.ToInt64(reader["admin_user_id"])),
             LastMessage: null,
             UnreadCount: Convert.ToInt32(reader["unread_count"]),
             LastReadMessageId: Convert.ToInt64(reader["last_read_message_id"]),

@@ -96,24 +96,25 @@ struct PictureRequestHintTests {
 
     /// In the family chat `/draw` only asks with the `@ai` in front of it —
     /// without one the draft never reaches the assistant, and advice about
-    /// the picture provider would be advice about nothing.
-    @Test("the family chat shows it only for @ai /draw")
-    func familyChatNeedsTheMention() {
+    /// the picture provider would be advice about nothing. A GROUP is the
+    /// same surface since 2026-10-22 (docs/protocol.md, "Groups").
+    @Test("the family chat and a group show it only for @ai /draw", arguments: ["family", "group"])
+    func familyChatNeedsTheMention(_ kind: String) {
         #expect(PictureRequestHint.showsInComposer(
-            chatKind: "family", draft: "@ai /draw ", isEditing: false, offersPictures: true))
+            chatKind: kind, draft: "@ai /draw ", isEditing: false, offersPictures: true))
         #expect(PictureRequestHint.showsInComposer(
-            chatKind: "family", draft: "@ai /draw a cat", isEditing: false, offersPictures: true))
+            chatKind: kind, draft: "@ai /draw a cat", isEditing: false, offersPictures: true))
         #expect(!PictureRequestHint.showsInComposer(
-            chatKind: "family", draft: "/draw a cat", isEditing: false, offersPictures: true))
+            chatKind: kind, draft: "/draw a cat", isEditing: false, offersPictures: true))
         #expect(!PictureRequestHint.showsInComposer(
-            chatKind: "family", draft: "@ai a cat", isEditing: false, offersPictures: true))
+            chatKind: kind, draft: "@ai a cat", isEditing: false, offersPictures: true))
         #expect(!PictureRequestHint.showsInComposer(
-            chatKind: "family", draft: "hey @ai /draw a cat", isEditing: false, offersPictures: true))
+            chatKind: kind, draft: "hey @ai /draw a cat", isEditing: false, offersPictures: true))
     }
 
     @Test("a chat that never reaches the assistant never shows it")
     func otherChatsNever() {
-        for kind in ["direct", "group", nil] as [String?] {
+        for kind in ["direct", nil] as [String?] {
             #expect(!PictureRequestHint.showsInComposer(
                 chatKind: kind, draft: "/draw a cat", isEditing: false, offersPictures: true))
             #expect(!PictureRequestHint.showsInComposer(

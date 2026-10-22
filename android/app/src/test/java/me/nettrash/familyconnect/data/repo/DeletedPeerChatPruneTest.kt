@@ -20,9 +20,11 @@
  *
  * And what must NOT be pruned, which is the half that costs history if
  * it is wrong: nothing at all on a failed or errored list, because a
- * flaky connection would then wipe somebody's messages; and never the
- * family chat or the assistant chat on any response, because neither can
- * disappear server-side while this client can still ask.
+ * flaky connection would then wipe somebody's messages.
+ *
+ * Since groups (docs/protocol.md, resync step 2, amended 2026-10-22) the
+ * prune covers EVERY kind — "a client drops every chat that leaves `GET
+ * /chats`, of any kind" — and GroupChatSyncTest pins the group half.
  */
 
 package me.nettrash.familyconnect.data.repo
@@ -297,29 +299,28 @@ class DeletedPeerChatPruneTest {
     }
 
     /**
-     * The scope of the prune, and the reason it is scoped at all: the
-     * family chat lives as long as the family and the assistant thread as
-     * long as the account, so neither can be missing from a list this
-     * client successfully made. If one ever is, the answer is a bug
-     * somewhere else — never deleting the family's history.
+     * The scope of the prune: every kind, since groups (docs/protocol.md,
+     * resync step 2: "a chat that is no longer in it … is dropped, whatever
+     * its kind"). The family chat lives as long as the family and the
+     * assistant thread as long as the account, so neither is missing from a
+     * list this client successfully made — and when one is, the server is
+     * saying this reader no longer has it.
      */
     @Test
-    fun `the family chat and the assistant chat are never pruned`() = runTest(dispatcher) {
+    fun `a chat of any kind the server no longer lists is pruned`() = runTest(dispatcher) {
         val repository = repository()
         seedEveryKindOfChat()
-        // A response that lists NEITHER of them (and no direct chat
-        // either) — the worst thing a well-formed 200 could say.
+        // A response that lists nothing at all — the worst thing a
+        // well-formed 200 could say, and it is believed.
         chatApi.chatsResult = ApiResult.Ok(ChatsResponse(emptyList()))
 
         repository.refreshChats()
 
-        assertThat(held(FAMILY_CHAT)).isTrue()
-        assertThat(messageCount(FAMILY_CHAT)).isEqualTo(2)
-        assertThat(held(AI_CHAT)).isTrue()
-        assertThat(messageCount(AI_CHAT)).isEqualTo(2)
-        // Only the direct chats went.
+        assertThat(held(FAMILY_CHAT)).isFalse()
+        assertThat(held(AI_CHAT)).isFalse()
         assertThat(held(DIRECT_GONE)).isFalse()
         assertThat(held(DIRECT_KEPT)).isFalse()
+        assertThat(messageCount(FAMILY_CHAT)).isEqualTo(0)
     }
 
     // -- The immediate half: the member_deleted frame ----------------------------------

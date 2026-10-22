@@ -329,6 +329,7 @@ pub(crate) fn props_with(
                 kind: "family".into(),
                 title: Some("The Smiths".into()),
                 peer_user_id: None,
+                ..Chat::default()
             },
             last_message: None,
             unread_count: 0,
@@ -1128,10 +1129,10 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
         root_id: 10,
         messages: vec![photo_root].into(),
         my_user_id: 7,
-        is_family_chat: true,
-        is_ai_chat: false,
+        chat_kind: "family".into(),
         names: Default::default(),
         members: Vec::new(),
+        chat_members: Vec::new(),
         assistant: Some(Assistant {
             user_id: 2,
             display_name: "Assistant".into(),
@@ -2169,10 +2170,10 @@ async fn a_thread_sends_a_sticker_to_its_root() {
                     root_id={1}
                     messages={crate::store::Messages::from(vec![message(1), message(2)])}
                     my_user_id={7}
-                    is_family_chat={!is_ai_chat}
-                    {is_ai_chat}
+                    chat_kind={if is_ai_chat { "ai" } else { "family" }}
                     names={std::collections::HashMap::<i64, String>::new()}
                     members={Vec::<Member>::new()}
+                    chat_members={Vec::<Member>::new()}
                     assistant={is_ai_chat.then(|| assistant_answered_by(Some("Microsoft — Azure OpenAI")))}
                     blocked={std::collections::HashSet::<i64>::new()}
                     revealed={std::collections::HashSet::<i64>::new()}
@@ -2676,10 +2677,10 @@ async fn esc_in_a_thread_keeps_its_draft() {
         root_id: 1,
         messages: vec![message(1)].into(),
         my_user_id: 7,
-        is_family_chat: true,
-        is_ai_chat: false,
+        chat_kind: "family".into(),
         names: Default::default(),
         members: Vec::new(),
+        chat_members: Vec::new(),
         assistant: None,
         blocked: Default::default(),
         revealed: Default::default(),
@@ -2921,4 +2922,121 @@ async fn an_upright_ipad_opens_a_panel_over_the_chat() {
         "a phone: alone"
     );
     frame.remove();
+}
+
+/// A GROUP'S CONVERSATION (docs/protocol.md, "Groups"): its title opens
+/// Group Info and says how many are in it; it has open polls as the family
+/// chat does and never a call, even on a server that carries calls; and at
+/// a phone's width the bar and the dialog stay on the screen.
+#[wasm_bindgen_test]
+async fn a_groups_conversation_has_its_info_and_no_calls() {
+    let root = pane_of(390.0);
+    let (_, on_action) = recorder();
+    let mut props = props_with(vec![message(1), message(2)], None, on_action);
+    props.calls_enabled = true;
+    props.item.chat = Chat {
+        id: 42,
+        kind: "group".into(),
+        title: Some("The cousins who meet on Sundays at grandmother's house".into()),
+        member_ids: Some(vec![7, 9]),
+        admin_user_id: Some(7),
+        ..Chat::default()
+    };
+    props.members = vec![
+        Member {
+            id: 7,
+            display_name: "Me".into(),
+            ..Member::default()
+        },
+        Member {
+            id: 9,
+            display_name: "Anna".into(),
+            ..Member::default()
+        },
+        Member {
+            id: 11,
+            display_name: "Bob".into(),
+            ..Member::default()
+        },
+    ];
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props).render();
+    TimeoutFuture::new(50).await;
+    assert!(
+        root.query_selector(".call-buttons").unwrap().is_none(),
+        "no calls"
+    );
+    assert!(
+        root.query_selector(".open-polls").unwrap().is_some(),
+        "polls"
+    );
+    let title = query(&root, ".conversation-title .title-button");
+    assert!(title
+        .text_content()
+        .unwrap_or_default()
+        .contains("Members: 2"));
+    // Sender names, as in the family chat: Anna's message says who.
+    assert!(
+        root.query_selector(".sender").unwrap().is_some(),
+        "a group names its senders"
+    );
+    // The bar stays inside the phone: the long name gives way.
+    let bar = query(&root, ".conversation-bar").get_bounding_client_rect();
+    let polls = query(&root, ".open-polls").get_bounding_client_rect();
+    assert!(
+        bar.right() <= 390.5 && polls.right() <= bar.right() + 0.5,
+        "{} {}",
+        bar.right(),
+        polls.right()
+    );
+
+    title.dyn_into_html().click();
+    TimeoutFuture::new(50).await;
+    let dialog = query(&root, ".dialog.group-dialog");
+    assert!(visible_text(&dialog).contains("Group Info"));
+    let members = dialog
+        .query_selector_all(".group-members .member-row")
+        .unwrap();
+    assert_eq!(members.length(), 2, "the group's members, not the family's");
+    handle.destroy();
+    root.remove();
+
+    // The dialog's own markup at a phone's width and a desk's: inside the
+    // window, nothing wider than it.
+    for width in [390, 1024] {
+        let markup = r#"<div class="dialog-backdrop"><div class="dialog group-dialog" role="dialog">
+               <h2>Group Info</h2><p class="group-name"><strong>The cousins who meet on Sundays at grandmother's house</strong></p>
+               <h3>Members: 2</h3><ul class="members group-members">
+               <li class="member-row"><span class="avatar" style="width:28px;height:28px"></span><span class="identity-text"><span><strong>Alexandrina Wilhelmina Featherstonehaugh</strong><span class="capsule">Admin</span></span></span></li>
+               <li class="member-row"><span class="avatar" style="width:28px;height:28px"></span><span class="identity-text"><span><strong>Anna</strong></span></span><button class="link group-remove">Remove from Group</button></li>
+               </ul><div class="group-tools"><button class="link">Rename Group</button><button class="link">Add Members</button><button class="link danger">Leave Group</button><button class="link danger">Delete Group</button></div>
+               <div class="dialog-actions"><button class="primary">Done</button></div></div></div>"#;
+        let (frame, inner) = framed_window(width, markup).await;
+        let dialog = inner
+            .query_selector(".dialog")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        assert!(
+            dialog.left() >= 0.0 && dialog.right() <= f64::from(width),
+            "{width}: {} {}",
+            dialog.left(),
+            dialog.right()
+        );
+        let page = inner.document_element().unwrap();
+        assert!(
+            page.scroll_width() <= page.client_width(),
+            "{width}: no sideways scroll"
+        );
+        let remove = inner
+            .query_selector(".group-remove")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        assert!(
+            remove.right() <= dialog.right(),
+            "{width}: Remove is inside the dialog"
+        );
+        frame.remove();
+    }
 }

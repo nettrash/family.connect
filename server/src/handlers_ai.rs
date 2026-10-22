@@ -430,6 +430,16 @@ pub const MENTION_WITH_HISTORY_INSTRUCTION: &str = "You have been mentioned with
      If answering needs context you were not given, say so in one line and ask for it. \
      Keep the answer short — this is a group chat, not a document.";
 
+/// What a mention in a GROUP adds to the instruction: which chat this is,
+/// and that nothing outside it is shown (protocol.md, "Groups").
+pub fn group_note(name: &str) -> String {
+    format!(
+        "This chat is not the whole family's: it is a group called \"{name}\" of some of the \
+         family's members, and only they read your answer. You can see nothing from outside this \
+         group — not the family chat, and not any other group."
+    )
+}
+
 /// How far back a mention may look. One of THREE bounds on the same
 /// window (docs/protocol.md, "Mentioning the assistant in the family chat"),
 /// all three of them here so the cost of a mention is one piece of
@@ -2529,8 +2539,11 @@ async fn mention_prompt(
                 p.body AS quoted_body,
                 p.sender_id AS quoted_sender_id,
                 (qu.assistant_lookup_consent_at IS NOT NULL) AS quoted_lookup_consent,
-                qu.display_name AS quoted_author
+                qu.display_name AS quoted_author,
+                c.kind AS chat_kind,
+                c.title AS group_title
          FROM messages m
+         JOIN chats c ON c.id = m.chat_id
          LEFT JOIN messages p ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id
          LEFT JOIN users qu ON qu.id = p.sender_id
          WHERE m.id = $1 AND m.chat_id = $2",
@@ -2821,6 +2834,16 @@ async fn mention_prompt(
     } else {
         MENTION_INSTRUCTION.to_string()
     };
+    // In a GROUP it is told so, and told the group's edge: a model that
+    // takes "a family group chat" for the whole family will speak as if
+    // everybody can read the answer (protocol.md, "Groups").
+    if row.get::<String, _>("chat_kind") == "group" {
+        instruction.push(' ');
+        instruction.push_str(&group_note(
+            &row.get::<Option<String>, _>("group_title")
+                .unwrap_or_default(),
+        ));
+    }
     // A marker the model has not been taught is worse than no marker, so a
     // poll on either of the two messages says so in the instruction that
     // describes them — and says it ONCE. When a poll also survived into the

@@ -675,6 +675,11 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+    // Out of every group first, with each group's admin hand-off — a group
+    // outlives its admin, and the last one out takes it with them
+    // (protocol.md, "Groups"). Their messages in it stay, like the family
+    // chat's.
+    let group_exits = crate::handlers_group::leave_every_group(&mut tx, user_id).await?;
     sqlx::query("DELETE FROM chat_members WHERE user_id = $1")
         .bind(user_id)
         .execute(&mut *tx)
@@ -773,6 +778,8 @@ pub async fn scrub_account(
     for session_id in session_ids {
         state.registry.close_session(session_id).await;
     }
+    // The groups they were in, as they now stand, to the members who stay.
+    crate::handlers_group::announce_exits(state, user_id, group_exits).await;
     // Fan-out cannot fail a write that has already committed.
     //
     // `member_left` and `family_owner` are about a ROSTER, so they are

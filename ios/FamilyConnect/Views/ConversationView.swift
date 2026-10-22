@@ -392,11 +392,16 @@ struct ConversationView: View {
     }
 
     private var chat: ChatEntity? { chats.first }
-    private var isFamilyChat: Bool { chat?.kind == "family" }
+    /// The family chat or a group — the one surface they share: sender
+    /// names, member mentions, polls, `@ai`, and no "seen" tick
+    /// (docs/protocol.md, "Groups"; `ChatRules`).
+    private var isFamilyOrGroup: Bool { ChatRules.isFamilyOrGroup(chat?.kind) }
 
-    /// Whether there is somebody to ring from here.
+    /// Whether there is somebody to ring from here. A direct chat only — a
+    /// group has no single person to ring and the protocol has no group
+    /// calls (`ChatRules.offersCalls`).
     private var canCall: Bool {
-        session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+        session.callsEnabled && ChatRules.offersCalls(chat?.kind) && chat?.peerUserID != nil
             // The blocker calling somebody they blocked is refused with
             // `blocked`, so the button does not offer it. Defence in depth
             // behind the direct-chat prune: if the prune landed this is
@@ -437,10 +442,13 @@ struct ConversationView: View {
     // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
 
     /// Everybody a mention may name: the current roster, by the name the
-    /// app calls them.
+    /// app calls them — in a group, only its own members (`ChatRules`).
     private var mentionRoster: [MentionDTO] {
-        members.filter { !$0.hasLeft && !$0.accountDeleted }
-            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        ChatRules.mentionRoster(
+            members.filter { !$0.hasLeft && !$0.accountDeleted }
+                .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) },
+            kind: chat?.kind,
+            groupMemberIDs: chat?.groupMemberIDs ?? [])
     }
 
     /// What the strip offers for the prefix being typed: the assistant
@@ -455,10 +463,10 @@ struct ConversationView: View {
                 ? (AppSettings.assistantName ?? String(localized: "Assistant")) : nil)
     }
 
-    /// The members the text names, resolved at send — family chat only,
-    /// nil when it names nobody so the wire stays as it was.
+    /// The members the text names, resolved at send — the family chat or a
+    /// group only, nil when it names nobody so the wire stays as it was.
     private func resolvedMentions(in body: String) -> [MentionDTO]? {
-        guard isFamilyChat else { return nil }
+        guard isFamilyOrGroup else { return nil }
         let found = MemberMentions.resolve(body: body, roster: mentionRoster)
         return found.isEmpty ? nil : found
     }
@@ -1022,23 +1030,15 @@ struct ConversationView: View {
         .toolbar {
             // Title + typing subtitle in the fixed-height nav bar: the
             // indicator can come and go without moving any chat content
-            // (see the header comment; Android shows it the same way).
+            // (see the header comment; Android shows it the same way). In a
+            // group the title is the way into Group Info (GroupViews.swift),
+            // which carries its own sheet so nothing is added to this chain.
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    Text(chat?.title ?? "")
-                        .font(.headline)
-                        .lineLimit(1)
-                    if let typingLine {
-                        // One line: three people typing at once wrapped
-                        // the caption and pushed the title off its bar.
-                        Text(typingLine)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(.easeInOut(duration: 0.15), value: typingLine)
+                ConversationHeaderTitle(
+                    chatID: chatID,
+                    title: chat?.title ?? "",
+                    isGroup: chat?.kind == ChatRules.group,
+                    typingLine: typingLine)
             }
             // A direct chat's peer can be rung (docs/protocol.md, "Voice
             // calls"); the family chat has no single person to ring, and
@@ -1074,10 +1074,10 @@ struct ConversationView: View {
                 }
             }
             // The way back to a decision the family has scrolled past
-            // (docs/protocol.md, "Finding the open ones"). Family chat only,
-            // because polls exist nowhere else — which is also why this slot
-            // was empty here: `canCall` is false in the family chat, so it
-            // had no trailing item at all.
+            // (docs/protocol.md, "Finding the open ones"). The family chat
+            // or a group only, because polls exist nowhere else — which is
+            // also why this slot was empty here: `canCall` is false in both,
+            // so it had no trailing item at all.
             //
             // The badge counts open polls THIS READER has not voted in,
             // derived from the votes already on every poll (OpenPollsBadge).
@@ -1085,7 +1085,7 @@ struct ConversationView: View {
             // everything, until somebody else closes them, and a badge that
             // cannot be cleared by doing the thing it asks for stops meaning
             // anything within a day.
-            if chat?.kind == "family" {
+            if ChatRules.offersPolls(chat?.kind) {
                 ToolbarItem(placement: .topBarTrailing) {
                     // Counts from its own narrow query, once per pass of its
                     // own body (OpenPollsToolbarButton says why).
@@ -1239,7 +1239,7 @@ struct ConversationView: View {
         let avatarVersions: [Int64: Int64]
         let memberCount: Int
         let blocked: Set<Int64>
-        let isFamilyChat: Bool
+        let isFamilyOrGroup: Bool
         let isAssistantChat: Bool
         let assistantChatTitle: String?
         let assistantID: Int64?
@@ -1267,7 +1267,7 @@ struct ConversationView: View {
             avatarVersions: avatarVersions,
             memberCount: familyMemberCount,
             blocked: coordinator.blockedUserIDs,
-            isFamilyChat: isFamilyChat,
+            isFamilyOrGroup: isFamilyOrGroup,
             isAssistantChat: isAssistantChat,
             assistantChatTitle: chat?.title,
             assistantID: AppSettings.assistantUserID,
@@ -1326,7 +1326,7 @@ struct ConversationView: View {
                 showsSenderName: MessagePresentation.showsSenderName(
                     at: index,
                     in: rows,
-                    isFamilyChat: lookups.isFamilyChat,
+                    isFamilyOrGroup: lookups.isFamilyOrGroup,
                     currentUserID: lookups.currentUserID,
                     blockedUserIDs: lookups.blocked),
                 senderName: lookups.displayName(for: message.senderID),
@@ -1342,7 +1342,7 @@ struct ConversationView: View {
                 isRead: MessagePresentation.isRead(
                     message,
                     othersReadUpTo: lookups.othersReadUpTo,
-                    isFamilyChat: lookups.isFamilyChat),
+                    isFamilyOrGroup: lookups.isFamilyOrGroup),
                 reactionChips: MessagePresentation.reactionChips(
                     message.reactions,
                     currentUserID: lookups.currentUserID),
@@ -1731,9 +1731,9 @@ struct ConversationView: View {
                 stagedRow
             }
             // The roster, while a member is being named (protocol.md,
-            // "Mentioning a member") — family chat only, and only while
-            // the draft ends in an `@` token.
-            if isFamilyChat, let query = MemberMentions.query(in: model.draft) {
+            // "Mentioning a member") — the family chat or a group only, and
+            // only while the draft ends in an `@` token.
+            if isFamilyOrGroup, let query = MemberMentions.query(in: model.draft) {
                 let candidates = mentionCandidates(matching: query)
                 if !candidates.isEmpty {
                     MentionSuggestions(suggestions: candidates) { name in
@@ -1807,7 +1807,7 @@ struct ConversationView: View {
             hasCamera: CameraPicker.isAvailable,
             offersVoice: offersVoiceMessages,
             roundAvailable: roundAvailable,
-            isFamilyChat: isFamilyChat,
+            isFamilyOrGroup: isFamilyOrGroup,
             offersAssistant: offersAssistant)
         ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
             if index > 0 { Divider() }
@@ -4221,7 +4221,7 @@ struct ConversationView: View {
     /// typing `@` is where people look for a name, and the menu is where
     /// they look for words.
     private var offersAssistant: Bool {
-        chat?.kind == "family" && AppSettings.assistantUserID != nil
+        ChatRules.offersAssistantMention(chat?.kind) && AppSettings.assistantUserID != nil
             // A server that names nobody is one whose assistant this
             // client does not offer: the consent screen would have a hole
             // exactly where the person needs to read (protocol.md,
@@ -4348,7 +4348,7 @@ struct ConversationView: View {
     /// one of the four may be somebody else's picture (protocol.md, "Recent
     /// photos from the family chat").
     private var mentionPictureNotice: String? {
-        guard isFamilyChat else { return nil }
+        guard isFamilyOrGroup else { return nil }
         return MentionPictureNotice.of(
             draft: model.draft,
             staged: staged.map(\.assistantPictureCandidate),
@@ -4493,9 +4493,13 @@ struct ConversationView: View {
     /// How many people a poll could hear from: the live roster, which is
     /// neither the people who have left nor the accounts that were
     /// deleted — a tally must not go on counting somebody who no longer
-    /// exists (docs/protocol.md, "Deleting an account").
+    /// exists (docs/protocol.md, "Deleting an account"). In a group, its
+    /// members (`ChatRules.pollAudience`).
     private var familyMemberCount: Int {
-        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
+        ChatRules.pollAudience(
+            kind: chat?.kind,
+            groupMemberIDs: chat?.groupMemberIDs ?? [],
+            liveFamilyMembers: members.filter { !$0.hasLeft && !$0.accountDeleted }.count)
     }
 
     /// userID → display name for every known member, feeding the "who

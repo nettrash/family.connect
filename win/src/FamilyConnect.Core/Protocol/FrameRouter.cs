@@ -15,7 +15,7 @@ namespace FamilyConnect.Core.Protocol;
 /// <b>A `read` FRAME IS TWO DIFFERENT FACTS.</b> One naming YOURSELF is your own marker, arriving
 /// because you read on another device — applied <c>max(stored, received)</c> and followed by a
 /// recount. One naming somebody else is roster data, and is drawn as "seen" only in a DIRECT chat:
-/// in the family chat a per-member seen state over N members is a row of faces nobody asked for,
+/// in the family chat — or a group — a per-member seen state over N members is a row of faces nobody asked for,
 /// and a per-member ABSENCE is exactly what a blocker's suppressed inward frames would put on
 /// screen. Applying the second as if it were the first clears your own unread count from somebody
 /// else's reading — so who "you" are is asked of the store, which already has to know (a message
@@ -65,6 +65,12 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
     /// not something a person said (docs/protocol.md, "What does not touch the pack").
     /// </summary>
     public event Action<PackItemDto>? PackChanged;
+
+    /// <summary>
+    /// A GROUP this reader is no longer in has been dropped from the cache — left, removed from, or deleted
+    /// (docs/protocol.md, "Groups"). <see cref="ChatChanged"/> fires for it too; this is for whoever has it OPEN.
+    /// </summary>
+    public event Action<long>? ChatRemoved;
 
     /// <summary>The roster changed — a join, a leave, a deleted account, a new owner.</summary>
     public event Action? RosterChanged;
@@ -194,6 +200,24 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 // Full current state, so an unblock is this same frame with `false`.
                 chats.SetBlocked(blocked.UserId, blocked.Blocked);
                 BlockChanged?.Invoke(blocked.UserId, blocked.Blocked);
+                break;
+
+            case ServerFrame.ChatUpdated updated:
+                // A group as it now stands, written whole: a member just added gets the chat this way, before any list
+                // read (docs/protocol.md, "Groups").
+                chats.Upsert(updated.Chat);
+                ChatChanged?.Invoke(updated.Chat.Id);
+                break;
+
+            case ServerFrame.ChatRemoved removed:
+                // Dropped with its messages and its queued sends — and only if it IS a group: the family chat, a direct
+                // chat and an `ai` chat never leave this way, so a frame naming one changes nothing. `GET /chats` stays
+                // the reconciler for whatever frame was missed.
+                if (chats.Remove(removed.ChatId))
+                {
+                    ChatRemoved?.Invoke(removed.ChatId);
+                    ChatChanged?.Invoke(removed.ChatId);
+                }
                 break;
 
             case ServerFrame.AiDelta delta:

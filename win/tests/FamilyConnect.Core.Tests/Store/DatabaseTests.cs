@@ -1,3 +1,4 @@
+using FamilyConnect.Core.Protocol;
 using FamilyConnect.Core.Store;
 
 namespace FamilyConnect.Core.Tests.Store;
@@ -38,7 +39,7 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(9, Database.SchemaVersion);
+        Assert.Equal(10, Database.SchemaVersion);
         Assert.Equal(
             ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
              "pack_gone", "pack_items", "pack_recents", "played_rounds", "played_voice", "transcripts"],
@@ -349,6 +350,50 @@ public class DatabaseTests : IDisposable
         Assert.All(queued, row => Assert.False(row.Animation));
         Assert.True(queued[0].Round);
         Assert.False(queued[1].Round);
+    }
+
+    /// <summary>
+    /// Version 9 → 10 adds a GROUP's members and admin to its chat row (docs/protocol.md, "Groups"): nothing held is read
+    /// again — the chats, their messages and the outbox stay — and every chat already cached carries neither until a list
+    /// read or a <c>chat_updated</c> writes them, which is what every kind but a group always says.
+    /// </summary>
+    [Fact]
+    public void AVersionNineCacheGainsGroupMembersAndLosesNothing()
+    {
+        var path = Path_("nine.db");
+        using (var nine = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+        {
+            nine.Open();
+            foreach (var statement in Migrations.All.Take(9).SelectMany(step => step)
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (42, 'family', 'The Smiths')")
+                         // A group an older build met before it knew groups: a chat with a name and nothing else.
+                         .Append("INSERT INTO chats (chat_id, kind, title) VALUES (77, 'group', 'Cousins')")
+                         .Append("INSERT INTO messages (message_id, chat_id, sender_id, body, created_at, sequenced) VALUES (20, 77, 9, 'hi', 0, 1)")
+                         .Append("INSERT INTO outbox (client_msg_id, chat_id, body, queued_at) VALUES ('k', 42, 'Dinner at 7?', 0)")
+                         .Append("PRAGMA user_version = 9"))
+            {
+                using var command = nine.CreateCommand();
+                command.CommandText = statement;
+                command.ExecuteNonQuery();
+            }
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+        using var migrated = Database.Open(path);
+        Assert.Equal(Database.SchemaVersion, migrated.UserVersion);
+        var chats = new ChatStore(migrated);
+        Assert.Equal("hi", Assert.Single(chats.Messages(77)).Body);
+        var group = chats.Chat(77)!.Chat;
+        Assert.Equal("Cousins", group.Title);
+        Assert.Null(group.MemberIds);
+        Assert.Null(group.AdminUserId);
+        Assert.Equal("Dinner at 7?", Assert.Single(new OutboxStore(migrated).All()).Body);
+
+        // The next list read writes them.
+        chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths")),
+                       new ChatRowDto(new ChatDto(77, "group", "Cousins", MemberIds: [7, 9], AdminUserId: 9))]);
+        Assert.Equal([7L, 9L], chats.Chat(77)!.Chat.MemberIds!);
+        Assert.Equal(9, chats.Chat(77)!.Chat.AdminUserId);
     }
 
     /// <summary>

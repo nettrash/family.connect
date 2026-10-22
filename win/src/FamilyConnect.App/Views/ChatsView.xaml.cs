@@ -54,6 +54,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<MessageDto> onArrived;
     private readonly Action<MessageDto> onEdited;
     private readonly Action<long> onChat;
+    private readonly Action<long> onChatRemoved;
     private readonly Action onRoster;
     private readonly Action<long, bool> onBlock;
     private readonly Action<long, long> onTyping;
@@ -356,6 +357,9 @@ public sealed partial class ChatsView : UserControl
     private bool gone;
     private ConversationModel? open;
 
+    /// <summary>The open chat was a group when it opened — so its row vanishing means the reader is out of it.</summary>
+    private bool openWasGroup;
+
     /// <summary>The open chat's open polls, when it is the family chat — the only one that holds any.</summary>
     private OpenPollsModel? openPolls;
     private MessageDto? replyingTo;
@@ -657,6 +661,12 @@ public sealed partial class ChatsView : UserControl
             }
         };
         CapitalLetters.Attach(ThreadComposer);
+        ToolTipService.SetToolTip(NewGroupButton, say.Get("New Group"));
+        AutomationProperties.SetName(NewGroupButton, say.Get("New Group"));
+        NewGroupButton.Click += (_, _) => _ = NewGroupAsync();
+        ToolTipService.SetToolTip(GroupInfoButton, say.Get("Group Info"));
+        AutomationProperties.SetName(GroupInfoButton, say.Get("Group Info"));
+        GroupInfoButton.Click += (_, _) => _ = ShowGroupInfoAsync();
         ToolTipService.SetToolTip(CallButton, say.Get("Call"));
         AutomationProperties.SetName(CallButton, say.Get("Call"));
         ToolTipService.SetToolTip(VideoCallButton, say.Get("Video Call"));
@@ -767,6 +777,20 @@ public sealed partial class ChatsView : UserControl
         };
         onEdited = _ => QueueRedraw();
         onChat = _ => QueueRedraw();
+        // A group the reader is out of (docs/protocol.md, "Groups", chat_removed): if it is the one open, it closes.
+        onChatRemoved = chatId => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (gone)
+            {
+                return;
+            }
+            // Open or not, its notifications go: one clicked would open a chat that is not there.
+            Toasts.Clear(NotificationRules.ChatTag(chatId));
+            if (open?.ChatId == chatId)
+            {
+                CloseConversation();
+            }
+        });
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
         onTyping = (chatId, userId) =>
@@ -821,6 +845,7 @@ public sealed partial class ChatsView : UserControl
         connection.Router.Arrived += onArrived;
         connection.Router.Edited += onEdited;
         connection.Router.ChatChanged += onChat;
+        connection.Router.ChatRemoved += onChatRemoved;
         connection.Router.RosterChanged += onRoster;
         connection.Router.BlockChanged += onBlock;
         connection.Router.Typing += onTyping;
@@ -860,6 +885,7 @@ public sealed partial class ChatsView : UserControl
         connection.Router.Arrived -= onArrived;
         connection.Router.Edited -= onEdited;
         connection.Router.ChatChanged -= onChat;
+        connection.Router.ChatRemoved -= onChatRemoved;
         connection.Router.RosterChanged -= onRoster;
         connection.Router.BlockChanged -= onBlock;
         connection.Router.Typing -= onTyping;
@@ -988,6 +1014,8 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        // First: a group the reader is out of closes before anything is drawn from it, and a renamed one shows its new name.
+        DrawHeader();
         DrawList();
         DrawConversation(keepFromBottom: null);
         DrawThread();
@@ -1338,14 +1366,21 @@ public sealed partial class ChatsView : UserControl
         return grid;
     }
 
-    /// <summary>A chat's circle: the family's house, a direct chat's peer, the assistant's initials.</summary>
+    /// <summary>A chat's circle: the family's house, a group's people, a direct chat's peer, the assistant's initials.</summary>
     private FrameworkElement Face(ChatDto chat, string title, double size, IReadOnlyDictionary<long, int>? versions = null)
     {
-        var peer = chat.Kind == "direct" ? chat.PeerUserId : null;
+        var peer = chat.Kind == ChatKinds.Direct ? chat.PeerUserId : null;
         var version = peer is { } id
             ? versions?.GetValueOrDefault(id) ?? connection.Chats.Member(id)?.AvatarVersion ?? 0
             : 0;
-        return faces.Face(title, chat.Kind == "family", peer, version, size);
+        var face = faces.Face(title, ChatFaces.For(chat.Kind), peer, version, size);
+        if (ChatFaces.For(chat.Kind) == ChatFace.People)
+        {
+            // A group's circle says what it is: a group's name can be anybody's name, and nothing else on the row says so.
+            AutomationProperties.SetAccessibilityView(face, AccessibilityView.Content);
+            AutomationProperties.SetName(face, services.Say.Get("Group"));
+        }
+        return face;
     }
 
     private void OnChatPicked(object sender, SelectionChangedEventArgs e)
@@ -1407,6 +1442,7 @@ public sealed partial class ChatsView : UserControl
         DrawNotSent();
         ComposerError.Visibility = Visibility.Collapsed;
         var held = connection.Chats.Chat(chatId);
+        openWasGroup = held is not null && ChatKinds.IsGroup(held.Chat.Kind);
         ConversationTitle.Text = held is { } row ? list.Title(row.Chat) : string.Empty;
         ConversationFace.Content = held is { } shown ? Face(shown.Chat, ConversationTitle.Text, 32) : null;
         ConversationHeader.Visibility = Visibility.Visible;
@@ -1415,10 +1451,12 @@ public sealed partial class ChatsView : UserControl
         unreadAtOpen = held?.UnreadCount ?? 0;
         lastReadAtOpen = held?.LastReadMessageId ?? 0;
         DecideAnchor(chat);
-        // Polls are the family chat's alone: anywhere else the server answers invalid_poll.
-        var family = connection.Chats.Kind(chatId) == "family";
-        openPolls = family ? new OpenPollsModel(chatId, connection.Chats, connection.Api) : null;
-        OpenPollsButton.Visibility = family ? Visibility.Visible : Visibility.Collapsed;
+        // Polls are the family chat's and a group's (docs/protocol.md, "Polls", amended 2026-10-22): anywhere else the
+        // server answers invalid_poll.
+        var shared = ChatKinds.IsShared(connection.Chats.Kind(chatId));
+        openPolls = shared ? new OpenPollsModel(chatId, connection.Chats, connection.Api) : null;
+        OpenPollsButton.Visibility = shared ? Visibility.Visible : Visibility.Collapsed;
+        ShowGroupInfoButton();
         ShowPollsBadge();
         ShowCallButtons();
         DrawList();
@@ -1481,8 +1519,8 @@ public sealed partial class ChatsView : UserControl
         keepRowsOnce = false;
         conversationDrawn = drawn;
         var kind = connection.Chats.Kind(chat.ChatId);
-        // Names over bubbles only where there is more than one other person to tell apart.
-        var family = kind == "family";
+        // Names over bubbles only where there is more than one other person to tell apart: the family chat or a group.
+        var family = ChatKinds.IsShared(kind);
         var around = DrawnAround(chat, kind);
         whole = whole || !ReferenceEquals(drawnFor, chat) || !string.Equals(around, drawnAround, StringComparison.Ordinal);
 
@@ -1868,7 +1906,8 @@ public sealed partial class ChatsView : UserControl
         var mine = bubble.Mine;
         var kind = connection.Chats.Kind(chat.ChatId);
         var assistantChat = kind == "ai";
-        var familyChat = kind == "family";
+        // The family chat or a group: no "seen" where there are many readers.
+        var familyChat = ChatKinds.IsShared(kind);
         var assistantId = connection.Session.State.Assistant?.UserId;
         // The body as drawn: an answer still being written shows what has streamed so far.
         var body = connection.Answers.BodyOf(message);
@@ -3883,9 +3922,9 @@ public sealed partial class ChatsView : UserControl
         // What is held is drawn; what could not be fetched is said, rather than passed off as the whole chain.
         ThreadNotice.Text = say.Get("Couldn't load the whole thread.");
         ThreadNotice.Visibility = bubbles.Count > 0 && chain.Failure is not null ? Visibility.Visible : Visibility.Collapsed;
-        var family = connection.Chats.Kind(chat.ChatId) == "family";
+        var shared = ChatKinds.IsShared(connection.Chats.Kind(chat.ChatId));
         var today = DateOnly.FromDateTime(DateTime.Now);
-        foreach (var line in Timeline.Rows(bubbles, family, Reader, null, TimeZoneInfo.Local))
+        foreach (var line in Timeline.Rows(bubbles, shared, Reader, null, TimeZoneInfo.Local))
         {
             if (line.DayAbove is { } day)
             {
@@ -3975,7 +4014,7 @@ public sealed partial class ChatsView : UserControl
         }
         var body = ThreadComposer.Text.Trim();
         chat.Send(body, replyToMessageId: chain.RootId,
-            mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
+            mentions: ComposerMentions.ForSend(body, Candidates(chat), IsShared(chat)));
         ThreadComposer.Text = string.Empty;
         threadDrawn = string.Empty;
         DrawThread(scrollToEnd: true);
@@ -4087,7 +4126,7 @@ public sealed partial class ChatsView : UserControl
             }
             chat.Send(
                 body, replyToMessageId: replyTo, pendingFiles: handles,
-                mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
+                mentions: ComposerMentions.ForSend(body, Candidates(chat), IsShared(chat)));
             if (!editingNow)
             {
                 drafts.Sent(chat.ChatId);
@@ -5083,7 +5122,7 @@ public sealed partial class ChatsView : UserControl
             handle = await Task.Run(() => store.Stage(note));
             chat.Send(
                 string.Empty, replyToMessageId: replyTo, pendingFiles: [handle],
-                mentions: ComposerMentions.ForSend(string.Empty, connection.Chats.Members(), IsFamily(chat)));
+                mentions: ComposerMentions.ForSend(string.Empty, Candidates(chat), IsShared(chat)));
         }
         catch (Exception e)
         {
@@ -5714,7 +5753,7 @@ public sealed partial class ChatsView : UserControl
             }
             chat.Send(
                 caption, replyToMessageId: entry.ReplyToMessageId, pendingFiles: [handle],
-                mentions: ComposerMentions.ForSend(caption, connection.Chats.Members(), IsFamily(chat)));
+                mentions: ComposerMentions.ForSend(caption, Candidates(chat), IsShared(chat)));
             if (!await Task.Run(() => parked.Remove(entry)))
             {
                 Diagnostics.Write("a voice message that was sent could not be taken out of the not-sent store");
@@ -7261,9 +7300,10 @@ public sealed partial class ChatsView : UserControl
 
     // ---- polls ---------------------------------------------------------------------------------------
 
+    /// <summary>What a poll card is drawn with; the M in "N of M voted" is the people in THIS chat — a group's members in a group.</summary>
     private PollCard.Seen PollSeen() => new(
         services.Say, Reader, connection.Chats.Member, connection.Chats.IsBlocked,
-        PollText.MemberCount(connection.Chats.Members()));
+        PollText.MemberCount(open is { } chat ? Candidates(chat) : connection.Chats.Members()));
 
     /// <summary>How many open polls the reader has still to answer — nothing drawn at none.</summary>
     private void ShowPollsBadge()
@@ -7279,7 +7319,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     private async Task AskPollAsync()
     {
-        if (open is not { } chat || !IsFamily(chat))
+        if (open is not { } chat || !IsShared(chat))
         {
             return;
         }
@@ -7300,7 +7340,7 @@ public sealed partial class ChatsView : UserControl
         }
         chat.Send(
             poll.Question, replyToMessageId: replyingTo?.Id, pollOptions: poll.Options,
-            mentions: ComposerMentions.ForSend(poll.Question, connection.Chats.Members(), familyChat: true));
+            mentions: ComposerMentions.ForSend(poll.Question, Candidates(chat), enabled: true));
         if (replyingTo is not null)
         {
             EndComposerMode(clear: false);
@@ -7333,17 +7373,29 @@ public sealed partial class ChatsView : UserControl
 
     // ---- mentioning a member ---------------------------------------------------------------------
 
-    private bool IsFamily(ConversationModel chat) => connection.Chats.Kind(chat.ChatId) == "family";
+    /// <summary>
+    /// The family chat or a group (<see cref="ChatKinds.IsShared"/>): where a name names somebody, a poll may be started and
+    /// names stand over bubbles (docs/protocol.md, "Groups").
+    /// </summary>
+    private bool IsShared(ConversationModel chat) => ChatKinds.IsShared(Kind(chat));
 
     /// <summary>
-    /// What KIND of chat this is, in the protocol's own words — "family", "direct", "ai" — or
+    /// Who a name in this chat may name, and who its polls count: the live roster in the family chat, the group's own live
+    /// members in a group (<see cref="ComposerMentions.Candidates"/>).
+    /// </summary>
+    private IReadOnlyList<MemberDto> Candidates(ConversationModel chat) =>
+        ComposerMentions.Candidates(connection.Chats.Chat(chat.ChatId)?.Chat, connection.Chats.Members());
+
+    /// <summary>
+    /// What KIND of chat this is, in the protocol's own words — "family", "direct", "ai", "group" — or
     /// null while the list has not caught up with it. The assistant's rules are written against
     /// it (docs/protocol.md, "Consenting to the assistant").
     /// </summary>
     private string? Kind(ConversationModel chat) => connection.Chats.Kind(chat.ChatId);
 
     /// <summary>
-    /// The strip over the composer: the names a half-typed @ could mean, in the family chat alone — the assistant first,
+    /// The strip over the composer: the names a half-typed @ could mean, in the family chat or a group — that group's members
+    /// alone — the assistant first,
     /// where it can be asked, whose pick writes @ai (#106). The arrows walk it, Enter or Tab takes the highlighted name, and a
     /// click takes that one.
     /// </summary>
@@ -7351,7 +7403,7 @@ public sealed partial class ChatsView : UserControl
     {
         offered = open is { } chat
             ? ComposerMentions.Choices(
-                ComposerBox.Text, connection.Chats.Members(), Reader, connection.Chats.IsBlocked, IsFamily(chat), editing is not null,
+                ComposerBox.Text, Candidates(chat), Reader, connection.Chats.IsBlocked, IsShared(chat), editing is not null,
                 connection.Session.State.Assistant)
             : [];
         SuggestionStrip.Children.Clear();
@@ -7812,10 +7864,12 @@ public sealed partial class ChatsView : UserControl
                 ShowProblem(FamilyText.GenericFailure(answer.Error ?? ApiError.Transport("no answer"), services.Say));
                 return;
             }
+            // Taken before the request, so its answer cannot undo a group changed meanwhile (ChatStore.Replace).
+            var mark = connection.Chats.ListMark;
             var chats = await connection.Api.Chats();
             if (chats is { Ok: true, Value.Chats: { } rows })
             {
-                connection.Chats.Replace(rows);
+                connection.Chats.Replace(rows, mark);
             }
             OpenChat(opened.Chat.Id);
         }
@@ -7946,7 +8000,7 @@ public sealed partial class ChatsView : UserControl
         // Written down first; the outbox owns it from here, and a send interrupted by anything at
         // all is a message that can be finished rather than one that never happened.
         // The names are resolved from the text at send: a name typed by hand mentions too.
-        chat.Send(body, replyToMessageId: replyTo, mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)));
+        chat.Send(body, replyToMessageId: replyTo, mentions: ComposerMentions.ForSend(body, Candidates(chat), IsShared(chat)));
         drafts.Sent(chat.ChatId);
         EndComposerMode(clear: true);
         // A send that empties the composer turns Send into the microphone under the pointer: a double click on Send cannot
@@ -7982,7 +8036,7 @@ public sealed partial class ChatsView : UserControl
             });
             chat.Send(
                 body, replyToMessageId: replyTo, pendingFiles: handles,
-                mentions: ComposerMentions.ForSend(body, connection.Chats.Members(), IsFamily(chat)),
+                mentions: ComposerMentions.ForSend(body, Candidates(chat), IsShared(chat)),
                 // One animation alone is sent AS one (docs/protocol.md, "Animations"); beside anything else it is the video it is.
                 animation: AnimationSend.Is(items));
             drafts.Sent(chat.ChatId);
@@ -8043,7 +8097,7 @@ public sealed partial class ChatsView : UserControl
             assistantChat: kind == "ai",
             // The assistant's own chat, a server that can see, and a family that allows it — all three, or no door that lies.
             offersPictureAttach: AssistantPictures.OffersPictureAttach(kind == "ai", state.Assistant?.Vision == true, state.Family?.AiVision == true),
-            familyChat: kind == "family",
+            sharedChat: ChatKinds.IsShared(kind),
             roundAvailable: RoundAvailable(),
             assistantAvailable: AttachMenu.AssistantAvailable(state.Assistant));
         foreach (var group in groups)
@@ -8155,8 +8209,8 @@ public sealed partial class ChatsView : UserControl
     //
     // Phase 3d (docs/audio-video-messages-2026-10-04.md, S1.4–S1.6, S3, S4, S8.6): the video button inside the empty field,
     // "Record Video Message" in the paperclip's menu and the microphone's, and the recorder they open over the window. All of
-    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, off until the
-    // owner's trials T1–T3), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
+    // it is drawn only where RoundVideoRules.Available — this build records (RoundVideoRules.RecordingEnabled, on since
+    // 2026-10-21; the owner's trials T1–T3 still to run), the server named the limits, and the machine has a camera — so a build that can only RECEIVE
     // circles shows no way of recording one (Decision 40).
 
     /// <summary>The video button's glyph: Segoe Fluent E714, a video camera (S1.4).</summary>
@@ -8232,7 +8286,7 @@ public sealed partial class ChatsView : UserControl
         }
         return ComposerButton.VideoDoor(new DoorInputs(
             inputs,
-            FamilyOrDirectChat: Kind(chat) is "family" or "direct",
+            FamilyOrDirectChat: ChatKinds.TakesVideoMessages(Kind(chat)),
             ServerOffersRound: connection.Session.State.RoundVideo is not null,
             HasCamera: hasCamera,
             EncoderProbePasses: true,
@@ -10386,7 +10440,7 @@ public sealed partial class ChatsView : UserControl
                 said = AssistantPictures.PrivateNotice(
                     staged, AssistantPictures.OffersPictureAttach(true, serverCanSee, familyAllows), services.Say);
             }
-            else if (kind == "family" && editing is null && state.Assistant is { } assistant)
+            else if (ChatKinds.IsShared(kind) && editing is null && state.Assistant is { } assistant)
             {
                 List<PictureCandidate> quoted =
                 [

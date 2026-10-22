@@ -11,8 +11,8 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
-    handlers_chat, handlers_device, handlers_family, handlers_pack, handlers_poll, handlers_report,
-    handlers_stats, handlers_transcript, ws,
+    handlers_chat, handlers_device, handlers_family, handlers_group, handlers_pack, handlers_poll,
+    handlers_report, handlers_stats, handlers_transcript, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -150,6 +150,20 @@ pub fn build_router(state: AppState) -> Router {
         // Chats & messages
         .route("/api/v1/chats", get(handlers_chat::list_chats))
         .route("/api/v1/chats/direct", post(handlers_chat::direct_chat))
+        // Groups (docs/protocol.md, "Groups").
+        .route("/api/v1/chats/groups", post(handlers_group::create_group))
+        .route(
+            "/api/v1/chats/{id}",
+            patch(handlers_group::rename_group).delete(handlers_group::delete_group),
+        )
+        .route(
+            "/api/v1/chats/{id}/members",
+            post(handlers_group::add_members),
+        )
+        .route(
+            "/api/v1/chats/{id}/members/{user_id}",
+            delete(handlers_group::remove_member),
+        )
         .route(
             "/api/v1/chats/{id}/messages",
             get(handlers_chat::get_messages).post(handlers_chat::post_message),

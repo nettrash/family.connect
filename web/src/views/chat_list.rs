@@ -1,16 +1,20 @@
 //! The list of chats down the side: the family chat always and first,
-//! direct chats and the assistant's once they exist, newest conversation
-//! first, each with its unread count and — while an unread message names
-//! the reader — an "@".
+//! groups, direct chats and the assistant's once they exist, newest
+//! conversation first, each with its unread count and — while an unread
+//! message names the reader — an "@". Above them, "New Group"
+//! (docs/protocol.md, "Groups": a button in the list's header on the web,
+//! the Mac and Windows).
 
 use std::collections::{HashMap, HashSet};
 
 use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
-use crate::model::{ChatListItem, Message};
+use crate::actions::Action;
+use crate::model::{ChatListItem, Member, Message};
 use crate::time;
 use crate::views::avatar::Avatar;
+use crate::views::group::NewGroupDialog;
 
 #[derive(Properties, PartialEq)]
 pub struct ChatListProps {
@@ -29,6 +33,12 @@ pub struct ChatListProps {
     pub on_select: Callback<i64>,
     /// Wall-clock now, for the short times on the rows.
     pub now_ms: f64,
+    /// The family's roster, whom a new group may hold — None where there is
+    /// no family to make a group in, and then no "New Group" at all.
+    #[prop_or_default]
+    pub members: Option<Vec<Member>>,
+    #[prop_or_default]
+    pub on_action: Callback<Action>,
 }
 
 /// The one line under a chat's name.
@@ -79,8 +89,37 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
 
 #[function_component(ChatList)]
 pub fn chat_list(props: &ChatListProps) -> Html {
+    let making = use_state(|| false);
+    let new_group = props.members.clone().map(|members| {
+        let open = {
+            let making = making.clone();
+            Callback::from(move |_: MouseEvent| making.set(true))
+        };
+        let close = {
+            let making = making.clone();
+            Callback::from(move |_: ()| making.set(false))
+        };
+        html! {
+            <>
+                <div class="chat-list-head">
+                    <button type="button" class="link new-group" aria-haspopup="dialog" onclick={open}>
+                        <span aria-hidden="true">{ "+ " }</span>{ t("New Group") }
+                    </button>
+                </div>
+                if *making {
+                    <NewGroupDialog
+                        {members}
+                        my_user_id={props.my_user_id}
+                        on_action={props.on_action.clone()}
+                        on_close={close}
+                    />
+                }
+            </>
+        }
+    });
     html! {
         <nav class="chat-list" aria-label={t("Chats")}>
+            { new_group.unwrap_or_default() }
             { for props.chats.iter().map(|item| {
                 let chat_id = item.chat.id;
                 let selected = props.selected == Some(chat_id);
@@ -108,12 +147,14 @@ pub fn chat_list(props: &ChatListProps) -> Html {
                         aria-current={selected.then_some("true")}
                         {onclick}
                     >
-                        // The family is a house; a direct chat is the peer's
-                        // face; the assistant's chat has no peer id, and is
-                        // the initials of its name (ios MacChatView).
+                        // The family is a house; a group is its people; a
+                        // direct chat is the peer's face; the assistant's
+                        // chat has no peer id, and is the initials of its
+                        // name (ios MacChatView).
                         <Avatar
                             title={item.chat.display_title(peer)}
                             family={item.chat.is_family()}
+                            group={item.chat.is_group()}
                             user_id={item.chat.peer_user_id.filter(|_| item.chat.is_direct())}
                             version={item.chat.peer_user_id.and_then(|peer| props.avatars.get(&peer).copied()).unwrap_or(0)}
                             size={34}
@@ -286,6 +327,105 @@ mod tests {
         let mut pair = message(9, "");
         pair.attachments = Some(vec![video(true), video(true)]);
         assert_eq!(preview(&pair, 7, &HashSet::new()), "Video");
+    }
+
+    fn row(chat: crate::model::Chat) -> ChatListItem {
+        ChatListItem {
+            chat,
+            ..ChatListItem::default()
+        }
+    }
+
+    /// A group is listed under its name below the family chat, its circle
+    /// its people and named "Group"; "New Group" heads the list wherever
+    /// there is a family to make one in, and opens the dialog
+    /// (docs/protocol.md, "Groups").
+    #[wasm_bindgen_test]
+    async fn a_group_is_listed_and_new_group_heads_the_list() {
+        use crate::model::Chat;
+        use wasm_bindgen::JsCast;
+        let chats = vec![
+            row(Chat {
+                id: 42,
+                kind: "family".into(),
+                title: Some("The Smiths".into()),
+                ..Chat::default()
+            }),
+            row(Chat {
+                id: 77,
+                kind: "group".into(),
+                title: Some("Cousins".into()),
+                member_ids: Some(vec![7, 9]),
+                admin_user_id: Some(9),
+                ..Chat::default()
+            }),
+        ];
+        let props = |members: Option<Vec<crate::model::Member>>| ChatListProps {
+            chats: chats.clone(),
+            names: HashMap::new(),
+            blocked: HashSet::new(),
+            avatars: HashMap::new(),
+            my_user_id: 7,
+            selected: None,
+            on_select: Callback::noop(),
+            now_ms: 0.0,
+            members,
+            on_action: Callback::noop(),
+        };
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let handle =
+            yew::Renderer::<ChatList>::with_root_and_props(root.clone(), props(Some(Vec::new())))
+                .render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let titles = root.query_selector_all(".chat-title").unwrap();
+        let titles: Vec<String> = (0..titles.length())
+            .map(|at| titles.item(at).unwrap().text_content().unwrap_or_default())
+            .collect();
+        assert_eq!(titles, vec!["The Smiths", "Cousins"]);
+        let circle = root
+            .query_selector(".chat-row:nth-of-type(2) .avatar")
+            .unwrap()
+            .expect("the group's circle");
+        assert_eq!(circle.get_attribute("aria-label").as_deref(), Some("Group"));
+        assert_eq!(circle.get_attribute("role").as_deref(), Some("img"));
+        assert!(
+            circle.query_selector("svg").unwrap().is_some(),
+            "its people"
+        );
+        let family = root
+            .query_selector(".chat-row.is-family .avatar")
+            .unwrap()
+            .unwrap();
+        assert_eq!(family.get_attribute("aria-hidden").as_deref(), Some("true"));
+
+        let new_group: web_sys::HtmlElement = root
+            .query_selector(".chat-list-head .new-group")
+            .unwrap()
+            .expect("New Group")
+            .dyn_into()
+            .unwrap();
+        assert!(new_group
+            .text_content()
+            .unwrap_or_default()
+            .contains("New Group"));
+        new_group.click();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let title = root
+            .query_selector(".dialog h2")
+            .unwrap()
+            .expect("the dialog");
+        assert_eq!(title.text_content().as_deref(), Some("New Group"));
+        handle.destroy();
+
+        // No family, no group to make.
+        let handle =
+            yew::Renderer::<ChatList>::with_root_and_props(root.clone(), props(None)).render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(root.query_selector(".new-group").unwrap().is_none());
+        handle.destroy();
+        root.remove();
     }
 
     /// A call record's body is an English placeholder the list never shows.

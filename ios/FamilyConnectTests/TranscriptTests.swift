@@ -439,7 +439,7 @@ struct TranscriptWireTests {
         let added = with.filter { !without.contains($0) }
         #expect(added.count == 2)
         #expect(added.allSatisfy { $0.contains(p) })
-        #expect(added.last?.hasPrefix("In a direct chat, the other person") == true)
+        #expect(added.last?.hasPrefix("In a direct chat or a group, the others in it") == true)
     }
 }
 

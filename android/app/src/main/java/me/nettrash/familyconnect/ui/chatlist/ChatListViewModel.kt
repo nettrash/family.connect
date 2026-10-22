@@ -7,6 +7,9 @@
  * refresh-on-resume plus whatever the socket manager's resyncs pull in.
  * The new-chat picker lists family members minus me; picking one runs
  * the idempotent POST /chats/direct and emits the chat id to navigate.
+ * The same sheet starts a GROUP (#107; docs/protocol.md, "Groups"): a name
+ * and the members to add, checked here before POST /chats/groups, and the
+ * new chat opened the same way.
  *
  * iOS counterpart: ios/FamilyConnect/UI/ChatList/ChatListViewModel.swift
  */
@@ -38,11 +41,13 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import kotlinx.coroutines.flow.first
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.GroupRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
+import me.nettrash.familyconnect.util.GroupRules
 
 @HiltViewModel
 class ChatListViewModel @Inject constructor(
@@ -69,6 +74,7 @@ class ChatListViewModel @Inject constructor(
     settings: SettingsRepository,
     connectivity: ConnectivityObserver,
     socket: ChatSocket,
+    private val groupRepository: GroupRepository,
 ) : ViewModel() {
 
     // Seeded with null, not emptyList(): null means "Room hasn't answered
@@ -115,6 +121,64 @@ class ChatListViewModel @Inject constructor(
             // are still nameable everywhere a name is needed.
             members.filter { it.userId != s.myUserId && it.userId !in s.blockedUserIds }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Who a new GROUP may be started with: everyone still in the family but
+     * me ([GroupRules.startableWith]). Unlike [pickableMembers], the blocked
+     * are offered — a block is never a reason to refuse an add, and inside a
+     * group it works as it does in the family chat (docs/protocol.md,
+     * "Groups").
+     */
+    val groupCandidates: StateFlow<List<MemberEntity>> =
+        combine(familyRepository.observeActiveMembers(), settings.state) { members, s ->
+            val ids = GroupRules.startableWith(members.map { it.userId }, s.myUserId).toSet()
+            members.filter { it.userId in ids }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val _groupError = MutableStateFlow<String?>(null)
+
+    /** Why the New Group form did not create one; null while there is nothing to say. */
+    val groupError: StateFlow<String?> = _groupError
+
+    private val _creatingGroup = MutableStateFlow(false)
+
+    /** A `POST /chats/groups` is in flight: the form's button waits for it. */
+    val creatingGroup: StateFlow<Boolean> = _creatingGroup
+
+    /**
+     * Create a group named [name] with [memberIds], and open it.
+     *
+     * Both checks the server makes are made first, so a form that can only
+     * be refused is never sent: the trimmed name is 1 to 64 characters, and
+     * somebody besides the creator is in it.
+     */
+    fun createGroup(name: String, memberIds: Set<Long>) {
+        if (_creatingGroup.value) return
+        val title = GroupRules.validName(name)
+        if (title == null) {
+            _groupError.value = appContext.getString(R.string.e_group_name_length)
+            return
+        }
+        if (memberIds.isEmpty()) {
+            _groupError.value = appContext.getString(R.string.e_group_choose_member)
+            return
+        }
+        _groupError.value = null
+        _creatingGroup.value = true
+        viewModelScope.launch {
+            val result = groupRepository.create(title, memberIds.toList())
+            _creatingGroup.value = false
+            when (result) {
+                is ApiResult.Ok -> _navigateToChat.tryEmit(result.value.id)
+                else -> _groupError.value = appContext.getString(GroupRules.createFailure(result))
+            }
+        }
+    }
+
+    /** The form was closed or edited: what it said no longer applies. */
+    fun clearGroupError() {
+        _groupError.value = null
+    }
 
     /**
      * What is new to READ on the board since this device last showed it:

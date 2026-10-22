@@ -831,11 +831,15 @@ struct ChatRowView: View {
     /// It gets a second line on the phone's wide row and a third in the
     /// narrow sidebar row, whose title shares its measure with the time
     /// and, on an iPad mini in portrait, has ~150pt to wrap in ("The
-    /// Harper-" / "Whittington" / "Family"). A person's name keeps one.
+    /// Harper-" / "Whittington" / "Family"). A group's name is the same
+    /// kind of title, up to 64 characters of it (docs/protocol.md,
+    /// "Groups"). A person's name keeps one.
     private var titleLines: Int {
-        guard chat.kind == "family" else { return 1 }
+        guard ChatRules.isFamilyOrGroup(chat.kind) else { return 1 }
         return isNarrow ? 3 : 2
     }
+
+    private var isGroup: Bool { chat.kind == ChatRules.group }
 
     var body: some View {
         if isNarrow {
@@ -850,11 +854,13 @@ struct ChatRowView: View {
             InitialsAvatar(
                 title: chat.title,
                 isFamily: chat.kind == "family",
+                isGroup: isGroup,
                 userID: chat.peerUserID,
                 avatarVersion: peerAvatarVersion)
                 // The initials repeat the title; VoiceOver would read
-                // the name twice.
-                .accessibilityHidden(true)
+                // the name twice. A group's says "Group" instead, which
+                // the title does not.
+                .accessibilityHidden(!isGroup)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title)
@@ -916,10 +922,11 @@ struct ChatRowView: View {
             InitialsAvatar(
                 title: chat.title,
                 isFamily: chat.kind == "family",
+                isGroup: isGroup,
                 userID: chat.peerUserID,
                 avatarVersion: peerAvatarVersion,
                 size: 34)
-                .accessibilityHidden(true)
+                .accessibilityHidden(!isGroup)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(chat.title)

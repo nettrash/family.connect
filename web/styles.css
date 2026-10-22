@@ -2610,3 +2610,46 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
     .recorder-slot { background: ButtonFace; border: 2px solid ButtonText; }
     .recorder-slot.is-record .recorder-slot-mark { display: block; width: 26px; height: 26px; border-radius: 50%; }
 }
+
+/* --- groups (#107) --------------------------------------------------------- */
+
+/* "New Group", above the chats: the list's own header, which scrolls away
+ * with it rather than standing over the rows. */
+.chat-list-head {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--line);
+}
+.chat-list-head .new-group { min-height: 36px; padding: 4px 8px; }
+.avatar.is-group { background: color-mix(in srgb, var(--tint) 18%, var(--soft)); color: var(--tint); }
+
+/* A group's title is the way into Group Info: it reads as the title, with
+ * how many are in it under it, and is a button to the keyboard and the
+ * screen reader. */
+.title-button {
+    background: transparent;
+    color: inherit;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    display: grid;
+    min-width: 0;
+    max-width: 100%;
+}
+.title-button .title-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.title-button .title-sub { font-size: 12px; font-weight: 400; color: var(--muted); }
+
+.group-dialog .members { max-height: 45dvh; overflow-y: auto; }
+.group-dialog .member-row .identity-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.group-dialog .member-row .check { flex: 1; min-width: 0; font-size: 14px; }
+.group-name { margin: 0; overflow-wrap: anywhere; }
+.group-tools { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.group-tools .link, .group-remove { padding: 4px 0; }

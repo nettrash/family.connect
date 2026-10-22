@@ -216,7 +216,7 @@ class UnreadNotificationsTest {
 
     /**
      * A peer deleted their account, so the direct chat is gone from this
-     * device (ChatRepository.deleteDirectChat). The notification pointed
+     * device (ChatRepository.deleteChat). The notification pointed
      * at a conversation that no longer exists and cannot be opened.
      */
     @Test

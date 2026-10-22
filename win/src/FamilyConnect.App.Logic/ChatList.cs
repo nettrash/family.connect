@@ -41,11 +41,28 @@ public sealed record ChatRow(
     RowTimeKind When,
     DateTimeOffset? At)
 {
-    public bool IsFamily => Chat.Kind == "family";
+    public bool IsFamily => Chat.Kind == ChatKinds.Family;
 
-    public bool IsDirect => Chat.Kind == "direct";
+    public bool IsDirect => Chat.Kind == ChatKinds.Direct;
 
-    public bool IsAssistant => Chat.Kind == "ai";
+    public bool IsAssistant => Chat.Kind == ChatKinds.Assistant;
+
+    /// <summary>A group (docs/protocol.md, "Groups"): listed below the family chat, by its last message like any chat.</summary>
+    public bool IsGroup => ChatKinds.IsGroup(Chat.Kind);
+
+    /// <summary>What its circle shows.</summary>
+    public ChatFace Face => ChatFaces.For(Chat.Kind);
+}
+
+/// <summary>Which circle a chat is drawn with, by its kind — the list's rows and the conversation's header alike.</summary>
+public static class ChatFaces
+{
+    public static ChatFace For(string? kind) => kind switch
+    {
+        ChatKinds.Family => ChatFace.House,
+        ChatKinds.Group => ChatFace.People,
+        _ => ChatFace.Initials,
+    };
 }
 
 /// <summary>
@@ -78,8 +95,8 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
 
     /// <summary>The rows, as of <paramref name="now"/> — which only the times depend on.</summary>
     /// <remarks>
-    /// THE FAMILY CHAT IS FIRST, always, and everything else follows it newest conversation
-    /// first. It is the room everybody is in and the one a reader looks for — Apple pins it, the
+    /// THE FAMILY CHAT IS FIRST, always, and everything else — groups included (docs/protocol.md,
+    /// "Groups") — follows it newest conversation first. It is the room everybody is in and the one a reader looks for — Apple pins it, the
     /// web pins it, and a list that let it slide under a busy direct chat would be a different
     /// app on Windows. The rest go by the id of their newest message rather than by its time: ids
     /// are monotonic, where a stamp can be moved by a server's clock and is deliberately NOT
@@ -112,8 +129,8 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
     }
 
     /// <summary>
-    /// The name on the row. The wire's title is the family's name, the peer's display name or the
-    /// assistant's, recomputed by the server on every read — so it wins; the roster is the
+    /// The name on the row. The wire's title is the family's name, the peer's display name, the
+    /// assistant's or the group's, recomputed by the server on every read — so it wins; the roster is the
     /// fallback for a direct chat whose title arrived empty, and "Chat" is the floor, because a
     /// row with no name at all is a row nobody can tap with intent.
     /// </summary>

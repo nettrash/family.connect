@@ -230,13 +230,15 @@ public sealed class Resync(
         }
 
         // 2. The list: previews, the authoritative unread counts, and the caller's own marker.
+        // The mark is taken BEFORE the request: a group changed while it is in flight is not undone by its answer.
+        var mark = chats.ListMark;
         var list = await api.Chats(ct).ConfigureAwait(false);
         if (!list.Ok || list.Value is null)
         {
             return report with { Stopped = list.Error };
         }
         var rows = list.Value.Chats ?? [];
-        chats.Replace(rows);
+        chats.Replace(rows, mark);
         report = report with { Chats = rows.Length };
 
         // 3. Per chat: the messages, then the three sequence catch-ups.

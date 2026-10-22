@@ -32,6 +32,7 @@ use crate::views::composer::{
 };
 use crate::views::consent::AssistantConsentDialog;
 use crate::views::dialog::Confirm;
+use crate::views::group::GroupInfoDialog;
 use crate::views::poll::PollComposer;
 use crate::views::quiet::{use_quiet_reason, use_quiet_while};
 use crate::views::report::{AssistantReportDialog, ReportDialog, ReportTarget};
@@ -336,6 +337,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     // it there to send, and "Not Now" is "not this one", never "lose what
     // I typed".
     let consent_open = use_state(|| false);
+    // "Group Info", opened from a group's title (docs/protocol.md,
+    // "Groups").
+    let group_info = use_state(|| false);
     let poll_open = use_state(|| false);
     let highlight = use_state(|| Option::<i64>::None);
     let at_newest = use_state(|| true);
@@ -579,8 +583,18 @@ pub fn conversation(props: &ConversationProps) -> Html {
         });
     }
 
-    let is_family = props.item.chat.is_family();
+    // What this chat offers, by its kind as sent (fc_text::groups::offers):
+    // a group is the family chat less calls and "seen" (docs/protocol.md,
+    // "Groups"). `chat_kind` is the kind the shared rules are asked about —
+    // a group as a group, and nothing guessed for a kind this client does
+    // not know.
+    let chat_kind = fc_text::groups::known(&props.item.chat.kind);
+    let offers = props.item.chat.offers();
+    let takes_mentions = offers.mentions;
     let is_ai = props.item.chat.is_ai();
+    // Whom a mention here may name and a poll here counts: the family, or
+    // in a group the group's members.
+    let chat_members = props.item.chat.members_of(&props.members);
     let blocked_peer = props
         .item
         .chat
@@ -593,8 +607,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
     let assistant_user_id = props.assistant.as_ref().map(|assistant| assistant.user_id);
     let context = Context {
         my_user_id: props.my_user_id,
-        is_family_chat: is_family,
-        is_ai_chat: is_ai,
+        chat_kind,
         assistant_user_id,
         blocked: &props.blocked,
         first_unread_id: anchor.map(|(id, _)| id),
@@ -629,8 +642,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
     );
     let blocked = use_memo(props.blocked.clone(), |blocked| blocked.clone());
     let member_ids = use_memo(
-        props
-            .members
+        chat_members
             .iter()
             .map(|member| member.id)
             .collect::<Vec<i64>>(),
@@ -1309,8 +1321,8 @@ pub fn conversation(props: &ConversationProps) -> Html {
         let staged = props.staged.len();
         Callback::from(move |_: ()| record.emit(!*draft_blank.borrow() || staged > 0))
     };
-    // THE WAYS INTO THE VIDEO RECORDER (S1.4–S1.6): offered in a family or
-    // a direct chat, on a server with video messages, on a page that can
+    // THE WAYS INTO THE VIDEO RECORDER (S1.4–S1.6): offered in the family
+    // chat, a direct chat or a group, on a server with video messages, on a page that can
     // capture at all — in a browser that cannot record one ALWAYS, the menus
     // saying so instead of opening (S1.5, S8.7), whatever cameras it lists;
     // where it can, on a device with a camera
@@ -1318,8 +1330,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
     // them opens it during a call or while the composer is busy; a voice
     // message that was not sent does not stop it — that rule is about voice.
     let probed = *probe;
-    let offers_video =
-        crate::round_video::offers_video_entry(props.round.is_some(), !is_ai, probed);
+    let offers_video = crate::round_video::offers_video_entry(
+        props.round.is_some(),
+        offers.video_messages,
+        probed,
+    );
     let records_video = probed.is_some_and(|probe| probe.records);
     let open_recorder = {
         let recorder_open = recorder_open.clone();
@@ -1347,9 +1362,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     };
     // "Ask the Assistant" — the row's old `@ai` button, now a line of the
     // paperclip's menu — where `@ai` may be written at all: the family
-    // chat, on a server with an assistant that names who answers
+    // chat or a group, on a server with an assistant that names who answers
     // (docs/protocol.md, "Mentioning a member", amended 2026-10-20).
-    let offers_assistant = is_family
+    let offers_assistant = offers.assistant_mention
         && props
             .assistant
             .as_ref()
@@ -1368,7 +1383,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             assistant_chat={is_ai}
             offers_pictures={assistant_pictures::offers_picture_attach(is_ai, server_can_see, family_allows)}
             on_pictures={ingest.clone()}
-            offers_poll={is_family}
+            offers_poll={offers.polls}
             busy={busy_reason.clone()}
             on_files={ingest.clone()}
             on_paste={on_paste_menu}
@@ -1396,8 +1411,11 @@ pub fn conversation(props: &ConversationProps) -> Html {
     // consent screen INSTEAD of sending — picking again once the answer is
     // recorded sends it, as pressing Send again does for words — and on a
     // server that names nobody it says so and sends nothing.
-    let sticker_gate =
-        crate::pack::send_gate(is_ai, props.assistant.as_ref(), props.agreed_to_assistant);
+    let sticker_gate = crate::pack::send_gate(
+        chat_kind,
+        props.assistant.as_ref(),
+        props.agreed_to_assistant,
+    );
     let sticker_menu = props.stickers.clone().map(|items| {
         let on_pick = {
             let on_action = props.on_action.clone();
@@ -1454,14 +1472,14 @@ pub fn conversation(props: &ConversationProps) -> Html {
             let poll_open = poll_open.clone();
             let replying = replying.clone();
             let pinned = pinned.clone();
-            let members = props.members.clone();
+            let members = chat_members.clone();
             Callback::from(move |(question, options): (String, Vec<String>)| {
                 poll_open.set(false);
                 *pinned.borrow_mut() = true;
                 // A question names members the way a message does, and the
                 // list is fixed at send (ios MacConversationView resolves
                 // them from the question).
-                let mentions = resolve_mentions(&question, &members, is_family);
+                let mentions = resolve_mentions(&question, &members, takes_mentions);
                 on_action.emit(Action::Send {
                     chat_id,
                     draft: Draft {
@@ -1624,20 +1642,13 @@ pub fn conversation(props: &ConversationProps) -> Html {
         let consent_open = consent_open.clone();
         let notice = notice.clone();
         let pinned = pinned.clone();
-        let members = props.members.clone();
+        let members = chat_members.clone();
         let processor = props
             .assistant
             .as_ref()
             .and_then(|assistant| assistant.processor.clone());
         let has_assistant = props.assistant.is_some();
         let agreed = props.agreed_to_assistant;
-        let chat_kind = if is_ai {
-            "ai"
-        } else if is_family {
-            "family"
-        } else {
-            "direct"
-        };
         Callback::from(move |row: NotSent| {
             use fc_text::assistant_consent;
             if assistant_consent::is_required(chat_kind, &row.caption, processor.as_deref(), agreed)
@@ -1659,7 +1670,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             on_action.emit(Action::SendNotSent {
                 chat_id,
                 id: row.id,
-                mentions: resolve_mentions(&row.caption, &members, is_family),
+                mentions: resolve_mentions(&row.caption, &members, takes_mentions),
             });
         })
     };
@@ -1845,7 +1856,8 @@ pub fn conversation(props: &ConversationProps) -> Html {
     };
 
     let divider_count = anchor.map(|(_, count)| count).unwrap_or(0);
-    let member_count = props.members.len();
+    let chat_kind_value = AttrValue::from(props.item.chat.kind.clone());
+    let member_count = chat_members.len();
     let avatar_versions: HashMap<i64, i64> = props
         .members
         .iter()
@@ -1878,7 +1890,22 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         onclick={props.on_action.reform(|_: MouseEvent| Action::CloseChat)}>
                     <span aria-hidden="true">{ "‹ " }</span>{ t("Chats") }
                 </button>
-                <h2 class="conversation-title">{ title }</h2>
+                // A group's title opens Group Info — its members, and the
+                // admin's tools and everybody's Leave (docs/protocol.md,
+                // "Groups").
+                if props.item.chat.is_group() {
+                    <h2 class="conversation-title">
+                        <button type="button" class="title-button" aria-haspopup="dialog" onclick={{
+                            let group_info = group_info.clone();
+                            Callback::from(move |_: MouseEvent| group_info.set(true))
+                        }}>
+                            <span class="title-name">{ title.clone() }</span>
+                            <span class="title-sub">{ tn("Members: %lld", props.item.chat.group_member_ids().len() as i64) }</span>
+                        </button>
+                    </h2>
+                } else {
+                    <h2 class="conversation-title">{ title }</h2>
+                }
                 // A call lives in a direct chat: the family chat has nobody
                 // in particular to ring, and the assistant has no ears
                 // (docs/protocol.md, "Voice calls"). A member this reader
@@ -1899,7 +1926,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         }
                     </span>
                 }
-                if is_family {
+                if offers.polls {
                     <button class="open-polls" onclick={
                         let on_action = props.on_action.clone();
                         Callback::from(move |_: MouseEvent| on_action.emit(Action::ShowOpenPolls { chat_id }))
@@ -1958,7 +1985,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     quote_round={quoted.round(message)}
                                     quote_animation={quoted.animation(message)}
                                     hidden={row.hidden && !revealed}
-                                    shows_sender={row.shows_sender || (row.hidden && revealed && is_family)}
+                                    shows_sender={row.shows_sender || (row.hidden && revealed && offers.sender_names)}
                                     sender_avatar_version={avatar_versions.get(&message.sender_id).copied().unwrap_or(0)}
                                     calls_enabled={props.calls_enabled && !props.on_call && !recording_on}
                                     video_calls_enabled={props.video_calls_enabled}
@@ -1967,8 +1994,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     awaited={row.awaited}
                                     ai_failed={props.ai_failed.get(&message.id).copied()}
                                     {failed}
-                                    is_family_chat={is_family}
-                                    is_ai_chat={is_ai}
+                                    chat_kind={chat_kind_value.clone()}
                                     {assistant_user_id}
                                     in_thread={false}
                                     {member_count}
@@ -2007,10 +2033,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
             <Composer
                 key={format!("composer-{chat_id}")}
                 {chat_id}
-                is_family_chat={is_family}
-                is_ai_chat={is_ai}
+                chat_kind={chat_kind_value.clone()}
                 my_user_id={props.my_user_id}
-                members={props.members.clone()}
+                members={chat_members.clone()}
                 blocked={props.blocked.clone()}
                 assistant={props.assistant.clone()}
                 agreed_to_assistant={props.agreed_to_assistant}
@@ -2092,6 +2117,18 @@ pub fn conversation(props: &ConversationProps) -> Html {
             { report_dialog.unwrap_or_default() }
             { assistant_report_dialog.unwrap_or_default() }
             { consent_dialog.unwrap_or_default() }
+            if *group_info && props.item.chat.is_group() {
+                <GroupInfoDialog
+                    chat={props.item.chat.clone()}
+                    members={props.members.clone()}
+                    my_user_id={props.my_user_id}
+                    on_action={props.on_action.clone()}
+                    on_close={{
+                        let group_info = group_info.clone();
+                        Callback::from(move |_: ()| group_info.set(false))
+                    }}
+                />
+            }
         </section>
     }
 }

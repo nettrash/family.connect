@@ -45,4 +45,11 @@ enum ComposerDrafts {
         defer { byChat[chatID] = nil }
         return byChat[chatID]
     }
+
+    /// The chat is gone — a group left, removed from or deleted
+    /// (docs/protocol.md, "Groups"): whatever was being written there goes
+    /// with it, so an id the server ever reuses opens on an empty field.
+    static func forget(chatID: Int64) {
+        byChat[chatID] = nil
+    }
 }

@@ -435,10 +435,10 @@ fn app() -> Html {
                 {root_id}
                 messages={view.thread.messages.clone()}
                 my_user_id={store.my_user_id}
-                is_family_chat={item.is_some_and(|item| item.chat.is_family())}
-                is_ai_chat={item.is_some_and(|item| item.chat.is_ai())}
+                chat_kind={item.map(|item| AttrValue::from(item.chat.kind.clone())).unwrap_or_default()}
                 names={store.names.clone()}
                 members={store.members.clone()}
+                chat_members={item.map(|item| item.chat.members_of(&store.members)).unwrap_or_default()}
                 assistant={store.assistant.clone()}
                 blocked={store.blocked.clone()}
                 revealed={store.revealed.clone()}
@@ -453,6 +453,11 @@ fn app() -> Html {
             />
         }
     } else if let Some(open) = &store.open_polls {
+        // A group's polls count the group (docs/protocol.md, "Groups").
+        let counted = store
+            .item(open.chat_id)
+            .map(|item| item.chat.members_of(&store.members))
+            .unwrap_or_else(|| store.members.clone());
         html! {
             <OpenPollsPanel
                 messages={open.messages.clone()}
@@ -460,8 +465,9 @@ fn app() -> Html {
                 names={store.names.clone()}
                 blocked={store.blocked.clone()}
                 revealed={store.revealed.clone()}
-                member_count={store.members.len()}
-                member_ids={store.members.iter().map(|member| member.id).collect::<std::collections::HashSet<i64>>()}
+                chat_kind={store.item(open.chat_id).map(|item| AttrValue::from(item.chat.kind.clone())).unwrap_or_default()}
+                member_count={counted.len()}
+                member_ids={counted.iter().map(|member| member.id).collect::<std::collections::HashSet<i64>>()}
                 {assistant_user_id}
                 on_action={on_action.clone()}
             />
@@ -651,6 +657,8 @@ fn app() -> Html {
                     selected={state.open_chat}
                     on_select={on_action.reform(Action::SelectChat)}
                     now_ms={now}
+                    members={store.family.is_some().then(|| store.members.clone())}
+                    on_action={on_action.clone()}
                 />
                 if let Some(panel) = panel {
                     { panel }

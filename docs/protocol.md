@@ -127,7 +127,8 @@ The consequences worth stating rather than discovering:
   the tab is not in front. A browser will not let a page ask unprompted, so asking is a switch in
   its settings and not a prompt on arrival. What such a notification says is the title the push
   rules give ("Titles", above: the sender in a direct chat; `"<Family> — <Sender>"`, or
-  `"<Family> — <Sender> mentioned you"`, in the family chat) and, for a body, what a server with
+  `"<Family> — <Sender> mentioned you"`, in the family chat; the same with the group's name in a
+  group) and, for a body, what a server with
   `include_message_body = false` would send — `"New message"`, `"New note"`. Never the words
   themselves: `[push] include_message_body` is the operator's decision about family text on a lock
   screen, it is not on the wire, and a browser that cannot know it has been told no does not get to
@@ -219,7 +220,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
-`storage_full`, `too_many_requests`, `internal`.
+`storage_full`, `not_group_admin`, `too_many_groups`, `too_many_requests`, `internal`.
 
 **Transient or terminal — every failure is one or the other, and a client must tell them apart.**
 A TRANSIENT failure says nothing about the request except that it did not arrive or was not
@@ -245,6 +246,8 @@ from this document is a code somebody deletes from a client that is still talkin
 has answered it (403) on every path that calls the model since "Consenting to the assistant" was
 written. It is listed now because the transcript endpoint answers it too, and a code a client learns
 only from prose is a code one client branches on and the next does not. Nothing about it changed.
+
+`not_group_admin` (403) and `too_many_groups` (409) were added 2026-10-22 with groups (see "Groups").
 
 ## Objects
 
@@ -371,10 +374,13 @@ Report    {"id": 4, "reporter": {User}, "reported": {User},
             string (present, because a message was named) and this is the only thing on the row that
             says what was reported. The bytes are not copied, so a client offers to open the
             attachment only while "message_id" survives, exactly as it offers the jump
-Chat      {"id": 42, "kind": "family|direct|ai", "title": "The Smiths", "peer_user_id": 9|null}
+Chat      {"id": 42, "kind": "family|direct|ai|group", "title": "The Smiths", "peer_user_id": 9|null}
           — "title" is the family name for the family chat, the peer's display name for direct,
-            and the assistant's name for "ai";
-            "peer_user_id" is set for direct chats only
+            the assistant's name for "ai", and the group's name for "group";
+            "peer_user_id" is set for direct chats only;
+            a group also carries "member_ids": [7, 9, 11] (everyone in it, the caller included,
+            in the order they joined) and "admin_user_id": 7 — both present only for "group"
+            (added 2026-10-22, see "Groups")
 Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
            "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
            "body": "Dinner at 7?", "created_at": "…"}
@@ -595,8 +601,8 @@ A native client keeps what it drew, keyed by `fcRich.version`, the kind, the lay
 theme, the colours, the text size and the source, so a message is drawn once rather than every
 time it scrolls into view.
 
-**Only the three chat bubbles render it** — the family chat, a direct chat, and the assistant's
-own. Every other surface shows the same body as SOURCE, and that is deliberate in each case: the
+**Only the chat bubbles render it** — the family chat, a direct chat, a group (since 2026-10-22), and the
+assistant's own. Every other surface shows the same body as SOURCE, and that is deliberate in each case: the
 excerpt above a quoted reply and the preview line under a chat in the list are one line with
 nowhere to lay a table out; a push body is drawn by the operating system and never by the app; and
 copy and share must hand on the characters that were typed rather than one client's idea of what
@@ -827,6 +833,10 @@ question, and that a poll's body — unlike a message carrying an attachment —
 Polls are refused in a direct chat and in the assistant's. A poll is a family deciding something
 together; between two people it is a question, and the answer is the next message. Anywhere but the
 family chat is `invalid_poll`.
+
+*Amended 2026-10-22 (#107):* a GROUP is some of the family deciding something together, so a poll may
+be started in a group too, and "the family chat" above reads "the family chat or a group" (see
+"Groups"). Anywhere else is still `invalid_poll`.
 
 Options are fixed at creation: 2–10 of them, each trimmed, non-empty, at most 100 characters, and
 no two the same ignoring case. A poll can never gain, lose or rename an option — the votes already
@@ -1677,7 +1687,7 @@ Everything else about it is a message: the outbox, `client_msg_id` dedup, backgr
 be replied to, reacted to, reported and threaded, though not edited; it moves the unread count and
 it pushes — with the body `"Sticker"` where a photo would say `"Photo"`. It can be sent in any
 chat, and a client offers the sticker button in EVERY place a message can be written: the family
-chat, a one-to-one chat, the assistant's chat, and the composer of a thread. In the `ai` chat it
+chat, a one-to-one chat, a group, the assistant's chat, and the composer of a thread. In the `ai` chat it
 is a photo to the assistant as it is to everything else on the server, under the rules in
 "Pictures" — and it is a message there like any other, so it goes through the same consent
 question: a member who has not agreed is answered `assistant_consent_required`, and the client
@@ -1845,8 +1855,8 @@ sticker's split between what the server checks and what the client is trusted wi
 posted into a thread, and is accepted in every chat — the assistant's too, where it is a message
 like any other and meets the same consent question a sticker does: a member who has not agreed is
 answered `assistant_consent_required` (see "Consenting to the assistant"). The server has no reason
-to refuse any of them. The apps offer recording only in the main composer of a family chat or a
-one-to-one chat; that is what has been BUILT, never a different protocol.
+to refuse any of them. The apps offer recording only in the main composer of a family chat, a group
+or a one-to-one chat; that is what has been BUILT, never a different protocol.
 
 **And it cannot be edited** (see "Editing"): `PATCH /chats/{id}/messages/{mid}` on a message whose
 attachment carries `round: true` is `validation` (400), changes nothing, takes no `edit_seq` and
@@ -2135,6 +2145,109 @@ tombstone, and a person who comes back registers afresh and joins as a new membe
 upgraded onto this rule starts every existing familyless account's clock at the upgrade, not at
 its registration — the grace is a promise the server was not making before.
 
+### Groups
+
+*Decided 2026-10-22 (#107). The assessment and the four decisions are in `docs/groups-2026-10-21.md`; this section
+is the part the server and every client have to agree on.*
+
+A **group** is a chat of kind `"group"` inside one family, with a NAME and an explicit MEMBER LIST: some of the
+family's members, and never anybody outside it. Inside, it is the family chat with fewer people — sender names,
+threads, polls, member mentions, the assistant by `@ai`, stickers, voice and video messages, formulas and diagrams —
+and every rule this document states for the family chat applies to a group unless this section or the rule itself
+says otherwise.
+
+**The family chat is untouched.** It stays the one chat every member is in, created with the family, never renamed,
+left or deleted through anything here, with every rule it had. Nothing in a group reaches the family chat, and
+nothing in the family chat reaches a group — the assistant included.
+
+**Visible only to its members.** A group appears in `GET /chats` only for its members, sends frames and pushes only to
+them, and **every endpoint answers anybody else `chat_not_found` (404)** for it — never `not_chat_member`, which
+would confirm that a chat with that id exists. Nobody else can see it, list it or count it: not other members, and
+not the family owner, who has no power over a group they are not in (the owner keeps what they have everywhere —
+reports, and removing a member from the family, which removes them from every group).
+
+**The group's fields on `Chat`** (present only when `kind` is `"group"`):
+
+- `title` — the group's name, as its admin last set it;
+- `member_ids` — every member of the group, the caller included, in the order they joined;
+- `admin_user_id` — the one member who may rename the group, add and remove members, and delete it.
+
+`peer_user_id` is null, as for the family chat.
+
+**Who may do what.**
+
+| Action | Who |
+|---|---|
+| Create a group, naming its first members | any member of a family |
+| Rename it | its admin |
+| Add members | its admin |
+| Remove a member | its admin |
+| Leave it | any member of it |
+| Delete it, with every message in it, for everyone | its admin |
+
+- **The admin is the member who created the group.** When the admin leaves the group — by leaving it, by leaving or
+  being removed from the family, or by deleting their account — the member who joined the GROUP earliest (ties by
+  lower user id) becomes admin. When the last member leaves, the group is deleted.
+- **A group starts with at least two people**, the creator and one other. It may later shrink to one; it is deleted
+  only when it has none. Two people in a group is not a direct chat: a group has a name and the assistant.
+- **Members must be members of the same family now** — never the assistant, never somebody who has left, never a
+  deleted account. A block is never a reason to refuse an add, in either direction: a refusal would tell the adder
+  about a block they are not party to. Inside the group a block works as it does in the family chat (see "Blocking a
+  member").
+- **A member added later sees the group's whole history**, as somebody joining the family sees the family chat's, and
+  starts with nothing unread: the server sets their read marker to the group's newest message when it adds them.
+- **Deleting** is final. The group, its messages, threads, polls, votes and reactions go, and every member's clients
+  drop it. A client asks before it deletes ("Delete “<name>”? Its messages are deleted for everyone.").
+- **Leaving the family removes the member from every group** of it, with the admin hand-off above; their messages
+  stay. **Rejoining does not put them back** — a group is joined by being added, and the admin adds them again. (The
+  family chat's history returning on a rejoin is the family chat's rule, and it is unchanged.)
+- **Deleting an account** keeps the member's messages in a group under "Deleted account", as in the family chat, and
+  takes them out of every group, with the hand-off.
+
+**The endpoints** (see "Chats & messages"): `POST /chats/groups` creates one; `PATCH /chats/{id}` renames it;
+`POST /chats/{id}/members` adds members; `DELETE /chats/{id}/members/{user_id}` removes a member or, with the caller's
+own id, leaves; `DELETE /chats/{id}` deletes it. A member who is not the admin is answered **`not_group_admin`**
+(403); any of them on a chat that is not a group is `validation`, so none of them can rename, empty or delete the
+family chat, a direct chat or an `ai` chat.
+
+**The name** is trimmed and must then be 1 to 64 characters; anything else is `validation`. Two groups may have the
+same name. A family has at most **50** groups; creating one more is **`too_many_groups`** (409).
+
+**Two frames** tell members about a group as it changes, so nothing waits for a resync:
+
+- `chat_updated` `{chat}` goes to every member when a group is created, renamed, or its members or admin change. A
+  member who has just been added receives it too, which is how a group appears on their devices at once;
+- `chat_removed` `{chat_id}` goes to a member who left or was removed — on every device of theirs — and to every
+  member when the group is deleted. A client drops the chat, its messages and anything it was drafting there.
+
+`GET /chats` stays the reconciler: a group that is no longer in it is gone, whatever frame was missed, and a client
+drops every chat that leaves `GET /chats`, of any kind.
+
+**What is the family chat's and what is not.** In a group:
+
+- **Member mentions** name members of THAT GROUP only (see "Mentioning a member"); the `@` list offers the assistant
+  first, then the group's members.
+- **Polls** may be started (see "Polls"), and "4 of 5 voted" counts the group's members.
+- **The assistant** answers `@ai` as in the family chat (see "Mentioning the assistant in the family chat"): it reads
+  THAT GROUP's recent history only, filtered by each sender's consent; the family owner's switches — `ai_history`,
+  `ai_vision`, `ai_history_photos`, `ai_faces`, `ai_lookups` — apply exactly as they do to the family chat; it answers
+  in the family's language; and it is told it is in a group of some of the family's members, named so, and sees
+  nothing else. A mention in the family chat never reads a group, and a mention in a group never reads the family
+  chat, another group, a direct chat or a private thread.
+- **The daily greeting** is posted in the family chat only.
+- **Transcripts** of somebody else's recording follow the DIRECT chat's rule — that sender's consent alone; the owner's
+  `ai_transcripts` is about the family chat and does not reach a group (see "Transcripts on request").
+- **Calls** are not offered: a call lives in a direct chat (`invalid_call`).
+- **"Seen"** is not drawn, as in the family chat; typing is.
+- **A message may be reported**, and a client says where it offers it that the family owner will see the message — a
+  group is a conversation the owner cannot otherwise see, exactly as a direct chat is.
+- **Push titles** are `"<Group> — <Sender>"`, and `"<Group> — <Sender> mentioned you"` (see "Push notifications").
+
+**What old clients do.** A client written before groups decodes `kind: "group"` as a chat it does not know: it lists it
+under its title and can read and send text in it, but offers none of the above, and a client that drops only direct
+chats missing from `GET /chats` keeps a deleted group until it updates. That is accepted: the alternative — keeping
+groups from old clients — needs a capability handshake this protocol does not have.
+
 ### The family's language
 
 A family may declare the ONE language it actually speaks to each other in. It is unset until
@@ -2259,6 +2372,9 @@ Two things did NOT widen with it, and neither of them is a setting anybody can t
   go to `processor` when the member it was sent to asks for its text and its sender has agreed to
   the assistant — see "Transcripts on request". That is not the assistant reading the chat: no
   conversation is consulted, and the text goes back only to the member who asked.)
+- **A group is its own surface** (added 2026-10-22, see "Groups"). A mention in a group is answered
+  as a mention in the family chat is, from THAT GROUP's history alone; a group never reaches the
+  family chat, another group, a direct chat or a private thread, and none of them reaches a group.
 
 Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
 too. The server:
@@ -2344,7 +2460,8 @@ real user id and every foreign key, join and index over messages keeps working u
 in the `members` roster (`GET /families/mine` selects by family, and the assistant has none) and the
 username is refused at registration so nobody can impersonate it. It cannot be messaged directly:
 `POST /chats/direct` naming it answers `not_same_family`, because it is in no family. The only two
-ways to reach it are its own `ai` chat and a mention in the family chat. Those are the two ways to
+ways to reach it are its own `ai` chat and a mention in the family chat — or, since 2026-10-22, in a
+group, which is the family chat's surface with fewer people (see "Groups"). Those are the ways to
 *reach* it; there is one thing it says without being reached, and it is deliberately not a reply to
 anybody — see "The daily greeting".
 
@@ -2484,6 +2601,13 @@ first one is, that in a direct chat the other person can ask for the text of the
 notes, audio files and videos, and that their sound is then sent to `processor`. A member who agreed
 before this line existed agreed to their messages going to `processor`, as above.
 
+*Amended 2026-10-22 (#107):* the same holds in a GROUP (see "Groups"), so the line reads "In a direct
+chat or a group, the others in it can ask for the text of your voice notes, audio files and videos,
+and their sound is then sent to `processor`." And because the owner's assistant switches apply to a
+group as they do to the family chat, every line on the consent screen and in the owner's settings
+that says what a mention in the family chat sends now says "the family chat or a group" — the
+transcripts switch alone keeps "the family chat", which is all it covers.
+
 *Amended 2026-10-03 (#72):* the sentence at the top of this section — the assistant is the only
 place a person's words leave the server they chose — now has a second half, and it is not
 `processor`. When the server, the family's owner and the member have all switched it on, the
@@ -2590,8 +2714,10 @@ and loses only the highlight.
 
 **What the server checks, and refuses as `validation`:**
 
-- the chat is the FAMILY chat. A one-to-one chat has nobody else to name, and the assistant thread
-  is the assistant's;
+- the chat is the FAMILY chat or a GROUP (groups since 2026-10-22). A one-to-one chat has nobody
+  else to name, and the assistant thread is the assistant's;
+- in a group, every `user_id` is a member of THAT GROUP now — somebody outside it would not even
+  receive the message;
 - every `user_id` is a member of this family now — never the assistant, whose `@ai` is its own
   grammar (see "Mentioning the assistant in the family chat") and is untouched by any of this;
   never somebody who has left; never a deleted account. The sender may name themself; it pushes
@@ -2629,7 +2755,8 @@ free to, as long as the text itself stays the colour of the words around it.
 
 **The notification.** A mention is not a seventh push event: it is the message's own push, with a
 different title for the people named. The mentioned member's devices get title
-**`"<Family> — <Sender> mentioned you"`** and the ordinary body (the message text, or `"New
+**`"<Family> — <Sender> mentioned you"`** — in a group, **`"<Group> — <Sender> mentioned you"`** — and the
+ordinary body (the message text, or `"New
 message"` under `include_message_body = false`); every other recipient gets the ordinary title. A
 member both named and a recipient is pushed exactly ONCE. `kind` stays `"message"` with the same
 `chat_id` and `message_id`, so nothing about routing or grouping changes — the newest push in a
@@ -2885,6 +3012,14 @@ three Unicode tables agreeing; the ambiguity it exists to resolve only arises in
 **Only the family chat.** A direct chat is two people who each already have a private assistant, and
 a third party appearing in a conversation that had two is not something either of them asked for. A
 mention in an `ai` chat is just text — that chat already answers everything.
+
+*Amended 2026-10-22 (#107):* **and a group.** Everything in this section holds in a group as it does
+in the family chat, with "the family chat" reading "that group": the transcript is THAT GROUP's recent
+history, filtered by each sender's consent exactly as here; the owner's switches (`ai_history`,
+`ai_vision`, `ai_history_photos`, `ai_faces`, `ai_lookups`) are the family's and apply to a group as
+written; the answer comes in the family's language; `ai_delta` goes to the group's members; and the
+note that introduces the transcript says it is a group of some of the family's members, under its
+name, and that nothing outside it is shown. The daily greeting stays in the family chat.
 
 **In the family chat the FAMILY's language wins.** When the owner has set one (see "The family's
 language") the answer comes back in it, whatever the asking device happens to be set to. When they
@@ -4365,6 +4500,11 @@ another member sent in the family chat (its threads included, which are the same
 the family's `ai_transcripts` is on, and only when that sender has agreed to the assistant; and
 never of the assistant's own messages.
 
+*Amended 2026-10-22 (#107):* **a GROUP follows the direct chat's rule** — another member's recording
+in a group, its threads included, needs only that sender's consent; the owner's `ai_transcripts` is
+about the family chat and does not reach a group, which the owner cannot see (see "Groups"). The
+consent screen's direct-chat line says so: "In a direct chat or a group, the others in it can ask…".
+
 - **Your own recordings need only your consent**, wherever you sent them, because the voice is
   yours and you are the one sending it — the same reason a member's own question needs nobody
   else's permission.
@@ -5387,6 +5527,10 @@ Apple's App Store guideline 5.1.1(v) requires of an app that lets people sign up
 self-hosted family server should offer regardless. It is `POST /me/delete`, it takes the account
 password, and it cannot be undone.
 
+*Amended 2026-10-22:* the member's messages in a GROUP stay under "Deleted account", as the family
+chat's do; they leave every group, and a group they were admin of passes to the member who joined it
+earliest, or is deleted when nobody is left (see "Groups"). The group never goes with them.
+
 **The person is erased; the words stay.** Everything that identifies the account is destroyed —
 the username (which becomes available for somebody else to register), the password, the profile
 picture, the birthday, the blocks it MADE, every session and every device row, and with them every
@@ -5457,6 +5601,11 @@ preference, not a governance action. The owner's administrative powers are untou
 blocked, and a report still reaches them, because a report is a write to a table and not a message
 the blocker has to read. A block affordance is weakest exactly where the person you want to stop
 reading is the one with power, so this is the case it is built for.
+
+*Amended 2026-10-22:* wherever this section says "the family chat", a GROUP behaves the same way — a
+blocked member's messages there are kept and delivered and drawn as hidden rows on the blocker's side,
+nothing in a group is withheld from either of them, and a block is never a reason to refuse adding
+somebody to a group (see "Groups"). Only a DIRECT chat is taken from the blocker.
 
 **It is server-side.** A block survives a reinstall and suppresses push. A client-only block is a
 block a new phone forgets, and it cannot stop a notification arriving while the app is not running.
@@ -5669,6 +5818,10 @@ which has no time limit, and retention DELETES the message outright. `message_id
 retention takes the message; the excerpt does not, so a client draws the excerpt always and offers
 to jump to the message only while the id survives.
 
+*Amended 2026-10-22:* everything this paragraph says of a direct chat holds for a GROUP too — the owner
+cannot see a group they are not in, so a client offering the affordance in a group says the same
+thing about who will see the message (see "Groups").
+
 **A message in a DIRECT chat may be reported**, and that is deliberate: a private conversation is
 exactly where harassment happens, and the excerpt is the whole of the evidence. It is the one way
 anything from a direct chat reaches a third person in this protocol, and it takes the deliberate act
@@ -5725,7 +5878,8 @@ and the words around it go to the people who run the server — the same disclos
 a message from a direct chat.
 
 **Both surfaces the assistant speaks on can be reported**: a reply in the member's private `ai`
-chat, and an `@ai` answer in the family chat. The second carries a reply the whole family could
+chat, and an `@ai` answer in the family chat — or in a group, since 2026-10-22, which is the same
+surface with fewer people. The second carries a reply the whole family could
 already read; the first carries one only that member could, which is exactly why the disclosure is
 part of the screen rather than a line in a policy.
 
@@ -5999,7 +6153,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
-| `POST /families/leave` | → `204`, or `200 {new_owner_user_id: 11}` when the caller was the owner and the family passed to somebody. **An owner who leaves hands the family on**; they are never refused. The successor is the longest-standing remaining member — the same rule defined once under "Deleting an account", and reached now from two doors rather than one. If nobody remains, the family is deleted with them exactly as before, and the answer is `204`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin — within the familyless grace (see "Accounts without a family"), after which the account itself is gone. The successor is told by a `family_owner` frame. That frame is sent BEFORE the departing owner's `member_left`, so no client ever momentarily holds a family whose `owner_user_id` names nobody in `members`. The leaving owner resolves `new_owner_user_id` against the roster it still holds, tells the user who inherited, and only then tears its family state down; a member sitting in their own leave dialog when `family_owner` arrives dismisses it and re-presents it from a fresh `GET /families/mine`, because both the successor and the consequences of leaving have just changed under them. `owner_cannot_leave` is no longer raised by this or any other endpoint. |
+| `POST /families/leave` | → `204`, or `200 {new_owner_user_id: 11}` when the caller was the owner and the family passed to somebody. **An owner who leaves hands the family on**; they are never refused. The successor is the longest-standing remaining member — the same rule defined once under "Deleting an account", and reached now from two doors rather than one. If nobody remains, the family is deleted with them exactly as before, and the answer is `204`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin — within the familyless grace (see "Accounts without a family"), after which the account itself is gone. It also takes them out of every GROUP, with the admin hand-off, and a rejoin does not put them back (since 2026-10-22, see "Groups"); the same holds for a member the owner removes. The successor is told by a `family_owner` frame. That frame is sent BEFORE the departing owner's `member_left`, so no client ever momentarily holds a family whose `owner_user_id` names nobody in `members`. The leaving owner resolves `new_owner_user_id` against the roster it still holds, tells the user who inherited, and only then tears its family state down; a member sitting in their own leave dialog when `family_owner` arrives dismisses it and re-presents it from a fresh `GET /families/mine`, because both the successor and the consequences of leaving have just changed under them. `owner_cannot_leave` is no longer raised by this or any other endpoint. |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
 | `PUT /families/members/{user_id}/birthday` | (owner) `{month, day}` → `200 {member: Member}`. The owner filling in a birthday for a member of their own family — a parent for a child, typically. The owner MAY name themselves here, unlike the password reset: there is no proof being skipped (see "Birthdays"). A user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
 | `DELETE /families/members/{user_id}/birthday` | (owner) → `204`. Clears it. Idempotent. Same errors. |
@@ -6048,8 +6202,13 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123, mentioned: true}]}`. `mentioned` rides only when an unread message in the chat names the caller (absent otherwise, never `false` — see "Mentioning a member"). Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
+| `GET /chats` | (Groups since 2026-10-22: every group the caller is in is listed, with or without messages, and no other — see "Groups".) → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123, mentioned: true}]}`. `mentioned` rides only when an unread message in the chat names the caller (absent otherwise, never `false` — see "Mentioning a member"). Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
+| `POST /chats/groups` | `{title, member_ids: [9, 11]}` → `201 {chat: Chat}` — a new GROUP (see "Groups"): the caller is added and becomes its admin, `member_ids` names the others (duplicates and the caller's own id ignored). Errors: `validation` (400 — the title trimmed is empty or over 64 characters, or nobody else is named), `not_in_family` (409), `not_same_family` (409 — an id that is not a current member of the caller's family: somebody who left, a deleted account, the assistant, a stranger), `too_many_groups` (409, the family has 50). |
+| `PATCH /chats/{id}` | `{title}` → `200 {chat: Chat}` — renames a group. Admin only. Errors: `validation` (400 — a bad title, or the chat is not a group), `not_group_admin` (403), `chat_not_found` (404 — also for a group the caller is not in). |
+| `POST /chats/{id}/members` | `{user_ids: [12]}` → `200 {chat: Chat}` — adds members to a group; an id already in it is ignored. Admin only. Each one added starts with the group's newest message read. Errors: `validation` (400 — empty, or not a group), `not_same_family` (409), `not_group_admin` (403), `chat_not_found` (404). |
+| `DELETE /chats/{id}/members/{user_id}` | → `200 {chat: Chat}` when the admin removes somebody else; → `204` when `user_id` is the caller (leaving — any member; an admin who leaves hands the group to the member who joined it earliest, and the last one out deletes it). Errors: `validation` (400 — not a group, or `user_id` is not in it), `not_group_admin` (403 — removing somebody else without being admin), `chat_not_found` (404). |
+| `DELETE /chats/{id}` | → `204` — deletes a group and everything in it, for every member. Admin only. Errors: `validation` (400 — the family chat, a direct chat or an `ai` chat can never be deleted here), `not_group_admin` (403), `chat_not_found` (404). |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `GET /chats/{id}/messages/{message_id}/thread` | Query: `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}` — the chain `message_id` belongs to, resolved to its ROOT whether the id named is the root or any reply in it: the root first — the oldest in its chain, so any `after_id` at or past it leaves it off — then every message whose `thread_root_id` is that root, ordered by id ASCENDING, oldest first; `after_id` is strictly newer, looped until a short page. A message that is neither a reply nor answered comes back as a chain of one. Not a cursor and no part of catch-up. Errors: `chat_not_found`, `not_chat_member`, `message_not_found` (no such message in THIS chat), `invalid_pagination`. See "Threads". |
 | `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?, mentions?, sticker?, round?}` → `201 {message: Message}`. `sticker: true` sends the message's one attachment as a STICKER (see "Sticker pack"): exactly one attachment, a `kind=photo` of `image/webp` or `image/png` no larger than `max_pack_item_bytes` (`invalid_attachment` otherwise), and no body (`validation`); the attachment then carries `sticker: true` on every read. Absent or `false` is an ordinary message. `round: true` sends it as a VIDEO MESSAGE (see "Video messages", 2026-10-05): exactly one attachment (`invalid_attachment`), no body (`validation`), never beside `sticker` (`validation`) or a `poll` (`invalid_poll`); and, checked at the claim, a `kind=video` of `video/mp4` whose declared `width` and `height` are equal and 1–720, whose `duration_ms` is 1 to `max_round_video_ms` and whose size is at most `max_round_video_bytes` (`invalid_attachment` otherwise, the upload left unclaimed); the attachment then carries `round: true` on every read. Absent or `false` is an ordinary message. `mentions: [{user_id, name}]` names members, family chat only — see "Mentioning a member" for what is checked (`validation` otherwise). In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. `assistant_consent_required` (403) when the chat is the caller's `ai` chat, or the body mentions the assistant, and they have not agreed that their words may go to the model — the message is REFUSED and not silently dropped, so the client can show the consent screen and offer to send it again ("Consenting to the assistant"). Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
@@ -6064,7 +6223,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
 | `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; the other person's in a direct chat only when that sender has agreed to the assistant; another member's in the family chat (threads included) only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
+| `POST /chats/{id}/messages/{mid}/attachments/{attachment_id}/transcript` | No body, or `multipart/form-data` with one part `audio` → `200 {transcript: {text, language?}}`. The text of a voice note, an audio file or a video's sound, for the CALLER only (see "Transcripts on request"). NO BODY sends the server's stored copy: `kind=audio` stored as `audio/mp4`, `audio/m4a`, `audio/mpeg` or `audio/wav`, at most `assistant.transcribe_max_bytes`; that answer is KEPT and handed to every later caller the rule allows, with no second provider call. A body that is not multipart is ignored and treated as no body. The `audio` PART is sound the caller's device took out of the file itself — AAC in MPEG-4 (`audio/mp4`, an `.m4a`), at most `transcribe_max_bytes` — for `kind=audio` or `kind=video`; that answer is returned and NEVER kept or shared, unless an answer from the stored copy already exists, which is then returned instead. `text` is always present and `""` is silence ("No speech"), never an error; `language` only when the provider names one. ALLOWED: the caller's own message in any chat they are in; the other person's in a direct chat or a group (since 2026-10-22) only when that sender has agreed to the assistant; another member's in the family chat (threads included) only with the family's `ai_transcripts` on, and only when that sender has agreed to the assistant; never the assistant's. SLOW — a client gives it a timeout of its own, no shorter than 90 s; a no-body request is finished and kept even if the caller stops waiting. Errors, checked in this order: `chat_not_found` (404), `not_chat_member` (403), `blocked` (409), `message_not_found` (404 — not in this chat), `attachment_not_found` (404 — not on this message), `transcripts_unavailable` (403 — no transcription deployment), `assistant_consent_required` (403 — the CALLER has not agreed), `transcript_not_allowed` (403 — the rule above), `not_transcribable` (400 — wrong kind, a stored type the provider does not read, over the ceiling, or a supplied part missing, empty, too large or not MPEG-4; under `api = "speech"` also the provider refusing the file's format or length, finding no audio in it, or identifying no language — never answered as `""`), `validation` (400 — a multipart body that cannot be parsed), `transcript_refused` (400 — the provider's own filter refused; terminal); any other provider failure is `internal` (500). |
 
 ### Devices
 
@@ -6148,6 +6307,10 @@ the other, or both, and the receiving stack accepts whichever it was given.)
 {"type": "board_note", "note": {Note}}
 {"type": "pack_item", "item": {PackItem}}
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
+{"type": "chat_updated", "chat": {Chat}}   — a group created, renamed, or its members or admin
+                                             changed; to every member, one just added included
+{"type": "chat_removed", "chat_id": 77}    — a group left, removed from, or deleted; drop it
+                                             (both added 2026-10-22, see "Groups")
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
 {"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
                                                                        — the provider's own filter refused it;
@@ -6322,7 +6485,8 @@ notifies and never counts as unread, and clients apply it under the `pack_seq` g
      the member cap and the family's language either raise no frame at all or raise one a sleeping
      client did not get.
   2. `GET /chats` — chat list, previews, authoritative unread counts, and the caller's own
-     read marker per chat.
+     read marker per chat. A chat that is no longer in it — a group left, removed from or deleted
+     while the client slept — is dropped, whatever its kind (since 2026-10-22).
   3. Per chat: `GET /chats/{id}/messages?after_id=<max known message id>` looped until a short
      page — message ids are globally monotonic, so `max(id)` is the sync cursor. That cursor
      belongs to the LOOP: it is read once, before the first page, and then advanced by the
@@ -6546,8 +6710,9 @@ the OS rotates the token — the launch re-POST is also what keeps the session l
 any of the sign-outs above it is what brings the device back at all. A push rejected as
 unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the device row.
 
-Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`, or
-`"<Family> — <Sender> mentioned you"` on the devices of a member the message names (see
+Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`; group (since
+2026-10-22) → `"<Group> — <Sender>"`, the group's name in place of the family's; or
+`"<Family> — <Sender> mentioned you"` / `"<Group> — <Sender> mentioned you"` on the devices of a member the message names (see
 "Mentioning a member" — the same push, a different title, never a second one). Body: the message
 text, or `"New message"` when the server's `[push] include_message_body = false`.
 
@@ -6722,7 +6887,9 @@ unregistered deletes the row, as an ordinary push would.
 | Session TTL | 180 days, sliding |
 | Poll options | 2 minimum (fixed), 10 maximum |
 | Poll option text | 100 chars |
-| Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
+| A group's name | 64 chars, trimmed, at least 1 (fixed) |
+| Groups in one family | 50 (fixed) |
+| Family-chat (or a group's) history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
 | Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
 | Profile pictures shown to the assistant with one mention | 4 — only with `ai_faces` on, only the members whose lines are in the transcript, most recently active first, under a budget SEPARATE from the four photographs above and never displacing one (fixed) |
 | A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
