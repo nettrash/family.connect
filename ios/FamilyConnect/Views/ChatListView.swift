@@ -115,7 +115,10 @@ struct ChatListView: View {
     /// direct chat whose `family_ids` name it. With one family that is every
     /// chat, exactly as before.
     private var listedChats: [ChatEntity] {
-        chats.filter { FamilyRules.isListed(chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID) }
+        chats.filter {
+            FamilyRules.isListed(
+                chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID, home: session.homeFamilyID)
+        }
     }
 
     /// The board on screen is the current family's, and so is its badge.

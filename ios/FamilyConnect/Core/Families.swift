@@ -58,7 +58,7 @@ nonisolated enum FamilyIDList {
     /// A chat's `family_ids` as the store keeps them, keeping the two
     /// "nothing"s apart for `encodeRoles`'s reason: nil — the field was
     /// absent, a server or a row from before several families — is `""`,
-    /// and the chat is the one family's, listed whatever family is shown;
+    /// and the chat is the one family's, the HOME family (`isListed`);
     /// `[]` — the server SAID none, which it says only to the side that left
     /// a direct chat that closed (docs/protocol.md, "Several families") — is
     /// `"-"`, and the chat is listed nowhere. Written as one text, the two
@@ -164,42 +164,63 @@ nonisolated enum FamilyRules {
     }
 
     /// One chat's share of the counting: which families list it (nil:
-    /// nobody said, see `isListed`), and how many of its messages are unread.
+    /// nobody said — the home family's, see `isListed`), and how many of its
+    /// messages are unread.
     struct ChatCount: Equatable, Sendable {
         let familyIDs: [Int64]?
         let unread: Int
     }
 
+    /// `families` in the order `GET /me` gave them, so the first is the home
+    /// family — the one a chat that names no family is counted in.
     static func switcherEntries(
         families: [FamilyDTO], chats: [ChatCount], current: Int64?
     ) -> [SwitcherEntry] {
-        families.map { family in
+        let home = families.first?.id
+        return families.map { family in
             SwitcherEntry(
                 id: family.id,
                 name: family.name,
-                unread: unread(in: family.id, chats: chats),
+                unread: unread(in: family.id, chats: chats, home: home),
                 isCurrent: family.id == current)
         }
     }
 
-    static func unread(in familyID: Int64, chats: [ChatCount]) -> Int {
-        chats.filter { isListed(chatFamilyIDs: $0.familyIDs, in: familyID) }
+    static func unread(in familyID: Int64, chats: [ChatCount], home: Int64?) -> Int {
+        chats.filter { isListed(chatFamilyIDs: $0.familyIDs, in: familyID, home: home) }
             .reduce(0) { $0 + $1.unread }
     }
 
     // MARK: - Which chats a family lists
 
     /// A chat is shown in the current family when its `family_ids` name it.
+    ///
     /// A chat whose `family_ids` nobody sent (nil) is from a server, or a
-    /// store, that predates several families — there is one family, and it
-    /// is listed in it. One the server sent as `[]` is a direct chat that
-    /// closed for this reader, who left the last family the two shared: it
-    /// is gone for them, and is listed in no family at all — not in every
-    /// one, which is what reading `[]` as "nobody said" did. With no family
-    /// known at all (an offline launch before the first `/me`), everything
-    /// else held is shown, as it always was.
-    static func isListed(chatFamilyIDs: [Int64]?, in familyID: Int64?) -> Bool {
-        guard let chatFamilyIDs else { return true }
+    /// store, that predates several families, and the protocol says what
+    /// that means: absent, "it means the one family the account has" — the
+    /// HOME family, `home` here, which is the first of the families as
+    /// `GET /me` orders them (docs/protocol.md, "Several families" and
+    /// `Chat.family_ids`). It is listed there and nowhere else. Reading nil
+    /// as "every family" put a row this device cached before the upgrade —
+    /// the old family chat, the old direct chats — into each family's list
+    /// and each family's unread in the switcher, until the first `GET
+    /// /chats` re-described it. Android (`FamilyList.listedIn`) and the web
+    /// (`listed_in`) read it as the home family's too.
+    ///
+    /// One the server sent as `[]` is a direct chat that closed for this
+    /// reader, who left the last family the two shared: it is gone for them,
+    /// and is listed in no family at all — not in every one, which is what
+    /// reading `[]` as "nobody said" did.
+    ///
+    /// With no family known at all (an offline launch before the first
+    /// `/me`: no family on screen, or no list to say which one is home),
+    /// everything else held is shown, as it always was — there is nothing
+    /// to tell one family's rows from another's by.
+    static func isListed(chatFamilyIDs: [Int64]?, in familyID: Int64?, home: Int64?) -> Bool {
+        guard let chatFamilyIDs else {
+            guard let familyID, let home else { return true }
+            return familyID == home
+        }
         guard !chatFamilyIDs.isEmpty else { return false }
         guard let familyID else { return true }
         return chatFamilyIDs.contains(familyID)
@@ -245,7 +266,7 @@ nonisolated enum FamilyRules {
         if let pushFamilyID {
             return held.contains(pushFamilyID) && pushFamilyID != current ? pushFamilyID : nil
         }
-        if isListed(chatFamilyIDs: chatFamilyIDs, in: current) { return nil }
+        if isListed(chatFamilyIDs: chatFamilyIDs, in: current, home: held.first) { return nil }
         return chatFamilyIDs.first { held.contains($0) }
     }
 

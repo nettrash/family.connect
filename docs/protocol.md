@@ -2137,8 +2137,8 @@ members start theirs — see "Several families" (2026-10-22). Left unset, `membe
 
 An account with no family is an account nothing on this server is for. ("No family" means none at
 all: since 2026-10-22 an account may be in several, and it is without a family only after leaving its
-LAST one — see "Several families". A pending invitation keeps the sweep away exactly as a pending
-join request does.) Somebody registers and
+LAST one — see "Several families". A pending join request keeps the sweep away; an invitation never
+needs to, because an account in no family shares a family with nobody and so cannot hold one.) Somebody registers and
 never joins — a stranger who found the address, a relative who mistyped the code and gave up, a
 member the owner removed who never came back — and the row would otherwise sit there for good,
 holding a username, and on a server closed to new families (above) with no way of ever becoming
@@ -2250,7 +2250,9 @@ to an owner who shares none with them). An invitation is the family's, not the o
 keeps it while the new owner also shares a family with the invited person; but an owner never goes
 on seeing the profile of somebody they share no family with, and nobody comes in through a door
 that `POST /families/{family}/invitations` would refuse today. Accepting re-checks this, and an
-invitation that no longer holds answers `invitation_not_pending`.
+invitation that no longer holds answers `invitation_not_pending`. A departure lapses what it can see,
+and an hourly sweep lapses the rest — an invitation created in the very instant the two stopped
+sharing a family — with the same `invitation_removed` frames.
 
 **Switching.** The apps show ONE family at a time, with a switcher listing every family and its
 unread count (and a pending join request or invitation as a row of its own). The chat list, the
@@ -2296,8 +2298,8 @@ reach beyond one family and are narrowed:
 
 **Leaving** (`POST /families/{family}/leave`) leaves that family only, with the owner hand-off as
 before. An account is "without a family" — and the 7-day clock of "Accounts without a family" starts
-— only when it leaves its LAST one; a pending invitation, like a pending join request, keeps the
-sweep away. **Deleting an account** leaves every family, each with its own hand-off, and the account
+— only when it leaves its LAST one; a pending join request keeps the sweep away (an invitation
+cannot outlive the last family: it lapses with the last family its person shared with the owner). **Deleting an account** leaves every family, each with its own hand-off, and the account
 appears in each family's `former_members`.
 
 **Uploads name their family.** An attachment belongs to the family it was uploaded for:
@@ -2335,6 +2337,11 @@ invitation, a family just created on another device), means "you are in a new fa
 re-reads `GET /me` and that family. A `member_left` naming the caller means "you are out of that
 family": the client drops the family's chats, board, pack, roster and cursors — and only that
 family's; a direct chat stays while its `family_ids` still name another family the client holds.
+The server sends a `chat_updated` for every direct chat the departure changed — narrowed, moved to
+another family of the reader's, or closed with `family_ids: []` — BEFORE the `member_left`; a client
+that applies frames out of order should therefore keep, listed nowhere, a direct chat that named only
+the family left, until that `chat_updated` says where it now is (or a `GET /chats` does), rather than
+delete it and its messages. `[]` on a direct chat means it is closed on the reader's side.
 The last member leaving deletes the family, and their own other devices are told the same way, by a
 `member_left` naming them.
 `board_note` and `pack_item` say whose they are by the `family_id` now on `Note` and `PackItem`.

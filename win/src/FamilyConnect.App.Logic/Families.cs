@@ -12,36 +12,55 @@ namespace FamilyConnect.App.Logic;
 public static class FamilyRules
 {
     /// <summary>
-    /// Whether <paramref name="chat"/> is shown in <paramref name="family"/>: the chats whose <c>family_ids</c> name it. A
-    /// direct chat names every family the two share, so it is shown in each. A chat with no <c>family_ids</c> — from a server
-    /// that predates them, where it means the one family there is — and a session with no family shown, show it.
+    /// The families <paramref name="chat"/> is listed in: its <c>family_ids</c> — or, for a chat with none (cached before them,
+    /// or from a server that predates them, where absent "means the one family the account has": docs/protocol.md,
+    /// <c>Chat</c>), the HOME family <paramref name="home"/> alone, as Android's <c>listedIn</c> and the web's
+    /// <c>listed_in</c> read it. An explicit <c>[]</c> stays empty: a direct chat closed for the one who left is listed nowhere.
     /// </summary>
-    public static bool Lists(ChatDto chat, long? family) =>
-        family is not { } shown || chat.FamilyIds is not { } families || families.Contains(shown);
+    public static long[] FamiliesOf(ChatDto chat, long? home) =>
+        chat.FamilyIds ?? (home is { } only ? [only] : []);
+
+    /// <summary>
+    /// Whether <paramref name="chat"/> is shown in <paramref name="family"/>: the chats whose families (<see cref="FamiliesOf"/>)
+    /// name it. A direct chat names every family the two share, so it is shown in each; a chat with no <c>family_ids</c> is
+    /// shown in the home family only. A session with no family shown shows it.
+    /// </summary>
+    public static bool Lists(ChatDto chat, long? family, long? home) =>
+        family is not { } shown || FamiliesOf(chat, home).Contains(shown);
 
     /// <summary>
     /// The family an upload for <paramref name="chat"/> is FOR: the one shown when the chat is listed there, else the first
-    /// the chat names — a message may use an attachment only in a chat its family lists — else the one shown.
+    /// the chat is listed in — a message may use an attachment only in a chat its family lists, and a chat with no
+    /// <c>family_ids</c> is the home family's — else the one shown.
     /// </summary>
-    public static long? UploadFamily(ChatDto? chat, long? shown) =>
-        chat?.FamilyIds is { Length: > 0 } families && !(shown is { } current && families.Contains(current))
+    public static long? UploadFamily(ChatDto? chat, long? shown, long? home) =>
+        chat is not null && FamiliesOf(chat, home) is { Length: > 0 } families && !(shown is { } current && families.Contains(current))
             ? families[0]
             : shown;
 
     /// <summary>
     /// The family to SHOW to open <paramref name="chat"/> — from a notification, say: the one shown when it lists the chat,
     /// else the first that does (docs/protocol.md, "Pushes": "in the family the app is showing when the chat is listed there,
-    /// else in the first that lists it"). Null when nothing needs to change.
+    /// else in the first that lists it"). Null when nothing needs to change — and for a chat listed in NO family
+    /// (<c>family_ids: []</c>, a direct chat closed when the last family the two shared went), which has no family to move
+    /// to: it opens where the reader is, as Android's <c>familyForChat</c> leaves the app where it is.
     /// </summary>
-    public static long? FamilyToOpen(ChatDto chat, long? shown) =>
-        Lists(chat, shown) ? null : chat.FamilyIds![0];
+    public static long? FamilyToOpen(ChatDto chat, long? shown, long? home)
+    {
+        if (Lists(chat, shown, home))
+        {
+            return null;
+        }
+        var families = FamiliesOf(chat, home);
+        return families.Length > 0 ? families[0] : null;
+    }
 
     /// <summary>
-    /// The name of the family a chat belongs to — its first <c>family_ids</c> — from the account's list, for a notification's
-    /// title; null when the list does not name it.
+    /// The name of the family a chat belongs to — the first it is listed in, the home family (the account's first) for a chat
+    /// with no <c>family_ids</c> — from the account's list, for a notification's title; null when the list does not name it.
     /// </summary>
     public static string? NameOf(ChatDto chat, IReadOnlyList<FamilyDto> families) =>
-        chat.FamilyIds is { Length: > 0 } ids ? NameOf(ids[0], families) : null;
+        FamiliesOf(chat, families.FirstOrDefault()?.Id) is { Length: > 0 } ids ? NameOf(ids[0], families) : null;
 
     /// <summary>One family's name from the account's list, or null.</summary>
     public static string? NameOf(long? familyId, IReadOnlyList<FamilyDto> families) =>
@@ -122,15 +141,15 @@ public static class FamilySwitcher
     /// A family's unread count: the unread of the chats LISTED in it. A direct chat counts in each family that lists it —
     /// what the reader would find unread there.
     /// </summary>
-    public static int Unread(long familyId, IEnumerable<ChatRowDto> chats) =>
-        chats.Where(row => FamilyRules.Lists(row.Chat, familyId)).Sum(row => row.UnreadCount);
+    public static int Unread(long familyId, IEnumerable<ChatRowDto> chats, long? home) =>
+        chats.Where(row => FamilyRules.Lists(row.Chat, familyId, home)).Sum(row => row.UnreadCount);
 
     public static IReadOnlyList<SwitcherRow> Rows(SessionState state, IReadOnlyList<ChatRowDto> chats, IStringCatalog say)
     {
         var rows = new List<SwitcherRow>();
         foreach (var family in state.AllFamilies)
         {
-            var unread = Unread(family.Id, chats);
+            var unread = Unread(family.Id, chats, state.HomeFamilyId);
             rows.Add(new SwitcherRow(
                 SwitcherRowKind.Family, family.Id, family.Name,
                 Unread: unread,

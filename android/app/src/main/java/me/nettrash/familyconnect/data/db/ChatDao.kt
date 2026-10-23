@@ -67,7 +67,9 @@ interface ChatDao {
     /**
      * Narrow a DIRECT chat's families after this account left one of them
      * (docs/protocol.md, "Several families": "a direct chat stays while its
-     * `family_ids` still name another family the client holds").
+     * `family_ids` still name another family the client holds") — or to
+     * none at all, until the `chat_updated` the departure sends says where it
+     * lives or that it is gone (ChatRepository.dropFamily).
      */
     @Query("UPDATE chats SET familyIdsJson = :familyIdsJson WHERE id = :chatId")
     suspend fun setFamilyIds(chatId: Long, familyIdsJson: String?)

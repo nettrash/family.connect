@@ -223,6 +223,78 @@ class SeveralFamiliesRepositoryTest {
         assertThat(rows(OTHER).single { it.userId == 13L }.offersPasswordReset).isTrue()
     }
 
+    /**
+     * Creating a family here: `create` reads the new roster with me as its
+     * owner, and the server's `member_joined` naming me — the creator —
+     * arrives after it. A joiner is a plain member, but this is no joiner:
+     * the frame used to write "member" over my live row, and the family I
+     * had just made showed no owner until the next roster read.
+     */
+    @Test
+    fun `the member_joined echo of a family created here keeps me its owner`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.createResult = ApiResult.Ok(FamilyResponse(newFamily))
+        familyApi.familyResults[NEW] = ApiResult.Ok(
+            FamilyMineResponse(family = newFamily, members = listOf(memberDto(ME, "anna", role = "owner"))),
+        )
+
+        repository.create("The Browns")
+        socket.emit(ServerFrame.MemberJoined(familyId = NEW, user = userDto(ME, "anna"), passwordReset = false))
+        runCurrent()
+
+        val mine = rows(NEW).single()
+        assertThat(mine.role).isEqualTo("owner")
+        // The frame's other columns still land: the COALESCE'd flag, the name.
+        assertThat(mine.passwordReset).isFalse()
+        assertThat(mine.displayName).isEqualTo("Anna")
+        assertThat(repository.observeActiveMembers().first().single().role).isEqualTo("owner")
+    }
+
+    /**
+     * The same echo winning the race with the roster read (or arriving when
+     * that read failed): the row is NEW, and mine, so it takes the role my
+     * entry for the family already says rather than "member".
+     */
+    @Test
+    fun `my own member_joined before the roster read takes the role my entry says`() = runTest(dispatcher) {
+        settings.setFamilies(
+            listOf(home, other, newFamily.copy(role = "owner")), emptyList(), emptyList(), true, 5, multiFamilyServer = true,
+        )
+        repository()
+
+        socket.emit(ServerFrame.MemberJoined(familyId = NEW, user = userDto(ME, "anna")))
+        runCurrent()
+
+        assertThat(rows(NEW).single().role).isEqualTo("owner")
+        // Held already, so this is no "you are in a new family": nothing re-read.
+        assertThat(familyApi.familiesRead).isEmpty()
+    }
+
+    /**
+     * `member_joined` never moves a role on a live row — only `family_owner`
+     * and a roster read do — but a row that had LEFT is a rejoin, and a
+     * joiner comes back a plain member whatever their old row said (an
+     * ex-owner whose hand-off this device never heard of).
+     */
+    @Test
+    fun `member_joined keeps a live row's role and rejoins a departed one as a member`() = runTest(dispatcher) {
+        repository()
+        db.memberDao().upsertAll(
+            listOf(
+                MemberEntity(familyId = OTHER, userId = PEER, username = "ben", displayName = "Ben", role = "owner"),
+                MemberEntity(
+                    familyId = OTHER, userId = 12, username = "dan", displayName = "Dan", role = "owner", hasLeft = true,
+                ),
+            ),
+        )
+
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(PEER, "ben")))
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(12, "dan")))
+        runCurrent()
+
+        assertThat(rows(OTHER).associate { it.userId to it.role }).containsExactly(PEER, "owner", 12L, "member")
+    }
+
     @Test
     fun `an approval keeps the owner's password_reset for the newcomer`() = runTest(dispatcher) {
         val repository = repository()

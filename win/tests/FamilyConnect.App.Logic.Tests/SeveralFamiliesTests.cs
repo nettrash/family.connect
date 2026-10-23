@@ -391,24 +391,93 @@ public class SeveralFamiliesTests : IDisposable
 
     private static FamilyDto Family(long id, string name, bool owner = false) => new(id, name, Role: owner ? "owner" : "member");
 
-    /// <summary>A family shows the chats that name it — a direct chat in each family it names — and an unnamed chat everywhere.</summary>
+    /// <summary>A family shows the chats that name it — a direct chat in each family it names — and an unnamed chat in the home family.</summary>
     [Fact]
     public void AFamilyListsTheChatsThatNameIt()
     {
         var direct = new ChatDto(44, "direct", "Bob", 9, FamilyIds: [3, 5]);
-        Assert.True(FamilyRules.Lists(direct, 3));
-        Assert.True(FamilyRules.Lists(direct, 5));
-        Assert.False(FamilyRules.Lists(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3));
-        Assert.True(FamilyRules.Lists(new ChatDto(42, "family", "The Smiths"), 3));
-        Assert.True(FamilyRules.Lists(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), null));
+        Assert.True(FamilyRules.Lists(direct, 3, home: 3));
+        Assert.True(FamilyRules.Lists(direct, 5, home: 3));
+        Assert.False(FamilyRules.Lists(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3, home: 3));
+        Assert.True(FamilyRules.Lists(new ChatDto(42, "family", "The Smiths"), 3, home: 3));
+        Assert.True(FamilyRules.Lists(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), null, home: 3));
         // An upload is for the family shown when the chat is listed there, else the chat's first.
-        Assert.Equal(5, FamilyRules.UploadFamily(direct, 5));
-        Assert.Equal(5, FamilyRules.UploadFamily(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3));
-        Assert.Equal(3, FamilyRules.UploadFamily(null, 3));
+        Assert.Equal(5, FamilyRules.UploadFamily(direct, 5, home: 3));
+        Assert.Equal(5, FamilyRules.UploadFamily(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3, home: 3));
+        Assert.Equal(3, FamilyRules.UploadFamily(null, 3, home: 3));
         // A notification opens its chat where it is listed.
-        Assert.Null(FamilyRules.FamilyToOpen(direct, 5));
-        Assert.Equal(5, FamilyRules.FamilyToOpen(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3));
+        Assert.Null(FamilyRules.FamilyToOpen(direct, 5, home: 3));
+        Assert.Equal(5, FamilyRules.FamilyToOpen(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), 3, home: 3));
         Assert.Equal("Ivanovs", FamilyRules.NameOf(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5]), [Family(3, "The Smiths"), Family(5, "Ivanovs")]));
+    }
+
+    /// <summary>
+    /// A chat with NO <c>family_ids</c> — cached before them, or from a server that predates them, where absent "means the one
+    /// family the account has" (docs/protocol.md, <c>Chat</c>) — is the HOME family's alone, as Android's <c>listedIn</c> and
+    /// the web's <c>listed_in</c> read it: not shown in another family, not counted in its unread, its uploads for the home
+    /// family (not the one shown — the server would answer <c>attachment_not_found</c>), and a notification opens it there.
+    /// An explicit <c>[]</c> is still listed nowhere.
+    /// </summary>
+    [Fact]
+    public void AChatWithNoFamiliesIsTheHomeFamilysOnly()
+    {
+        var unnamed = new ChatDto(42, "family", "The Smiths");
+        Assert.True(FamilyRules.Lists(unnamed, 3, home: 3));
+        Assert.False(FamilyRules.Lists(unnamed, 5, home: 3));
+        Assert.False(FamilyRules.Lists(unnamed, 5, home: null));
+        Assert.False(FamilyRules.Lists(new ChatDto(44, "direct", "Bob", 9, FamilyIds: []), 3, home: 3));
+        Assert.Equal([3L], FamilyRules.FamiliesOf(unnamed, 3));
+        Assert.Empty(FamilyRules.FamiliesOf(new ChatDto(44, "direct", "Bob", 9, FamilyIds: []), 3));
+
+        // An attachment sent there from family 5 is uploaded for the home family, where the chat is.
+        Assert.Equal(3, FamilyRules.UploadFamily(unnamed, 5, home: 3));
+        Assert.Equal(3, FamilyRules.UploadFamily(unnamed, 3, home: 3));
+        Assert.Equal(5, FamilyRules.UploadFamily(unnamed, 5, home: null));
+        Assert.Equal(3, FamilyRules.FamilyToOpen(unnamed, 5, home: 3));
+        Assert.Null(FamilyRules.FamilyToOpen(unnamed, 3, home: 3));
+        // Titled with the home family's name — the account's first — not the shown one's.
+        Assert.Equal("The Smiths", FamilyRules.NameOf(unnamed, [Family(3, "The Smiths"), Family(5, "Ivanovs")]));
+        Assert.Null(FamilyRules.NameOf(unnamed, []));
+
+        // The switcher counts it in the home family only.
+        var state = State([Family(3, "The Smiths"), Family(5, "Ivanovs")], current: 5);
+        Assert.Equal(3, state.HomeFamilyId);
+        var rows = FamilySwitcher.Rows(state, [new ChatRowDto(unnamed, UnreadCount: 2)], Say);
+        Assert.Equal([2, 0], rows.Where(row => row.Kind == SwitcherRowKind.Family).Select(row => row.Unread));
+
+        // And the list of family 5 does not show it, where family 3's does.
+        long? shown = 5;
+        var chats = new ChatStore(cache, () => 7, () => shown, () => 3);
+        chats.Replace([
+            new ChatRowDto(unnamed),
+            new ChatRowDto(new ChatDto(43, "family", "Ivanovs", FamilyIds: [5])),
+        ]);
+        var list = new ChatListModel(chats, () => 7, Say);
+        Assert.Equal([43L], list.Rows(DateTimeOffset.Now).Select(row => row.Chat.Id));
+        shown = 3;
+        Assert.Equal([42L], list.Rows(DateTimeOffset.Now).Select(row => row.Chat.Id));
+    }
+
+    /// <summary>
+    /// A notification for a chat listed in NO family opens where the reader is, and does not throw: a toast for a direct chat
+    /// with Bob, then the last family the two shared left — <c>chat_updated</c> with <c>family_ids: []</c>, the row kept,
+    /// because only a group is removed — and the old toast clicked. The rule used to index the empty array.
+    /// </summary>
+    [Fact]
+    public void ANotificationForAChatListedNowhereStaysInTheFamilyShown()
+    {
+        var chats = new ChatStore(cache, () => 7, () => 3, () => 3);
+        chats.Replace([new ChatRowDto(new ChatDto(44, "direct", "Bob", 9, FamilyIds: [3, 5]))]);
+        chats.Upsert(new ChatDto(44, "direct", "Bob", 9, FamilyIds: []));
+        Assert.False(chats.Remove(44));
+        var held = chats.Chat(44)!.Chat;
+        Assert.Empty(held.FamilyIds!);
+
+        Assert.Null(FamilyRules.FamilyToOpen(held, 3, home: 3));
+        Assert.Null(FamilyRules.FamilyToOpen(held, 5, home: 3));
+        Assert.Null(FamilyRules.FamilyToOpen(held, null, home: null));
+        Assert.Null(FamilyRules.NameOf(held, [Family(3, "The Smiths"), Family(5, "Ivanovs")]));
+        Assert.Equal(5, FamilyRules.UploadFamily(held, 5, home: 3));
     }
 
     /// <summary>

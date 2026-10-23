@@ -139,29 +139,50 @@ struct FamilyRulesTests {
             familyCount: families, pendingRequests: pending, invitations: invitations) == shown)
     }
 
-    @Test("a family lists the chats that name it; a chat naming none is listed everywhere")
+    @Test("a family lists the chats that name it")
     func isListed() {
-        #expect(FamilyRules.isListed(chatFamilyIDs: [3], in: 3))
-        #expect(!FamilyRules.isListed(chatFamilyIDs: [5], in: 3))
+        #expect(FamilyRules.isListed(chatFamilyIDs: [3], in: 3, home: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [5], in: 3, home: 3))
         // A direct chat is listed in every family the two people share.
-        #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 3))
-        #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 5))
-        // From before several families (nobody said), and with no family known yet.
-        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: 3))
-        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: nil))
-        #expect(FamilyRules.isListed(chatFamilyIDs: [5], in: nil))
+        #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 3, home: 3))
+        #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 5, home: 3))
+        // With no family known yet, everything held is shown.
+        #expect(FamilyRules.isListed(chatFamilyIDs: [5], in: nil, home: nil))
+    }
+
+    @Test("a chat naming no family (absent family_ids) is the HOME family's, and listed there alone")
+    func absentFamilyIDsMeanTheHomeFamily() {
+        // docs/protocol.md, `Chat.family_ids`: absent, "it means the one
+        // family the account has" — the home family, first in `GET /me`.
+        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: 3, home: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: nil, in: 5, home: 3),
+                "a chat cached before the upgrade was shown in every family")
+        // An offline launch before the first `/me`: no family on screen, or
+        // no list to say which one is home — shown, as it always was.
+        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: nil, home: nil))
+        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: 5, home: nil))
+        // And it counts towards the home family's unread only.
+        let chats = [Fixture.chat([5], unread: 4), FamilyRules.ChatCount(familyIDs: nil, unread: 2)]
+        #expect(FamilyRules.unread(in: 3, chats: chats, home: 3) == 2)
+        #expect(FamilyRules.unread(in: 5, chats: chats, home: 3) == 4)
+        let entries = FamilyRules.switcherEntries(
+            families: [Fixture.smiths, Fixture.ivanovs], chats: chats, current: 5)
+        #expect(entries.map(\.unread) == [2, 4], "the switcher's home is the first family /me lists")
+        // The session's home is that same first family.
+        #expect(FamilyRules.families(from: Fixture.me(families: [Fixture.ivanovs, Fixture.smiths])).first?.id == 5)
     }
 
     @Test("a chat the server lists in NO family is listed nowhere, not everywhere")
     func listedInNoFamily() {
-        // `family_ids: []` — a direct chat closed for the side that left.
-        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 3))
-        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 5))
-        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: nil))
+        // `family_ids: []` — a direct chat closed for the side that left —
+        // is not an absent one: not even the home family lists it.
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 3, home: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 5, home: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: nil, home: nil))
         // And it counts towards no family's unread.
         let chats = [Fixture.chat([3], unread: 2), FamilyRules.ChatCount(familyIDs: [], unread: 9)]
-        #expect(FamilyRules.unread(in: 3, chats: chats) == 2)
-        #expect(FamilyRules.unread(in: 5, chats: chats) == 0)
+        #expect(FamilyRules.unread(in: 3, chats: chats, home: 3) == 2)
+        #expect(FamilyRules.unread(in: 5, chats: chats, home: 3) == 0)
     }
 
     @Test("the store keeps a chat's absent family_ids and its empty family_ids apart")
@@ -186,8 +207,8 @@ struct FamilyRulesTests {
             Fixture.chat([5], unread: 4),     // the Ivanovs' family chat
             Fixture.chat([3, 5], unread: 1),  // a direct chat with somebody in both
         ]
-        #expect(FamilyRules.unread(in: 3, chats: chats) == 3)
-        #expect(FamilyRules.unread(in: 5, chats: chats) == 5)
+        #expect(FamilyRules.unread(in: 3, chats: chats, home: 3) == 3)
+        #expect(FamilyRules.unread(in: 5, chats: chats, home: 3) == 5)
         let entries = FamilyRules.switcherEntries(
             families: [Fixture.smiths, Fixture.ivanovs], chats: chats, current: 5)
         #expect(entries.map(\.unread) == [3, 5])
@@ -565,6 +586,7 @@ struct SeveralFamiliesSessionTests {
         session.apply(me: Fixture.me(families: [Fixture.smiths, Fixture.ivanovs]))
         session.switchFamily(to: 5)
         #expect(session.currentFamilyID == 5)
+        #expect(session.homeFamilyID == 3, "a switch moved the home family")
         #expect(session.role == "member")
         #expect(!session.isOwner)
         #expect(spies.current.last == 5)
@@ -807,6 +829,134 @@ struct SeveralFamiliesSessionTests {
         #expect(AppSettings.boardCursor(family: 5) == 0, "a board cursor outlived the board it counted")
     }
 
+    /// A leave whose own `member_left` beats its answer home. The stub
+    /// handler runs on the URLProtocol's thread while `leaveFamily` is
+    /// suspended on the request, and applies the frame on the main actor
+    /// exactly as the coordinator's handler does (`removeFamily`) — so the
+    /// echo is in before the 204 is.
+    private func leaveRacedByItsEcho(
+        host: String, families: [FamilyDTO], pending: [PendingJoinRequestDTO] = [], leaving: Int64
+    ) async throws -> (AppSession, Spies) {
+        final class Box: @unchecked Sendable { var session: AppSession? }
+        let box = Box()
+        StubURLProtocol.register(host: host) { _ in
+            if let session = box.session {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { session.removeFamily(leaving) } }
+            }
+            return .empty(204)
+        }
+        let api = APIClient(serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
+        let (session, spies) = makeSession(api: api)
+        box.session = session
+        session.apply(me: Fixture.me(families: families, pending: pending))
+        session.switchFamily(to: leaving)
+        _ = try await session.leaveFamily { _ in nil }
+        #expect(StubURLProtocol.requests(host: host).last?.url.path() == "/api/v1/families/\(leaving)/leave")
+        return (session, spies)
+    }
+
+    @Test("leaving one of two families when its member_left lands first: the other family stays, nothing else is purged")
+    func leaveRacedByEchoKeepsTheOtherFamily() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-echo.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (session, spies) = try await leaveRacedByItsEcho(
+            host: host, families: [Fixture.smiths, Fixture.ivanovs], leaving: 5)
+        #expect(session.phase == .active, "a leave of one family raced by its echo went to the gate")
+        #expect(session.families.map(\.id) == [3])
+        #expect(session.currentFamilyID == 3)
+        #expect(spies.chatStoreCleared == 0, "the whole store was purged while still in the Smiths")
+        #expect(spies.dropped == [5], "the family left was dropped twice, or not at all")
+    }
+
+    @Test("leaving the LAST family when its member_left lands first: one purge, and the gate")
+    func leaveLastRacedByEcho() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-last-echo.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (session, spies) = try await leaveRacedByItsEcho(host: host, families: [Fixture.ivanovs], leaving: 5)
+        #expect(session.phase == .needsFamily)
+        #expect(session.families.isEmpty)
+        #expect(spies.chatStoreCleared == 1)
+    }
+
+    @Test("losing the last family with a join request pending elsewhere is the waiting screen, not the gate")
+    func lastFamilyGoneWhilePending() {
+        forgetStoredFamily()
+        defer { forgetStoredFamily(); AppSettings.joinPending = false }
+        AppSettings.joinPending = false
+        let (session, spies) = makeSession()
+        let request = PendingJoinRequestDTO(familyID: 9, familyName: "The Lees", createdAt: nil)
+        session.apply(me: Fixture.me(families: [Fixture.ivanovs], pending: [request]))
+        #expect(session.phase == .active)
+
+        // A `member_left` naming this account (the coordinator's call).
+        session.removeFamily(5)
+        #expect(session.phase == .pendingApproval)
+        #expect(AppSettings.joinPending, "the waiting screen's poll and the decline both read it")
+        #expect(session.families.isEmpty)
+        #expect(session.pendingJoinRequests == [request])
+        #expect(spies.chatStoreCleared == 1)
+
+        // The owner approves: the poll's `/me` routes the app in.
+        session.apply(me: Fixture.me(families: [Fixture.family(9, "The Lees", role: "member")]))
+        #expect(session.phase == .active)
+        #expect(session.currentFamilyID == 9)
+        #expect(!AppSettings.joinPending)
+    }
+
+    @Test("leaving the last family with a join request pending elsewhere waits on it; a decline then says so")
+    func leaveLastWhilePending() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily(); AppSettings.joinPending = false }
+        AppSettings.joinPending = false
+        let host = "families-leave-pending.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        StubURLProtocol.register(host: host) { _ in .empty(204) }
+        let api = APIClient(serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
+        let (session, spies) = makeSession(api: api)
+        let request = PendingJoinRequestDTO(familyID: 9, familyName: "The Lees", createdAt: nil)
+        session.apply(me: Fixture.me(families: [Fixture.ivanovs], pending: [request]))
+
+        _ = try await session.leaveFamily { _ in nil }
+        #expect(session.phase == .pendingApproval)
+        #expect(AppSettings.joinPending)
+        #expect(spies.chatStoreCleared == 1)
+
+        // The Lees decline: neither a family nor the request any more.
+        session.apply(me: Fixture.me(families: []))
+        #expect(session.phase == .needsFamily)
+        #expect(session.joinDeclined)
+        #expect(spies.chatStoreCleared == 1, "nothing was left to purge a second time")
+    }
+
+    @Test("removed from the last family while offline, with a request pending: /me purges what was held")
+    func removedWhileOfflineWithPendingRequest() {
+        forgetStoredFamily()
+        defer { forgetStoredFamily(); AppSettings.joinPending = false }
+        AppSettings.joinPending = false
+        let (session, spies) = makeSession()
+        let request = PendingJoinRequestDTO(familyID: 9, familyName: "The Lees", createdAt: nil)
+        session.apply(me: Fixture.me(families: [Fixture.smiths], pending: [request]))
+        #expect(session.phase == .active)
+
+        // No `member_left` ever reached this device; the next `/me` (a
+        // resync's step 1) lists no family and the request still waiting.
+        session.apply(me: Fixture.me(families: [], pending: [request]))
+        #expect(session.phase == .pendingApproval)
+        #expect(session.families.isEmpty)
+        #expect(spies.chatStoreCleared == 1, "the Smiths' chats, board and pack stayed under the waiting screen")
+        #expect(AppSettings.joinPending)
+
+        // And when the Lees then decline, the gate — purged once, already.
+        session.apply(me: Fixture.me(families: []))
+        #expect(session.phase == .needsFamily)
+        #expect(session.joinDeclined)
+        #expect(spies.chatStoreCleared == 1)
+    }
+
     @Test("a push opens the app in its family; a direct chat's in the family that lists it")
     func pushRouting() {
         forgetStoredFamily()
@@ -940,9 +1090,14 @@ struct SeveralFamiliesStoreTests {
         """#
     }
 
-    private func makeHarness(host: String) throws -> Harness {
+    /// `extra` answers first when it answers at all — for a test that has to
+    /// do something while one particular request is in flight.
+    private func makeHarness(
+        host: String, extra: (@Sendable (RecordedRequest) -> StubResponse?)? = nil
+    ) throws -> Harness {
         let server = Server()
         StubURLProtocol.register(host: host) { request in
+            if let answer = extra?(request) { return answer }
             let path = request.url.path()
             switch path {
             case "/api/v1/me": return .json(200, Self.meJSON(server.families))
@@ -1003,6 +1158,12 @@ struct SeveralFamiliesStoreTests {
             #expect(paths.contains(path), "\(path) was never read")
         }
         #expect(!paths.contains("/api/v1/families/mine"))
+        // ONE read of each family: the roster's step and the board/pack step
+        // share it (it used to be read twice, once for each).
+        let familyReads = StubURLProtocol.requests(host: harness.host)
+            .filter { $0.method == "GET" && ["/api/v1/families/3", "/api/v1/families/5"].contains($0.url.path()) }
+            .map { $0.url.path() }
+        #expect(familyReads.sorted() == ["/api/v1/families/3", "/api/v1/families/5"])
         #expect(harness.notes().map(\.family) == [3, 5])
         #expect(harness.packItems().map(\.family) == [3, 5])
         #expect(harness.chat(42)?.familyIDs == [3, 5])
@@ -1077,8 +1238,8 @@ struct SeveralFamiliesStoreTests {
         harness.coordinator.handle(frame: closed)
         let chat = try #require(harness.chat(44))
         #expect(chat.familyIDs == [])
-        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 3))
-        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 5))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 3, home: harness.session.homeFamilyID))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 5, home: harness.session.homeFamilyID))
 
         harness.server.families = [3]
         harness.coordinator.handle(frame: .memberLeft(familyID: 5, userID: 7))
@@ -1127,6 +1288,84 @@ struct SeveralFamiliesStoreTests {
         harness.coordinator.handle(frame: try joined(21, family: 5, flag: "false"))
         #expect(harness.member(21)?.passwordResetAllowed(in: 3) == true)
         #expect(harness.member(21)?.passwordResetAllowed(in: 5) == false)
+    }
+
+    @Test("member_joined never demotes: an owner already on that roster stays owner; a newcomer is a member")
+    func memberJoinedKeepsHeldRole() async throws {
+        let harness = try makeHarness(host: "families-joined-role.test")
+        defer { tearDown(harness) }
+        await harness.coordinator.resync()
+        #expect(harness.member(7)?.familyRoles[3] == "owner")
+
+        func joined(_ userID: Int64, family: Int64) throws -> ServerFrame {
+            try APICoding.decoder().decode(ServerFrame.self, from: Data(#"""
+            {"type": "member_joined", "family_id": \#(family),
+             "user": {"id": \#(userID), "username": "u\#(userID)", "display_name": "U\#(userID)"}}
+            """#.utf8))
+        }
+
+        // "New Family…" from inside the app: the server's member_joined names
+        // the CREATOR, for a family this device already holds and whose
+        // roster it has read with the creator as owner.
+        harness.coordinator.handle(frame: try joined(7, family: 3))
+        #expect(harness.member(7)?.familyRoles[3] == "owner", "the creator was demoted by their own member_joined")
+        #expect(harness.member(7)?.role == "owner")
+        #expect(harness.session.isOwner)
+        // Anybody else's role in the family the frame names stands too —
+        // Olga owns the Ivanovs and is a member of the Smiths.
+        harness.coordinator.handle(frame: try joined(11, family: 5))
+        harness.coordinator.handle(frame: try joined(11, family: 3))
+        #expect(harness.member(11)?.familyRoles == [3: "member", 5: "owner"])
+        // A row new to that roster is a member: somebody held from the other
+        // family, and somebody this device has never seen.
+        harness.coordinator.handle(frame: try joined(13, family: 3))
+        #expect(harness.member(13)?.familyRoles == [3: "member", 5: "member"])
+        harness.coordinator.handle(frame: try joined(23, family: 3))
+        #expect(harness.member(23)?.familyRoles == [3: "member"])
+        // And the role still moves when something says so outright.
+        harness.coordinator.handle(frame: .familyOwner(familyID: 3, userID: 13))
+        #expect(harness.member(13)?.familyRoles[3] == "owner")
+    }
+
+    @Test("a leave whose member_left beats its 204 home, through the coordinator: the other family's data stays")
+    func leaveRacedByEchoThroughTheCoordinator() async throws {
+        // The frame is injected from the leave's own handler, on the
+        // URLProtocol's thread, while `leaveFamily` waits on the answer.
+        final class Box: @unchecked Sendable { var coordinator: ChatSyncCoordinator? }
+        let box = Box()
+        let harness = try makeHarness(host: "families-leave-echo-store.test", extra: { request in
+            guard request.method == "POST", request.url.path() == "/api/v1/families/5/leave" else { return nil }
+            if let coordinator = box.coordinator {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { coordinator.handle(frame: .memberLeft(familyID: 5, userID: 7)) }
+                }
+            }
+            return .empty(204)
+        })
+        box.coordinator = harness.coordinator
+        defer { tearDown(harness) }
+        // The harness leaves the store-wide wipe unwired; counted here, since
+        // a wipe is exactly what the race used to cause.
+        final class Purges { var count = 0 }
+        let purges = Purges()
+        harness.session.clearChatStore = { purges.count += 1 }
+        await harness.coordinator.resync()
+        harness.session.switchFamily(to: 5)
+        harness.server.families = [3]
+
+        _ = try await harness.session.leaveFamily { _ in nil }
+
+        #expect(harness.session.phase == .active, "a leave of one family raced by its echo went to the gate")
+        #expect(harness.session.families.map(\.id) == [3])
+        #expect(harness.session.currentFamilyID == 3)
+        #expect(purges.count == 0, "the whole store was purged while still in the Smiths")
+        // The Smiths' chats, board, pack and roster survived; the Ivanovs' went.
+        #expect(harness.chat(1) != nil)
+        #expect(harness.chat(42)?.familyIDs == [3])
+        #expect(harness.chat(2) == nil)
+        #expect(harness.notes().map(\.family) == [3])
+        #expect(harness.packItems().map(\.family) == [3])
+        #expect(harness.member(11)?.familyRoles == [3: "member"])
     }
 
     @Test("somebody else leaving one family is still in the other")

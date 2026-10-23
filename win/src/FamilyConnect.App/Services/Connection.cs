@@ -28,7 +28,8 @@ internal sealed class Connection : IAsyncDisposable
         // The reader is whoever `GET /me` last said: read when asked, never captured, because a
         // sign-in as somebody else must not be drawn as the previous person's "You". The family shown, the same way: the
         // chat list, the roster, the wall and the stickers are the shown family's (docs/protocol.md, "Several families").
-        Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0, () => Session.State.CurrentFamilyId);
+        Chats = new ChatStore(
+            Cache, () => Session.State.Me?.Id ?? 0, () => Session.State.CurrentFamilyId, () => Session.State.HomeFamilyId);
         Board = new BoardStore(Cache, () => Session.State.CurrentFamilyId);
         Pack = new PackStore(Cache, () => Session.State.CurrentFamilyId);
         Outbox = new OutboxStore(Cache);
@@ -36,7 +37,7 @@ internal sealed class Connection : IAsyncDisposable
         Staging = new FolderMediaStore(AppFolders.StagingPath);
         // A queued message's uploads are for the family its CHAT is in — only where the server names families at all.
         Media = new MediaOutbox(Outbox, Api, Staging, chatId => Session.State.NamesFamilies
-            ? FamilyRules.UploadFamily(Chats.Chat(chatId)?.Chat, Session.State.CurrentFamilyId)
+            ? FamilyRules.UploadFamily(Chats.Chat(chatId)?.Chat, Session.State.CurrentFamilyId, Session.State.HomeFamilyId)
             : null);
         Sending = new SendPipeline(Socket, Outbox, Chats, Api, uploads: PushMediaAsync);
         Router = new FrameRouter(Chats, Board, Pack);

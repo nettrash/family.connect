@@ -50,7 +50,8 @@ public enum SeqRoute
 /// <c>ChatRepository</c> + the DAOs.
 /// </para>
 /// </remarks>
-public sealed class ChatStore(Database database, Func<long>? me = null, Func<long?>? current = null)
+public sealed class ChatStore(
+    Database database, Func<long>? me = null, Func<long?>? current = null, Func<long?>? homeFamily = null)
 {
     /// <summary>
     /// Who is reading. A message of THEIR OWN never counts as unread, and there is no other
@@ -61,6 +62,12 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
 
     /// <summary>The family being shown (docs/protocol.md, "Several families"); null while there is none to say.</summary>
     private readonly Func<long?> family = current ?? (() => null);
+
+    /// <summary>
+    /// The account's HOME family, as the session says now — the one a chat with no <c>family_ids</c> is listed in (cached
+    /// before them, or from a server that predates them); null while there is none to say.
+    /// </summary>
+    private readonly Func<long?> home = homeFamily ?? (() => null);
 
     /// <summary>
     /// Who is reading, for the callers that also have to know — the frame router asks the store
@@ -188,6 +195,13 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
     /// nothing unread, as the server starts a member just added; the counts, the marker and the cursors of one it holds are
     /// not touched — none of them is on a <c>Chat</c>, and the next list read brings the server's.
     /// </summary>
+    /// <remarks>
+    /// A DIRECT CHAT WITH SOMEBODY THIS READER HAS BLOCKED STAYS OFF THE LIST. The server sends a direct chat's
+    /// <c>chat_updated</c> without asking about blocks — a held chat moving family when the reader leaves one, say — and
+    /// the list read and <see cref="SetBlocked"/> both keep such a chat hidden, for the blocker alone (docs/protocol.md,
+    /// "Blocking a member"); a frame relisting it would show it until the next <c>GET /chats</c>. The row is still written:
+    /// it comes back whole, with whatever the frame said, on unblock.
+    /// </remarks>
     public void Upsert(ChatDto chat)
     {
         ArgumentNullException.ThrowIfNull(chat);
@@ -196,13 +210,14 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, family_ids_json)
-            VALUES ($id, $kind, $title, $peer, $members, $admin, $families)
+            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, family_ids_json, listed)
+            VALUES ($id, $kind, $title, $peer, $members, $admin, $families,
+                    CASE WHEN $kind = 'direct' AND $peer IN (SELECT user_id FROM blocked) THEN 0 ELSE 1 END)
             ON CONFLICT(chat_id) DO UPDATE SET
                 kind = excluded.kind, title = excluded.title, peer_user_id = excluded.peer_user_id,
                 member_ids_json = excluded.member_ids_json, admin_user_id = excluded.admin_user_id,
                 family_ids_json = excluded.family_ids_json,
-                listed = 1
+                listed = excluded.listed
             """;
         command.Parameters.AddWithValue("$id", chat.Id);
         command.Parameters.AddWithValue("$kind", chat.Kind);
@@ -774,6 +789,9 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
     /// </summary>
     public long? Family => family();
 
+    /// <summary>The account's home family, as the session says now — or null (see <see cref="Family"/>).</summary>
+    public long? Home => home();
+
     /// <summary>The roster of the family being shown — present and former members alike.</summary>
     public IReadOnlyList<MemberDto> Members()
     {
@@ -888,13 +906,17 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
     }
 
     /// <summary>
-    /// A member who JOINED, as the frame carries them — a <c>User</c>, so their role is
+    /// A member who JOINED, as the frame carries them — a <c>User</c>, so a newcomer's role is
     /// "member". A REJOIN lands here too: the row survived their leaving, and this is what
     /// takes the flag back off.
     /// </summary>
     /// <remarks>
     /// The narrow writer, not the roster one: an absent field must never clear a stored one, so
-    /// a frame that says nothing about a birthday leaves the one this device knows alone. The
+    /// a frame that says nothing about a birthday leaves the one this device knows alone — and
+    /// a frame that says nothing about a ROLE leaves the role of somebody already here alone: a
+    /// family started in the app is announced by a <c>member_joined</c> naming its creator, who is
+    /// its OWNER, and that frame may land after the roster read that said so (docs/protocol.md,
+    /// "Several families"). Only a new row, or one that had left, becomes "member". The
     /// exception is <see cref="Deleted"/>, whose whole job is to wipe. <paramref name="familyId"/> is the family the frame
     /// names — never "my family" (docs/protocol.md, "Several families") — and the one shown when it names none.
     /// <paramref name="passwordReset"/> is the family OWNER's flag for the newcomer — false when they are also in a family
@@ -919,8 +941,9 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username, display_name = excluded.display_name,
                     avatar_version = excluded.avatar_version,
-                    -- A rejoin is a member again, and never the owner by arriving.
-                    role = 'member', has_left = 0, deleted = 0,
+                    -- A rejoin is a member again, and never the owner by arriving; somebody still here keeps their role.
+                    role = CASE WHEN members.has_left = 0 AND members.role IS NOT NULL THEN members.role ELSE 'member' END,
+                    has_left = 0, deleted = 0,
                     birthday_month = COALESCE(excluded.birthday_month, members.birthday_month),
                     birthday_day = COALESCE(excluded.birthday_day, members.birthday_day)
                 """;
@@ -941,7 +964,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
                 INSERT INTO family_members (family_id, user_id, role, has_left, password_reset)
                 VALUES ($family, $id, 'member', 0, $reset)
                 ON CONFLICT(family_id, user_id) DO UPDATE SET
-                    role = 'member', has_left = 0,
+                    -- Never a downgrade: the creator of a family started in the app is its owner (see above).
+                    role = CASE WHEN family_members.has_left = 0 AND family_members.role IS NOT NULL
+                                THEN family_members.role ELSE 'member' END,
+                    has_left = 0,
                     password_reset = COALESCE(excluded.password_reset, family_members.password_reset)
                 """;
             row.Parameters.AddWithValue("$family", joined);

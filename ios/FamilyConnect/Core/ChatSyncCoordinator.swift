@@ -793,6 +793,18 @@ final class ChatSyncCoordinator {
             // did not mention it — which `.some(nil)` would do.
             var passwordReset: Bool?? = .none
             if let flag = payload.passwordReset { passwordReset = .some(flag) }
+            // The frame carries no role, so "member" is only what a NEW row
+            // on that family's roster starts as — anybody who joins is one
+            // (`keepsHeldRole`). A member this device already holds there
+            // keeps the role it holds. The case that needs it: "New Family…"
+            // from inside the app makes the server send `member_joined`
+            // naming the CREATOR, who is the family's OWNER; by then
+            // `createFamily` has adopted the family and the resync it starts
+            // may already have read the roster with the creator as owner,
+            // and writing "member" over that demoted them on this device
+            // until the next roster read. The same goes for a duplicate or
+            // late frame about anybody whose role has since moved
+            // (`family_owner`).
             upsertMember(
                 userID: payload.user.id,
                 username: payload.user.username,
@@ -800,7 +812,8 @@ final class ChatSyncCoordinator {
                 role: "member",
                 avatarVersion: payload.user.avatarVersion,
                 familyKey: familyKey(named: payload.familyID),
-                passwordReset: passwordReset)
+                passwordReset: passwordReset,
+                keepsHeldRole: true)
 
         case .reaction(let payload):
             // Full-state apply under the per-message seq guard; the chat
@@ -888,9 +901,17 @@ final class ChatSyncCoordinator {
                 // We are out of THAT family (docs/protocol.md, "Several
                 // families"): its chats, board, pack, roster and cursors go
                 // — and only its. A family this device holds is dropped at
-                // once; the resync then reconciles the rest (and, when it
-                // was the last family, routes the session to the gate and
-                // purges, as it always has).
+                // once; the resync then reconciles the rest. When it was the
+                // last family, `removeFamily` purges and routes the session
+                // itself — to the gate, or to the waiting screen while a
+                // join request is pending elsewhere, whose own `/me` poll
+                // takes over from there — and the socket closes with the
+                // phase, so there is nothing for a resync to do.
+                //
+                // This frame also reaches the device that sent a leave,
+                // possibly before the leave's own answer does
+                // (`AppSession.leaveFamily`, which is written to come to the
+                // same end whichever arrives first).
                 if let familyID, let session, session.families.contains(where: { $0.id == familyID }) {
                     session.removeFamily(familyID)
                     guard session.phase == .active else { return }
@@ -4353,12 +4374,23 @@ final class ChatSyncCoordinator {
 
         // 2. Rosters — EVERY family's, for sender-name resolution and the
         // member pickers (docs/protocol.md, resync step 1, 2026-10-22).
+        //
+        // Each family's read is kept for step 7 as well, which needs only
+        // its board and pack marks: one `GET /families/{id}` per family per
+        // resync, not two. With it goes the pack's connection number taken
+        // BEFORE the read, because the pack mark is a promise about the
+        // connection it was read under (`packConnection`) — and a reconnect
+        // between here and step 7 is exactly what
+        // `catchUpPackForThisConnection` notices and re-reads for.
         var mines: [Int64: FamilyMineResponse] = [:]
+        var packConnectionsAtRead: [Int64: Int] = [:]
         var familyGone = false
         for familyKey in familyKeys {
+            let packConnectionAtRead = packConnection
             do {
                 let mine = try await api.myFamily(family: pathFamily(familyKey))
                 mines[familyKey] = mine
+                packConnectionsAtRead[familyKey] = packConnectionAtRead
                 // Both arrays, one store: the tombstones are what let a
                 // stored message still name its sender. Only `members` is a
                 // roster (protocol.md, "Deleting an account").
@@ -4521,17 +4553,27 @@ final class ChatSyncCoordinator {
         // server's max, so a board nothing has happened on costs no request
         // at all.
         //
-        // The pack's connection number is taken BEFORE the read: the mark
-        // below is only a promise about the connection it was read under
-        // (`packConnection`).
+        // That read is step 2's, with the pack's connection number taken
+        // BEFORE it: the mark below is only a promise about the connection
+        // it was read under (`packConnection`). A board's mark is only a
+        // gate — the catch-up pages from the cursor to a short page whatever
+        // it says — so being read a few steps earlier changes nothing. A
+        // family step 2 has no read of (its read failed, or the family
+        // arrived since) is read here, as every family used to be.
         for familyKey in heldFamilyKeys {
-            let packConnectionAtRead = packConnection
-            if let mine = try? await api.myFamily(family: pathFamily(familyKey)) {
-                await catchUpBoard(serverMaxSeq: mine.maxBoardSeq ?? 0, familyKey: familyKey)
+            let read: (mine: FamilyMineResponse, packConnection: Int)?
+            if let mine = mines[familyKey], let connection = packConnectionsAtRead[familyKey] {
+                read = (mine, connection)
+            } else {
+                let connection = packConnection
+                read = (try? await api.myFamily(family: pathFamily(familyKey))).map { ($0, connection) }
+            }
+            if let read {
+                await catchUpBoard(serverMaxSeq: read.mine.maxBoardSeq ?? 0, familyKey: familyKey)
                 // 7a. The sticker pack, on its own cursor and by the board's
                 // own rule.
                 await catchUpPackForThisConnection(
-                    connection: packConnectionAtRead, mine: mine, familyKey: familyKey)
+                    connection: read.packConnection, mine: read.mine, familyKey: familyKey)
             }
         }
 
@@ -5518,7 +5560,13 @@ final class ChatSyncCoordinator {
         /// The owner's `password_reset` for this member, doubly wrapped for
         /// the birthday's reason: `.none` was never told, `.some(nil)` is a
         /// read that does not carry it (a member's, or an older server's).
-        passwordReset: Bool?? = .none
+        passwordReset: Bool?? = .none,
+        /// True when `role` is a DEFAULT rather than something the server
+        /// said — a `member_joined`, which carries no role. It then applies
+        /// only to a row new to this family's roster; one already on it
+        /// keeps the role it holds, so a frame can never demote an owner.
+        /// A roster read says the role outright and leaves this false.
+        keepsHeldRole: Bool = false
     ) {
         let familyKey = familyKey ?? currentFamilyKey
         let member: MemberEntity
@@ -5552,7 +5600,7 @@ final class ChatSyncCoordinator {
         // On THIS family's roster, in this role; `role` and `hasLeft` are
         // then the projection onto the family on screen.
         var roles = member.familyRoles
-        roles[familyKey] = role
+        if !keepsHeldRole || roles[familyKey] == nil { roles[familyKey] = role }
         if roles != member.familyRoles { member.familyRoles = roles }
         if let passwordReset {
             var denied = Set(FamilyIDList.decode(member.passwordResetDeniedText))

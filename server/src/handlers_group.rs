@@ -392,7 +392,7 @@ pub async fn create_group(
     // one decision, and two creators racing for the fiftieth group must not
     // both get it.
     let still_here: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
             .bind(family_id)
             .fetch_optional(&mut *tx)
             .await?;

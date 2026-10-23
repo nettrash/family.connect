@@ -1353,7 +1353,7 @@ async fn lock_board(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     family_id: i64,
 ) -> Result<(), ApiError> {
-    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
         .bind(family_id)
         .execute(&mut **tx)
         .await?;

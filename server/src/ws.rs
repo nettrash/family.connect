@@ -390,6 +390,10 @@ pub async fn ws_upgrade(
     let token = crate::auth::bearer_from_header(&headers)
         .or_else(|| crate::auth::bearer_from_subprotocols(&headers))
         .ok_or_else(ApiError::unauthorized)?;
+    // Taken BEFORE the memberships are read: the home family this socket is
+    // registered with is recorded only if nothing newer was (see
+    // `Registry::home_ticket`).
+    let home_ticket = state.registry.home_ticket();
     let mut auth = crate::auth::authenticate(&state, &token).await?;
     // The socket's counterpart of `X-FC-Families: 1` (docs/protocol.md,
     // "Several families"): a query parameter, because a browser's WebSocket
@@ -425,7 +429,9 @@ pub async fn ws_upgrade(
             .fetch_optional(&state.pool)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
-    Ok(ws.on_upgrade(move |socket| run_connection(state, auth, expires_at, language, socket)))
+    Ok(ws.on_upgrade(move |socket| {
+        run_connection(state, auth, home_ticket, expires_at, language, socket)
+    }))
 }
 
 /// The per-connection task. Runs until the socket dies, the client idles
@@ -434,6 +440,7 @@ pub async fn ws_upgrade(
 async fn run_connection(
     state: AppState,
     auth: AuthUser,
+    home_ticket: u64,
     expires_at: OffsetDateTime,
     language: Option<String>,
     mut socket: WebSocket,
@@ -445,6 +452,7 @@ async fn run_connection(
             auth.session_id,
             auth.multi,
             auth.home_family(),
+            home_ticket,
         )
         .await;
     let shutdown = registry.shutdown_token();

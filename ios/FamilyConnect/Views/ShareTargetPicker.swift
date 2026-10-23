@@ -40,7 +40,10 @@ struct ShareTargetPicker: View {
     private var eligibleChats: [ChatEntity] {
         chats
             .filter { ShareImport.isEligible(chatKind: $0.kind) }
-            .filter { FamilyRules.isListed(chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID) }
+            .filter {
+                FamilyRules.isListed(
+                    chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID, home: session.homeFamilyID)
+            }
             .sorted { a, b in
                 if a.pinRank != b.pinRank { return a.pinRank < b.pinRank }
                 let dateA = a.lastMessageDate ?? .distantPast

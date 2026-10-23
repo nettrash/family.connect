@@ -169,7 +169,7 @@ pub async fn create_invitation(
     // same lock every membership change takes, so an invitation cannot be
     // created into a family half way through being deleted either.
     let owner: Option<i64> =
-        sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR NO KEY UPDATE")
             .bind(family_id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -213,6 +213,29 @@ pub async fn create_invitation(
             .fetch_optional(&mut *tx)
             .await?;
     if alive.is_none() {
+        return Err(ApiError::forbidden(
+            codes::NOT_SAME_FAMILY,
+            "you can invite only people from your other families",
+        ));
+    }
+    // And still somebody the owner shares another family with — asked again
+    // inside the transaction. The answer above was read before it, and a
+    // departure that unshared the two in between lapsed the invitations it
+    // could see, which did not yet include this one. What still slips through
+    // (a departure committing in the same instant) the hourly
+    // `sweep_unshared_invitations` lapses.
+    let still_shared: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM family_members mine
+               JOIN family_members theirs ON theirs.family_id = mine.family_id
+              WHERE mine.user_id = $1 AND theirs.user_id = $2 AND mine.family_id <> $3)",
+    )
+    .bind(auth.user_id)
+    .bind(target)
+    .bind(family_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !still_shared {
         return Err(ApiError::forbidden(
             codes::NOT_SAME_FAMILY,
             "you can invite only people from your other families",
@@ -324,7 +347,7 @@ pub async fn accept_invitation(
                JOIN family_members theirs ON theirs.family_id = mine.family_id
               WHERE mine.user_id = f.owner_user_id AND theirs.user_id = $2
                 AND mine.family_id <> f.id)
-           FROM families f WHERE f.id = $1 FOR UPDATE",
+           FROM families f WHERE f.id = $1 FOR NO KEY UPDATE",
     )
     .bind(family_id)
     .bind(auth.user_id)

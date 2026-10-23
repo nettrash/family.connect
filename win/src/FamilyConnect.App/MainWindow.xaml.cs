@@ -267,7 +267,7 @@ public sealed partial class MainWindow : Window
             var family = target switch
             {
                 { ChatId: { } chat } when current.Chats.Chat(chat)?.Chat is { } held =>
-                    FamilyRules.FamilyToOpen(held, current.Session.State.CurrentFamilyId),
+                    FamilyRules.FamilyToOpen(held, current.Session.State.CurrentFamilyId, current.Session.State.HomeFamilyId),
                 { FamilyId: { } named } => named,
                 _ => null,
             };

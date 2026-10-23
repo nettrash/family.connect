@@ -117,6 +117,11 @@ class FamilyRepository @Inject constructor(
                     // a family created on another device): `/me` and that
                     // family are read again (docs/protocol.md, "Several
                     // families").
+                    //
+                    // One naming ME for a family this device DOES hold is
+                    // the echo of a door I just went through here — most
+                    // often a family I created, of which I am the owner —
+                    // and changes nothing about my role in it.
                     is ServerFrame.MemberJoined -> {
                         val state = settings.state.first()
                         val held = state.families.isEmpty() || state.families.any { it.id == frame.familyId }
@@ -131,9 +136,24 @@ class FamilyRepository @Inject constructor(
                                     userId = frame.user.id,
                                     username = frame.user.username,
                                     displayName = frame.user.displayName,
-                                    // Joiners are always plain members; the
-                                    // owner existed before the frame could.
-                                    role = "member",
+                                    // A NEW row's role, and a returning
+                                    // one's: joiners are plain members. It
+                                    // never lands on a row still live
+                                    // (MemberDao.updateLeavingBirthday) —
+                                    // the frame naming ME for a family this
+                                    // device just created arrives after
+                                    // `create` read the roster with me as
+                                    // its owner, and must not demote me.
+                                    // My own row, if the frame wins the race
+                                    // with that read, takes the role my
+                                    // entry already says (the creator's is
+                                    // "owner"), so a failed read leaves no
+                                    // "member" behind either.
+                                    role = if (frame.user.id == state.myUserId) {
+                                        state.families.firstOrNull { it.id == frame.familyId }?.role ?: "member"
+                                    } else {
+                                        "member"
+                                    },
                                     avatarVersion = frame.user.avatarVersion,
                                     // On the owner's copy only (docs/protocol.md,
                                     // "Several families"). A newcomer who came

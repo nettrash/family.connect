@@ -32,8 +32,11 @@ interface FamilyLocalData {
 
     /**
      * This account is out of [familyId]: drop that family's chats, board,
-     * pack and roster, and only that family's. A direct chat stays while its
-     * `family_ids` still name one of [remainingFamilyIds].
+     * pack and roster, and only that family's. A direct chat is the pair's,
+     * not the family's: it is narrowed rather than dropped, and the
+     * `chat_updated` the server sends with the departure says where it now
+     * lives or that it is gone (ChatRepository.dropFamily) — it may still
+     * name one of [remainingFamilyIds], or none until that frame lands.
      */
     suspend fun dropFamily(familyId: Long, remainingFamilyIds: Set<Long>)
 

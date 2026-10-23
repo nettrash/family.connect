@@ -542,9 +542,16 @@ pub(crate) async fn grant_membership(
     //
     // This joins an existing lock order rather than inventing one:
     // `leave_family`, `remove_member` and `delete_account` already take
-    // this same row FOR UPDATE, so a caller can never hold one of those
-    // and wait on this.
-    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+    // this same row's lock, so a caller can never hold one of those and
+    // wait on this.
+    //
+    // FOR NO KEY UPDATE, like every family-row lock in this server: it
+    // serializes everybody who takes it exactly as FOR UPDATE did, and it
+    // does NOT block the FOR KEY SHARE a foreign-key check takes — so a
+    // departure moving a direct chat onto this family (`UPDATE chats SET
+    // family_id`) while holding that chat's lock cannot deadlock against a
+    // grant that holds this row and waits for the same chat.
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
         .bind(family_id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -632,6 +639,11 @@ pub(crate) async fn grant_membership(
     .bind(family_id)
     .execute(&mut *tx)
     .await?;
+    // The joiner's direct chats BEFORE the invitation row: a departure locks
+    // its direct chats and then the invitations it lapses
+    // (`remove_membership`), so a grant that took them the other way round
+    // would close a cycle with it.
+    reopen_direct_chats(&mut *tx, family_id, user_id).await?;
     // An invitation into this family lapses — "when the invited person joins
     // the family by another door" — and the accept path deletes its own the
     // same way, so this one statement is every door's.
@@ -642,7 +654,6 @@ pub(crate) async fn grant_membership(
     .bind(user_id)
     .fetch_optional(&mut *tx)
     .await?;
-    reopen_direct_chats(&mut *tx, family_id, user_id).await?;
     Ok(Granted::Yes(lapsed.map(|id| LapsedInvitation {
         id,
         family_id,
@@ -749,6 +760,24 @@ pub async fn create_family(
                 .bind(auth.user_id)
                 .fetch_one(&mut *tx)
                 .await?;
+        // The door is chosen AGAIN under the lock. The one above was read off
+        // the memberships at authentication, and a join approved since then
+        // makes this a member starting ANOTHER family — which
+        // `member_families` may forbid even where `registration` allows a
+        // first one (or the other way round, after a last family was left).
+        let first_family = held == 0;
+        if first_family && !state.cfg.families.registration {
+            return Err(ApiError::forbidden(
+                codes::FAMILY_REGISTRATION_DISABLED,
+                "this server does not take new families",
+            ));
+        }
+        if !first_family && !state.cfg.families.member_families_enabled() {
+            return Err(ApiError::forbidden(
+                codes::MEMBER_FAMILIES_DISABLED,
+                "this server does not let members start families",
+            ));
+        }
         // An account may CREATE a family only while it owns none — so the
         // married son owns his one family, and a second needs the first
         // handed on or deleted. Ownership that came by hand-off counts
@@ -1739,14 +1768,14 @@ pub async fn leave_family(
     // decision, so they are one transaction with the family row locked.
     // They used to be two pool round-trips with nothing between them, and
     // under `join_policy = 'open'` somebody could join in that gap and find
-    // their new family deleted underneath them. `FOR UPDATE` is what closes
+    // their new family deleted underneath them. The row lock is what closes
     // it rather than the transaction alone: `grant_membership` takes this
-    // same row FOR UPDATE before it inserts a membership, so a join in
+    // same row's lock before it inserts a membership, so a join in
     // flight either lands before the count sees it, or waits and then fails
     // against a family that is gone.
     let mut tx = state.pool.begin().await?;
     let owner_user_id: Option<i64> =
-        sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR NO KEY UPDATE")
             .bind(family_id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -1848,12 +1877,20 @@ pub async fn leave_family(
         .await?;
         // The chats the leaver holds after the other side left, whose row
         // names this family: re-pointed before the cascade could take them.
-        let held = settle_held_closed_chats(&mut tx, family_id, auth.user_id).await?;
+        let held = held_closed_chats(&mut tx, family_id, auth.user_id).await?;
+        lock_chats(&mut tx, &held).await?;
+        let mut held = settle_held_closed_chats(&mut tx, family_id, auth.user_id, &held).await?;
         let deleted = delete_family_in_tx(&mut tx, family_id).await?;
         let ended = end_legacy_sessions_if_home_moved(&mut tx, auth.user_id, was_home).await?;
         tx.commit().await?;
         refresh_home(&state, auth.user_id).await;
         announce_deleted_family_invitations(&state, &deleted.invitations).await;
+        match repair_held_chats(&state, auth.user_id).await {
+            Ok(repaired) => held.extend(repaired),
+            Err(error) => tracing::warn!(?error, "could not repair held direct chats"),
+        }
+        held.sort_unstable();
+        held.dedup();
         announce_direct_chats(&state, &held).await;
         // The account's OTHER devices are told the family is gone the way a
         // departure always tells them — nobody else is left to tell.
@@ -2020,7 +2057,7 @@ pub async fn remove_member(
     // `delete_account`, which holds it while it chooses a successor, can
     // never read a roster somebody is half way out of.
     let mut tx = state.pool.begin().await?;
-    sqlx::query_scalar::<_, i64>("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+    sqlx::query_scalar::<_, i64>("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
         .bind(family.id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -2102,8 +2139,10 @@ pub async fn reset_member_password(
     // somebody else's family in that gap would otherwise hand this owner an
     // account that is no longer only theirs to recover. `grant_membership`
     // takes this same row FOR UPDATE before it inserts a membership, so the
-    // answer read here cannot move before the commit.
-    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+    // answer read here cannot move before the commit. FOR NO KEY UPDATE is
+    // enough for that, and leaves the member's own messages — whose
+    // foreign-key check takes FOR KEY SHARE on this row — unblocked.
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(target_user_id)
         .execute(&mut *tx)
         .await?;
@@ -2499,19 +2538,27 @@ async fn remove_membership(
     .bind(family_id)
     .fetch_all(&mut *tx)
     .await?;
-    let mut direct_changes = Vec::with_capacity(direct.len());
+    // And the chats the leaver holds after the OTHER side left, whose row
+    // names this family (`settle_held_closed_chats`).
+    let held = held_closed_chats(&mut *tx, family_id, user_id).await?;
+    // Every direct chat this departure may change is LOCKED before any is
+    // read or written, in ONE ascending pass. Each departure holds only its
+    // own family's lock, so two of them from two different shared families
+    // — one by each side — could otherwise each read the other's membership
+    // as still there, and neither would close a chat the pair no longer
+    // shares; the families the two share are read after the lock, in a
+    // statement of their own, so the second sees what the first committed.
+    // One pass and one order, the order `reopen_direct_chats` takes them in,
+    // because two passes could each hold what the other one waits for.
+    // FOR NO KEY UPDATE, so a message being sent into one of them — whose
+    // foreign-key check takes FOR KEY SHARE on the chat — is not in the way.
+    let mut to_lock: Vec<i64> = direct.iter().map(|(chat_id, _)| *chat_id).collect();
+    to_lock.extend(&held);
+    to_lock.sort_unstable();
+    to_lock.dedup();
+    lock_chats(&mut *tx, &to_lock).await?;
+    let mut direct_changes = Vec::with_capacity(to_lock.len());
     for (chat_id, peer) in direct {
-        // The chat row's lock BEFORE the families the two share are read.
-        // Each departure holds only its own family's lock, so two of them
-        // from two different shared families — one by each side — could
-        // otherwise each read the other's membership as still there, and
-        // neither would close a chat the pair no longer shares. Locked in
-        // ascending id order, and read in a statement of its own after the
-        // lock, so the second sees what the first committed.
-        sqlx::query("SELECT id FROM chats WHERE id = $1 FOR UPDATE")
-            .bind(chat_id)
-            .execute(&mut *tx)
-            .await?;
         let shared = crate::families::shared_families(&mut *tx, user_id, peer).await?;
         if shared.is_empty() {
             sqlx::query("DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2")
@@ -2529,13 +2576,55 @@ async fn remove_membership(
         }
         direct_changes.push(chat_id);
     }
-    direct_changes.extend(settle_held_closed_chats(&mut *tx, family_id, user_id).await?);
+    direct_changes.extend(settle_held_closed_chats(&mut *tx, family_id, user_id, &held).await?);
     let lapsed = lapse_unshared_invitations(&mut *tx, user_id, family_id).await?;
     Ok(Departure {
         group_exits,
         direct_changes,
         lapsed,
     })
+}
+
+/// Lock these chat rows, in ascending id order — the one order every path
+/// that changes several direct chats takes them in.
+async fn lock_chats(tx: &mut PgConnection, chat_ids: &[i64]) -> Result<(), ApiError> {
+    if chat_ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query("SELECT id FROM chats WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+        .bind(chat_ids)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+/// SQL selecting the direct chats `$1` holds after the OTHER side left whose
+/// row names `$2` — chats the peer is no longer in `$2` for. `c` is `chats`.
+const HELD_CLOSED_SQL: &str = "SELECT c.id
+       FROM chats c
+       JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
+      WHERE c.kind = 'direct'
+        AND c.family_id = $2
+        AND (c.user_a_id = $1 OR c.user_b_id = $1)
+        AND NOT EXISTS (SELECT 1 FROM family_members fm
+                         WHERE fm.family_id = $2
+                           AND fm.user_id =
+                               CASE WHEN c.user_a_id = $1 THEN c.user_b_id
+                                    ELSE c.user_a_id END)";
+
+/// The chats [`settle_held_closed_chats`] is about, read before they are
+/// locked so the caller can lock them together with the rest.
+async fn held_closed_chats(
+    tx: &mut PgConnection,
+    family_id: i64,
+    user_id: i64,
+) -> Result<Vec<i64>, ApiError> {
+    let held = sqlx::query_scalar(&format!("{HELD_CLOSED_SQL} ORDER BY c.id"))
+        .bind(user_id)
+        .bind(family_id)
+        .fetch_all(&mut *tx)
+        .await?;
+    Ok(held)
 }
 
 /// The direct chats `user_id` still holds after the OTHER side left, whose
@@ -2547,57 +2636,109 @@ async fn remove_membership(
 /// that family's deletion, with nobody told. Without a family left, the
 /// leaver lets go of it too, as every departure did before several families.
 ///
-/// Answers the chats it changed, to be announced with the departure.
+/// `candidates` are the chats [`held_closed_chats`] read, already LOCKED by
+/// the caller; each is read again here, under that lock, in case a wait for
+/// it changed the answer. Answers the chats it changed, to be announced with
+/// the departure.
 async fn settle_held_closed_chats(
     tx: &mut PgConnection,
     family_id: i64,
     user_id: i64,
+    candidates: &[i64],
 ) -> Result<Vec<i64>, ApiError> {
-    let held: Vec<i64> = sqlx::query_scalar(
-        "SELECT c.id
-           FROM chats c
-           JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
-          WHERE c.kind = 'direct'
-            AND c.family_id = $2
-            AND (c.user_a_id = $1 OR c.user_b_id = $1)
-            AND NOT EXISTS (SELECT 1 FROM family_members fm
-                             WHERE fm.family_id = $2
-                               AND fm.user_id =
-                                   CASE WHEN c.user_a_id = $1 THEN c.user_b_id
-                                        ELSE c.user_a_id END)
-          ORDER BY c.id
-            FOR UPDATE OF c",
-    )
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let held: Vec<i64> = sqlx::query_scalar(&format!(
+        "{HELD_CLOSED_SQL} AND c.id = ANY($3) ORDER BY c.id"
+    ))
     .bind(user_id)
     .bind(family_id)
+    .bind(candidates)
     .fetch_all(&mut *tx)
     .await?;
+    move_or_release_held(tx, user_id, family_id, &held).await?;
+    Ok(held)
+}
+
+/// Point each of these held chats at `user_id`'s home family other than
+/// `leaving`, or — with no such family — take `user_id` out of them.
+async fn move_or_release_held(
+    tx: &mut PgConnection,
+    user_id: i64,
+    leaving: i64,
+    held: &[i64],
+) -> Result<(), ApiError> {
     if held.is_empty() {
-        return Ok(held);
+        return Ok(());
     }
-    // Their home family OTHER than this one: when the last member leaves,
-    // this runs before the family is deleted and still counts it.
+    // Their home family OTHER than the one being left: when the last member
+    // leaves, this runs before the family is deleted and still counts it.
     match crate::families::family_ids_of(&mut *tx, user_id)
         .await?
         .into_iter()
-        .find(|id| *id != family_id)
+        .find(|id| *id != leaving)
     {
         Some(home) => {
             sqlx::query("UPDATE chats SET family_id = $2 WHERE id = ANY($1)")
-                .bind(&held)
+                .bind(held)
                 .bind(home)
                 .execute(&mut *tx)
                 .await?;
         }
         None => {
             sqlx::query("DELETE FROM chat_members WHERE chat_id = ANY($1) AND user_id = $2")
-                .bind(&held)
+                .bind(held)
                 .bind(user_id)
                 .execute(&mut *tx)
                 .await?;
         }
     }
-    Ok(held)
+    Ok(())
+}
+
+/// After a departure has COMMITTED: the closed direct chats `user_id` still
+/// holds whose row names a family `user_id` is no longer in, put right.
+///
+/// What the departure's own transaction settled can be undone by another
+/// departure of the same account running at the same moment: each holds only
+/// its own family's lock, so each may move a held chat onto the family the
+/// other is leaving, or read the other's membership as still there. Nothing
+/// locks an account's departures against each other — a lock on the account
+/// row would close a cycle with two owners handing their families to each
+/// other at once — so instead each departure, once committed, looks again;
+/// whichever commits LAST sees both, and puts the row on a family the holder
+/// is in, or lets the holder go. Answers the chats it changed.
+async fn repair_held_chats(state: &AppState, user_id: i64) -> Result<Vec<i64>, ApiError> {
+    const ADRIFT: &str = "SELECT c.id
+           FROM chats c
+           JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
+          WHERE c.kind = 'direct'
+            AND (c.user_a_id = $1 OR c.user_b_id = $1)
+            AND NOT EXISTS (SELECT 1 FROM chat_members peer
+                             WHERE peer.chat_id = c.id AND peer.user_id <> $1)
+            AND NOT EXISTS (SELECT 1 FROM family_members fm
+                             WHERE fm.family_id = c.family_id AND fm.user_id = $1)";
+    let candidates: Vec<i64> = sqlx::query_scalar(&format!("{ADRIFT} ORDER BY c.id"))
+        .bind(user_id)
+        .fetch_all(&state.pool)
+        .await?;
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+    let mut tx = state.pool.begin().await?;
+    lock_chats(&mut tx, &candidates).await?;
+    let adrift: Vec<i64> =
+        sqlx::query_scalar(&format!("{ADRIFT} AND c.id = ANY($2) ORDER BY c.id"))
+            .bind(user_id)
+            .bind(&candidates)
+            .fetch_all(&mut *tx)
+            .await?;
+    // No family is being left here, so 0 — an id no family has — excludes
+    // nothing.
+    move_or_release_held(&mut tx, user_id, 0, &adrift).await?;
+    tx.commit().await?;
+    Ok(adrift)
 }
 
 /// The invitations that stop being valid when `user_id` leaves `family_id`:
@@ -2614,21 +2755,38 @@ pub(crate) async fn lapse_unshared_invitations(
     user_id: i64,
     family_id: i64,
 ) -> Result<Vec<LapsedInvitation>, ApiError> {
-    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
-        "DELETE FROM invitations i
-          USING families f
-          WHERE f.id = i.family_id
-            AND (i.user_id = $1 OR f.owner_user_id = $1 OR i.family_id = $2)
-            AND NOT EXISTS (
-                SELECT 1 FROM family_members mine
-                  JOIN family_members theirs ON theirs.family_id = mine.family_id
-                 WHERE mine.user_id = f.owner_user_id
-                   AND theirs.user_id = i.user_id
-                   AND mine.family_id <> i.family_id)
-          RETURNING i.id, i.family_id, i.user_id",
+    // The rows that MIGHT lapse are locked first, and decided in a statement
+    // of their own after the lock — the same shape as a departure's direct
+    // chats, for the same reason: two departures from two different shared
+    // families, one by the owner and one by the invited, each read the
+    // other's membership as still there, and neither lapsed an invitation
+    // the two no longer share. Locked, the second waits for the first and
+    // then sees it.
+    let candidates: Vec<i64> = sqlx::query_scalar(
+        "SELECT i.id
+           FROM invitations i
+           JOIN families f ON f.id = i.family_id
+          WHERE i.user_id = $1 OR f.owner_user_id = $1 OR i.family_id = $2
+          ORDER BY i.id
+            FOR UPDATE OF i",
     )
     .bind(user_id)
     .bind(family_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+        "DELETE FROM invitations i
+          USING families f
+          WHERE f.id = i.family_id
+            AND i.id = ANY($1)
+            AND {}
+          RETURNING i.id, i.family_id, i.user_id",
+        UNSHARED_INVITATION_SQL
+    ))
+    .bind(&candidates)
     .fetch_all(&mut *tx)
     .await?;
     Ok(rows
@@ -2639,6 +2797,42 @@ pub(crate) async fn lapse_unshared_invitations(
             user_id,
         })
         .collect())
+}
+
+/// SQL true when an invitation `i` (into family `f`) no longer holds: its
+/// person and its family's CURRENT owner share no family other than `f`.
+const UNSHARED_INVITATION_SQL: &str = "NOT EXISTS (
+        SELECT 1 FROM family_members mine
+          JOIN family_members theirs ON theirs.family_id = mine.family_id
+         WHERE mine.user_id = f.owner_user_id
+           AND theirs.user_id = i.user_id
+           AND mine.family_id <> i.family_id)";
+
+/// The hourly backstop for [`lapse_unshared_invitations`]: every invitation
+/// whose person and family owner no longer share another family, lapsed and
+/// announced. A departure lapses what it can see, but an invitation CREATED
+/// in the same instant as the departure that unshares the pair is not there
+/// for that departure to see; this catches it within the hour. Answers how
+/// many it lapsed.
+pub async fn sweep_unshared_invitations(state: &AppState) -> Result<usize, ApiError> {
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+        "DELETE FROM invitations i
+          USING families f
+          WHERE f.id = i.family_id AND {UNSHARED_INVITATION_SQL}
+          RETURNING i.id, i.family_id, i.user_id"
+    ))
+    .fetch_all(&state.pool)
+    .await?;
+    let lapsed: Vec<LapsedInvitation> = rows
+        .into_iter()
+        .map(|(id, family_id, user_id)| LapsedInvitation {
+            id,
+            family_id,
+            user_id,
+        })
+        .collect();
+    announce_lapsed(state, &lapsed).await;
+    Ok(lapsed.len())
 }
 
 /// After a departure committed: the groups as they now stand, and each
@@ -2655,6 +2849,13 @@ pub(crate) async fn announce_departure(
     was_home: bool,
 ) {
     refresh_home(state, user_id).await;
+    let mut direct_changes = departure.direct_changes;
+    match repair_held_chats(state, user_id).await {
+        Ok(repaired) => direct_changes.extend(repaired),
+        Err(error) => tracing::warn!(?error, user_id, "could not repair held direct chats"),
+    }
+    direct_changes.sort_unstable();
+    direct_changes.dedup();
     crate::handlers_group::announce_exits(
         state,
         user_id,
@@ -2662,7 +2863,7 @@ pub(crate) async fn announce_departure(
         Some((family_id, was_home)),
     )
     .await;
-    announce_direct_chats(state, &departure.direct_changes).await;
+    announce_direct_chats(state, &direct_changes).await;
     announce_lapsed(state, &departure.lapsed).await;
 }
 
@@ -2672,11 +2873,12 @@ pub(crate) async fn announce_departure(
 /// Never fails the change it follows; a lost refresh is put right by the
 /// app's next connection.
 pub(crate) async fn refresh_home(state: &AppState, user_id: i64) {
+    let ticket = state.registry.home_ticket();
     match crate::families::family_ids_of(&state.pool, user_id).await {
         Ok(family_ids) => {
             state
                 .registry
-                .set_home(user_id, family_ids.first().copied())
+                .set_home(user_id, family_ids.first().copied(), ticket)
                 .await
         }
         Err(error) => tracing::warn!(?error, user_id, "could not refresh a home family"),
@@ -2703,48 +2905,65 @@ pub(crate) async fn announce_joined(state: &AppState, family_id: i64, joined: Us
 
 /// The joiner's direct chats with members of `family_id`, both sides put
 /// back into any that had closed and the row moved onto a family the two
-/// share — inside the grant's transaction, as ONE statement, so a leave or a
-/// removal that lands after the grant cannot have its closure undone by a
-/// reopen running late, and a failure reopens nothing rather than some.
+/// share — inside the grant's transaction, so a leave or a removal that lands
+/// after the grant cannot have its closure undone by a reopen running late,
+/// and a failure reopens nothing rather than some.
+///
+/// The chat rows are LOCKED first, in ascending id order, and only then
+/// written, each write a statement of its own: a statement's snapshot is
+/// taken when it starts, so a write in the same statement as the lock would
+/// still see whatever a departure it waited for had just changed — a peer
+/// still in the family they left — and leave the row naming a family the two
+/// no longer share. Nobody can leave `family_id` meanwhile: the grant holds
+/// its row.
 ///
 /// The row's own `family_id` moves here only when it names a family the two
 /// no longer share — `direct_chat`'s upsert rule. A chat that closed kept the
 /// family one side left, and everything read off the row (a transcript's
-/// switch, language and statistics) would go on naming it. Each chat row is
-/// locked, as a departure locks it (`remove_membership`).
+/// switch, language and statistics) would go on naming it.
 async fn reopen_direct_chats(
     tx: &mut PgConnection,
     family_id: i64,
     user_id: i64,
 ) -> Result<(), ApiError> {
+    let chat_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT c.id
+           FROM chats c
+          WHERE c.kind = 'direct'
+            AND (c.user_a_id = $1 OR c.user_b_id = $1)
+            AND EXISTS (SELECT 1 FROM family_members fm
+                         WHERE fm.family_id = $2
+                           AND fm.user_id =
+                               CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END)
+          ORDER BY c.id
+            FOR NO KEY UPDATE OF c",
+    )
+    .bind(user_id)
+    .bind(family_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if chat_ids.is_empty() {
+        return Ok(());
+    }
     sqlx::query(
-        "WITH pairs AS (
-             SELECT c.id, c.user_a_id, c.user_b_id
-               FROM chats c
-              WHERE c.kind = 'direct'
-                AND (c.user_a_id = $1 OR c.user_b_id = $1)
-                AND EXISTS (SELECT 1 FROM family_members fm
-                             WHERE fm.family_id = $2
-                               AND fm.user_id =
-                                   CASE WHEN c.user_a_id = $1 THEN c.user_b_id
-                                        ELSE c.user_a_id END)
-              ORDER BY c.id
-                FOR UPDATE OF c
-         ), joined AS (
-             INSERT INTO chat_members (chat_id, user_id)
-             SELECT id, user_a_id FROM pairs
-             UNION ALL
-             SELECT id, user_b_id FROM pairs
-             ON CONFLICT DO NOTHING
-         )
-         UPDATE chats c SET family_id = $2
-           FROM pairs p
-          WHERE c.id = p.id
+        "INSERT INTO chat_members (chat_id, user_id)
+         SELECT c.id, side.user_id
+           FROM chats c
+          CROSS JOIN LATERAL (VALUES (c.user_a_id), (c.user_b_id)) AS side(user_id)
+          WHERE c.id = ANY($1)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&chat_ids)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE chats c SET family_id = $2
+          WHERE c.id = ANY($1)
             AND (SELECT count(*) FROM family_members fm
                   WHERE fm.family_id = c.family_id
                     AND fm.user_id IN (c.user_a_id, c.user_b_id)) < 2",
     )
-    .bind(user_id)
+    .bind(&chat_ids)
     .bind(family_id)
     .execute(&mut *tx)
     .await?;

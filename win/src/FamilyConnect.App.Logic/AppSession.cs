@@ -114,6 +114,13 @@ public sealed record SessionState(
     /// <summary>The families, never null.</summary>
     public IReadOnlyList<FamilyDto> AllFamilies => Families ?? [];
 
+    /// <summary>
+    /// The HOME family — the first <c>GET /me</c> lists (docs/protocol.md, "Several families"), and the one family of a server
+    /// that predates them — where a chat with no <c>family_ids</c> is listed (<see cref="FamilyRules.FamiliesOf"/>); null
+    /// with no family.
+    /// </summary>
+    public long? HomeFamilyId => AllFamilies.FirstOrDefault()?.Id;
+
     /// <summary>The waiting join requests, never null.</summary>
     public IReadOnlyList<PendingJoinDto> AllPending => PendingJoins ?? [];
 

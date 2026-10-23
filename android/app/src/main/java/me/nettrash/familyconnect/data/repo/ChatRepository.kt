@@ -60,6 +60,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.GroupMembersCodec
@@ -205,6 +207,18 @@ class ChatRepository @Inject constructor(
      * (docs/protocol.md, "Mentioning a member").
      */
     private val liveMentionIds = ConcurrentHashMap<Long, MutableSet<Long>>()
+
+    /**
+     * Serialises the two writers of a chat's `family_ids` that race each
+     * other on a departure — [applyChat] off this repository's collector and
+     * [dropFamily] off FamilyRepository's — so neither decides on a row the
+     * other is halfway through changing. Each reads, decides and writes; an
+     * interleaving would let [dropFamily] narrow a chat [applyChat] had just
+     * moved, from the copy it read before the move. Above the `init` for
+     * the reason the ledgers are: the collector may call [applyChat] on its
+     * first dispatch.
+     */
+    private val familyListing = Mutex()
 
     // Declared AFTER the state it touches: the collector body may run on
     // the very first dispatch after construction, and a lambda reading a
@@ -503,17 +517,39 @@ class ChatRepository @Inject constructor(
     /**
      * This account is out of [familyId] (docs/protocol.md, "Several
      * families"): that family's chats go — its family chat, its groups, its
-     * `ai` chat — and a DIRECT chat stays, narrowed, while its `family_ids`
-     * still name one of [remainingFamilyIds]. A chat that never said its
-     * families (a server from before) was the one family's, and goes.
+     * `ai` chat. A chat that never said its families (a server from before)
+     * was the one family's, and goes.
+     *
+     * A DIRECT chat that names its families is narrowed, never deleted
+     * here — even when nothing in [remainingFamilyIds] lists it any more.
+     * Direct chats are the pair's, and what a departure does to each is the
+     * server's call, sent to the leaver as a `chat_updated` for every one it
+     * touches: narrowed to the families the two still share, moved onto
+     * another family of the leaver (a chat they held after the other side
+     * had gone, docs/protocol.md "Several families"), or `[]` — gone for
+     * this side, which [applyChat] deletes. That frame is sent BEFORE
+     * `member_left`, but the two are consumed by different collectors
+     * (this repository's and FamilyRepository's), so either may run first.
+     * Deleting here when the local copy names no remaining family made the
+     * outcome depend on that race: run first, it took a chat about to be
+     * moved — row, messages, read marker — and the `chat_updated` that
+     * followed found nothing to move. Narrowed instead, the row stays, in
+     * no family this device shows, until the frame says where it lives or
+     * that it is gone; whichever order they run in, the result is the same.
+     * A frame that never arrives (the socket down for the leave) leaves the
+     * row to [refreshChats], whose prune drops what the server no longer
+     * lists and whose upsert re-lists what it does. So [remainingFamilyIds]
+     * no longer decides anything here; it stays because it is the per-family
+     * store's contract (FamilyLocalData), which hands it to every half.
      */
-    suspend fun dropFamily(familyId: Long, remainingFamilyIds: Set<Long>) {
+    suspend fun dropFamily(familyId: Long, remainingFamilyIds: Set<Long>) = familyListing.withLock {
         for (chat in chatDao.allChats()) {
             val ids = chat.familyIds
             if (ids != null && familyId !in ids) continue
-            val kept = ids.orEmpty().filter { it != familyId }
-            if (chat.kind == "direct" && kept.any { it in remainingFamilyIds }) {
-                chatDao.setFamilyIds(chat.id, GroupMembersCodec.encode(kept))
+            if (chat.kind == "direct" && ids != null) {
+                // Still listed in a family in [remainingFamilyIds], or in
+                // none until its `chat_updated` decides — see above.
+                chatDao.setFamilyIds(chat.id, GroupMembersCodec.encode(ids.filter { it != familyId }))
             } else {
                 deleteChat(chat.id)
             }
@@ -538,40 +574,52 @@ class ChatRepository @Inject constructor(
      * stopped, or started, sharing a family (docs/protocol.md, "Several
      * families"). A row of another kind this device does not hold is still
      * `GET /chats`'s to write: it brings the preview and the count with it.
+     *
+     * A DIRECT chat whose `family_ids` arrive EMPTY is gone for this side —
+     * "gone for the one who left (`family_ids: []`)" — and goes, through
+     * [deleteChat]. It used to be kept with an empty list, listed nowhere
+     * and holding its messages until the next `GET /chats` pruned it, which
+     * left a departure's result depending on whether this frame or the
+     * `member_left` after it ran first (see [dropFamily]).
      */
-    suspend fun applyChat(dto: ChatDto): ChatEntity? {
+    suspend fun applyChat(dto: ChatDto): ChatEntity? = familyListing.withLock {
         val existing = chatDao.getById(dto.id)
         if (!GroupRules.isGroup(dto.kind)) {
-            if (existing == null) return null
-            val replaced = existing.copy(
+            when {
+                existing == null -> null
+                dto.kind == "direct" && dto.familyIds?.isEmpty() == true -> {
+                    deleteChat(dto.id)
+                    null
+                }
+                else -> existing.copy(
+                    title = dto.title,
+                    familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: existing.familyIdsJson,
+                ).also { chatDao.upsertAll(listOf(it)) }
+            }
+        } else {
+            val entity = existing?.copy(
                 title = dto.title,
+                memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
+                adminUserId = dto.adminUserId,
                 familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: existing.familyIdsJson,
+            ) ?: ChatEntity(
+                id = dto.id,
+                kind = dto.kind,
+                peerUserId = dto.peerUserId,
+                title = dto.title,
+                unreadCount = 0,
+                myLastReadId = null,
+                peerLastReadId = null,
+                lastMessageBody = null,
+                lastMessageAt = null,
+                lastMessageSenderId = null,
+                memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
+                adminUserId = dto.adminUserId,
+                familyIdsJson = GroupMembersCodec.encode(dto.familyIds),
             )
-            chatDao.upsertAll(listOf(replaced))
-            return replaced
+            chatDao.upsertAll(listOf(entity))
+            entity
         }
-        val entity = existing?.copy(
-            title = dto.title,
-            memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
-            adminUserId = dto.adminUserId,
-            familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: existing.familyIdsJson,
-        ) ?: ChatEntity(
-            id = dto.id,
-            kind = dto.kind,
-            peerUserId = dto.peerUserId,
-            title = dto.title,
-            unreadCount = 0,
-            myLastReadId = null,
-            peerLastReadId = null,
-            lastMessageBody = null,
-            lastMessageAt = null,
-            lastMessageSenderId = null,
-            memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
-            adminUserId = dto.adminUserId,
-            familyIdsJson = GroupMembersCodec.encode(dto.familyIds),
-        )
-        chatDao.upsertAll(listOf(entity))
-        return entity
     }
 
     /** POST /chats/direct — get-or-create, idempotent server-side. */
@@ -579,7 +627,13 @@ class ChatRepository @Inject constructor(
         when (val result = chatApi.createDirect(userId)) {
             is ApiResult.Ok -> {
                 val dto = result.value.chat
-                val entity = chatDao.getById(dto.id) ?: ChatEntity(
+                // A row already held keeps everything that is this device's,
+                // but is listed where the answer says: [dropFamily] can leave
+                // one listed nowhere until its `chat_updated` lands, and a
+                // chat opened again before that must show in the list.
+                val entity = chatDao.getById(dto.id)?.let { held ->
+                    held.copy(familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: held.familyIdsJson)
+                } ?: ChatEntity(
                     id = dto.id,
                     kind = dto.kind,
                     peerUserId = dto.peerUserId,

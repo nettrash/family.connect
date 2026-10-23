@@ -361,6 +361,85 @@ public class SeveralFamiliesProtocolTests : IDisposable
     }
 
     /// <summary>
+    /// A JOIN NEVER DOWNGRADES. A family started in the app is announced by a <c>member_joined</c> naming its CREATOR, who is
+    /// its owner — and that frame may land after the roster read that said so. The role held stays; a newcomer, and a former
+    /// member back again, are members; the reset flag still follows the frame when it carries one.
+    /// </summary>
+    [Fact]
+    public void AJoinNamingTheOwnerLeavesThemTheOwner()
+    {
+        long? shown = 5;
+        var chats = new ChatStore(database, () => 7, () => shown);
+        chats.Replace(3, [new MemberDto(7, "anna", "Anna", Role: "member"), new MemberDto(9, "bob", "Bob", Role: "owner")]);
+        chats.Replace(5, [new MemberDto(7, "anna", "Anna", Role: "owner"), new MemberDto(11, "carl", "Carl", Role: "member", PasswordReset: true)]);
+        var router = new FrameRouter(chats, new BoardStore(database, () => shown));
+
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 7, "username": "anna", "display_name": "Anna"}}""")!);
+        Assert.True(chats.MembersOf(5).Single(member => member.Id == 7).Owner);
+        Assert.True(chats.Members().Single(member => member.Id == 7).Owner);
+        // Family 3's role is family 3's.
+        Assert.False(chats.MembersOf(3).Single(member => member.Id == 7).Owner);
+
+        // A member named again stays a member, and the flag the owner's copy carries still lands.
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 11, "username": "carl", "display_name": "Carl"}, "password_reset": false}""")!);
+        var carl = chats.MembersOf(5).Single(member => member.Id == 11);
+        Assert.Equal("member", carl.Role);
+        Assert.False(carl.PasswordReset);
+
+        // A newcomer is a member; so is somebody who left and came back, whatever they were before.
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 3, "user": {"id": 12, "username": "dana", "display_name": "Dana"}}""")!);
+        Assert.Equal("member", chats.MembersOf(3).Single(member => member.Id == 12).Role);
+        router.Hear(ServerFrame.Parse("""{"type": "member_left", "family_id": 3, "user_id": 9}""")!);
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 3, "user": {"id": 9, "username": "bob", "display_name": "Bob"}}""")!);
+        var bob = chats.MembersOf(3).Single(member => member.Id == 9);
+        Assert.False(bob.HasLeft);
+        Assert.Equal("member", bob.Role);
+    }
+
+    /// <summary>
+    /// A <c>chat_updated</c> does not un-hide a direct chat with somebody this reader has BLOCKED. The server sends a direct
+    /// chat's frame with no regard to blocks — a held chat moving family when the reader leaves one — while <c>GET /chats</c>
+    /// and <c>member_blocked</c> keep it off the list, for the blocker alone (docs/protocol.md, "Blocking a member"). The frame
+    /// is still written, so the chat comes back whole — in the families it said — on unblock.
+    /// </summary>
+    [Fact]
+    public void AChatUpdatedKeepsABlockedPeersChatHidden()
+    {
+        long? shown = 3;
+        var chats = new ChatStore(database, () => 7, () => shown);
+        chats.Replace([
+            new ChatRowDto(new ChatDto(42, "family", "The Smiths", FamilyIds: [3])),
+            new ChatRowDto(new ChatDto(44, "direct", "Bob", 9, FamilyIds: [3, 5])),
+            new ChatRowDto(new ChatDto(45, "direct", "Carl", 11, FamilyIds: [3])),
+        ]);
+        var router = new FrameRouter(chats, new BoardStore(database, () => shown));
+        router.Hear(ServerFrame.Parse("""{"type": "member_blocked", "user_id": 9, "blocked": true}""")!);
+        Assert.False(chats.IsListed(44));
+
+        router.Hear(ServerFrame.Parse("""{"type": "chat_updated", "chat": {"id": 44, "kind": "direct", "title": "Bob", "peer_user_id": 9, "family_ids": [5]}}""")!);
+        Assert.False(chats.IsListed(44));
+        Assert.DoesNotContain(chats.Chats(), row => row.Chat.Id == 44);
+        Assert.Equal([5L], chats.Chat(44)!.Chat.FamilyIds!);
+
+        // A direct chat this device never held, with a blocked peer, arrives hidden too.
+        router.Hear(ServerFrame.Parse("""{"type": "member_blocked", "user_id": 14, "blocked": true}""")!);
+        router.Hear(ServerFrame.Parse("""{"type": "chat_updated", "chat": {"id": 46, "kind": "direct", "title": "Eve", "peer_user_id": 14, "family_ids": [3]}}""")!);
+        Assert.NotNull(chats.Chat(46));
+        Assert.False(chats.IsListed(46));
+
+        // Anybody else's chat, a group's included, is put on the list as before.
+        router.Hear(ServerFrame.Parse("""{"type": "chat_updated", "chat": {"id": 45, "kind": "direct", "title": "Carl", "peer_user_id": 11, "family_ids": [3, 5]}}""")!);
+        Assert.True(chats.IsListed(45));
+        router.Hear(ServerFrame.Parse("""{"type": "chat_updated", "chat": {"id": 47, "kind": "group", "title": "Cousins", "member_ids": [7, 9], "admin_user_id": 9, "family_ids": [3]}}""")!);
+        Assert.True(chats.IsListed(47));
+
+        // Unblocked, it is back — with what the frame said.
+        router.Hear(ServerFrame.Parse("""{"type": "member_blocked", "user_id": 9, "blocked": false}""")!);
+        Assert.True(chats.IsListed(44));
+        Assert.Equal([5L], chats.Chat(44)!.Chat.FamilyIds!);
+    }
+
+    /// <summary>
     /// A family frame is applied to the family it NAMES (docs/protocol.md, "Frames"): a join, a leave and an owner in family 5
     /// leave family 3's roster alone, and a note and an item go onto family 5's wall and pack whatever is shown.
     /// </summary>

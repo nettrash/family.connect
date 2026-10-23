@@ -51,6 +51,16 @@ struct SessionLogicTests {
         #expect(SessionLogic.resolve(me: me, wasAwaitingApproval: true) == .needsFamily(declined: true))
     }
 
+    /// Out of the last family with no `/me` in hand (a leave, a
+    /// `member_left`): the same rule as `resolve(me:)`, from what the
+    /// session holds — since several families a request may be pending
+    /// while the account is still in a family.
+    @Test("out of the last family: a pending request waits, nothing pending is the gate")
+    func afterLastFamily() {
+        #expect(SessionLogic.afterLastFamily(pendingRequests: [Self.pending]) == .pendingApproval)
+        #expect(SessionLogic.afterLastFamily(pendingRequests: []) == .needsFamily(declined: false))
+    }
+
     @Test("purge scopes: logout keeps the server URL, wipes the rest")
     func purgeLogout() {
         let scope = SessionLogic.purgeScope(for: .logout)

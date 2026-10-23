@@ -101,8 +101,8 @@ final class ChatEntity {
     /// (docs/protocol.md, "Several families", 2026-10-22) — as decimal ids
     /// joined by commas, for the reason `groupMemberIDsText` is a string.
     /// "" is "nobody said": a row from before several families, or from a
-    /// server that predates them, where the chat is the one family's and
-    /// is listed whatever family is shown (`FamilyRules.isListed`). "-" is
+    /// server that predates them, where the chat is the one family's — the
+    /// HOME family's, and listed there alone (`FamilyRules.isListed`). "-" is
     /// the server's `[]` — listed in NO family, a direct chat that closed
     /// for this reader — and must never be written as "" (`FamilyIDList
     /// .encodeListed`), or it would be listed in every family instead.

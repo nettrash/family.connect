@@ -168,6 +168,36 @@ public class SeveralFamiliesStoreTests : IDisposable
         Assert.True(chats.MembersOf(5).Single(member => member.Id == 12).HasLeft);
     }
 
+    /// <summary>
+    /// A join keeps the role of somebody already here — on a family's rows and on a cache's one roster from before several
+    /// families alike — and makes a newcomer or a returning former member a member; the reset flag keeps its narrow rule.
+    /// </summary>
+    [Fact]
+    public void AJoinNeverDowngradesSomebodyAlreadyHere()
+    {
+        var chats = new ChatStore(database, () => 7, () => 5);
+        chats.Replace(5, [new MemberDto(7, "anna", "Anna", Role: "owner"), new MemberDto(11, "carl", "Carl", Role: "member", PasswordReset: false)]);
+        chats.Joined(new UserDto(7, "anna", "Anna"), 5);
+        chats.Joined(new UserDto(11, "carl", "Carl"), 5);
+        Assert.Equal("owner", chats.MembersOf(5).Single(member => member.Id == 7).Role);
+        Assert.Equal("member", chats.MembersOf(5).Single(member => member.Id == 11).Role);
+        Assert.False(chats.MembersOf(5).Single(member => member.Id == 11).PasswordReset);
+        chats.Left(7, 5);
+        chats.Joined(new UserDto(7, "anna", "Anna"), 5);
+        Assert.Equal("member", chats.MembersOf(5).Single(member => member.Id == 7).Role);
+
+        // One family, no family named: the person's own row.
+        using var legacy = Database.OpenInMemory();
+        var one = new ChatStore(legacy, () => 7);
+        one.Replace([new MemberDto(7, "anna", "Anna", Role: "owner")]);
+        one.Joined(new UserDto(7, "anna", "Anna"));
+        Assert.True(one.Member(7)!.Owner);
+        one.Left(7);
+        one.Joined(new UserDto(7, "anna", "Anna"));
+        Assert.Equal("member", one.Member(7)!.Role);
+        Assert.False(one.Member(7)!.HasLeft);
+    }
+
     // ---- the wall and the pack --------------------------------------------------------------------------------------------------
 
     /// <summary>

@@ -39,9 +39,10 @@ public sealed partial class ChatsView
     /// </summary>
     private void FamilyMoved()
     {
-        var shown = connection.Session.State.CurrentFamilyId;
+        var state = connection.Session.State;
+        var shown = state.CurrentFamilyId;
         if (open is { } chat
-            && (connection.Chats.Chat(chat.ChatId)?.Chat is not { } held || !FamilyRules.Lists(held, shown)))
+            && (connection.Chats.Chat(chat.ChatId)?.Chat is not { } held || !FamilyRules.Lists(held, shown, state.HomeFamilyId)))
         {
             CloseConversation();
         }
@@ -68,7 +69,7 @@ public sealed partial class ChatsView
             SwitcherText.Text = state.Family?.Name ?? string.Empty;
             // What is unread OUTSIDE the family shown — a chat it lists is on screen already, and one listed in several is
             // counted once.
-            var elsewhere = held.Where(row => !FamilyRules.Lists(row.Chat, state.CurrentFamilyId)).Sum(row => row.UnreadCount);
+            var elsewhere = held.Where(row => !FamilyRules.Lists(row.Chat, state.CurrentFamilyId, state.HomeFamilyId)).Sum(row => row.UnreadCount);
             OtherFamiliesBadge.Visibility = elsewhere > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (elsewhere > 0 && OtherFamiliesBadge.Value != elsewhere)
             {

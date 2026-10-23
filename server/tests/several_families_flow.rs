@@ -1089,6 +1089,105 @@ async fn a_held_chat_outlives_the_family_it_was_opened_in() {
     assert_eq!(kept["family_ids"], json!([dans]));
 }
 
+/// A held chat whose row names a family its holder is not in — what two
+/// departures of one account racing each other can leave behind — is put
+/// right by that account's next departure, once it has committed.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_held_chat_left_adrift_is_put_right_by_the_next_departure() {
+    let ts = spawn_server().await;
+    let (olive, _, bob, _, smiths, _browns) = bob_in_two(&ts).await;
+    let (carl, carl_id) = ts.register("carl", "Carl").await;
+    let smiths_code = invite_code_of(&ts, &olive, smiths).await;
+    ts.join(&carl, &smiths_code, "joined").await;
+    let opened = json_of(
+        ts.post(&bob, "/chats/direct", json!({"user_id": carl_id}))
+            .await,
+        "opening a direct chat",
+    )
+    .await;
+    let direct = opened["chat"]["id"].as_i64().expect("chat id");
+    let response = ts
+        .post(&carl, &format!("/families/{smiths}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+
+    // Adrift: the row names a family Bob is not in.
+    let (dan, _) = ts.register("dan", "Dan").await;
+    let (dans, _) = ts.create_family(&dan, "The Dans").await;
+    sqlx::query("UPDATE chats SET family_id = $2 WHERE id = $1")
+        .bind(direct)
+        .bind(dans)
+        .execute(&ts.state.pool)
+        .await
+        .expect("setting the chat adrift");
+
+    // Bob comes and goes through some other family.
+    open_family(&ts, &dan, dans).await;
+    let dans_code = invite_code_of(&ts, &dan, dans).await;
+    ts.join(&bob, &dans_code, "joined").await;
+    let mut bob_ws = connect_ws(&ts, &bob, true).await;
+    let response = ts
+        .post(&bob, &format!("/families/{dans}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+    let row_family: i64 = sqlx::query_scalar("SELECT family_id FROM chats WHERE id = $1")
+        .bind(direct)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the chat row");
+    assert_eq!(row_family, smiths, "back on Bob's home family");
+    let updated = next_frame_where(&mut bob_ws, |frame| {
+        frame["type"] == "chat_updated" && frame["chat"]["id"].as_i64() == Some(direct)
+    })
+    .await;
+    assert_eq!(updated["chat"]["family_ids"], json!([smiths]));
+}
+
+/// The hourly backstop: an invitation whose person and family owner no
+/// longer share another family — one a departure could not see — lapses, and
+/// a valid one is left alone.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_invitation_nobody_shares_a_family_for_is_swept() {
+    let ts = spawn_server().await;
+    let (olive, olive_id, bob, _, smiths, browns) = bob_in_two(&ts).await;
+    let (carl, carl_id) = ts.register("carl", "Carl").await;
+    let smiths_code = invite_code_of(&ts, &olive, smiths).await;
+    ts.join(&carl, &smiths_code, "joined").await;
+    let unshared = invite_ok(&ts, &bob, browns, carl_id).await;
+    let valid = invite_ok(&ts, &bob, browns, olive_id).await;
+    // Carl out of the Smiths behind every departure's back.
+    sqlx::query("DELETE FROM family_members WHERE family_id = $1 AND user_id = $2")
+        .bind(smiths)
+        .bind(carl_id)
+        .execute(&ts.state.pool)
+        .await
+        .expect("unsharing the pair");
+    let mut bob_ws = connect_ws(&ts, &bob, true).await;
+
+    let swept = family_connect::handlers_family::sweep_unshared_invitations(&ts.state)
+        .await
+        .expect("the sweep runs");
+    assert_eq!(swept, 1);
+    let removed = next_frame_of_type(&mut bob_ws, "invitation_removed").await;
+    assert_eq!(removed["invitation_id"].as_i64(), Some(unshared));
+    let list = json_of(
+        ts.get(&bob, &format!("/families/{browns}/invitations"))
+            .await,
+        "the owner's list",
+    )
+    .await;
+    let ids: Vec<i64> = list["invitations"]
+        .as_array()
+        .expect("invitations")
+        .iter()
+        .map(|invitation| invitation["id"].as_i64().expect("id"))
+        .collect();
+    assert_eq!(ids, vec![valid]);
+    let _ = carl;
+}
+
 /// An app from before several families is not sent what happens in a closed
 /// direct chat that its account holds under a family other than home —
 /// `GET /chats` does not list it there, so neither do the frames.

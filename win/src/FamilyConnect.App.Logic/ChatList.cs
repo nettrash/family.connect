@@ -113,10 +113,11 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
         var rows = new List<ChatRow>();
         var newestId = new Dictionary<long, long>();
         // The family shown: its chats and no other family's (docs/protocol.md, "Several families") — so "the family chat"
-        // pinned first below is the shown family's, and so is the assistant's.
+        // pinned first below is the shown family's, and so is the assistant's. A chat with no family_ids is the home family's.
         var shown = chats.Family;
+        var home = chats.Home;
         Held = chats.Chats();
-        foreach (var held in Held.Where(row => FamilyRules.Lists(row.Chat, shown)))
+        foreach (var held in Held.Where(row => FamilyRules.Lists(row.Chat, shown, home)))
         {
             var newest = chats.Newest(held.Chat.Id);
             newestId[held.Chat.Id] = newest?.Id ?? 0;

@@ -162,7 +162,10 @@ interface MemberDao {
      * `hasLeft` still clears — the frame is precisely the news that they
      * are back — and the birthday columns are not in the SET list at all,
      * which is what makes "not told" and "told it is empty" different
-     * things here.
+     * things here. The role is the other column the frame does not really
+     * carry: [MemberEntity.role] lands on a NEW row, and on one coming back
+     * from having left, but never over a live row's — see
+     * [updateLeavingBirthday].
      *
      * `passwordReset` follows the same rule by a different road: the frame
      * carries it on the family OWNER's copy alone (docs/protocol.md, "Several
@@ -198,10 +201,26 @@ interface MemberDao {
      * The FAMILY's columns a `member_joined` frame carries: the role, that
      * they are back, and — only when the frame said it — whether the owner
      * may reset their password (COALESCE: a null keeps what is stored).
+     *
+     * The role is written only over a row that had LEFT — a rejoin, where
+     * the frame's role is the news. A row still live is somebody this device
+     * already holds in the family, and the frame cannot be telling it a role
+     * change: `member_joined` carries no role at all, and the one the caller
+     * passes is a default. The case that made this matter is a family
+     * created on THIS device (docs/protocol.md, "Several families"):
+     * `create` reads the new roster with the creator as owner, and the
+     * server's `member_joined` naming the creator arrives after it — written
+     * through, it demoted the owner of the family they had just made to
+     * "member" (no crown, sorted among the rest, every owner check on the
+     * roster wrong) until the next roster read. Ownership moves only by
+     * `family_owner` ([setOwner]) and by a roster read.
      */
     @Query(
         """
-        UPDATE members SET role = :role, hasLeft = 0, passwordReset = COALESCE(:passwordReset, passwordReset)
+        UPDATE members
+        SET role = CASE WHEN hasLeft = 1 THEN :role ELSE role END,
+            hasLeft = 0,
+            passwordReset = COALESCE(:passwordReset, passwordReset)
         WHERE familyId = :familyId AND userId = :userId
         """,
     )

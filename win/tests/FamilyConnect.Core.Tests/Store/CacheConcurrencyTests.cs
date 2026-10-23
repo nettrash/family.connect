@@ -250,9 +250,10 @@ public class CacheConcurrencyTests : IDisposable
                 .Concat(type
                     .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                     .Select(property => property.Name))
-                // The reader and the family shown are functions the store was given, not the cache; and `In` makes
-                // another store, whose operations are these same ones.
-                .Where(member => member is not (nameof(ChatStore.Reader) or nameof(ChatStore.Family) or nameof(BoardStore.In)))
+                // The reader, the family shown and the home family are functions the store was given, not the cache; and
+                // `In` makes another store, whose operations are these same ones.
+                .Where(member => member is not (nameof(ChatStore.Reader) or nameof(ChatStore.Family) or nameof(ChatStore.Home)
+                    or nameof(BoardStore.In)))
                 .Distinct();
             foreach (var member in members)
             {

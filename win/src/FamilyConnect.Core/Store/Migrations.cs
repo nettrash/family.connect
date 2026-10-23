@@ -366,7 +366,7 @@ public static class Migrations
     /// NOTHING HELD IS READ AGAIN OR DELETED. Every row an older build cached was the HOME family's — an app from before
     /// several families saw nothing else — but the home family's id is not in this file, so the new columns start NULL and
     /// <see cref="Database.AdoptLegacy"/> stamps them with it once the first <c>GET /me</c> names it. A chat whose
-    /// <c>family_ids</c> is NULL is shown in whichever family is current until the next list read writes it.
+    /// <c>family_ids</c> is NULL is shown in the home family alone until the next list read writes it.
     /// </remarks>
     private static readonly string[] Eleven =
     [

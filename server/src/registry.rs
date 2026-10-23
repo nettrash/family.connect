@@ -49,14 +49,6 @@ struct ConnHandle {
     /// about its account's home family alone (docs/protocol.md, "Several
     /// families") — which is why the fan-out below can be told to skip it.
     multi: bool,
-    /// The account's HOME family as this connection last heard it — what a
-    /// legacy connection is shown, and so what decides which frames it may be
-    /// sent, without a database question per frame. Set at registration and
-    /// kept current by `set_home` whenever a membership changes; a home that
-    /// MOVES ends every legacy session outright
-    /// (`handlers_family::end_legacy_sessions_if_home_moved`), so what is
-    /// left to follow is a first family arriving and a last one going.
-    home: Option<i64>,
     tx: mpsc::Sender<ServerFrame>,
     /// `Some(close_code)` asks the connection task to close the socket.
     close_tx: Arc<watch::Sender<Option<u16>>>,
@@ -72,20 +64,63 @@ pub struct Registration {
     pub close: watch::Receiver<Option<u16>>,
 }
 
+/// An account's HOME family as the registry last heard it, and the ticket of
+/// the read it came from (see [`Registry::home_ticket`]).
+#[derive(Clone, Copy)]
+struct Home {
+    ticket: u64,
+    family: Option<i64>,
+}
+
 pub struct Registry {
     next_conn_id: AtomicU64,
+    next_home_ticket: AtomicU64,
     queue_capacity: usize,
     shutdown: CancellationToken,
     inner: RwLock<HashMap<i64, Vec<ConnHandle>>>,
+    /// The HOME family of every account with a connection — what a legacy
+    /// connection is shown, and so what decides which frames it may be sent,
+    /// without a database question per frame. Per ACCOUNT, not per
+    /// connection, so every connection of one account answers alike. A home
+    /// that MOVES ends every legacy session outright
+    /// (`handlers_family::end_legacy_sessions_if_home_moved`), so what is
+    /// left to follow is a first family arriving and a last one going. Always
+    /// taken after `inner` when both are needed.
+    homes: RwLock<HashMap<i64, Home>>,
 }
 
 impl Registry {
     pub fn new(queue_capacity: usize) -> Self {
         Self {
             next_conn_id: AtomicU64::new(1),
+            next_home_ticket: AtomicU64::new(1),
             queue_capacity: queue_capacity.max(1),
             shutdown: CancellationToken::new(),
             inner: RwLock::new(HashMap::new()),
+            homes: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// A ticket to take BEFORE reading an account's home family from the
+    /// database, handed back with what the read found (`register`,
+    /// `set_home`). Tickets only grow, and a home is recorded only over one
+    /// with a lower ticket — so a read that started before a membership
+    /// changed can never overwrite what a read that started after it found,
+    /// whichever of the two reaches the registry first. Without it a socket
+    /// whose upgrade read the home a moment before an approval committed
+    /// kept the stale answer for its whole life, because the approval's own
+    /// refresh ran before the socket was registered.
+    pub fn home_ticket(&self) -> u64 {
+        self.next_home_ticket.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Record a home family read under `ticket`, unless a newer read already
+    /// was.
+    async fn record_home(&self, user_id: i64, family: Option<i64>, ticket: u64) {
+        let mut homes = self.homes.write().await;
+        let entry = homes.entry(user_id).or_insert(Home { ticket, family });
+        if ticket > entry.ticket {
+            *entry = Home { ticket, family };
         }
     }
 
@@ -97,13 +132,15 @@ impl Registry {
 
     /// Add a connection for `user_id` and hand back its receiving ends.
     /// `multi` is whether the client said `families=1` on the upgrade, and
-    /// `home` the account's home family as the upgrade read it.
+    /// `home` the account's home family as the upgrade read it, under
+    /// `home_ticket` taken before that read.
     pub async fn register(
         &self,
         user_id: i64,
         session_id: i64,
         multi: bool,
         home: Option<i64>,
+        home_ticket: u64,
     ) -> Registration {
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, frames) = mpsc::channel(self.queue_capacity);
@@ -112,7 +149,6 @@ impl Registry {
             conn_id,
             session_id,
             multi,
-            home,
             tx,
             close_tx: Arc::new(close_tx),
         };
@@ -122,6 +158,7 @@ impl Registry {
             .entry(user_id)
             .or_default()
             .push(handle);
+        self.record_home(user_id, home, home_ticket).await;
         Registration {
             conn_id,
             frames,
@@ -136,6 +173,7 @@ impl Registry {
             conns.retain(|c| c.conn_id != conn_id);
             if conns.is_empty() {
                 inner.remove(&user_id);
+                self.homes.write().await.remove(&user_id);
             }
         }
     }
@@ -231,26 +269,27 @@ impl Registry {
     /// fact `events::legacy_hidden` needs about each, read from memory.
     pub async fn legacy_homes(&self, user_ids: &[i64]) -> HashMap<i64, Option<i64>> {
         let inner = self.inner.read().await;
+        let homes = self.homes.read().await;
         user_ids
             .iter()
-            .filter_map(|user_id| {
+            .filter(|user_id| {
                 inner
                     .get(user_id)
-                    .and_then(|conns| conns.iter().find(|conn| !conn.multi))
-                    .map(|conn| (*user_id, conn.home))
+                    .is_some_and(|conns| conns.iter().any(|conn| !conn.multi))
             })
+            .map(|user_id| (*user_id, homes.get(user_id).and_then(|home| home.family)))
             .collect()
     }
 
-    /// Record `user_id`'s home family on every connection of theirs — called
-    /// once a membership change has committed, before its frames go out.
-    pub async fn set_home(&self, user_id: i64, home: Option<i64>) {
-        let mut inner = self.inner.write().await;
-        if let Some(conns) = inner.get_mut(&user_id) {
-            for conn in conns {
-                conn.home = home;
-            }
+    /// Record `user_id`'s home family, read under `ticket` — called once a
+    /// membership change has committed, before its frames go out. Nothing is
+    /// recorded for an account with no connection: its next one reads the
+    /// home itself.
+    pub async fn set_home(&self, user_id: i64, home: Option<i64>, ticket: u64) {
+        if !self.inner.read().await.contains_key(&user_id) {
+            return;
         }
+        self.record_home(user_id, home, ticket).await;
     }
 
     /// Send one frame to a SINGLE connection of `user_id` — the one that
@@ -342,8 +381,8 @@ mod tests {
     #[tokio::test]
     async fn live_multi_sessions_ignores_a_session_whose_only_socket_is_legacy() {
         let registry = Registry::new(4);
-        let _old_phone = registry.register(1, 100, false, None).await;
-        let _new_mac = registry.register(1, 101, true, None).await;
+        let _old_phone = registry.register(1, 100, false, None, 0).await;
+        let _new_mac = registry.register(1, 101, true, None, 0).await;
         assert_eq!(sorted(registry.live_multi_sessions(&[1]).await), vec![101]);
         assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
     }
@@ -351,8 +390,8 @@ mod tests {
     #[tokio::test]
     async fn live_sessions_holds_every_session_a_user_is_connected_on() {
         let registry = Registry::new(4);
-        let mac = registry.register(1, 100, true, None).await;
-        let _phone = registry.register(1, 101, true, None).await;
+        let mac = registry.register(1, 100, true, None, 0).await;
+        let _phone = registry.register(1, 101, true, None, 0).await;
         assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
         registry.unregister(1, mac.conn_id).await;
         assert_eq!(
@@ -365,8 +404,8 @@ mod tests {
     #[tokio::test]
     async fn live_sessions_covers_the_batch_and_skips_users_with_no_socket() {
         let registry = Registry::new(4);
-        let _one = registry.register(1, 100, true, None).await;
-        let _two = registry.register(2, 200, true, None).await;
+        let _one = registry.register(1, 100, true, None, 0).await;
+        let _two = registry.register(2, 200, true, None, 0).await;
         assert_eq!(
             sorted(registry.live_sessions(&[1, 2, 3]).await),
             vec![100, 200]
@@ -380,8 +419,8 @@ mod tests {
     #[tokio::test]
     async fn fan_out_skips_the_origin_connection_but_reaches_other_devices() {
         let registry = Registry::new(4);
-        let mut a = registry.register(1, 100, true, None).await;
-        let mut b = registry.register(1, 101, true, None).await;
+        let mut a = registry.register(1, 100, true, None, 0).await;
+        let mut b = registry.register(1, 101, true, None, 0).await;
         registry.fan_out(&[1], &pong(), Some(a.conn_id)).await;
         assert!(
             b.frames.try_recv().is_ok(),
@@ -396,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_send_queue_triggers_a_kick_instead_of_blocking() {
         let registry = Registry::new(1);
-        let mut reg = registry.register(1, 100, true, None).await;
+        let mut reg = registry.register(1, 100, true, None, 0).await;
         registry.send_to_users(&[1], &pong()).await; // fills the queue
         registry.send_to_users(&[1], &pong()).await; // overflows -> kick
         assert_eq!(
@@ -409,8 +448,8 @@ mod tests {
     #[tokio::test]
     async fn close_session_signals_exactly_the_matching_connections() {
         let registry = Registry::new(4);
-        let mut same = registry.register(1, 100, true, None).await;
-        let mut other = registry.register(1, 200, true, None).await;
+        let mut same = registry.register(1, 100, true, None, 0).await;
+        let mut other = registry.register(1, 200, true, None, 0).await;
         registry.close_session(100).await;
         assert_eq!(*same.close.borrow_and_update(), Some(CLOSE_SESSION_GONE));
         assert_eq!(*other.close.borrow_and_update(), None);
@@ -422,9 +461,9 @@ mod tests {
     #[tokio::test]
     async fn a_hidden_user_loses_the_frame_only_on_legacy_connections() {
         let registry = Registry::new(4);
-        let mut old_app = registry.register(1, 100, false, None).await;
-        let mut new_app = registry.register(1, 101, true, None).await;
-        let mut other = registry.register(2, 200, false, None).await;
+        let mut old_app = registry.register(1, 100, false, None, 0).await;
+        let mut new_app = registry.register(1, 101, true, None, 0).await;
+        let mut other = registry.register(2, 200, false, None, 0).await;
         assert_eq!(registry.legacy_users(&[1, 2, 3]).await, vec![1, 2]);
         let hidden: HashSet<i64> = [1].into_iter().collect();
         registry
@@ -438,23 +477,57 @@ mod tests {
     #[tokio::test]
     async fn a_legacy_connection_keeps_the_home_it_was_last_told() {
         let registry = Registry::new(4);
-        let _old_app = registry.register(1, 100, false, None).await;
-        let _new_app = registry.register(2, 200, true, Some(7)).await;
+        let _old_app = registry.register(1, 100, false, None, 0).await;
+        let _new_app = registry.register(2, 200, true, Some(7), 0).await;
         assert_eq!(
             registry.legacy_homes(&[1, 2]).await,
             [(1, None)].into_iter().collect()
         );
-        registry.set_home(1, Some(3)).await;
+        let ticket = registry.home_ticket();
+        registry.set_home(1, Some(3), ticket).await;
         assert_eq!(
             registry.legacy_homes(&[1, 2]).await,
             [(1, Some(3))].into_iter().collect()
         );
     }
 
+    /// A read that started BEFORE a membership changed never overwrites one
+    /// that started after it — whichever reaches the registry first. This is
+    /// the socket whose upgrade read "no family" a moment before an approval
+    /// committed, and whose registration lands after the approval's refresh.
+    #[tokio::test]
+    async fn a_stale_home_never_overwrites_a_fresher_one() {
+        let registry = Registry::new(4);
+        let _already_open = registry.register(1, 100, false, None, 0).await;
+        let upgrade_ticket = registry.home_ticket();
+        let approval_ticket = registry.home_ticket();
+        registry.set_home(1, Some(5), approval_ticket).await;
+        let _late = registry.register(1, 101, false, None, upgrade_ticket).await;
+        assert_eq!(
+            registry.legacy_homes(&[1]).await,
+            [(1, Some(5))].into_iter().collect()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_home_is_forgotten_with_the_last_connection() {
+        let registry = Registry::new(4);
+        let only = registry.register(1, 100, false, Some(5), 0).await;
+        registry.unregister(1, only.conn_id).await;
+        let ticket = registry.home_ticket();
+        registry.set_home(1, Some(9), ticket).await;
+        let _again = registry.register(1, 101, false, None, ticket + 1).await;
+        assert_eq!(
+            registry.legacy_homes(&[1]).await,
+            [(1, None)].into_iter().collect(),
+            "nothing was kept for an account with no connection"
+        );
+    }
+
     #[tokio::test]
     async fn unregister_removes_the_connection_and_empties_the_map() {
         let registry = Registry::new(4);
-        let reg = registry.register(1, 100, true, None).await;
+        let reg = registry.register(1, 100, true, None, 0).await;
         assert_eq!(registry.connection_count().await, 1);
         registry.unregister(1, reg.conn_id).await;
         assert_eq!(registry.connection_count().await, 0);

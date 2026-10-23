@@ -120,8 +120,8 @@ public sealed record BirthdayDto(int Month, int Day);
 /// <param name="FamilyIds">
 /// Which families the chat is LISTED in (docs/protocol.md, "Several families"): exactly one for a family chat, a group and an
 /// <c>ai</c> chat; for a direct chat every family the two people share, ascending. Null from a server that predates several
-/// families, where it means the one family the account has — so a null is shown in whichever family is current
-/// (<c>FamilyRules.Lists</c>).
+/// families, where it means the one family the account has — so a null is listed in the HOME family alone
+/// (<c>FamilyRules.FamiliesOf</c>). An empty array is listed nowhere.
 /// </param>
 public sealed record ChatDto(
     long Id,

@@ -26,12 +26,15 @@ import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.GroupMembersCodec
 import me.nettrash.familyconnect.data.db.MemberEntity
+import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.db.PackItemEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.ChatListItemDto
+import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.PackResponse
@@ -290,13 +293,143 @@ class SeveralFamiliesStoreTest {
                 chat(4, "direct", listOf(OTHER)),
                 chat(5, "group", listOf(OTHER)),
                 chat(6, "ai", listOf(OTHER)),
+                // Never told its families: the one family's, and goes.
+                chat(7, "direct", null),
             ),
         )
 
         chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
 
-        assertThat(db.chatDao().allChatIds()).containsExactly(1L, 3L)
+        assertThat(db.chatDao().allChatIds()).containsExactly(1L, 3L, 4L)
         assertThat(db.chatDao().getById(3)!!.familyIds).containsExactly(HOME)
+        // A direct chat no remaining family lists is narrowed to none, not
+        // deleted: its `chat_updated` says whether it moves or goes. Listed
+        // nowhere meanwhile, so no screen shows it.
+        assertThat(db.chatDao().getById(4)!!.familyIds).isEmpty()
+        val held = db.chatDao().allChats()
+        assertThat(FamilyList.chatsOf(held, HOME, HOME).map { it.id }).containsExactly(1L, 3L)
+        assertThat(FamilyList.chatsOf(held, OTHER, HOME)).isEmpty()
+    }
+
+    private fun message(chatId: Long, serverId: Long) = MessageEntity(
+        clientMsgId = "c$serverId",
+        serverId = serverId,
+        chatId = chatId,
+        senderId = 9L,
+        body = "body $serverId",
+        createdAt = serverId,
+        status = MessageStatus.SENT,
+    )
+
+    private suspend fun messagesIn(chatId: Long): Int = db.messageDao().observeMessages(chatId, limit = 50).first().size
+
+    /**
+     * Leaving OTHER while holding a direct chat the other side had already
+     * left, listed under OTHER: the server MOVES it onto a family this account
+     * keeps and sends `chat_updated{family_ids:[HOME]}`, then `member_left`
+     * (docs/protocol.md, "Several families"). The two are consumed by two
+     * collectors, so either may run first, and the chat — its messages and
+     * its read marker with it — must come out the same either way. Run
+     * first, `member_left` used to delete it, and the `chat_updated` behind
+     * it then found nothing to move.
+     */
+    @Test
+    fun `a held chat moved to a family kept survives either order of chat_updated and member_left`() =
+        runTest(dispatcher) {
+            val chats = testChatRepository(FakeChatApi(), db.chatDao(), db.messageDao(), socket, repoScope)
+            runCurrent()
+            val moved = ChatDto(4, "direct", "Ben", peerUserId = 9, familyIds = listOf(HOME))
+            for (frameFirst in listOf(true, false)) {
+                db.chatDao().upsertAll(listOf(chat(4, "direct", listOf(OTHER)).copy(myLastReadId = 402, unreadCount = 1)))
+                db.messageDao().insertIgnore(listOf(message(4, 401), message(4, 402), message(4, 403)))
+
+                if (frameFirst) {
+                    chats.applyChat(moved)
+                    chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
+                } else {
+                    chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
+                    chats.applyChat(moved)
+                }
+
+                val kept = db.chatDao().getById(4)
+                assertThat(kept).isNotNull()
+                assertThat(kept!!.familyIds).containsExactly(HOME)
+                assertThat(kept.myLastReadId).isEqualTo(402L)
+                assertThat(kept.unreadCount).isEqualTo(1)
+                assertThat(messagesIn(4)).isEqualTo(3)
+                assertThat(FamilyList.chatsOf(db.chatDao().allChats(), HOME, HOME).map { it.id }).containsExactly(4L)
+            }
+        }
+
+    /**
+     * The same race over a frame that arrives on the socket rather than by a
+     * direct call: `member_left`'s half runs, then the collector applies the
+     * `chat_updated` that was sent before it.
+     */
+    @Test
+    fun `a moved chat's chat_updated restores it after member_left ran first`() = runTest(dispatcher) {
+        val chats = testChatRepository(FakeChatApi(), db.chatDao(), db.messageDao(), socket, repoScope)
+        runCurrent()
+        db.chatDao().upsertAll(listOf(chat(4, "direct", listOf(OTHER))))
+        db.messageDao().insertIgnore(listOf(message(4, 401)))
+
+        chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
+        socket.emit(ServerFrame.ChatUpdated(ChatDto(4, "direct", "Ben", peerUserId = 9, familyIds = listOf(HOME))))
+        runCurrent()
+
+        assertThat(db.chatDao().getById(4)!!.familyIds).containsExactly(HOME)
+        assertThat(messagesIn(4)).isEqualTo(1)
+    }
+
+    /**
+     * The other verdict: a direct chat whose two people now share no family
+     * closes, and the side that LEFT is sent `family_ids: []` — "gone for the
+     * one who left". Gone, messages and all, whichever of that frame and
+     * `member_left` runs first; an empty list used to be stored instead, and
+     * the row sat there listed nowhere until a `GET /chats` pruned it.
+     */
+    @Test
+    fun `a direct chat closed for this side goes in either order`() = runTest(dispatcher) {
+        val chats = testChatRepository(FakeChatApi(), db.chatDao(), db.messageDao(), socket, repoScope)
+        runCurrent()
+        val closed = ChatDto(4, "direct", "Ben", peerUserId = 9, familyIds = emptyList())
+        for (frameFirst in listOf(true, false)) {
+            db.chatDao().upsertAll(listOf(chat(4, "direct", listOf(OTHER))))
+            db.messageDao().insertIgnore(listOf(message(4, 401), message(4, 402)))
+
+            if (frameFirst) {
+                assertThat(chats.applyChat(closed)).isNull()
+                chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
+            } else {
+                chats.dropFamily(OTHER, remainingFamilyIds = setOf(HOME))
+                assertThat(chats.applyChat(closed)).isNull()
+            }
+
+            assertThat(db.chatDao().getById(4)).isNull()
+            assertThat(messagesIn(4)).isEqualTo(0)
+        }
+    }
+
+    /**
+     * A row narrowed to no family, whose `chat_updated` has not landed yet,
+     * opened again from the picker: `POST /chats/direct` says where it is
+     * listed, and the row keeps its own read state and messages.
+     */
+    @Test
+    fun `opening a direct chat again lists a held row where the answer says`() = runTest(dispatcher) {
+        val chatApi = FakeChatApi()
+        val chats = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        runCurrent()
+        db.chatDao().upsertAll(listOf(chat(4, "direct", emptyList()).copy(myLastReadId = 401)))
+        chatApi.createDirectResult = ApiResult.Ok(
+            ChatResponse(ChatDto(4, "direct", "Ben", peerUserId = 9, familyIds = listOf(HOME))),
+        )
+
+        chats.createDirect(9)
+
+        val row = db.chatDao().getById(4)!!
+        assertThat(row.familyIds).containsExactly(HOME)
+        assertThat(row.myLastReadId).isEqualTo(401L)
     }
 
     @Test

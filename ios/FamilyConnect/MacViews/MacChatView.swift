@@ -58,7 +58,10 @@ struct MacChatView: View {
 
     /// The chats the CURRENT family lists — every chat, with one family.
     private var listedChats: [ChatEntity] {
-        chats.filter { FamilyRules.isListed(chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID) }
+        chats.filter {
+            FamilyRules.isListed(
+                chatFamilyIDs: $0.familyIDs, in: session.currentFamilyID, home: session.homeFamilyID)
+        }
     }
 
     /// The current family's notes, for its board's badge.
