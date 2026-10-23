@@ -1189,7 +1189,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             "families": families_json,
             "pending_join_requests": pending_requests,
             "invitations": invitations,
-            "member_families_enabled": state.cfg.families.member_families,
+            "member_families_enabled": state.cfg.families.member_families_enabled(),
             "max_families_per_account": state.cfg.families.max_families_per_account,
             // Whether this server signals voice calls at all. Always
             // present, like the assistant/history switches: a client hides

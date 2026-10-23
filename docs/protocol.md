@@ -2129,8 +2129,9 @@ It is a SERVER setting and not a family one, and no endpoint lets an owner chang
 machine may host new families is the operator's decision alone.
 
 `registration` is about an account's FIRST family. A member starting ANOTHER family in the app is
-the separate switch `[families] member_families` (default `true`), so a server closed to strangers
-can still let its members start theirs — see "Several families" (2026-10-22).
+the separate switch `[families] member_families`, so a server closed to strangers can still let its
+members start theirs — see "Several families" (2026-10-22). Left unset, `member_families` follows
+`registration`, so a server closed to strangers is not reopened by an upgrade.
 
 ### Accounts without a family
 
@@ -2211,9 +2212,11 @@ families on a server cannot be counted by trying ids.
 
 - **Creating one** — `POST /families` `{name}` from an account already in a family ("New Family…").
   The creator becomes its owner and gets its family chat, exactly as at registration. This door is
-  the operator's `[families] member_families` (default `true`), NOT `registration`: a server closed
-  to strangers' families (`registration = false`) still lets its members start theirs, and an
-  operator who wants neither sets both to `false` (`member_families_disabled`, 403). An account may
+  the operator's `[families] member_families`, NOT `registration`: a server closed to strangers'
+  families (`registration = false`) may still let its members start theirs, with
+  `member_families = true`. Left unset, `member_families` follows `registration` — open on an open
+  server, closed on a closed one, so an upgrade reopens nothing an operator closed
+  (`member_families_disabled`, 403). An account may
   create a family only while it OWNS none (`already_own_a_family`, 409) — ownership that came by
   hand-off counts — and may belong to at most `[families] max_families_per_account` families
   (default **5**; `too_many_families`, 409). An account with NO family creates its first one under

@@ -282,14 +282,10 @@ async fn a_member_starts_a_second_family_and_stays_in_the_first() {
     .await;
 }
 
-/// The two operator switches are separate: closing the server to strangers'
-/// families does not close it to members', and `member_families = false`
-/// closes the in-app door alone (docs/protocol.md, "Several families").
-#[tokio::test]
-#[ignore = "requires PostgreSQL"]
-async fn in_app_creation_is_its_own_switch() {
-    // Registration closed, member families open: the issue's own case.
-    let ts = spawn_server_with_config(|cfg| cfg.families.registration = false).await;
+/// A member of a family on a server closed to strangers — the first family
+/// seeded by hand, the way such an operator would have made it — and that
+/// member's token.
+async fn member_on_a_closed_server(ts: &TestServer) -> String {
     let (olive, _) = ts.register("olive", "Olive").await;
     assert_error(
         ts.post(&olive, "/families", json!({"name": "The Smiths"}))
@@ -298,7 +294,6 @@ async fn in_app_creation_is_its_own_switch() {
         "family_registration_disabled",
     )
     .await;
-    // Seed a first family the way an operator would have, by hand.
     let smiths: i64 = sqlx::query_scalar(
         "INSERT INTO families (name, invite_code, owner_user_id, join_policy)
          SELECT 'The Smiths', 'SEEDCODE', id, 'open' FROM users WHERE username = 'olive'
@@ -314,6 +309,38 @@ async fn in_app_creation_is_its_own_switch() {
         .expect("its chat");
     let (bob, _) = ts.register("bob", "Bob").await;
     ts.join(&bob, "SEEDCODE", "joined").await;
+    bob
+}
+
+/// The two operator switches are separate: `member_families` decides the
+/// in-app door, and only when it is UNSET does it follow `registration` — so
+/// a server closed to strangers is not reopened by an upgrade, and its
+/// operator can still let members start families by saying so
+/// (docs/protocol.md, "Several families").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn in_app_creation_is_its_own_switch() {
+    // Registration closed and nothing said about members: closed to them too.
+    let ts = spawn_server_with_config(|cfg| cfg.families.registration = false).await;
+    let bob = member_on_a_closed_server(&ts).await;
+    assert_error(
+        ts.post(&bob, "/families", json!({"name": "The Browns"}))
+            .await,
+        403,
+        "member_families_disabled",
+    )
+    .await;
+    assert_eq!(me(&ts, &bob, true).await["member_families_enabled"], false);
+
+    // Registration closed, member families opened on purpose: the issue's
+    // own case.
+    let ts = spawn_server_with_config(|cfg| {
+        cfg.families.registration = false;
+        cfg.families.member_families = Some(true);
+    })
+    .await;
+    let bob = member_on_a_closed_server(&ts).await;
+    assert_eq!(me(&ts, &bob, true).await["member_families_enabled"], true);
     let response = ts
         .post(&bob, "/families", json!({"name": "The Browns"}))
         .await;
@@ -324,7 +351,7 @@ async fn in_app_creation_is_its_own_switch() {
     );
 
     // Member families closed: a member is refused, a newcomer is not.
-    let ts = spawn_server_with_config(|cfg| cfg.families.member_families = false).await;
+    let ts = spawn_server_with_config(|cfg| cfg.families.member_families = Some(false)).await;
     let (olive, _) = ts.register("olive", "Olive").await;
     let (_, code) = ts.create_family(&olive, "The Smiths").await;
     ts.set_open_policy(&olive).await;

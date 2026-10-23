@@ -707,7 +707,7 @@ pub async fn create_family(
             "this server does not take new families",
         ));
     }
-    if !first_family && !state.cfg.families.member_families {
+    if !first_family && !state.cfg.families.member_families_enabled() {
         return Err(ApiError::forbidden(
             codes::MEMBER_FAMILIES_DISABLED,
             "this server does not let members start families",

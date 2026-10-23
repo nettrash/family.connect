@@ -47,9 +47,11 @@ familyless_account_ttl_days = 7
 # inside the app — somebody in their parents' family who marries and starts
 # their own, staying in both with one login. This is NOT `registration`:
 # that one is about a stranger's first family, so a server closed to
-# strangers can still let its members start theirs. Set both to false for
-# neither. An account may create a family only while it owns none.
-member_families = true
+# strangers can still let its members start theirs by setting this to true.
+# LEFT UNSET it follows `registration`, so a server closed with
+# `registration = false` is not reopened by an upgrade. An account may
+# create a family only while it owns none.
+# member_families = true
 # The most families one account may belong to, however it got into them —
 # creating one, an owner's invitation, or an invite code. At least 1.
 max_families_per_account = 5
