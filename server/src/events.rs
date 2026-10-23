@@ -68,9 +68,10 @@ pub enum Scope {
 /// The users among `user_ids` whose LEGACY connections must not be sent a
 /// frame of this scope. Their multi-family connections are unaffected.
 ///
-/// Costs nothing while no recipient holds a legacy connection — the
-/// registry answers that from memory — and one indexed query (two for a
-/// chat) when somebody does.
+/// Costs nothing while no recipient holds a legacy connection, and each
+/// legacy connection's home family is read from the registry rather than the
+/// database (`Registry::legacy_homes`) — so a family-scoped frame asks no
+/// question at all, and a chat-scoped one asks which families list the chat.
 pub async fn legacy_hidden(
     state: &AppState,
     user_ids: &[i64],
@@ -79,33 +80,42 @@ pub async fn legacy_hidden(
     if matches!(scope, Scope::Everywhere) {
         return Ok(HashSet::new());
     }
-    let legacy = state.registry.legacy_users(user_ids).await;
+    let legacy = state.registry.legacy_homes(user_ids).await;
     if legacy.is_empty() {
         return Ok(HashSet::new());
     }
     let families: Vec<i64> = match scope {
         Scope::Everywhere => return Ok(HashSet::new()),
-        Scope::MultiOnly => return Ok(legacy.into_iter().collect()),
+        Scope::MultiOnly => return Ok(legacy.into_keys().collect()),
         Scope::Family(family_id) => vec![*family_id],
         Scope::Chat(chat_id) => {
             let family_ids = crate::families::chat_family_ids(&state.pool, *chat_id).await?;
             // A direct chat whose pair shares no family any more is closed
-            // on the side that left and still held on the side that stayed —
-            // `GET /chats` lists it to an app from before exactly as it
-            // always did, so what happens in it reaches that app as it
-            // always did too. It is about no OTHER family, which is the
-            // only thing this rule holds back.
+            // on the side that left and still held on the side that stayed,
+            // and `GET /chats` lists it to that side under the families IT
+            // is sent (`viewer_chat_family_ids_sql`) — so that, per reader,
+            // is what an app from before may be sent frames about. Only the
+            // side that stayed is still a member, so this is one question.
             if family_ids.is_empty() {
-                return Ok(HashSet::new());
+                let mut hidden = HashSet::new();
+                for (user_id, home) in legacy {
+                    let theirs =
+                        crate::families::viewer_chat_family_ids(&state.pool, *chat_id, user_id)
+                            .await?;
+                    if !crate::families::home_in_scope(home, &theirs) {
+                        hidden.insert(user_id);
+                    }
+                }
+                return Ok(hidden);
             }
             family_ids
         }
         Scope::Families(family_ids) => family_ids.clone(),
     };
-    let homes = crate::families::homes(&state.pool, &legacy).await?;
     Ok(legacy
         .into_iter()
-        .filter(|user_id| !crate::families::home_in_scope(homes.get(user_id).copied(), &families))
+        .filter(|(_, home)| !crate::families::home_in_scope(*home, &families))
+        .map(|(user_id, _)| user_id)
         .collect())
 }
 

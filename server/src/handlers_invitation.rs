@@ -313,6 +313,43 @@ pub async fn accept_invitation(
     };
 
     let mut tx = state.pool.begin().await?;
+    // An invitation is good only while its person shares ANOTHER family with
+    // the family's owner — the rule `create_invitation` applies, read again
+    // here under the family row's lock, because either of them may have left
+    // the family they shared since, or the family changed hands. One that no
+    // longer holds lapses now, exactly as a departure would have lapsed it.
+    let still_shared: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM family_members mine
+               JOIN family_members theirs ON theirs.family_id = mine.family_id
+              WHERE mine.user_id = f.owner_user_id AND theirs.user_id = $2
+                AND mine.family_id <> f.id)
+           FROM families f WHERE f.id = $1 FOR UPDATE",
+    )
+    .bind(family_id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if still_shared == Some(false) {
+        let lapsed: Option<i64> =
+            sqlx::query_scalar("DELETE FROM invitations WHERE id = $1 RETURNING id")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        if lapsed.is_some() {
+            crate::handlers_family::announce_lapsed(
+                &state,
+                &[LapsedInvitation {
+                    id,
+                    family_id,
+                    user_id: auth.user_id,
+                }],
+            )
+            .await;
+        }
+        return Err(not_pending());
+    }
     // The grant takes the family row's lock and then the account's; the
     // invitation is re-read after it, under that same lock, so a withdrawal
     // that landed in between is honoured rather than overridden.

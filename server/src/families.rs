@@ -13,9 +13,7 @@
 //! answer "yes" about them without any `deleted_at` test of its own — the
 //! same property `users.family_id IS NULL` gave every caller before.
 
-use std::collections::HashMap;
-
-use sqlx::{PgExecutor, PgPool};
+use sqlx::PgExecutor;
 
 use crate::error::ApiError;
 
@@ -173,26 +171,6 @@ pub async fn viewer_chat_family_ids<'e, E: PgExecutor<'e>>(
     .fetch_optional(executor)
     .await?;
     Ok(ids.unwrap_or_default())
-}
-
-/// The HOME family of each of `user_ids` that has one — what an app that
-/// predates several families is shown, and so what decides which frames its
-/// connection may receive (docs/protocol.md, "Several families"). An account
-/// in no family is simply absent from the map.
-pub async fn homes(pool: &PgPool, user_ids: &[i64]) -> Result<HashMap<i64, i64>, ApiError> {
-    if user_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT DISTINCT ON (user_id) user_id, family_id
-           FROM family_members
-          WHERE user_id = ANY($1)
-          ORDER BY user_id, joined_at, family_id",
-    )
-    .bind(user_ids)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().collect())
 }
 
 /// Of `family_ids` (a frame's scope), which may a connection whose account's

@@ -49,6 +49,14 @@ struct ConnHandle {
     /// about its account's home family alone (docs/protocol.md, "Several
     /// families") — which is why the fan-out below can be told to skip it.
     multi: bool,
+    /// The account's HOME family as this connection last heard it — what a
+    /// legacy connection is shown, and so what decides which frames it may be
+    /// sent, without a database question per frame. Set at registration and
+    /// kept current by `set_home` whenever a membership changes; a home that
+    /// MOVES ends every legacy session outright
+    /// (`handlers_family::end_legacy_sessions_if_home_moved`), so what is
+    /// left to follow is a first family arriving and a last one going.
+    home: Option<i64>,
     tx: mpsc::Sender<ServerFrame>,
     /// `Some(close_code)` asks the connection task to close the socket.
     close_tx: Arc<watch::Sender<Option<u16>>>,
@@ -88,8 +96,15 @@ impl Registry {
     }
 
     /// Add a connection for `user_id` and hand back its receiving ends.
-    /// `multi` is whether the client said `families=1` on the upgrade.
-    pub async fn register(&self, user_id: i64, session_id: i64, multi: bool) -> Registration {
+    /// `multi` is whether the client said `families=1` on the upgrade, and
+    /// `home` the account's home family as the upgrade read it.
+    pub async fn register(
+        &self,
+        user_id: i64,
+        session_id: i64,
+        multi: bool,
+        home: Option<i64>,
+    ) -> Registration {
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, frames) = mpsc::channel(self.queue_capacity);
         let (close_tx, close) = watch::channel(None);
@@ -97,6 +112,7 @@ impl Registry {
             conn_id,
             session_id,
             multi,
+            home,
             tx,
             close_tx: Arc::new(close_tx),
         };
@@ -210,14 +226,31 @@ impl Registry {
             .collect()
     }
 
-    /// Is this ONE connection an app that predates several families?
-    /// `None` when the connection has gone.
-    pub async fn is_legacy_conn(&self, user_id: i64, conn_id: u64) -> Option<bool> {
+    /// The users among `user_ids` who hold a legacy connection, each with the
+    /// home family that connection is showing — `legacy_users` with the one
+    /// fact `events::legacy_hidden` needs about each, read from memory.
+    pub async fn legacy_homes(&self, user_ids: &[i64]) -> HashMap<i64, Option<i64>> {
         let inner = self.inner.read().await;
-        inner
-            .get(&user_id)
-            .and_then(|conns| conns.iter().find(|c| c.conn_id == conn_id))
-            .map(|conn| !conn.multi)
+        user_ids
+            .iter()
+            .filter_map(|user_id| {
+                inner
+                    .get(user_id)
+                    .and_then(|conns| conns.iter().find(|conn| !conn.multi))
+                    .map(|conn| (*user_id, conn.home))
+            })
+            .collect()
+    }
+
+    /// Record `user_id`'s home family on every connection of theirs — called
+    /// once a membership change has committed, before its frames go out.
+    pub async fn set_home(&self, user_id: i64, home: Option<i64>) {
+        let mut inner = self.inner.write().await;
+        if let Some(conns) = inner.get_mut(&user_id) {
+            for conn in conns {
+                conn.home = home;
+            }
+        }
     }
 
     /// Send one frame to a SINGLE connection of `user_id` — the one that
@@ -309,8 +342,8 @@ mod tests {
     #[tokio::test]
     async fn live_multi_sessions_ignores_a_session_whose_only_socket_is_legacy() {
         let registry = Registry::new(4);
-        let _old_phone = registry.register(1, 100, false).await;
-        let _new_mac = registry.register(1, 101, true).await;
+        let _old_phone = registry.register(1, 100, false, None).await;
+        let _new_mac = registry.register(1, 101, true, None).await;
         assert_eq!(sorted(registry.live_multi_sessions(&[1]).await), vec![101]);
         assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
     }
@@ -318,8 +351,8 @@ mod tests {
     #[tokio::test]
     async fn live_sessions_holds_every_session_a_user_is_connected_on() {
         let registry = Registry::new(4);
-        let mac = registry.register(1, 100, true).await;
-        let _phone = registry.register(1, 101, true).await;
+        let mac = registry.register(1, 100, true, None).await;
+        let _phone = registry.register(1, 101, true, None).await;
         assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
         registry.unregister(1, mac.conn_id).await;
         assert_eq!(
@@ -332,8 +365,8 @@ mod tests {
     #[tokio::test]
     async fn live_sessions_covers_the_batch_and_skips_users_with_no_socket() {
         let registry = Registry::new(4);
-        let _one = registry.register(1, 100, true).await;
-        let _two = registry.register(2, 200, true).await;
+        let _one = registry.register(1, 100, true, None).await;
+        let _two = registry.register(2, 200, true, None).await;
         assert_eq!(
             sorted(registry.live_sessions(&[1, 2, 3]).await),
             vec![100, 200]
@@ -347,8 +380,8 @@ mod tests {
     #[tokio::test]
     async fn fan_out_skips_the_origin_connection_but_reaches_other_devices() {
         let registry = Registry::new(4);
-        let mut a = registry.register(1, 100, true).await;
-        let mut b = registry.register(1, 101, true).await;
+        let mut a = registry.register(1, 100, true, None).await;
+        let mut b = registry.register(1, 101, true, None).await;
         registry.fan_out(&[1], &pong(), Some(a.conn_id)).await;
         assert!(
             b.frames.try_recv().is_ok(),
@@ -363,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_send_queue_triggers_a_kick_instead_of_blocking() {
         let registry = Registry::new(1);
-        let mut reg = registry.register(1, 100, true).await;
+        let mut reg = registry.register(1, 100, true, None).await;
         registry.send_to_users(&[1], &pong()).await; // fills the queue
         registry.send_to_users(&[1], &pong()).await; // overflows -> kick
         assert_eq!(
@@ -376,8 +409,8 @@ mod tests {
     #[tokio::test]
     async fn close_session_signals_exactly_the_matching_connections() {
         let registry = Registry::new(4);
-        let mut same = registry.register(1, 100, true).await;
-        let mut other = registry.register(1, 200, true).await;
+        let mut same = registry.register(1, 100, true, None).await;
+        let mut other = registry.register(1, 200, true, None).await;
         registry.close_session(100).await;
         assert_eq!(*same.close.borrow_and_update(), Some(CLOSE_SESSION_GONE));
         assert_eq!(*other.close.borrow_and_update(), None);
@@ -389,9 +422,9 @@ mod tests {
     #[tokio::test]
     async fn a_hidden_user_loses_the_frame_only_on_legacy_connections() {
         let registry = Registry::new(4);
-        let mut old_app = registry.register(1, 100, false).await;
-        let mut new_app = registry.register(1, 101, true).await;
-        let mut other = registry.register(2, 200, false).await;
+        let mut old_app = registry.register(1, 100, false, None).await;
+        let mut new_app = registry.register(1, 101, true, None).await;
+        let mut other = registry.register(2, 200, false, None).await;
         assert_eq!(registry.legacy_users(&[1, 2, 3]).await, vec![1, 2]);
         let hidden: HashSet<i64> = [1].into_iter().collect();
         registry
@@ -400,20 +433,28 @@ mod tests {
         assert!(old_app.frames.try_recv().is_err(), "the old app is skipped");
         assert!(new_app.frames.try_recv().is_ok(), "the new app still hears");
         assert!(other.frames.try_recv().is_ok(), "a user not hidden hears");
+    }
+
+    #[tokio::test]
+    async fn a_legacy_connection_keeps_the_home_it_was_last_told() {
+        let registry = Registry::new(4);
+        let _old_app = registry.register(1, 100, false, None).await;
+        let _new_app = registry.register(2, 200, true, Some(7)).await;
         assert_eq!(
-            registry.is_legacy_conn(1, old_app.conn_id).await,
-            Some(true)
+            registry.legacy_homes(&[1, 2]).await,
+            [(1, None)].into_iter().collect()
         );
+        registry.set_home(1, Some(3)).await;
         assert_eq!(
-            registry.is_legacy_conn(1, new_app.conn_id).await,
-            Some(false)
+            registry.legacy_homes(&[1, 2]).await,
+            [(1, Some(3))].into_iter().collect()
         );
     }
 
     #[tokio::test]
     async fn unregister_removes_the_connection_and_empties_the_map() {
         let registry = Registry::new(4);
-        let reg = registry.register(1, 100, true).await;
+        let reg = registry.register(1, 100, true, None).await;
         assert_eq!(registry.connection_count().await, 1);
         registry.unregister(1, reg.conn_id).await;
         assert_eq!(registry.connection_count().await, 0);

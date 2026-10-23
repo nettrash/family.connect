@@ -2240,9 +2240,14 @@ Invitations, in full:
 | `POST /invitations/{id}/decline` | (the invited person) → `204`. Idempotent for the invited person; the owner is not pushed. |
 
 An invitation lapses — and is simply gone from both lists — when it is accepted, declined or
-withdrawn, when the family is deleted, when either account is deleted, or when the invited person
-joins the family by another door. An owner who leaves or hands the family on leaves its invitations
-standing: they are the family's, not the owner's.
+withdrawn, when the family is deleted, when either account is deleted, when the invited person
+joins the family by another door, or when the invited person and the family's CURRENT owner no
+longer share another family (either of them left the one they shared, or the family changed hands
+to an owner who shares none with them). An invitation is the family's, not the owner's, so a hand-off
+keeps it while the new owner also shares a family with the invited person; but an owner never goes
+on seeing the profile of somebody they share no family with, and nobody comes in through a door
+that `POST /families/{family}/invitations` would refuse today. Accepting re-checks this, and an
+invitation that no longer holds answers `invitation_not_pending`.
 
 **Switching.** The apps show ONE family at a time, with a switcher listing every family and its
 unread count (and a pending join request or invitation as a row of its own). The chat list, the
@@ -2327,6 +2332,8 @@ invitation, a family just created on another device), means "you are in a new fa
 re-reads `GET /me` and that family. A `member_left` naming the caller means "you are out of that
 family": the client drops the family's chats, board, pack, roster and cursors — and only that
 family's; a direct chat stays while its `family_ids` still name another family the client holds.
+The last member leaving deletes the family, and their own other devices are told the same way, by a
+`member_left` naming them.
 `board_note` and `pack_item` say whose they are by the `family_id` now on `Note` and `PackItem`.
 An account deleted while in several families raises one `member_deleted` (and its `member_left`)
 per family, each with that family's id and to that family's members; a client that holds the

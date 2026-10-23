@@ -440,7 +440,12 @@ async fn run_connection(
 ) {
     let registry = state.registry.clone();
     let mut registration = registry
-        .register(auth.user_id, auth.session_id, auth.multi)
+        .register(
+            auth.user_id,
+            auth.session_id,
+            auth.multi,
+            auth.home_family(),
+        )
         .await;
     let shutdown = registry.shutdown_token();
 
@@ -579,18 +584,21 @@ async fn call_replays(state: &AppState, auth: &AuthUser) -> Vec<ServerFrame> {
     let mut frames = Vec::new();
     let pending = match state.calls.pending_offer_for(user_id) {
         Some(pending) if !auth.multi => {
-            let in_scope =
-                match crate::families::chat_family_ids(&state.pool, pending.chat_id).await {
-                    // `[]` is a closed direct chat, about no other family — the
-                    // same exception `events::legacy_hidden` makes.
-                    Ok(family_ids) => {
-                        family_ids.is_empty()
-                            || crate::families::home_in_scope(auth.home_family(), &family_ids)
-                    }
-                    // A replay is a courtesy; a database hiccup must not keep a
-                    // socket from opening. The live offer already decided.
-                    Err(_) => false,
-                };
+            // The families the chat is listed in FOR THIS READER — which for
+            // a closed direct chat the reader still holds is theirs, the same
+            // rule `GET /chats` and `events::legacy_hidden` follow.
+            let in_scope = match crate::families::viewer_chat_family_ids(
+                &state.pool,
+                pending.chat_id,
+                user_id,
+            )
+            .await
+            {
+                Ok(family_ids) => crate::families::home_in_scope(auth.home_family(), &family_ids),
+                // A replay is a courtesy; a database hiccup must not keep a
+                // socket from opening. The live offer already decided.
+                Err(_) => false,
+            };
             in_scope.then_some(pending)
         }
         other => other,

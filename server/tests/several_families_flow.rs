@@ -993,6 +993,122 @@ async fn a_closed_direct_chat_takes_uploads_and_reopens_under_the_shared_family(
     assert_eq!(back["family_ids"], json!([browns]));
 }
 
+/// A chat held by the side that stayed moves with them when they leave the
+/// family its row names, so that family's later deletion cannot take it —
+/// and the last member deleting a family by leaving it tells their own other
+/// devices, as any departure does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_held_chat_outlives_the_family_it_was_opened_in() {
+    let ts = spawn_server().await;
+    let (olive, _, bob, _, smiths, browns) = bob_in_two(&ts).await;
+    let (carl, carl_id) = ts.register("carl", "Carl").await;
+    let smiths_code = invite_code_of(&ts, &olive, smiths).await;
+    ts.join(&carl, &smiths_code, "joined").await;
+    let opened = json_of(
+        ts.post(&bob, "/chats/direct", json!({"user_id": carl_id}))
+            .await,
+        "opening a direct chat",
+    )
+    .await;
+    let direct = opened["chat"]["id"].as_i64().expect("chat id");
+    send(&ts, &bob, direct, "keep this").await;
+
+    // Carl leaves: closed on his side, Bob holds it. Then Bob leaves the
+    // Smiths too, and Olive — the last — deletes them by leaving.
+    for (token, path) in [
+        (&carl, format!("/families/{smiths}/leave")),
+        (&bob, format!("/families/{smiths}/leave")),
+    ] {
+        let response = ts.post(token, &path, json!({})).await;
+        assert_eq!(response.status(), 204);
+    }
+    let response = ts
+        .post(&olive, &format!("/families/{smiths}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+    let kept = chats(&ts, &bob, true)
+        .await
+        .into_iter()
+        .find(|chat| chat["id"].as_i64() == Some(direct))
+        .expect("the chat outlives the Smiths");
+    assert_eq!(kept["family_ids"], json!([browns]));
+    let messages = json_of(
+        ts.get(&bob, &format!("/chats/{direct}/messages")).await,
+        "the history",
+    )
+    .await;
+    assert_eq!(messages["messages"][0]["body"], "keep this");
+
+    // Bob joins the Dans, then leaves the Browns, where he is the only one:
+    // his other device hears the Browns are gone, and the chat moves again.
+    let (dan, _) = ts.register("dan", "Dan").await;
+    let (dans, _) = ts.create_family(&dan, "The Dans").await;
+    open_family(&ts, &dan, dans).await;
+    let dans_code = invite_code_of(&ts, &dan, dans).await;
+    ts.join(&bob, &dans_code, "joined").await;
+    let mut other_device = connect_ws(&ts, &bob, true).await;
+    let response = ts
+        .post(&bob, &format!("/families/{browns}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+    let left = next_frame_of_type(&mut other_device, "member_left").await;
+    assert_eq!(left["family_id"].as_i64(), Some(browns));
+    let kept = chats(&ts, &bob, true)
+        .await
+        .into_iter()
+        .find(|chat| chat["id"].as_i64() == Some(direct))
+        .expect("the chat outlives the Browns");
+    assert_eq!(kept["family_ids"], json!([dans]));
+}
+
+/// An app from before several families is not sent what happens in a closed
+/// direct chat that its account holds under a family other than home —
+/// `GET /chats` does not list it there, so neither do the frames.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_held_chat_outside_home_stays_off_an_app_from_before() {
+    let ts = spawn_server().await;
+    let (_olive, _, bob, _, smiths, browns) = bob_in_two(&ts).await;
+    let (carl, carl_id) = ts.register("carl", "Carl").await;
+    open_family(&ts, &bob, browns).await;
+    let browns_code = invite_code_of(&ts, &bob, browns).await;
+    ts.join(&carl, &browns_code, "joined").await;
+    let opened = json_of(
+        ts.post(&bob, "/chats/direct", json!({"user_id": carl_id}))
+            .await,
+        "opening a direct chat",
+    )
+    .await;
+    let direct = opened["chat"]["id"].as_i64().expect("chat id");
+    let response = ts
+        .post(&carl, &format!("/families/{browns}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+
+    let old_phone = ts.login("bob", "password123").await;
+    assert!(
+        chats(&ts, &old_phone, false)
+            .await
+            .iter()
+            .all(|chat| chat["id"].as_i64() != Some(direct)),
+        "not listed to the old app"
+    );
+    let mut old_socket = connect_ws(&ts, &old_phone, false).await;
+    send(&ts, &bob, direct, "a note to myself").await;
+    let home_chat = family_chat_of(&ts, &bob, smiths).await;
+    let probe = send(&ts, &bob, home_chat, "probe").await;
+    let seen = frames_until(&mut old_socket, |frame| {
+        frame["type"] == "message" && frame["message"]["id"].as_i64() == Some(probe)
+    })
+    .await;
+    assert!(
+        seen.iter()
+            .all(|frame| frame["message"]["chat_id"].as_i64() != Some(direct)),
+        "nothing from the held chat reached the old app: {seen:?}"
+    );
+}
+
 /// Opening a direct chat needs ONE shared family, whichever it is.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
@@ -1056,16 +1172,40 @@ async fn leaving_one_family_keeps_the_others_and_the_sweep_waits_for_the_last() 
     assert_eq!(family_ids_of(&me(&ts, &carl, true).await), vec![smiths]);
     assert_eq!(familyless_since(&ts, carl_id).await, None);
 
-    // Invited back into the Browns, then out of his last family.
+    // Invited back into the Browns, then out of his last family — the
+    // Smiths, the one family he shared with Bob. The invitation lapses with
+    // it: Bob may invite only somebody he shares another family with.
     let invitation_id = invite_ok(&ts, &bob, browns, carl_id).await;
+    let mut bob_ws = connect_ws(&ts, &bob, true).await;
     let response = ts.post(&carl, "/families/leave", json!({})).await;
     assert_eq!(response.status(), 204);
     assert!(
         familyless_since(&ts, carl_id).await.is_some(),
         "the clock starts at the last"
     );
+    let removed = next_frame_of_type(&mut bob_ws, "invitation_removed").await;
+    assert_eq!(removed["invitation_id"].as_i64(), Some(invitation_id));
+    assert_eq!(
+        me(&ts, &carl, true).await["invitations"],
+        json!([]),
+        "nobody shares a family with him any more"
+    );
+    assert_error(
+        ts.post(
+            &carl,
+            &format!("/invitations/{invitation_id}/accept"),
+            json!({}),
+        )
+        .await,
+        409,
+        "invitation_not_pending",
+    )
+    .await;
 
-    // Long past the grace — and spared by the invitation.
+    // Long past the grace — and spared by a join request still waiting.
+    let (dan, _) = ts.register("dan", "Dan").await;
+    let (_, dans_code) = ts.create_family(&dan, "The Dans").await;
+    ts.join(&carl, &dans_code, "pending").await;
     sqlx::query("UPDATE users SET familyless_since = now() - interval '30 days' WHERE id = $1")
         .bind(carl_id)
         .execute(&ts.state.pool)
@@ -1074,15 +1214,17 @@ async fn leaving_one_family_keeps_the_others_and_the_sweep_waits_for_the_last() 
     let swept = family_connect::handlers_auth::sweep_familyless_accounts(&ts.state)
         .await
         .expect("the sweep runs");
-    assert_eq!(swept, 0, "a pending invitation keeps the sweep away");
+    assert_eq!(swept, 0, "a pending join request keeps the sweep away");
+    let requests = json_of(ts.get(&dan, "/families/join-requests").await, "requests").await;
+    let request_id = requests["requests"][0]["id"].as_i64().expect("request id");
     let response = ts
         .post(
-            &carl,
-            &format!("/invitations/{invitation_id}/decline"),
+            &dan,
+            &format!("/families/join-requests/{request_id}/reject"),
             json!({}),
         )
         .await;
-    assert_eq!(response.status(), 204);
+    assert!(response.status().is_success(), "rejecting the request");
     let swept = family_connect::handlers_auth::sweep_familyless_accounts(&ts.state)
         .await
         .expect("the sweep runs");

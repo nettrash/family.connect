@@ -595,6 +595,37 @@ pub async fn scrub_account(
             owned.push(family_id);
         }
     }
+    // Then the ACCOUNT's row — family rows first, then the user row, the
+    // order everything here observes — and the families read AGAIN under it.
+    // The list above was read before the transaction, and since members may
+    // start families of their own a family created (or joined) by another
+    // device in that gap was never locked or handed on: its membership would
+    // go below and leave it owned by a tombstone with nobody in it. Every
+    // membership is granted under this same row's lock
+    // (`grant_membership`), so the list read now cannot grow before the
+    // commit, and any family it gained is locked and handled like the rest.
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    let mut now_in = crate::families::family_ids_of(&mut *tx, user_id).await?;
+    now_in.sort_unstable();
+    for &family_id in now_in.iter().filter(|id| !family_ids.contains(id)) {
+        let locked_owner_id: Option<i64> =
+            sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
+                .bind(family_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if locked_owner_id == Some(user_id) {
+            owned.push(family_id);
+        }
+        let members: Vec<i64> = crate::families::member_ids(&mut *tx, family_id)
+            .await?
+            .into_iter()
+            .filter(|member| *member != user_id)
+            .collect();
+        rosters.push((family_id, members));
+    }
     let mut successors: Vec<(i64, i64)> = Vec::new();
     let mut families_to_delete: Vec<i64> = Vec::new();
     for family_id in owned {
@@ -730,7 +761,7 @@ pub async fn scrub_account(
     // Invitations lapse "when either account is deleted" (docs/protocol.md,
     // "Several families"): the ones TO this account and the ones it SENT.
     // Collected so both parties of each can be told after the commit.
-    let lapsed: Vec<(i64, i64, i64)> = sqlx::query_as(
+    let mut lapsed: Vec<(i64, i64, i64)> = sqlx::query_as(
         "DELETE FROM invitations WHERE user_id = $1 OR invited_by = $1
          RETURNING id, family_id, user_id",
     )
@@ -752,6 +783,17 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+    // And the invitations of a family that changed hands above, to people
+    // its NEW owner shares no other family with — the rule every departure
+    // follows (`handlers_family::lapse_unshared_invitations`).
+    for &(family_id, _) in &successors {
+        lapsed.extend(
+            crate::handlers_family::lapse_unshared_invitations(&mut tx, user_id, family_id)
+                .await?
+                .into_iter()
+                .map(|invitation| (invitation.id, invitation.family_id, invitation.user_id)),
+        );
+    }
     // An upload NOTHING ever claimed is a half-finished action of an
     // account that no longer exists, and nothing else would remove it for
     // hours. A CLAIMED one is not touched: its message — or the board note
