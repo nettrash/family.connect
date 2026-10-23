@@ -315,8 +315,16 @@ final class AppSession {
 
     private func resolvePendingPushFamily() {
         guard pendingPushRoute != nil || pendingPushFamilyID != nil else { return }
-        var chatFamilies: [Int64] = []
-        if case .chat(let chatID) = pendingPushRoute { chatFamilies = chatFamilyIDs(chatID) ?? [] }
+        // The chat's `family_ids` as this device holds them, with ABSENT kept
+        // apart from empty. Absent (nil) is a chat cached before several
+        // families, and the protocol makes that the HOME family's
+        // (`FamilyRules.isListed`); folding it into `[]` — listed in NO
+        // family — left a push for it in whichever family was on screen,
+        // though the home family is the only one that lists it. A chat this
+        // device does not hold at all (a direct chat newer than the last
+        // sync) has nothing to go by, and the app stays where it is: `[]`.
+        var chatFamilies: [Int64]? = []
+        if case .chat(let chatID) = pendingPushRoute, let held = chatFamilyIDs(chatID) { chatFamilies = held }
         let target = FamilyRules.pushFamily(
             pushFamilyID: pendingPushFamilyID, chatFamilyIDs: chatFamilies,
             current: currentFamilyID, held: families.map(\.id))
@@ -484,9 +492,17 @@ final class AppSession {
     /// Rows a build from before several families cached were the home
     /// family's (it read nothing else): hand them to it, once.
     var adoptUnattributedFamilyData: (Int64) -> Void = { _ in }
-    /// The id of every family a held chat is listed in, or nil when this
-    /// device does not hold the chat — for a push that names no family.
-    var chatFamilyIDs: (Int64) -> [Int64]? = { _ in nil }
+    /// The `family_ids` of a held chat, or `.none` when this device does not
+    /// hold the chat — for a push that names no family. Doubly optional
+    /// because a held chat's own answer may be nil: `family_ids` nobody sent
+    /// (cached before several families, the HOME family's), which is not
+    /// "not held" and must not be read as it (`resolvePendingPushFamily`).
+    var chatFamilyIDs: (Int64) -> [Int64]?? = { _ in nil }
+    /// Whether this device still holds anything that is a family's — chats,
+    /// a roster, a board, a pack, or their marks — read from what is
+    /// PERSISTED and not from `families`, which a cold launch has not filled
+    /// yet (`apply(me:)`). A closure for the reason `clearChatStore` is one.
+    var holdsFamilyData: () -> Bool = { false }
     /// Run a resync: a family was added and its roster, board, pack and
     /// chats are to be fetched now, not at the next reconnect.
     var requestResync: () -> Void = {}
@@ -551,14 +567,22 @@ final class AppSession {
                 // Offline but with history: open the chat list read-only;
                 // the coordinator keeps retrying the socket + resync.
                 AppLog.app.info("Bootstrap offline; opening cached chats")
-                // The family this account was last shown, so the list is
-                // that family's chats until `/me` can say more.
-                currentFamilyID = AppSettings.currentUserID.flatMap(AppSettings.currentFamilyID(forUser:))
-                phase = .active
+                openOffline()
             } else {
                 bootError = Self.describeTransport(error)
             }
         }
+    }
+
+    /// The cached chats, opened with no `/me` in hand: the family this
+    /// account was last shown is current, so the list is that family's chats
+    /// until `/me` can say more — and there is NO family list, which only
+    /// `/me` gives. Internal rather than private so a test can reach that
+    /// state without a stored token, which an unsigned test host cannot
+    /// write.
+    func openOffline() {
+        currentFamilyID = AppSettings.currentUserID.flatMap(AppSettings.currentFamilyID(forUser:))
+        phase = .active
     }
 
     func retryBootstrap() async {
@@ -597,6 +621,19 @@ final class AppSession {
         // none is a loss to purge for, on either of the two family-less
         // branches below. The list as well as the phase, as Android reads
         // it (`wasInFamily || before.families.isNotEmpty()`).
+        //
+        // Neither can see a COLD launch: the list lives in memory and is
+        // empty in `.booting`, and the phase has no past there. An app
+        // terminated while in family A alone, with a request pending to B,
+        // and removed from A before it was next opened, purged nothing on
+        // its bootstrap `/me` — the waiting screen — and nothing again when
+        // B then declined — the gate — so A's messages, roster, board, pack,
+        // contact links and cursors stayed on the device for good. So those
+        // two branches also ask what is PERSISTED (`holdsFamilyData`): with
+        // no family listed, whatever a family left on this device belongs to
+        // a family the account no longer has. Asked there alone, since it
+        // reads the store, and answered "no" once a purge has run — so the
+        // waiting screen's `/me` poll does not purge again on every tick.
         let heldFamilies = wasActive || !families.isEmpty
         // Several families (docs/protocol.md, "Several families"): the list,
         // whatever this server is — one that predates them describes its
@@ -612,7 +649,11 @@ final class AppSession {
         case .active:
             // A family this device held that `/me` no longer lists is gone
             // for this account — left on another device, or removed while
-            // the socket was down — and its data goes with it, alone.
+            // the socket was down — and its data goes with it, alone. On a
+            // cold launch there is no list to compare against and this finds
+            // nothing; the resync that follows every way into `.active`
+            // drops what such a family left behind (`pruneFamilies`, and
+            // `GET /chats` for its chats).
             let gone = Set(families.map(\.id)).subtracting(listed.map(\.id))
             families = listed
             if let home = listed.first {
@@ -639,18 +680,19 @@ final class AppSession {
             // Skipped here, nothing else would: A's chats, board, pack and
             // cursors sat under the waiting screen, and when B then declined,
             // the gate's branch skipped its purge too, the phase being
-            // `.pendingApproval` rather than `.active` by then.
+            // `.pendingApproval` rather than `.active` by then. On a cold
+            // launch it is what the device persisted that says A was here.
             families = []
             currentFamilyID = nil
             AppSettings.joinPending = true
-            if heldFamilies { purge(.kicked) }
+            if heldFamilies || holdsFamilyData() { purge(.kicked) }
             phase = .pendingApproval
         case .needsFamily(let declined):
             families = []
             currentFamilyID = nil
             AppSettings.joinPending = false
             if declined { joinDeclined = true }
-            if heldFamilies { purge(.kicked) }
+            if heldFamilies || holdsFamilyData() { purge(.kicked) }
             phase = .needsFamily
         }
     }
@@ -940,21 +982,58 @@ final class AppSession {
     /// only whether the family being left is one this session lists, and
     /// what is decided after it is only what remains OTHER than that family
     /// — which is the same answer whichever of the two arrived first.
+    ///
+    /// The echo is not the only thing that can change the list under the
+    /// request: a `/me` can too. A cold start whose first `/me` failed opens
+    /// the cached chats with NO list (`openOffline`); connectivity returns
+    /// while the leave is in flight, and a resync's `/me` fills `families`
+    /// with the account's other families. Deciding the no-list fallback
+    /// before the request then purged the whole store, emptied the list and
+    /// went to the gate while the account was still in those. So the
+    /// fallback, too, is decided after the request, from what is known
+    /// then: the whole store goes only when no family other than the one
+    /// left is known even now.
     func leaveFamily(resolveName: (Int64) -> String?) async throws -> String? {
         let leaving = currentFamilyID
-        let listed = leaving.map { id in families.contains { $0.id == id } } ?? false
+        let listedBefore = leaving.map { id in families.contains { $0.id == id } } ?? false
         let successor = try await api.leaveFamily(family: apiFamilyID)
         let name = successor.flatMap(resolveName)
-        if let leaving, listed {
-            // Last or not is `removeFamily`'s question, asked of what is left
-            // now; a family the echo already removed is a leave already
-            // carried out, and `removeFamily` does nothing a second time.
+        if let leaving, families.contains(where: { $0.id == leaving }) {
+            // Still listed. Last or not is `removeFamily`'s question, asked
+            // of what is left now.
             removeFamily(leaving, reason: .leftFamily)
             return name
         }
-        // No family list to consult — a session no `/me` has described
-        // since several families: the one family there is, left. The old
-        // path, unchanged.
+        if families.contains(where: { $0.id != leaving }) {
+            // Another family is known, and the one left is not on the list.
+            // When it was before the request, whatever took it off — the
+            // echo (`removeFamily`) or a `/me` (`apply(me:)`'s `gone`) —
+            // dropped its data as it did: the leave is already carried out.
+            // When it was not, the list arrived during the request with a
+            // `/me` that had nothing to compare it to and so dropped nothing,
+            // and the family left goes now, alone (one an echo has since
+            // dropped as well has nothing left to drop). A leave that named
+            // no family left the HOME family as the server counted it when
+            // the request landed, which a list that arrived meanwhile cannot
+            // say — a resync asks again, and its `/me` and prune drop
+            // whatever is no longer listed.
+            if !listedBefore {
+                if let leaving {
+                    forgetFamily(leaving)
+                    if currentFamilyID == leaving { setCurrentFamily(families.first?.id) }
+                } else {
+                    requestResync()
+                }
+            }
+            return name
+        }
+        // No family other than the one left is known, even now. With a list
+        // before the request, the echo or a `/me` has emptied it since — and
+        // purged and routed with it (`removeFamily`, `apply(me:)`) — so a
+        // second purge would have nothing to take. Without one — a session no
+        // `/me` has described since several families — the one family there
+        // is, left: the old path, unchanged.
+        guard !listedBefore else { return name }
         purge(.leftFamily)
         families = []
         currentFamilyID = nil

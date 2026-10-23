@@ -1158,10 +1158,32 @@ final class ChatSyncCoordinator {
         saveContext()
     }
 
-    /// The families a held chat is listed in, or nil when this device does
-    /// not hold it — for a push that names no family.
-    func chatFamilyIDs(of chatID: Int64) -> [Int64]? {
-        fetchChat(chatID)?.familyIDs
+    /// The families a held chat is listed in, or `.none` when this device
+    /// does not hold it — for a push that names no family. `.some(nil)` is a
+    /// held chat whose `family_ids` nobody sent, the HOME family's; flattened
+    /// into one nil, as `fetchChat(id)?.familyIDs` does, it read as "not
+    /// held" and the push stayed wherever the app was
+    /// (`AppSession.resolvePendingPushFamily`).
+    func chatFamilyIDs(of chatID: Int64) -> [Int64]?? {
+        guard let chat = fetchChat(chatID) else { return .none }
+        return .some(chat.familyIDs)
+    }
+
+    /// Whether this device holds anything that is a family's at all: a chat,
+    /// a roster row, a note, a sticker — or a board or pack mark, which live
+    /// in the defaults and can outlast rows that went without them. What a
+    /// `/me` listing NO family asks before it purges (`AppSession
+    /// .holdsFamilyData`): on a cold launch the session's list is still
+    /// empty, and only what was persisted can say a family's data is here.
+    /// Every one of these goes with a purge, so the answer is "no" after one.
+    func holdsFamilyData() -> Bool {
+        func holds<Model: PersistentModel>(_: Model.Type) -> Bool {
+            var descriptor = FetchDescriptor<Model>()
+            descriptor.fetchLimit = 1
+            return ((try? modelContext.fetchCount(descriptor)) ?? 0) > 0
+        }
+        return holds(ChatEntity.self) || holds(MemberEntity.self) || holds(NoteEntity.self)
+            || holds(PackItemEntity.self) || AppSettings.holdsFamilyMarks
     }
 
     /// Everything this device holds that is ONE family's, gone: the account
@@ -4377,11 +4399,10 @@ final class ChatSyncCoordinator {
         //
         // Each family's read is kept for step 7 as well, which needs only
         // its board and pack marks: one `GET /families/{id}` per family per
-        // resync, not two. With it goes the pack's connection number taken
-        // BEFORE the read, because the pack mark is a promise about the
-        // connection it was read under (`packConnection`) — and a reconnect
-        // between here and step 7 is exactly what
-        // `catchUpPackForThisConnection` notices and re-reads for.
+        // resync, not two. With it goes the connection number taken BEFORE
+        // the read (`packConnection`), because a mark is a promise about the
+        // connection it was read under — and step 7 trusts the read only
+        // while that connection is still the one up.
         var mines: [Int64: FamilyMineResponse] = [:]
         var packConnectionsAtRead: [Int64: Int] = [:]
         var familyGone = false
@@ -4553,17 +4574,30 @@ final class ChatSyncCoordinator {
         // server's max, so a board nothing has happened on costs no request
         // at all.
         //
-        // That read is step 2's, with the pack's connection number taken
-        // BEFORE it: the mark below is only a promise about the connection
-        // it was read under (`packConnection`). A board's mark is only a
-        // gate — the catch-up pages from the cursor to a short page whatever
-        // it says — so being read a few steps earlier changes nothing. A
-        // family step 2 has no read of (its read failed, or the family
-        // arrived since) is read here, as every family used to be.
+        // That read is step 2's, with the connection number taken BEFORE
+        // it: the mark below is only a promise about the connection it was
+        // read under (`packConnection`). A family step 2 has no read of (its
+        // read failed, or the family arrived since) is read here, as every
+        // family used to be.
+        //
+        // And so is one whose read a reconnect has overtaken. The resync the
+        // new connection starts finds this one running and returns
+        // (`isResyncing`), so a board change made while the socket was down
+        // — note 51 over a step-2 mark of 50 — reached this device by no
+        // frame, and the old mark, equal to the cursor, let the catch-up skip
+        // it until some later resync. A mark read under the connection that
+        // is still up is only a gate — the catch-up pages from the cursor to
+        // a short page whatever it says — and is reused; `packConnection`
+        // moves on at every connect and disconnect (and every purge of a
+        // pack), so one that has moved since step 2 is read again, under the
+        // connection that is up now. One read per family on an ordinary
+        // resync, two only for a family a reconnect made stale. (The pack
+        // noticed on its own — `catchUpPackForThisConnection` re-reads when
+        // overtaken — but only after a first pass under the old mark.)
         for familyKey in heldFamilyKeys {
             let read: (mine: FamilyMineResponse, packConnection: Int)?
-            if let mine = mines[familyKey], let connection = packConnectionsAtRead[familyKey] {
-                read = (mine, connection)
+            if let mine = mines[familyKey], packConnectionsAtRead[familyKey] == packConnection {
+                read = (mine, packConnection)
             } else {
                 let connection = packConnection
                 read = (try? await api.myFamily(family: pathFamily(familyKey))).map { ($0, connection) }

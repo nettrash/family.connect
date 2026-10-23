@@ -32,6 +32,10 @@ private enum Fixture {
     static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
     static let smiths = family(3, "The Smiths", role: "owner")
     static let ivanovs = family(5, "The Ivanovs", role: "member")
+    /// A family the store suite's server does not list — for a session test
+    /// that has to SHOW a family other than the home one, which is then
+    /// remembered for user 7 where the store suite would read it.
+    static let parks = family(8, "The Parks", role: "member")
 
     static func me(
         families: [FamilyDTO]?,
@@ -249,6 +253,21 @@ struct FamilyRulesTests {
         #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: [3, 5], current: 5, held: held) == nil)
         #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: [5], current: 3, held: held) == 5)
         #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: [], current: 3, held: held) == nil)
+    }
+
+    @Test("a push for a chat that names no family (absent family_ids) opens in the HOME family")
+    func pushFamilyForAnAbsentList() {
+        let held: [Int64] = [3, 5]
+        // Cached before several families: the home family's, and only its —
+        // the first of the families `/me` lists.
+        #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: nil, current: 5, held: held) == 3,
+                "a push for a chat only the home family lists stayed in another family")
+        #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: nil, current: 3, held: held) == nil)
+        // No list to say which family is home (before the first `/me`): stay.
+        #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: nil, current: 5, held: []) == nil)
+        #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: nil, current: nil, held: held) == nil)
+        // Listed in NO family is not absent: nowhere to go.
+        #expect(FamilyRules.pushFamily(pushFamilyID: nil, chatFamilyIDs: [], current: 5, held: held) == nil)
     }
 
     @Test("a family chat's notification is titled with THAT chat's family")
@@ -542,17 +561,31 @@ struct SeveralFamiliesSessionTests {
         var current: [Int64?] = []
         var resyncs = 0
         var chatStoreCleared = 0
+        /// What the store would answer `holdsFamilyData`: whatever a test
+        /// says it persisted, until a purge clears the store.
+        var holdsData = false
     }
 
     private func makeSession(api: APIClient? = nil) -> (AppSession, Spies) {
         let spies = Spies()
         let session = AppSession(api: api ?? APIClient(serverURL: nil), defaultServerURL: { nil })
-        session.clearChatStore = { spies.chatStoreCleared += 1 }
+        session.clearChatStore = {
+            spies.chatStoreCleared += 1
+            spies.holdsData = false
+        }
+        session.holdsFamilyData = { spies.holdsData }
         session.dropFamilyData = { spies.dropped.append($0) }
         session.adoptUnattributedFamilyData = { spies.adopted.append($0) }
         session.onCurrentFamilyChanged = { spies.current.append($0) }
         session.requestResync = { spies.resyncs += 1 }
-        session.chatFamilyIDs = { $0 == 42 ? [5] : nil }
+        session.chatFamilyIDs = { chatID -> [Int64]?? in
+            // 42: a direct chat listed in the Ivanovs only. 77: a chat cached
+            // before several families, whose `family_ids` nobody sent. Any
+            // other: not held.
+            if chatID == 42 { return [5] }
+            if chatID == 77 { return .some(nil) }
+            return nil
+        }
         return (session, spies)
     }
 
@@ -972,6 +1005,177 @@ struct SeveralFamiliesSessionTests {
         #expect(session.currentFamilyID == 5)
     }
 
+    @Test("a push for a held chat whose family_ids are absent opens in the home family; a chat not held stays put")
+    func pushForAChatWithAbsentFamilyIDs() {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let (session, _) = makeSession()
+        // The Parks (8) rather than the Ivanovs: what this suite shows is
+        // remembered for user 7, and the store suite, running alongside,
+        // reads it for the families 3 and 5.
+        session.apply(me: Fixture.me(families: [Fixture.smiths, Fixture.parks]))
+        session.switchFamily(to: 8)
+        // Not held — a direct chat newer than the last sync: nothing to go by.
+        session.routePush(.chat(99), familyID: nil)
+        #expect(session.currentFamilyID == 8)
+        // Held, cached before several families: the Smiths', the home family.
+        session.routePush(.chat(77), familyID: nil)
+        #expect(session.currentFamilyID == 3, "a push for a chat only the home family lists stayed in the Parks")
+        // And from the home family itself, it stays.
+        session.routePush(.chat(77), familyID: nil)
+        #expect(session.currentFamilyID == 3)
+    }
+
+    // MARK: Cold launch
+
+    @Test("cold launch: removed from the last family while terminated, a request pending — the persisted family data goes")
+    func coldLaunchLostLastFamilyWhilePending() {
+        forgetStoredFamily()
+        defer { forgetStoredFamily(); AppSettings.joinPending = false }
+        AppSettings.joinPending = false
+        // The Parks' chats, roster, board (its cursor among them) and pack are
+        // on the device; the app was terminated, and the Parks' owner removed
+        // this account. Nothing in memory says so: the bootstrap `/me` is the first.
+        let (session, spies) = makeSession()
+        spies.holdsData = true
+        AppSettings.setBoardCursor(40, family: 8)
+        #expect(session.phase == .booting)
+        #expect(session.families.isEmpty)
+
+        let request = PendingJoinRequestDTO(familyID: 9, familyName: "The Lees", createdAt: nil)
+        session.apply(me: Fixture.me(families: [], pending: [request]))
+        #expect(session.phase == .pendingApproval)
+        #expect(spies.chatStoreCleared == 1, "the Parks' chats, board and pack stayed under the waiting screen")
+        #expect(AppSettings.boardCursor(family: 8) == 0, "a board cursor outlived the board it counted")
+
+        // The waiting screen polls: the store is empty now, and stays unpurged.
+        session.apply(me: Fixture.me(families: [], pending: [request]))
+        #expect(spies.chatStoreCleared == 1, "every poll tick purged again")
+
+        // The Lees decline: the gate, with nothing left to purge.
+        session.apply(me: Fixture.me(families: []))
+        #expect(session.phase == .needsFamily)
+        #expect(session.joinDeclined)
+        #expect(spies.chatStoreCleared == 1)
+    }
+
+    @Test("cold launch: /me lists no family and nothing pending — the gate, purged only when something was held")
+    func coldLaunchLostLastFamily() {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let (session, spies) = makeSession()
+        spies.holdsData = true
+        session.apply(me: Fixture.me(families: []))
+        #expect(session.phase == .needsFamily)
+        #expect(spies.chatStoreCleared == 1, "the family this device last held stayed on it behind the gate")
+
+        // A device that never held a family (a new account, or one already
+        // purged) has nothing to lose — and a purge would throw away a share
+        // parked for after the gate.
+        let (fresh, freshSpies) = makeSession()
+        fresh.apply(me: Fixture.me(families: []))
+        #expect(fresh.phase == .needsFamily)
+        #expect(freshSpies.chatStoreCleared == 0)
+    }
+
+    // MARK: Leaving from a session no /me has described
+
+    /// A leave sent from the cached chats opened offline (`openOffline`): no
+    /// family list, the family remembered for this account on screen. A
+    /// resync's `/me` — connectivity came back — lands while the leave is in
+    /// flight: the stub applies it on the main actor, as the coordinator's
+    /// step 1 does, before the 204 is answered. `me` nil: none lands.
+    private func leaveWhileMeLands(
+        host: String, me: MeResponse?, remembered: Int64?
+    ) async throws -> (AppSession, Spies) {
+        final class Box: @unchecked Sendable {
+            var session: AppSession?
+            var me: MeResponse?
+        }
+        let box = Box()
+        box.me = me
+        StubURLProtocol.register(host: host) { _ in
+            if let session = box.session, let me = box.me {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { session.apply(me: me) } }
+            }
+            return .empty(204)
+        }
+        let api = APIClient(serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
+        let (session, spies) = makeSession(api: api)
+        AppSettings.currentUserID = Fixture.user.id
+        AppSettings.setCurrentFamilyID(remembered, forUser: Fixture.user.id)
+        session.openOffline()
+        #expect(session.phase == .active)
+        #expect(session.families.isEmpty)
+        #expect(session.currentFamilyID == remembered)
+        box.session = session
+        _ = try await session.leaveFamily { _ in nil }
+        let path = remembered.map { "/api/v1/families/\($0)/leave" } ?? "/api/v1/families/leave"
+        #expect(StubURLProtocol.requests(host: host).last?.url.path() == path)
+        return (session, spies)
+    }
+
+    @Test("leaving offline when a /me lists other families meanwhile: that family goes, not the whole store")
+    func leaveFromAnOfflineLaunchWhileMeLands() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-offline-me.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        // The server took the leave first: `/me` lists the Smiths alone.
+        let (session, spies) = try await leaveWhileMeLands(
+            host: host, me: Fixture.me(families: [Fixture.smiths]), remembered: 8)
+        #expect(session.phase == .active, "still in the Smiths, and sent to the gate")
+        #expect(session.families.map(\.id) == [3])
+        #expect(session.currentFamilyID == 3)
+        #expect(spies.chatStoreCleared == 0, "the whole store was purged while still in the Smiths")
+        #expect(spies.dropped == [8], "the Parks' data stayed — no `/me` had a list to compare against")
+    }
+
+    @Test("leaving offline when a /me still listing that family lands meanwhile: it goes, the other stays")
+    func leaveFromAnOfflineLaunchWhileEarlierMeLands() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-offline-me-before.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        // `/me` answered before the server took the leave: both are listed.
+        let (session, spies) = try await leaveWhileMeLands(
+            host: host, me: Fixture.me(families: [Fixture.smiths, Fixture.parks]), remembered: 8)
+        #expect(session.phase == .active)
+        #expect(session.families.map(\.id) == [3])
+        #expect(session.currentFamilyID == 3)
+        #expect(spies.chatStoreCleared == 0)
+        #expect(spies.dropped == [8])
+    }
+
+    @Test("leaving offline with no family on screen when a /me lands meanwhile: no purge, a resync asks again")
+    func leaveFromAnOfflineLaunchWithNoFamilyWhileMeLands() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-offline-none.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        // The leave named no family — the home family, as the server counts
+        // it — which the list that arrived cannot say.
+        let (session, spies) = try await leaveWhileMeLands(
+            host: host, me: Fixture.me(families: [Fixture.smiths]), remembered: nil)
+        #expect(session.phase == .active)
+        #expect(session.families.map(\.id) == [3])
+        #expect(spies.chatStoreCleared == 0)
+        #expect(spies.resyncs == 1)
+    }
+
+    @Test("leaving offline with no /me meanwhile: the one family there is, left — the old way to the gate")
+    func leaveFromAnOfflineLaunchAlone() async throws {
+        forgetStoredFamily()
+        defer { forgetStoredFamily() }
+        let host = "families-leave-offline-alone.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (session, spies) = try await leaveWhileMeLands(host: host, me: nil, remembered: 8)
+        #expect(session.phase == .needsFamily)
+        #expect(session.families.isEmpty)
+        #expect(session.currentFamilyID == nil)
+        #expect(spies.chatStoreCleared == 1)
+    }
+
     @Test("a cold-start push waits for /me to say the family is held")
     func coldStartPush() {
         forgetStoredFamily()
@@ -1366,6 +1570,121 @@ struct SeveralFamiliesStoreTests {
         #expect(harness.notes().map(\.family) == [3])
         #expect(harness.packItems().map(\.family) == [3])
         #expect(harness.member(11)?.familyRoles == [3: "member"])
+    }
+
+    @Test("a reconnect during a resync's chat steps: the board step reads the family again, and the change made in the gap arrives")
+    func reconnectDuringResyncRereadsTheBoardMark() async throws {
+        /// Armed for the second resync: its `GET /chats` (step 3) drops the
+        /// socket and brings it back, and from then on the Smiths' board has
+        /// a note 31 that no frame ever delivered.
+        final class Gap: @unchecked Sendable {
+            private let lock = NSLock()
+            private var armed = false
+            private var dropped = false
+            var coordinator: ChatSyncCoordinator?
+            func arm() { lock.lock(); armed = true; lock.unlock() }
+            func observe(_ path: String) -> (dropNow: Bool, afterDrop: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
+                if armed, !dropped, path == "/api/v1/chats" {
+                    dropped = true
+                    return (true, true)
+                }
+                return (false, dropped)
+            }
+        }
+        let gap = Gap()
+        let harness = try makeHarness(host: "families-board-gap.test", extra: { request in
+            let path = request.url.path()
+            let seen = gap.observe(path)
+            if seen.dropNow, let coordinator = gap.coordinator {
+                // The new connection's resync finds this one running and
+                // returns (`isResyncing`): nothing else will read the board.
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated {
+                        coordinator.handle(event: .disconnected)
+                        coordinator.handle(event: .connected)
+                    }
+                }
+            }
+            guard seen.afterDrop else { return nil }
+            switch path {
+            case "/api/v1/families/3":
+                return .json(200, Self.rosterJSON(3).replacingOccurrences(
+                    of: #""max_board_seq": 30"#, with: #""max_board_seq": 31"#))
+            case "/api/v1/families/3/board/changes":
+                return .json(200, #"""
+                {"notes": [{"id": 301, "author_id": 9, "text": "Bread", "color": "blue",
+                            "x": 0.3, "y": 0.4, "board_seq": 31, "family_id": 3}]}
+                """#)
+            default:
+                return nil
+            }
+        })
+        gap.coordinator = harness.coordinator
+        defer { tearDown(harness) }
+        await harness.coordinator.resync()
+        #expect(AppSettings.boardCursor(family: 3) == 30)
+
+        gap.arm()
+        await harness.coordinator.resync()
+        await harness.coordinator.pendingConnectResync?.value
+        let meReads = StubURLProtocol.requests(host: harness.host).filter { $0.url.path() == "/api/v1/me" }
+        #expect(meReads.count == 2, "the reconnect's own resync ran; it was meant to find this one running")
+
+        #expect(harness.notes().map(\.id).contains(301),
+                "the note added while the socket was down never arrived: step 7 trusted a mark read before the reconnect")
+        #expect(AppSettings.boardCursor(family: 3) == 31)
+    }
+
+    @Test("cold launch: a /me listing no family finds what the store holds of the family lost, and purges it")
+    func coldLaunchFindsPersistedFamilyData() async throws {
+        let harness = try makeHarness(host: "families-cold-launch.test")
+        defer {
+            tearDown(harness)
+            AppSettings.joinPending = false
+        }
+        await harness.coordinator.resync()
+        #expect(harness.coordinator.holdsFamilyData())
+
+        // The next launch: a new session with nothing in memory, over the
+        // same store — wired as the app wires it.
+        let api = APIClient(serverURL: URL(string: "https://\(harness.host)")!, session: StubURLProtocol.makeSession())
+        let session = AppSession(api: api, defaultServerURL: { nil })
+        harness.coordinator.bind(session: session)
+        let coordinator = harness.coordinator
+        session.holdsFamilyData = { [weak coordinator] in coordinator?.holdsFamilyData() ?? false }
+        final class Purges { var count = 0 }
+        let purges = Purges()
+        session.clearChatStore = { purges.count += 1 }
+        #expect(session.phase == .booting)
+        #expect(session.families.isEmpty)
+
+        // Removed from both families while the app was terminated; a request
+        // to the Lees is waiting.
+        let request = PendingJoinRequestDTO(familyID: 9, familyName: "The Lees", createdAt: nil)
+        session.apply(me: Fixture.me(families: [], pending: [request]))
+        #expect(session.phase == .pendingApproval)
+        #expect(purges.count == 1, "the families' chats, board and pack stayed under the waiting screen")
+    }
+
+    @Test("a push for a chat cached before several families (no family_ids) opens in the home family, read from the store")
+    func pushForAChatCachedBeforeSeveralFamilies() async throws {
+        let harness = try makeHarness(host: "families-push-absent.test")
+        defer { tearDown(harness) }
+        await harness.coordinator.resync()
+        // The Smiths' family chat as a build from before several families
+        // cached it, before any `GET /chats` re-described it.
+        let chat = try #require(harness.chat(1))
+        chat.familyIDs = nil
+        try harness.context.save()
+        #expect(harness.coordinator.chatFamilyIDs(of: 1) == .some(nil), "held with no family_ids read as not held")
+        #expect(harness.coordinator.chatFamilyIDs(of: 2) == .some([5]))
+        #expect(harness.coordinator.chatFamilyIDs(of: 999) == .none)
+
+        harness.session.switchFamily(to: 5)
+        harness.session.routePush(.chat(1), familyID: nil)
+        #expect(harness.session.currentFamilyID == 3, "the push stayed in a family that does not list the chat")
     }
 
     @Test("somebody else leaving one family is still in the other")

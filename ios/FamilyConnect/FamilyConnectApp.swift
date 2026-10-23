@@ -260,6 +260,11 @@ struct FamilyConnectApp: App {
             session.chatFamilyIDs = { [weak coordinator] chatID in
                 coordinator?.chatFamilyIDs(of: chatID)
             }
+            // What a `/me` listing no family asks on a cold launch, before
+            // the session holds any list of its own (`AppSession.apply(me:)`).
+            session.holdsFamilyData = { [weak coordinator] in
+                coordinator?.holdsFamilyData() ?? false
+            }
             session.requestResync = { [weak coordinator] in
                 Task { await coordinator?.resync() }
             }

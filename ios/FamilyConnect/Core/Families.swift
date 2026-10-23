@@ -260,13 +260,20 @@ nonisolated enum FamilyRules {
     /// A push that names a family this device holds opens there; one that
     /// names none (a direct chat's) stays in the family on screen when the
     /// chat is listed there, else opens in the first family that lists it.
+    ///
+    /// `chatFamilyIDs` nil is a chat whose `family_ids` nobody sent — cached
+    /// before several families — and that is the HOME family's alone
+    /// (`isListed`), the first of `held`: it opens there from any other
+    /// family. Reading it as `[]` (listed nowhere) left the app in a family
+    /// that does not list the chat.
     static func pushFamily(
-        pushFamilyID: Int64?, chatFamilyIDs: [Int64], current: Int64?, held: [Int64]
+        pushFamilyID: Int64?, chatFamilyIDs: [Int64]?, current: Int64?, held: [Int64]
     ) -> Int64? {
         if let pushFamilyID {
             return held.contains(pushFamilyID) && pushFamilyID != current ? pushFamilyID : nil
         }
         if isListed(chatFamilyIDs: chatFamilyIDs, in: current, home: held.first) { return nil }
+        guard let chatFamilyIDs else { return held.first }
         return chatFamilyIDs.first { held.contains($0) }
     }
 

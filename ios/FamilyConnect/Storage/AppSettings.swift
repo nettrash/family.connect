@@ -443,6 +443,17 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// Whether ANY family's board or pack marks are kept — part of "does this
+    /// device still hold a family's data?", which a `/me` listing no family
+    /// asks (`ChatSyncCoordinator.holdsFamilyData`). A purge empties every
+    /// one of these maps (`forgetFamilies(except: [])`), so it answers "no"
+    /// after one.
+    static var holdsFamilyMarks: Bool {
+        [Key.boardCursors, Key.boardSeenNoteIDs, Key.boardSeenContentSeqs, Key.packCursors].contains { key in
+            !((defaults.dictionary(forKey: key) as? [String: Int]) ?? [:]).isEmpty
+        }
+    }
+
     /// What a build from before several families stored — one board cursor,
     /// one pair of marks, one pack cursor — belongs to the HOME family:
     /// it was all read from `/families/mine`. Moved there once, never over

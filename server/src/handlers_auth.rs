@@ -402,6 +402,29 @@ pub enum Scrubbed {
     Spared,
 }
 
+/// Everyone who shares a direct chat with `user_id` and NO family — the
+/// `member_deleted` audience no family roster reaches (see `scrub_account`).
+async fn direct_peers_outside_families(
+    pool: &sqlx::PgPool,
+    user_id: i64,
+) -> Result<Vec<i64>, ApiError> {
+    let peers = sqlx::query_scalar(
+        "SELECT DISTINCT cm.user_id
+           FROM chat_members cm
+           JOIN chats c ON c.id = cm.chat_id
+          WHERE (c.user_a_id = $1 OR c.user_b_id = $1)
+            AND cm.user_id <> $1
+            AND NOT EXISTS (SELECT 1 FROM family_members mine
+                              JOIN family_members theirs
+                                ON theirs.family_id = mine.family_id
+                             WHERE mine.user_id = $1 AND theirs.user_id = cm.user_id)",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(peers)
+}
+
 /// Scrub one account: the shared body of `POST /me/delete` and of the
 /// familyless sweep (docs/protocol.md, "Deleting an account" and "Accounts
 /// without a family"). Everything the former promises, the latter gets,
@@ -479,20 +502,7 @@ pub async fn scrub_account(
             .collect();
         rosters.push((family_id, members));
     }
-    let peers: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT cm.user_id
-           FROM chat_members cm
-           JOIN chats c ON c.id = cm.chat_id
-          WHERE (c.user_a_id = $1 OR c.user_b_id = $1)
-            AND cm.user_id <> $1
-            AND NOT EXISTS (SELECT 1 FROM family_members mine
-                              JOIN family_members theirs
-                                ON theirs.family_id = mine.family_id
-                             WHERE mine.user_id = $1 AND theirs.user_id = cm.user_id)",
-    )
-    .bind(user_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let mut peers = direct_peers_outside_families(&state.pool, user_id).await?;
 
     // The files whose rows are about to go. Collected before the delete and
     // swept after the commit, each key checked rather than removed: since
@@ -611,22 +621,25 @@ pub async fn scrub_account(
                 owned.push(family_id);
             }
         }
-        // Their join requests, BEFORE the account row: approving one locks
-        // the request, then the family, then this account's row
-        // (`grant_membership`), and a scrub that held the account row while
-        // it waited for the request would close a cycle with it.
-        sqlx::query("DELETE FROM join_requests WHERE user_id = $1")
+        // Then the ACCOUNT's row. Every membership is granted under this
+        // row's lock (`grant_membership`), and a join request is filed under
+        // a share lock on it (`join_family`), so neither the list read under
+        // it nor the join requests deleted after it can grow before the
+        // commit. FOR NO KEY UPDATE: it excludes a grant and a join request
+        // exactly as FOR UPDATE would, without blocking the FOR KEY SHARE
+        // that another device's message, read marker or upload takes on it —
+        // each of which may already hold a chat this scrub is about to
+        // delete.
+        //
+        // Join requests go AFTER this row, the order every path observes —
+        // the account row, then its requests: a grant updates the joiner's
+        // requests under the row, and approving one now locks the family and
+        // the applicant's row before the request (`approve_join_request`).
+        sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
             .bind(user_id)
             .execute(&mut *tx)
             .await?;
-        // Then the ACCOUNT's row. Every membership is granted under this
-        // row's lock (`grant_membership`), so the list read under it cannot
-        // grow before the commit. FOR NO KEY UPDATE: it excludes a grant and
-        // a join request exactly as FOR UPDATE would, without blocking the
-        // FOR KEY SHARE that another device's message, read marker or upload
-        // takes on it — each of which may already hold a chat this scrub is
-        // about to delete.
-        sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        sqlx::query("DELETE FROM join_requests WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut *tx)
             .await?;
@@ -642,6 +655,10 @@ pub async fn scrub_account(
             )));
         }
         family_ids = now_in;
+        // A family left in the gap takes its roster with it, and the direct
+        // chats its members held with this account become chats with peers
+        // in no shared family — told by `peers`, so that is read again too.
+        peers = direct_peers_outside_families(&state.pool, user_id).await?;
         rosters.clear();
         for &family_id in &family_ids {
             let members: Vec<i64> = crate::families::member_ids(&state.pool, family_id)
@@ -780,7 +797,32 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    // (Their join requests went before the account row was locked, above.)
+    // Every invitation this scrub may remove — to or from the account, into
+    // a family it handed on or is deleting, or into one it still owns — is
+    // LOCKED first, once, in ascending id order: the deletes below, the
+    // hand-off lapses and the cascade of a deleted family then touch rows
+    // already held. A departure locks its lapse candidates the same way
+    // (`handlers_family::lapse_unshared_invitations`), and two transactions
+    // that each lock in one ascending pass cannot each hold a row the other
+    // waits for; this one taking them in three passes could.
+    let touched_families: Vec<i64> = successors
+        .iter()
+        .map(|(family_id, _)| *family_id)
+        .chain(families_to_delete.iter().copied())
+        .collect();
+    sqlx::query(
+        "SELECT i.id
+           FROM invitations i
+           JOIN families f ON f.id = i.family_id
+          WHERE i.user_id = $1 OR i.invited_by = $1 OR f.owner_user_id = $1
+             OR i.family_id = ANY($2)
+          ORDER BY i.id
+            FOR UPDATE OF i",
+    )
+    .bind(user_id)
+    .bind(&touched_families)
+    .execute(&mut *tx)
+    .await?;
     // Invitations lapse "when either account is deleted" (docs/protocol.md,
     // "Several families"): the ones TO this account and the ones it SENT.
     // Collected so both parties of each can be told after the commit.

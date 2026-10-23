@@ -1525,7 +1525,30 @@ pub async fn approve_join_request(
     let family = require_owner(&state, &auth).await?;
 
     let mut tx = state.pool.begin().await?;
-    // FOR UPDATE serializes concurrent decisions on the same request.
+    // Locked in the order every path that touches a join request observes:
+    // the family row, then the applicant's account row, then the request.
+    // A grant updates the joiner's requests under the account row, and a
+    // scrub deletes them under it (`handlers_auth::scrub_account`); taking
+    // the request FIRST, as this used to, closed a cycle with both. The
+    // applicant is read unlocked to know whose row to lock, and the request
+    // read again under the locks — the FOR UPDATE on it is what serializes
+    // two decisions on the same request.
+    let applicant: Option<i64> =
+        sqlx::query_scalar("SELECT user_id FROM join_requests WHERE id = $1 AND family_id = $2")
+            .bind(request_id)
+            .bind(family.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(applicant) = applicant {
+        sqlx::query("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(family.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+            .bind(applicant)
+            .execute(&mut *tx)
+            .await?;
+    }
     let row = sqlx::query(
         "SELECT user_id, status FROM join_requests
          WHERE id = $1 AND family_id = $2
@@ -1857,6 +1880,20 @@ pub async fn leave_family(
         // Sole member: delete the family. Cascades remove chats, messages,
         // the membership itself, join requests and invitations. Nobody is
         // left to notify but the invited.
+        //
+        // The row's lock goes up to FOR UPDATE first — what the DELETE takes
+        // anyway — because only that mode excludes the FOR KEY SHARE a write
+        // pointing INTO this family takes. Another departure of this same
+        // account may be moving a held chat onto this family right now; with
+        // the weaker lock it would land, and the cascade below would take
+        // the chat and its history. Now it is either already committed —
+        // this waits for it, and the chats read below include it — or it
+        // waits for this, finds the family gone and moves the chat elsewhere
+        // (`move_or_release_held`).
+        sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+            .bind(family_id)
+            .execute(&mut *tx)
+            .await?;
         //
         // The cascade removes the membership and nothing else, so the
         // familyless clock is started HERE, by hand — the one departure that
@@ -2674,11 +2711,28 @@ async fn move_or_release_held(
     }
     // Their home family OTHER than the one being left: when the last member
     // leaves, this runs before the family is deleted and still counts it.
-    match crate::families::family_ids_of(&mut *tx, user_id)
-        .await?
-        .into_iter()
-        .find(|id| *id != leaving)
-    {
+    //
+    // Each candidate is LOCKED (FOR KEY SHARE, the lock the move's own
+    // foreign-key check would take) before it is chosen, and the membership
+    // read again after: a family its last member is deleting at this moment
+    // holds its row FOR UPDATE (`leave_family`), so this waits for that and
+    // then finds no row, rather than moving the chat into a cascade.
+    let mut destination = None;
+    for candidate in crate::families::family_ids_of(&mut *tx, user_id).await? {
+        if candidate == leaving {
+            continue;
+        }
+        let alive: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM families WHERE id = $1 FOR KEY SHARE")
+                .bind(candidate)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if alive.is_some() && crate::families::is_member(&mut *tx, candidate, user_id).await? {
+            destination = Some(candidate);
+            break;
+        }
+    }
+    match destination {
         Some(home) => {
             sqlx::query("UPDATE chats SET family_id = $2 WHERE id = ANY($1)")
                 .bind(held)
@@ -3051,13 +3105,17 @@ pub(crate) async fn announce_direct_chats(state: &AppState, chat_ids: &[i64]) {
             .await
             {
                 Ok(sides) => sides,
+                // Nothing is sent rather than a guess: `[]` tells a client
+                // the chat is closed ON ITS SIDE, and some delete it on that
+                // word — the side that stayed would lose a chat it still
+                // holds. The next `GET /chats` says where it stands.
                 Err(error) => {
                     tracing::warn!(
                         ?error,
                         chat_id,
                         "could not read a closed direct chat's sides"
                     );
-                    (Vec::new(), Vec::new())
+                    continue;
                 }
             }
         } else {

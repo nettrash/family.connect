@@ -86,6 +86,13 @@ pub struct Registry {
     /// (`handlers_family::end_legacy_sessions_if_home_moved`), so what is
     /// left to follow is a first family arriving and a last one going. Always
     /// taken after `inner` when both are needed.
+    ///
+    /// An entry OUTLIVES the account's connections, and a refresh is recorded
+    /// whether or not the account is connected: the socket being upgraded at
+    /// the moment a membership changes is not registered yet, and when it is
+    /// the account's only one, a refresh dropped for "nobody connected" would
+    /// leave nothing newer than that socket's own stale read. One small entry
+    /// per account that has connected or changed families since start.
     homes: RwLock<HashMap<i64, Home>>,
 }
 
@@ -173,7 +180,6 @@ impl Registry {
             conns.retain(|c| c.conn_id != conn_id);
             if conns.is_empty() {
                 inner.remove(&user_id);
-                self.homes.write().await.remove(&user_id);
             }
         }
     }
@@ -282,13 +288,9 @@ impl Registry {
     }
 
     /// Record `user_id`'s home family, read under `ticket` — called once a
-    /// membership change has committed, before its frames go out. Nothing is
-    /// recorded for an account with no connection: its next one reads the
-    /// home itself.
+    /// membership change has committed, before its frames go out. Recorded
+    /// even with no connection registered: see `homes`.
     pub async fn set_home(&self, user_id: i64, home: Option<i64>, ticket: u64) {
-        if !self.inner.read().await.contains_key(&user_id) {
-            return;
-        }
         self.record_home(user_id, home, ticket).await;
     }
 
@@ -509,18 +511,36 @@ mod tests {
         );
     }
 
+    /// The account's ONLY socket is being upgraded when a membership changes:
+    /// the refresh finds no connection, and must still win over the stale
+    /// read the socket registers with a moment later.
     #[tokio::test]
-    async fn a_home_is_forgotten_with_the_last_connection() {
+    async fn a_refresh_with_nobody_connected_still_wins_over_a_late_socket() {
         let registry = Registry::new(4);
-        let only = registry.register(1, 100, false, Some(5), 0).await;
-        registry.unregister(1, only.conn_id).await;
-        let ticket = registry.home_ticket();
-        registry.set_home(1, Some(9), ticket).await;
-        let _again = registry.register(1, 101, false, None, ticket + 1).await;
+        let upgrade_ticket = registry.home_ticket();
+        let approval_ticket = registry.home_ticket();
+        registry.set_home(1, Some(5), approval_ticket).await;
+        let _only = registry.register(1, 100, false, None, upgrade_ticket).await;
         assert_eq!(
             registry.legacy_homes(&[1]).await,
-            [(1, None)].into_iter().collect(),
-            "nothing was kept for an account with no connection"
+            [(1, Some(5))].into_iter().collect()
+        );
+    }
+
+    /// And one recorded while a previous socket was still open survives that
+    /// socket going away before the late one registers.
+    #[tokio::test]
+    async fn a_home_outlives_the_connection_it_was_recorded_for() {
+        let registry = Registry::new(4);
+        let old = registry.register(1, 100, false, None, 0).await;
+        let upgrade_ticket = registry.home_ticket();
+        let approval_ticket = registry.home_ticket();
+        registry.set_home(1, Some(5), approval_ticket).await;
+        registry.unregister(1, old.conn_id).await;
+        let _late = registry.register(1, 101, false, None, upgrade_ticket).await;
+        assert_eq!(
+            registry.legacy_homes(&[1]).await,
+            [(1, Some(5))].into_iter().collect()
         );
     }
 
