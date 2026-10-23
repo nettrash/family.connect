@@ -95,13 +95,6 @@ final class MemberEntity {
         return BirthdayDTO(month: birthdayMonth, day: birthdayDay)
     }
 
-    /// What a screen actually draws for this person.
-    ///
-    /// The stored `displayName` of a deleted account is the server's
-    /// ENGLISH placeholder ("Deleted account"), and the protocol says a
-    /// client that understands the flag SHOULD draw its own translation
-    /// instead — so every name a view puts on screen goes through here
-    /// rather than reading `displayName` directly.
     /// family id → role, for every family of this device that lists them.
     var familyRoles: [Int64: String] {
         get { FamilyIDList.decodeRoles(familyRolesText) }
@@ -136,6 +129,13 @@ final class MemberEntity {
         !FamilyIDList.decode(passwordResetDeniedText).contains(familyID)
     }
 
+    /// What a screen actually draws for this person.
+    ///
+    /// The stored `displayName` of a deleted account is the server's
+    /// ENGLISH placeholder ("Deleted account"), and the protocol says a
+    /// client that understands the flag SHOULD draw its own translation
+    /// instead — so every name a view puts on screen goes through here
+    /// rather than reading `displayName` directly.
     var resolvedDisplayName: String {
         accountDeleted ? MemberDisplay.deletedAccountName : displayName
     }

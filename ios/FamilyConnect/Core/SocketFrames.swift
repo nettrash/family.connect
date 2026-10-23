@@ -241,9 +241,18 @@ nonisolated struct MemberJoinedPayload: Decodable, Equatable, Sendable {
     }
     let familyID: Int64
     let user: JoinedUser
+    /// Whether the reader may reset this member's password — TOP-LEVEL, not
+    /// on `user`, and only on the family OWNER's copy of the frame
+    /// (docs/protocol.md, "Several families"). Nil on everybody else's copy
+    /// and from an older server, and nil means "not told", never "allowed":
+    /// the flag already held for the member stands. An Optional, so the
+    /// synthesized decoder reads it with `decodeIfPresent` and an absent key
+    /// decodes rather than throws.
+    let passwordReset: Bool?
     enum CodingKeys: String, CodingKey {
         case familyID = "family_id"
         case user
+        case passwordReset = "password_reset"
     }
 }
 

@@ -330,7 +330,8 @@ pub async fn accept_invitation(
         Granted::Yes(Some(lapsed)) if lapsed.id == id => {
             tx.commit().await?;
             crate::handlers_family::announce_lapsed(&state, &[lapsed]).await;
-            crate::handlers_family::announce_joined(&state, family_id, auth.user_id).await?;
+            let joined = crate::handlers_family::user_brief(&state, auth.user_id).await?;
+            crate::handlers_family::announce_joined(&state, family_id, joined).await;
             let family =
                 crate::handlers_family::family_api(&state, family_id, auth.user_id).await?;
             Ok((StatusCode::OK, Json(json!({"family": family}))).into_response())

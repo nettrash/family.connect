@@ -54,7 +54,13 @@ public abstract record ServerFrame
     /// </summary>
     public sealed record PackItem(PackItemDto Item) : ServerFrame;
 
-    public sealed record MemberJoined(long? FamilyId, UserDto User) : ServerFrame;
+    /// <summary>
+    /// Somebody arrived in the family the frame names. <paramref name="PasswordReset"/> rides on the family OWNER's copy
+    /// alone — whether they may reset the newcomer's password, exactly as on their roster — and is absent (null) from
+    /// everybody else's and from a server before several families (docs/protocol.md, "Several families"). Null says
+    /// NOTHING: the store keeps whatever flag it already holds for that member.
+    /// </summary>
+    public sealed record MemberJoined(long? FamilyId, UserDto User, bool? PasswordReset = null) : ServerFrame;
 
     public sealed record MemberLeft(long? FamilyId, long UserId) : ServerFrame;
 
@@ -157,7 +163,7 @@ public abstract record ServerFrame
             "board_note" => Decode<NoteDto>(frame["note"]) is { } note ? new BoardNote(note) : null,
             "pack_item" => Decode<PackItemDto>(frame["item"]) is { } item ? new PackItem(item) : null,
             "member_joined" => Decode<UserDto>(frame["user"]) is { } user
-                ? new MemberJoined(Optional(frame["family_id"]), user) : null,
+                ? new MemberJoined(Optional(frame["family_id"]), user, Flag(frame["password_reset"])) : null,
             "member_left" => new MemberLeft(Optional(frame["family_id"]), Number(frame["user_id"])),
             "member_deleted" => Decode<MemberDto>(frame["member"]) is { } member
                 ? new MemberDeleted(Optional(frame["family_id"]), member) : null,
@@ -215,6 +221,22 @@ public abstract record ServerFrame
     }
 
     private static long? Optional(JsonNode? node) => node is null ? null : Number(node);
+
+    /// <summary>
+    /// An optional flag, or null. Anything that is not a JSON boolean is read as ABSENT rather than as either answer — an
+    /// absent flag keeps what the store holds, where a guessed one would overwrite it.
+    /// </summary>
+    private static bool? Flag(JsonNode? node)
+    {
+        try
+        {
+            return node?.GetValue<bool>();
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// <c>ai_error</c>'s <c>reason</c>, or null. A value this client does not know — and anything

@@ -23,7 +23,8 @@ use std::sync::OnceLock;
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use axum::extract::{FromRequestParts, RawPathParams};
+use axum::extract::rejection::RawPathParamsRejection;
+use axum::extract::{FromRequestParts, MatchedPath, RawPathParams};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use sqlx::{PgPool, Row};
@@ -68,6 +69,10 @@ pub struct AuthUser {
     /// and is answered about all of them. Without it the server answers as
     /// it did before 2026-10-22, about the home family alone (decision D8).
     pub multi: bool,
+    /// Whether THIS SESSION has ever said so (`sessions.multi_family`, 0058):
+    /// a session that never has is ended when its account's home family
+    /// moves — see `handlers_family::end_legacy_sessions_if_home_moved`.
+    pub session_multi: bool,
 }
 
 /// The header a client that knows about several families sends on every
@@ -142,19 +147,56 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = bearer_token(parts).ok_or_else(ApiError::unauthorized)?;
         let mut auth = authenticate(state, &token).await?;
         auth.multi = says_multi(&parts.headers);
+        remember_multi(state, &auth);
         // The `{family}` segment, when this route has one. Resolved HERE,
         // once, so no handler can forget to check that the caller is in the
         // family it names — the one check every family endpoint shares and
         // the one whose absence would let a member read a stranger's board.
         // A route with no parameters at all has no `UrlParams` extension,
-        // which reads as "no `{family}`", not as an error.
-        if let Ok(params) = RawPathParams::from_request_parts(parts, state).await
-            && let Some((_, segment)) = params.iter().find(|(name, _)| *name == "family")
-        {
-            auth.family_id = resolve_family_segment(&auth.family_ids, segment)?;
+        // which reads as "no `{family}`", not as an error. A segment that
+        // does not even decode (`/families/%FF/…`) is an error on a route
+        // that HAS a `{family}`: falling through would leave `family_id` the
+        // home family and serve a URL that named something else.
+        match RawPathParams::from_request_parts(parts, state).await {
+            Ok(params) => {
+                if let Some((_, segment)) = params.iter().find(|(name, _)| *name == "family") {
+                    auth.family_id = resolve_family_segment(&auth.family_ids, segment)?;
+                }
+            }
+            Err(RawPathParamsRejection::MissingPathParams(_)) => {}
+            Err(_) => {
+                let names_family = parts
+                    .extensions
+                    .get::<MatchedPath>()
+                    .is_some_and(|path| path.as_str().contains("{family}"));
+                if names_family {
+                    return Err(family_not_found());
+                }
+            }
         }
         Ok(auth)
     }
+}
+
+/// Mark the caller's session as one that knows about several families, the
+/// first time it says so (0058). Fire-and-forget, like the expiry slide: a
+/// lost write only means the next request writes it, and the request must not
+/// wait on bookkeeping.
+pub fn remember_multi(state: &AppState, auth: &AuthUser) {
+    if !auth.multi || auth.session_multi {
+        return;
+    }
+    let pool = state.pool.clone();
+    let session_id = auth.session_id;
+    tokio::spawn(async move {
+        if let Err(err) = sqlx::query("UPDATE sessions SET multi_family = true WHERE id = $1")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+        {
+            warn!(error = %err, session_id, "failed to mark a multi-family session");
+        }
+    });
 }
 
 /// Pull the bearer token out of the Authorization header, if any.
@@ -207,7 +249,7 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, Api
     // every "which family does an endpoint without one mean" question reads.
     // `ARRAY(subquery)` is `{}` rather than NULL for an account in none.
     let row = sqlx::query(
-        "SELECT s.id AS session_id, s.user_id, s.last_used_at,
+        "SELECT s.id AS session_id, s.user_id, s.last_used_at, s.multi_family,
                 ARRAY(SELECT fm.family_id FROM family_members fm
                        WHERE fm.user_id = s.user_id
                        ORDER BY fm.joined_at, fm.family_id) AS family_ids
@@ -226,6 +268,7 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, Api
     let user_id: i64 = row.get("user_id");
     let family_ids: Vec<i64> = row.get("family_ids");
     let last_used_at: OffsetDateTime = row.get("last_used_at");
+    let session_multi: bool = row.get("multi_family");
 
     let touch_interval = Duration::minutes(state.cfg.auth.session_touch_interval_mins);
     if OffsetDateTime::now_utc() - last_used_at > touch_interval {
@@ -254,21 +297,34 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, Api
         family_ids,
         session_id,
         multi: false,
+        session_multi,
     })
 }
 
 /// Create a session for `user_id` and return the opaque token — the only
 /// moment the token exists in plaintext on the server.
-pub async fn create_session(pool: &PgPool, cfg: &Config, user_id: i64) -> Result<String, ApiError> {
+///
+/// `multi` is whether the sign-in said `X-FC-Families: 1`; the session is
+/// marked from the start when it did (0058).
+pub async fn create_session(
+    pool: &PgPool,
+    cfg: &Config,
+    user_id: i64,
+    multi: bool,
+) -> Result<String, ApiError> {
     let token = tokens::gen_session_token();
     let token_hash = tokens::hash_token(&token);
     let expires_at = OffsetDateTime::now_utc() + Duration::days(cfg.auth.session_ttl_days);
-    sqlx::query("INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
-        .bind(user_id)
-        .bind(&token_hash)
-        .bind(expires_at)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO sessions (user_id, token_hash, expires_at, multi_family)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(&token_hash)
+    .bind(expires_at)
+    .bind(multi)
+    .execute(pool)
+    .await?;
     Ok(token)
 }
 

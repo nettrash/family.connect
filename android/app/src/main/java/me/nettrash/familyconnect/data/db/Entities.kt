@@ -674,7 +674,31 @@ data class MemberEntity(
      * MIGRATION_34_35.
      */
     @ColumnInfo(defaultValue = "0") val familyId: Long = 0,
+    /**
+     * Whether this family's OWNER may reset this member's password
+     * (`Member.password_reset`, docs/protocol.md, "Several families") — a
+     * FAMILY's column, not the account's: it is about who owns the families
+     * the member is in, as seen from THIS family's owner.
+     *
+     * Nullable with no default (MIGRATION_35_36), because null is a real
+     * answer: "not told", which is every row from a server that predates the
+     * field and every row read by somebody who is not the owner — and the
+     * old rule then holds, so the reset is offered ([offersPasswordReset]).
+     * Only an explicit false withholds it.
+     *
+     * Written whole by a roster read and by an approval's answer, both of
+     * which say it to the owner; a `member_joined` frame writes it only when
+     * it carries it, and leaves a stored answer alone otherwise.
+     */
+    val passwordReset: Boolean? = null,
 ) {
+    /**
+     * Whether "Reset Password" is offered for this member: unless the owner's
+     * roster said false. Absent is the old rule, where the owner may reset
+     * any member.
+     */
+    val offersPasswordReset: Boolean get() = passwordReset != false
+
     /** The wire shape back out of the flat columns, or null for unset. */
     val birthday: BirthdayDto?
         get() {

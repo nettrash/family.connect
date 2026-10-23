@@ -216,12 +216,16 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
         var answer = await api.ApproveJoinRequest(requestId, ct).ConfigureAwait(false);
         if (answer.Ok && answer.Value is not null)
         {
-            chats.Joined(new UserDto(
-                answer.Value.Member.Id,
-                answer.Value.Member.Username,
-                answer.Value.Member.DisplayName,
-                answer.Value.Member.AvatarVersion,
-                Birthday: answer.Value.Member.Birthday));
+            // With the answer's `password_reset`: the owner is not offered a reset for a newcomer who is also in a family
+            // they do not own, which the server would refuse (docs/protocol.md, "Several families").
+            chats.Joined(
+                new UserDto(
+                    answer.Value.Member.Id,
+                    answer.Value.Member.Username,
+                    answer.Value.Member.DisplayName,
+                    answer.Value.Member.AvatarVersion,
+                    Birthday: answer.Value.Member.Birthday),
+                passwordReset: answer.Value.Member.PasswordReset);
             return (answer.Value.Member, false, null);
         }
         var error = answer.Error ?? ApiError.Transport("no answer");

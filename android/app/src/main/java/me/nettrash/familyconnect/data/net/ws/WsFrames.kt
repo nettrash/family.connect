@@ -219,6 +219,16 @@ sealed interface ServerFrame {
     data class MemberJoined(
         @SerialName("family_id") val familyId: Long,
         val user: UserDto,
+        /**
+         * Whether the family's OWNER may reset the newcomer's password — the
+         * roster's `Member.password_reset`, carried TOP-LEVEL because `user`
+         * is a `UserBrief` (docs/protocol.md, "Several families"). On the
+         * owner's copy of the frame alone: absent from everyone else's and
+         * from a server that predates it, and absent means "not told", so it
+         * never overwrites a value already stored for that member
+         * ([me.nettrash.familyconnect.data.db.MemberDao.upsertLeavingBirthday]).
+         */
+        @SerialName("password_reset") val passwordReset: Boolean? = null,
     ) : ServerFrame
 
     @Serializable

@@ -114,6 +114,7 @@ fn days_in_month(month: i16) -> i16 {
 /// `POST /auth/register`
 pub async fn register(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     AppJson(req): AppJson<RegisterRequest>,
 ) -> Result<Response, ApiError> {
     validate_username(&req.username)?;
@@ -148,7 +149,8 @@ pub async fn register(
     };
 
     let user = User::from_row(&row);
-    let token = auth::create_session(&state.pool, &state.cfg, user.id).await?;
+    let token =
+        auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({"token": token, "user": user})),
@@ -159,6 +161,7 @@ pub async fn register(
 /// `POST /auth/login`
 pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     AppJson(req): AppJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     // `deleted_at IS NULL` is belt and braces, and deliberately kept: a
@@ -185,7 +188,8 @@ pub async fn login(
     let row = row.expect("password verified, so the user row exists");
 
     let user = User::from_row(&row);
-    let token = auth::create_session(&state.pool, &state.cfg, user.id).await?;
+    let token =
+        auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((StatusCode::OK, Json(json!({"token": token, "user": user}))).into_response())
 }
 
@@ -567,27 +571,33 @@ pub async fn scrub_account(
     // this same row's lock — `leave_family`, `remove_member` and this
     // handler — so the roster read below can only see committed answers.
     //
-    // It is also what it always was: `grant_membership`'s `UPDATE users SET
-    // family_id` takes a FOR KEY SHARE lock on this row for its
-    // foreign-key check, and FOR UPDATE conflicts with it, so somebody
-    // joining under `join_policy = 'open'` either lands before the
-    // successor is chosen or waits for a family that may no longer be
-    // there.
+    // It is also what serializes a join: `grant_membership` takes this same
+    // row FOR UPDATE before it inserts a membership, so somebody joining
+    // under `join_policy = 'open'` either lands before the successor is
+    // chosen or waits for a family that may no longer be there.
     //
-    // Once per family since 2026-10-22, in ascending id order: each family
-    // the account is in is locked, and each one it OWNS is handed on or
-    // marked for deletion, exactly as the one family always was.
-    let mut successors: Vec<(i64, i64)> = Vec::new();
-    let mut families_to_delete: Vec<i64> = Vec::new();
+    // Once per family since 2026-10-22, in TWO passes. Every family the
+    // account is in is locked first, in ascending id order, and only then is
+    // each one it OWNS handed on or marked for deletion. A hand-off locks the
+    // successor's `users` row, and the lock order everything in this server
+    // observes is family row, then user row: locking the next family AFTER a
+    // successor's row would close a cycle with `grant_membership` — that
+    // successor accepting an invitation into the next family holds the
+    // family row and waits for their own user row, which this holds.
+    let mut owned: Vec<i64> = Vec::new();
     for &family_id in &family_ids {
         let locked_owner_id: Option<i64> =
             sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
                 .bind(family_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        if locked_owner_id != Some(user_id) {
-            continue;
+        if locked_owner_id == Some(user_id) {
+            owned.push(family_id);
         }
+    }
+    let mut successors: Vec<(i64, i64)> = Vec::new();
+    let mut families_to_delete: Vec<i64> = Vec::new();
+    for family_id in owned {
         match pass_ownership_on(&mut tx, family_id, user_id).await? {
             Some(successor) => successors.push((family_id, successor)),
             // Nobody else is here: the family is deleted in (f), once the
@@ -994,7 +1004,7 @@ pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Res
 /// `GET /me`
 ///
 /// `family`, `role` and `pending_join_request` are about the HOME family
-/// (and the oldest pending request) — exactly what an app from before
+/// (and the newest pending request) — exactly what an app from before
 /// several families sees — and the lists beside them are the rest
 /// (docs/protocol.md, "Several families"). The lists are ALWAYS present,
 /// whatever the client: a field an older app does not read costs it
@@ -1096,8 +1106,9 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
 
     // The caller's live join requests, oldest first — a waiting client that
     // sees neither the family nor its request knows it was rejected.
-    // `pending_join_request` is the OLDEST of them, the one an app that
-    // predates several families can show.
+    // `pending_join_request` is the NEWEST of them, which is what it always
+    // was (`ORDER BY id DESC LIMIT 1`): an app that predates several
+    // families shows the request just made, not an older one.
     let pending_rows = sqlx::query(
         "SELECT jr.family_id, f.name AS family_name, jr.created_at
          FROM join_requests jr
@@ -1116,7 +1127,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             created_at: row.get::<OffsetDateTime, _>("created_at"),
         })
         .collect();
-    let pending = pending_requests.first().cloned();
+    let pending = pending_requests.last().cloned();
     let invitations =
         crate::handlers_invitation::invitations_for_user(&state.pool, auth.user_id).await?;
 

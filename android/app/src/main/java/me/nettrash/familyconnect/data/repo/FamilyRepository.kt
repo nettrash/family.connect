@@ -135,6 +135,14 @@ class FamilyRepository @Inject constructor(
                                     // owner existed before the frame could.
                                     role = "member",
                                     avatarVersion = frame.user.avatarVersion,
+                                    // On the owner's copy only (docs/protocol.md,
+                                    // "Several families"). A newcomer who came
+                                    // by approval, invitation or open join and
+                                    // is also in a family this owner does not
+                                    // own arrives with false, and is not
+                                    // offered a reset the server would refuse.
+                                    // Null — not told — keeps what is stored.
+                                    passwordReset = frame.passwordReset,
                                 ),
                             )
                         }
@@ -552,6 +560,11 @@ class FamilyRepository @Inject constructor(
                     // learns about it.
                     birthdayMonth = it.birthday?.month,
                     birthdayDay = it.birthday?.day,
+                    // The owner's read says it for every member; any other
+                    // read and a server from before say nothing, which is the
+                    // old rule. The whole roster is the server's answer, so
+                    // it is written as it reads.
+                    passwordReset = it.passwordReset,
                 )
             }
             // `former_members` goes into the SAME table, flagged — that
@@ -865,6 +878,13 @@ class FamilyRepository @Inject constructor(
                             avatarVersion = result.value.member.avatarVersion,
                             birthdayMonth = result.value.member.birthday?.month,
                             birthdayDay = result.value.member.birthday?.day,
+                            // The answer is the OWNER's, so it says whether
+                            // they may reset the newcomer's password — false
+                            // when the member is also in a family this owner
+                            // does not own (docs/protocol.md, "Several
+                            // families"). Kept, or "Reset Password" would be
+                            // offered until the next roster read.
+                            passwordReset = result.value.member.passwordReset,
                         ),
                     ),
                 )

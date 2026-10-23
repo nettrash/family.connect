@@ -109,6 +109,30 @@ pub async fn legacy_hidden(
         .collect())
 }
 
+/// `legacy_hidden` for a fan-out, which must not fail: a lookup that errors
+/// holds the frame back from EVERY legacy connection among `user_ids` and is
+/// logged. Failing closed costs an older app one frame it recovers by its next
+/// resync; failing open could show it another family's content, and failing
+/// the call would cost every multi-family connection the frame as well.
+pub async fn legacy_hidden_or_all(
+    state: &AppState,
+    user_ids: &[i64],
+    scope: &Scope,
+) -> HashSet<i64> {
+    match legacy_hidden(state, user_ids, scope).await {
+        Ok(hidden) => hidden,
+        Err(err) => {
+            warn!(error = ?err, ?scope, "legacy scope lookup failed; hiding from every legacy connection");
+            state
+                .registry
+                .legacy_users(user_ids)
+                .await
+                .into_iter()
+                .collect()
+        }
+    }
+}
+
 /// `fan_out`, scoped: the one door every family-scoped frame goes through.
 async fn send_scoped(
     state: &AppState,
@@ -117,7 +141,7 @@ async fn send_scoped(
     skip_conn: Option<u64>,
     scope: Scope,
 ) -> Result<(), ApiError> {
-    let hidden = legacy_hidden(state, user_ids, &scope).await?;
+    let hidden = legacy_hidden_or_all(state, user_ids, &scope).await;
     state
         .registry
         .fan_out_hiding(user_ids, frame, skip_conn, &hidden)
@@ -1069,14 +1093,47 @@ pub async fn deliver_typing(
 /// can show — and an account joining a SECOND family is told only on the
 /// connections that know there can be one (docs/protocol.md, "Several
 /// families").
+///
+/// The OWNER's copy also says whether they may reset the newcomer's
+/// password, as their roster does: without it a client reads the absent flag
+/// as "the old rule holds" and offers a reset the server refuses.
 pub async fn deliver_member_joined(
     state: &AppState,
     family_id: i64,
     user: UserBrief,
 ) -> Result<(), ApiError> {
     let recipients = family_member_ids(&state.pool, family_id).await?;
-    let frame = ServerFrame::MemberJoined { family_id, user };
-    send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await
+    let owner: Option<(i64, bool)> = sqlx::query_as(&format!(
+        "SELECT fam.owner_user_id, {} FROM families fam WHERE fam.id = $1",
+        crate::handlers_family::may_reset_sql("$2", "fam.owner_user_id")
+    ))
+    .bind(family_id)
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let owner_id = owner.map(|(owner_id, _)| owner_id);
+    let others: Vec<i64> = recipients
+        .iter()
+        .copied()
+        .filter(|id| Some(*id) != owner_id)
+        .collect();
+    if let Some((owner_id, may_reset)) = owner
+        && recipients.contains(&owner_id)
+    {
+        let frame = ServerFrame::MemberJoined {
+            family_id,
+            user: user.clone(),
+            // The owner's own arrival is never theirs to reset.
+            password_reset: Some(owner_id != user.id && may_reset),
+        };
+        send_scoped(state, &[owner_id], &frame, None, Scope::Family(family_id)).await?;
+    }
+    let frame = ServerFrame::MemberJoined {
+        family_id,
+        user,
+        password_reset: None,
+    };
+    send_scoped(state, &others, &frame, None, Scope::Family(family_id)).await
 }
 
 /// Announce a departure to the remaining members *and* to the departed user
@@ -1283,7 +1340,10 @@ pub async fn push_invitation(
     invitation: &crate::models::Invitation,
 ) -> Result<(), ApiError> {
     let invited = invitation.user.id;
-    let live_sessions = state.registry.live_sessions(&[invited]).await;
+    // Only a socket that was SENT the invitation frame stands in for the
+    // push: an app from before several families is not (`deliver_invitation`),
+    // and its device must still be woken.
+    let live_sessions = state.registry.live_multi_sessions(&[invited]).await;
     let devices = devices_for_users(&state.pool, &[invited]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {

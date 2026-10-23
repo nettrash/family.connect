@@ -649,16 +649,21 @@ pub(crate) async fn grant_membership(
     })))
 }
 
-/// One member's birthday, read on its own.
-async fn member_birthday(state: &AppState, user_id: i64) -> Result<Option<Birthday>, ApiError> {
-    let row = sqlx::query("SELECT birthday_month, birthday_day FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&state.pool)
-        .await?;
-    Ok(Birthday::from_row(&row))
+/// SQL for "may `owner` reset `member`'s password": true exactly when
+/// `owner` owns every family `member` is in (docs/protocol.md, "Several
+/// families"; D7). Both arguments are SQL expressions, and neither may name
+/// an outer `other` or `f` — the subquery's own aliases would shadow it. One
+/// boolean, so no other family's id ever leaves the server.
+pub(crate) fn may_reset_sql(member: &str, owner: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM family_members other
+                       JOIN families f ON f.id = other.family_id
+                      WHERE other.user_id = {member}
+                        AND f.owner_user_id <> {owner})"
+    )
 }
 
-async fn user_brief(state: &AppState, user_id: i64) -> Result<UserBrief, ApiError> {
+pub(crate) async fn user_brief(state: &AppState, user_id: i64) -> Result<UserBrief, ApiError> {
     let row =
         sqlx::query("SELECT id, username, display_name, avatar_version FROM users WHERE id = $1")
             .bind(user_id)
@@ -958,7 +963,7 @@ pub async fn join_family(
         tx.commit().await?;
 
         announce_lapsed(&state, lapsed.as_slice()).await;
-        announce_joined(&state, family.id, auth.user_id).await?;
+        announce_joined(&state, family.id, user_brief(&state, auth.user_id).await?).await;
         // `family_id` on both answers since 2026-10-22: a client in several
         // families has to know WHICH one it joined or is waiting on
         // (docs/protocol.md, `POST /families/join`).
@@ -1082,18 +1087,16 @@ pub async fn my_family(
     // owns every family the member is in, which is what a password reset
     // needs (docs/protocol.md, "Several families"; D7). One boolean per
     // row, computed here so no other family's id ever leaves the server.
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "SELECT u.id, u.username, u.display_name, u.avatar_version,
                 u.birthday_month, u.birthday_day,
-                NOT EXISTS (SELECT 1 FROM family_members other
-                              JOIN families f ON f.id = other.family_id
-                             WHERE other.user_id = u.id
-                               AND f.owner_user_id <> $2) AS may_reset
+                {} AS may_reset
          FROM family_members fm
          JOIN users u ON u.id = fm.user_id
          WHERE fm.family_id = $1
          ORDER BY u.id",
-    )
+        may_reset_sql("u.id", "$2")
+    ))
     .bind(family_id)
     .bind(auth.user_id)
     .fetch_all(&state.pool)
@@ -1590,24 +1593,36 @@ pub async fn approve_join_request(
     .await?;
     tx.commit().await?;
 
-    let joined = user_brief(&state, applicant_id).await?;
-    let member = Member {
-        id: joined.id,
-        username: joined.username.clone(),
-        display_name: joined.display_name.clone(),
-        role: Some("member".to_string()),
-        avatar_version: joined.avatar_version,
-        // Read on its own rather than carried by `user_brief`: that brief
-        // IS the `member_joined` frame payload, whose shape is pinned, and
-        // a birthday has no business travelling in a WS frame.
-        birthday: member_birthday(&state, applicant_id).await?,
-        // An account that has just been approved into a family is live by
-        // construction — a tombstone holds no family and makes no requests.
-        deleted: false,
-        password_reset: None,
+    // ONE read for the answer and the frame: the brief, the birthday, and
+    // whether this owner may reset the newcomer's password — on the answer
+    // exactly as on the owner's roster, because a client reads an absent
+    // flag as "the old rule holds" and would offer a reset the server then
+    // refuses (docs/protocol.md, `Member`). The birthday never travels in
+    // the `member_joined` frame, whose payload is the brief alone.
+    let row = sqlx::query(&format!(
+        "SELECT u.id, u.username, u.display_name, u.avatar_version,
+                u.birthday_month, u.birthday_day,
+                {} AS may_reset
+           FROM users u WHERE u.id = $1",
+        may_reset_sql("u.id", "$2")
+    ))
+    .bind(applicant_id)
+    .bind(auth.user_id)
+    .fetch_one(&state.pool)
+    .await?;
+    // An account that has just been approved into a family is live by
+    // construction — a tombstone holds no family and makes no requests —
+    // which is what `member_from_row` reads off a row without `deleted_at`.
+    let mut member = member_from_row(&row, family.owner_user_id);
+    member.password_reset = Some(row.get::<bool, _>("may_reset"));
+    let joined = UserBrief {
+        id: member.id,
+        username: member.username.clone(),
+        display_name: member.display_name.clone(),
+        avatar_version: member.avatar_version,
     };
     announce_lapsed(&state, lapsed.as_slice()).await;
-    announce_joined(&state, family.id, applicant_id).await?;
+    announce_joined(&state, family.id, joined).await;
     // An offline requester learns they're in by push ("joined").
     events::log_fanout_error(
         "join_approved_push",
@@ -1647,6 +1662,55 @@ pub async fn reject_join_request(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// End the sessions of `user_id` that never said they know about several
+/// families, when the departure just written moved the account's HOME family
+/// — `was_home`, and another family still left to become the new home. Inside
+/// the caller's transaction, after the membership write; answers the session
+/// ids, whose sockets the caller closes once it has committed
+/// ([`close_ended_sessions`]).
+///
+/// An app from before several families keeps one family's board, pack, chats
+/// and cursors and has exactly two ways to learn they are no longer its own: a
+/// live `member_left`, or `GET /me` finding no family at all. An app that was
+/// OFFLINE when its home family went, while the account stayed in another,
+/// gets neither — `/me` hands it a different family and it goes on using the
+/// old one's data and cursors as the new one's. Signing it out is the one
+/// thing every such app already answers by wiping and starting clean
+/// (docs/protocol.md, "Several families"). Deleting the sessions takes their
+/// device rows, and so their push tokens, with them (0021).
+async fn end_legacy_sessions_if_home_moved(
+    tx: &mut PgConnection,
+    user_id: i64,
+    was_home: bool,
+) -> Result<Vec<i64>, ApiError> {
+    if !was_home {
+        return Ok(Vec::new());
+    }
+    if crate::families::family_ids_of(&mut *tx, user_id)
+        .await?
+        .is_empty()
+    {
+        // No family left: `/me` says so, and that app wipes on it already.
+        return Ok(Vec::new());
+    }
+    let ended: Vec<i64> = sqlx::query_scalar(
+        "DELETE FROM sessions WHERE user_id = $1 AND NOT multi_family RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    Ok(ended)
+}
+
+/// Close the sockets of sessions [`end_legacy_sessions_if_home_moved`] ended,
+/// with 4401 — "your session no longer exists", which sends the app to its
+/// sign-in screen with its local state wiped.
+async fn close_ended_sessions(state: &AppState, session_ids: &[i64]) {
+    for &session_id in session_ids {
+        state.registry.close_session(session_id).await;
+    }
 }
 
 /// `POST /families/leave`
@@ -1707,6 +1771,7 @@ pub async fn leave_family(
             // Ownership is committed together with the departure, so no
             // reader ever sees a family owned by somebody who has left.
             let departure = remove_membership(&mut tx, family_id, auth.user_id).await?;
+            let ended = end_legacy_sessions_if_home_moved(&mut tx, auth.user_id, was_home).await?;
             tx.commit().await?;
             announce_departure(&state, family_id, auth.user_id, departure, was_home).await;
 
@@ -1720,6 +1785,7 @@ pub async fn leave_family(
                 "member_left",
                 events::deliver_member_left(&state, family_id, auth.user_id, was_home).await,
             );
+            close_ended_sessions(&state, &ended).await;
             return Ok((
                 StatusCode::OK,
                 Json(json!({"new_owner_user_id": new_owner_user_id})),
@@ -1779,8 +1845,10 @@ pub async fn leave_family(
         .execute(&mut *tx)
         .await?;
         let deleted = delete_family_in_tx(&mut tx, family_id).await?;
+        let ended = end_legacy_sessions_if_home_moved(&mut tx, auth.user_id, was_home).await?;
         tx.commit().await?;
         announce_deleted_family_invitations(&state, &deleted.invitations).await;
+        close_ended_sessions(&state, &ended).await;
         let storage_keys = deleted.storage_keys;
         // After the commit, never inside it — and so this may not fail the
         // request. The family is already gone: a `?` here would answer a
@@ -1806,6 +1874,7 @@ pub async fn leave_family(
     // read a roster that still listed this member, and hand them the family
     // they were in the middle of leaving. See `remove_membership`.
     let departure = remove_membership(&mut tx, family_id, auth.user_id).await?;
+    let ended = end_legacy_sessions_if_home_moved(&mut tx, auth.user_id, was_home).await?;
     tx.commit().await?;
     announce_departure(&state, family_id, auth.user_id, departure, was_home).await;
 
@@ -1813,6 +1882,7 @@ pub async fn leave_family(
         "member_left",
         events::deliver_member_left(&state, family_id, auth.user_id, was_home).await,
     );
+    close_ended_sessions(&state, &ended).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1958,6 +2028,7 @@ pub async fn remove_member(
     // and direct chats with people they now share nothing with
     // (docs/protocol.md, "Several families").
     let departure = remove_membership(&mut tx, family.id, target_user_id).await?;
+    let ended = end_legacy_sessions_if_home_moved(&mut tx, target_user_id, was_home).await?;
     tx.commit().await?;
     announce_departure(&state, family.id, target_user_id, departure, was_home).await;
 
@@ -1965,6 +2036,7 @@ pub async fn remove_member(
         "member_left",
         events::deliver_member_left(&state, family.id, target_user_id, was_home).await,
     );
+    close_ended_sessions(&state, &ended).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -2442,12 +2514,8 @@ pub(crate) async fn announce_departure(
 /// one's `family_ids` just grew, and one that was closed because the two
 /// shared no family comes back with its history (docs/protocol.md, "Several
 /// families").
-pub(crate) async fn announce_joined(
-    state: &AppState,
-    family_id: i64,
-    user_id: i64,
-) -> Result<(), ApiError> {
-    let joined = user_brief(state, user_id).await?;
+pub(crate) async fn announce_joined(state: &AppState, family_id: i64, joined: UserBrief) {
+    let user_id = joined.id;
     events::log_fanout_error(
         "member_joined",
         events::deliver_member_joined(state, family_id, joined).await,
@@ -2456,11 +2524,11 @@ pub(crate) async fn announce_joined(
         Ok(chat_ids) => announce_direct_chats(state, &chat_ids).await,
         Err(error) => tracing::warn!(?error, "could not settle direct chats after a join"),
     }
-    Ok(())
 }
 
 /// The joiner's direct chats with members of `family_id`, both sides put
-/// back into any that had closed. Answers the chats it touched.
+/// back into any that had closed and the row moved onto a family the two
+/// share. Answers the chats it touched.
 async fn reopen_direct_chats(
     state: &AppState,
     family_id: i64,
@@ -2490,6 +2558,22 @@ async fn reopen_direct_chats(
         .bind(chat_id)
         .bind(user_a)
         .bind(user_b)
+        .execute(&state.pool)
+        .await?;
+        // The row's own `family_id` moves here when it names a family the two
+        // no longer share — `direct_chat`'s upsert rule. A chat that closed
+        // kept the family one side left, and everything read off the row (a
+        // transcript's switch, language and statistics) would go on naming
+        // it.
+        sqlx::query(
+            "UPDATE chats c SET family_id = $2
+              WHERE c.id = $1
+                AND (SELECT count(*) FROM family_members fm
+                      WHERE fm.family_id = c.family_id
+                        AND fm.user_id IN (c.user_a_id, c.user_b_id)) < 2",
+        )
+        .bind(chat_id)
+        .bind(family_id)
         .execute(&state.pool)
         .await?;
         touched.push(chat_id);

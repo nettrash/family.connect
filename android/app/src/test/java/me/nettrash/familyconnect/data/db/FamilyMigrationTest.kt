@@ -2,7 +2,8 @@
  * FamilyMigrationTest.kt
  * Family Connect (Android)
  *
- * v34 → v35: several families (#88; docs/protocol.md, "Several families").
+ * v34 → v35: several families (#88; docs/protocol.md, "Several families"),
+ * and v35 → v36, the roster's `password_reset` that came with them.
  * GroupMigrationTest's shape: every row already held survives — chats not
  * yet told their families, notes, pack items and the roster filed under
  * family 0 for the first `GET /me` to claim — the roster's primary key
@@ -156,10 +157,38 @@ class FamilyMigrationTest {
             assertThat(columnsOf(db, "notes")["familyId"]).isEqualTo(columnsOf(freshDb, "notes")["familyId"])
             assertThat(columnsOf(db, "packItems")["familyId"]).isEqualTo("INTEGER|1|0|0")
             assertThat(columnsOf(db, "packItems")["familyId"]).isEqualTo(columnsOf(freshDb, "packItems")["familyId"])
-            // The rebuilt roster, whole — primary-key positions included.
-            assertThat(columnsOf(db, "members")).isEqualTo(columnsOf(freshDb, "members"))
+            // The rebuilt roster, whole — primary-key positions included —
+            // but for the one column v36 added after it.
+            assertThat(columnsOf(db, "members")).isEqualTo(columnsOf(freshDb, "members") - "passwordReset")
             assertThat(columnsOf(db, "members")["familyId"]).isEqualTo("INTEGER|1|0|1")
             assertThat(columnsOf(db, "members")["userId"]).isEqualTo("INTEGER|1|null|2")
+        } finally {
+            fresh.close()
+        }
+    }
+
+    /**
+     * v36: whether the owner may reset a member's password, per (family,
+     * member). Every row held survives as "not told" — null, the old rule —
+     * and the roster then byte-matches the entity, whole.
+     */
+    @Test
+    fun thePasswordResetColumnArrivesNotTold() {
+        db.execSQL("INSERT INTO members VALUES (9, 'ben', 'Ben', 'member', 0, 0, 0, NULL, NULL)")
+        AppDatabase.MIGRATION_34_35.migrate(db)
+        AppDatabase.MIGRATION_35_36.migrate(db)
+
+        db.query("SELECT userId, passwordReset FROM members").use { cursor ->
+            assertThat(cursor.count).isEqualTo(1)
+            cursor.moveToFirst()
+            assertThat(cursor.getLong(0)).isEqualTo(9L)
+            assertThat(cursor.isNull(1)).isTrue()
+        }
+        val fresh = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), AppDatabase::class.java).build()
+        try {
+            val freshDb = fresh.openHelper.writableDatabase
+            assertThat(columnsOf(db, "members")["passwordReset"]).isEqualTo("INTEGER|0|null|0")
+            assertThat(columnsOf(db, "members")).isEqualTo(columnsOf(freshDb, "members"))
         } finally {
             fresh.close()
         }

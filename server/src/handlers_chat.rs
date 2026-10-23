@@ -933,10 +933,15 @@ pub async fn create_message(
             // gets the 409. The `position` stamped is still the index in
             // the SENDER'S array, and the claimed list is put back into
             // that order below — the wire order never changes.
-            // The families this chat is listed in: an upload may be used
-            // only in a chat its family lists (docs/protocol.md, "Several
-            // families"). Read inside the transaction, beside the claims.
-            let chat_families = crate::families::chat_family_ids(&mut *tx, chat_id).await?;
+            // The families this chat is listed in FOR THE SENDER: an upload
+            // may be used only in a chat its family lists (docs/protocol.md,
+            // "Several families"). The sender's view and not the pair's
+            // shared list, because a direct chat the other side has left
+            // shares nothing and is still the stayer's to write in, under
+            // the family their app lists it in. Read inside the
+            // transaction, beside the claims.
+            let chat_families =
+                crate::families::viewer_chat_family_ids(&mut *tx, chat_id, sender_id).await?;
             let mut lock_order: Vec<(usize, i64)> =
                 attachment_ids.iter().copied().enumerate().collect();
             lock_order.sort_unstable_by_key(|(_, id)| *id);
@@ -1658,7 +1663,25 @@ pub async fn list_chats(
     } else {
         auth.home_family().into_iter().collect()
     };
-    for &family_id in &listed_families {
+    // The families whose thread is missing or unreachable, in ONE query:
+    // every refresh asks, and once each thread exists the answer is empty —
+    // `ensure_ai_chat`'s own reads and transaction are for the rare family
+    // that needs it.
+    let missing: Vec<i64> = if state.cfg.ai.is_usable() && !listed_families.is_empty() {
+        sqlx::query_scalar(
+            "SELECT f.id FROM unnest($2::bigint[]) AS f(id)
+              WHERE NOT EXISTS (SELECT 1 FROM chats c
+                                  JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
+                                 WHERE c.kind = 'ai' AND c.user_a_id = $1 AND c.family_id = f.id)",
+        )
+        .bind(auth.user_id)
+        .bind(&listed_families)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        Vec::new()
+    };
+    for &family_id in &missing {
         if let Err(error) =
             crate::handlers_ai::ensure_ai_chat(&state, auth.user_id, family_id).await
         {

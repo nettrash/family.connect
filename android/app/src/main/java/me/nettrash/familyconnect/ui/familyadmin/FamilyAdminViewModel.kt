@@ -214,10 +214,16 @@ class FamilyAdminViewModel @Inject constructor(
         val invitations: List<InvitationDto> = emptyList(),
         /**
          * The members this owner may NOT reset the password of: those whose
-         * `password_reset` is explicitly false on the owner's roster
-         * (docs/protocol.md, "Several families"). Absent means the old rule —
-         * the reset is offered — which is every member of a server from
-         * before.
+         * `password_reset` is explicitly false (docs/protocol.md, "Several
+         * families"). Absent means the old rule — the reset is offered —
+         * which is every member of a server from before.
+         *
+         * Read off the STORED roster ([MemberEntity.passwordReset]), not off
+         * this screen's own roster read: a member who arrives while the
+         * screen is open — approved here, or joining by invitation or open
+         * join, announced by `member_joined` — carries the answer in the
+         * approval or the frame, and a set taken only from [load] offered
+         * them a reset the server then refused.
          */
         val notResettable: Set<Long> = emptySet(),
         val busy: Boolean = false,
@@ -322,6 +328,15 @@ class FamilyAdminViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
+        // Whom "Reset Password" is withheld from follows the stored roster,
+        // which the roster read, an approval's answer and `member_joined`
+        // all write (see [UiState.notResettable]).
+        viewModelScope.launch {
+            familyRepository.observeActiveMembers().collect { roster ->
+                val withheld = roster.filterNot { it.offersPasswordReset }.mapTo(HashSet()) { it.userId }
+                _state.update { it.copy(notResettable = withheld) }
+            }
+        }
         load()
         // An invitation sent, accepted, declined or withdrawn elsewhere —
         // the owner's list follows the frames rather than a stale read.
@@ -377,9 +392,9 @@ class FamilyAdminViewModel @Inject constructor(
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
                         ceiling = settings.state.first().maxFamilyMembers,
-                        // Present in the owner's own read only; hidden only
-                        // where the server says false.
-                        notResettable = mine.members.filter { m -> m.passwordReset == false }.mapTo(HashSet()) { m -> m.id },
+                        // `password_reset` is not taken from here: the read
+                        // has already stored it on the roster, which is what
+                        // [UiState.notResettable] follows.
                     )
                 }
             }

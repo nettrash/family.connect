@@ -1,0 +1,20 @@
+-- 0058_session_families — which sessions belong to an app that knows about
+-- several families (docs/protocol.md, "Several families").
+--
+-- An app from before 2026-10-22 is shown its account's HOME family and nothing
+-- else, and it keeps that family's board, pack, chats and cursors on the
+-- device. It learns the home family moved only by a live `member_left`, or by
+-- `GET /me` finding no family at all — so an app that was OFFLINE when its
+-- account left the home family while staying in another comes back, reads a
+-- different family off `/me`, and goes on using the old one's data and
+-- cursors as if they were the new one's. Nothing the server can send makes
+-- such an app wipe and start over, short of ending its session; so that is
+-- what happens, and this column is how the server knows which sessions to
+-- end.
+--
+-- A session is marked the first time it says `X-FC-Families: 1` (or
+-- `families=1` on the socket), and a session opened by a sign-in that says it
+-- is marked from the start. Every session that existed before this migration
+-- starts unmarked, which is the safe side: an updated app marks its session
+-- on its very next request.
+ALTER TABLE sessions ADD COLUMN multi_family BOOLEAN NOT NULL DEFAULT false;

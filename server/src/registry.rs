@@ -270,6 +270,21 @@ impl Registry {
             .collect()
     }
 
+    /// `live_sessions`, counting only connections that said `families=1`.
+    ///
+    /// For a push whose FRAME is held back from apps that predate several
+    /// families (an invitation): such an app's socket was never sent the
+    /// frame, so it must not be what decides its device needs no push.
+    pub async fn live_multi_sessions(&self, user_ids: &[i64]) -> HashSet<i64> {
+        let inner = self.inner.read().await;
+        user_ids
+            .iter()
+            .filter_map(|user_id| inner.get(user_id))
+            .flat_map(|conns| conns.iter().filter(|conn| conn.multi))
+            .map(|conn| conn.session_id)
+            .collect()
+    }
+
     /// Number of live connections — used by main's bounded shutdown drain.
     pub async fn connection_count(&self) -> usize {
         self.inner.read().await.values().map(Vec::len).sum()
@@ -289,6 +304,15 @@ mod tests {
         let mut sessions: Vec<i64> = sessions.into_iter().collect();
         sessions.sort_unstable();
         sessions
+    }
+
+    #[tokio::test]
+    async fn live_multi_sessions_ignores_a_session_whose_only_socket_is_legacy() {
+        let registry = Registry::new(4);
+        let _old_phone = registry.register(1, 100, false).await;
+        let _new_mac = registry.register(1, 101, true).await;
+        assert_eq!(sorted(registry.live_multi_sessions(&[1]).await), vec![101]);
+        assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
     }
 
     #[tokio::test]

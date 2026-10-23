@@ -163,6 +163,13 @@ interface MemberDao {
      * are back — and the birthday columns are not in the SET list at all,
      * which is what makes "not told" and "told it is empty" different
      * things here.
+     *
+     * `passwordReset` follows the same rule by a different road: the frame
+     * carries it on the family OWNER's copy alone (docs/protocol.md, "Several
+     * families"), so it is written when [MemberEntity.passwordReset] is
+     * non-null and a null leaves the stored answer where it is — a
+     * re-approved member's known "false" must not read as "offer the reset"
+     * because some copy of a frame did not say.
      */
     @Transaction
     suspend fun upsertLeavingBirthday(member: MemberEntity) {
@@ -171,6 +178,7 @@ interface MemberDao {
                 familyId = member.familyId,
                 userId = member.userId,
                 role = member.role,
+                passwordReset = member.passwordReset,
             )
         }
         // The account's half on every row of theirs, the new one included.
@@ -186,9 +194,18 @@ interface MemberDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIfAbsent(member: MemberEntity): Long
 
-    /** The FAMILY's columns a `member_joined` frame carries: the role, and that they are back. */
-    @Query("UPDATE members SET role = :role, hasLeft = 0 WHERE familyId = :familyId AND userId = :userId")
-    suspend fun updateLeavingBirthday(familyId: Long, userId: Long, role: String)
+    /**
+     * The FAMILY's columns a `member_joined` frame carries: the role, that
+     * they are back, and — only when the frame said it — whether the owner
+     * may reset their password (COALESCE: a null keeps what is stored).
+     */
+    @Query(
+        """
+        UPDATE members SET role = :role, hasLeft = 0, passwordReset = COALESCE(:passwordReset, passwordReset)
+        WHERE familyId = :familyId AND userId = :userId
+        """,
+    )
+    suspend fun updateLeavingBirthday(familyId: Long, userId: Long, role: String, passwordReset: Boolean?)
 
     /** The ACCOUNT's columns a `member_joined` frame carries, on every row of theirs. */
     @Query(

@@ -138,6 +138,13 @@ pub enum ServerFrame {
         #[serde(default)]
         family_id: Option<i64>,
         user: crate::model::User,
+        /// Whether this reader may reset the newcomer's password — on the
+        /// family OWNER's copy alone, exactly as on their roster, and absent
+        /// from everybody else's (docs/protocol.md, "Several families").
+        /// Absent says nothing: whatever flag is already held for that
+        /// member stays (`Store::member_joined`).
+        #[serde(default)]
+        password_reset: Option<bool>,
     },
     MemberLeft {
         #[serde(default)]
@@ -420,7 +427,20 @@ mod tests {
         assert!(matches!(
             decode(r#"{"type": "member_joined", "family_id": 3,
                        "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0}}"#),
-            Some(ServerFrame::MemberJoined { family_id: Some(3), ref user }) if user.id == 11
+            Some(ServerFrame::MemberJoined { family_id: Some(3), ref user, password_reset: None })
+                if user.id == 11
+        ));
+        // The owner's copy says whether the newcomer is theirs to reset.
+        assert!(matches!(
+            decode(
+                r#"{"type": "member_joined", "family_id": 3,
+                       "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0},
+                       "password_reset": false}"#
+            ),
+            Some(ServerFrame::MemberJoined {
+                password_reset: Some(false),
+                ..
+            })
         ));
         assert_eq!(
             decode(r#"{"type": "member_left", "family_id": 3, "user_id": 11}"#),

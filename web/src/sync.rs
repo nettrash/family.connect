@@ -1430,14 +1430,18 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             });
             None
         }
-        ServerFrame::MemberJoined { family_id, user } => {
+        ServerFrame::MemberJoined {
+            family_id,
+            user,
+            password_reset,
+        } => {
             let joined_me = live.update(session, |state| {
                 let me = state.store.my_user_id;
                 let family_id = family_id.or_else(|| state.store.home_family_id());
                 let applied = family_id.and_then(|family_id| {
-                    state
-                        .store
-                        .with_family(family_id, |store| store.member_joined(&user))
+                    state.store.with_family(family_id, |store| {
+                        store.member_joined(&user, password_reset)
+                    })
                 });
                 user.id == me && applied.is_none()
             })?;

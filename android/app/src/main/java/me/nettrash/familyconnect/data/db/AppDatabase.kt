@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 35.
+ * Room database, version 36.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -47,7 +47,7 @@ fun interface LocalDataWiper {
         GonePackItemEntity::class,
         TranscriptEntity::class,
     ],
-    version = 35,
+    version = 36,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -649,6 +649,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v36: whether the owner may reset a member's password
+         * (`Member.password_reset`, docs/protocol.md, "Several families"),
+         * stored per (family, member) so a newcomer announced by
+         * `member_joined` — or answered by an approval — is drawn with the
+         * answer the server gave, rather than offered a reset it refuses
+         * (`member_in_other_families`). Nullable with no default, the
+         * MIGRATION_33_34 shape: every row already here was "not told",
+         * which is the old rule, and the next roster read says.
+         *
+         * Its own step rather than folded into MIGRATION_34_35: an install
+         * already at 35 would never run the change, and Room refuses to open
+         * a schema that does not match what it was promised.
+         */
+        val MIGRATION_35_36: Migration = object : Migration(35, 36) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE members ADD COLUMN passwordReset INTEGER")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -751,6 +771,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_32_33,
                 MIGRATION_33_34,
                 MIGRATION_34_35,
+                MIGRATION_35_36,
             )
         }
     }

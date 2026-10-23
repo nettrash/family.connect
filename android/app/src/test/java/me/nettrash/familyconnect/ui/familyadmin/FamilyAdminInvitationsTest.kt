@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.setMain
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.InvitationDto
@@ -47,6 +48,7 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.memberDto
+import me.nettrash.familyconnect.testutil.userDto
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -204,6 +206,35 @@ class FamilyAdminInvitationsTest {
         assertThat(vm.state.value.canReset(9)).isTrue()
         assertThat(vm.state.value.canReset(11)).isFalse()
         assertThat(vm.state.value.canReset(12)).isTrue()
+    }
+
+    /**
+     * A newcomer who arrives while the screen is open — by open join or an
+     * invitation, announced by `member_joined`, or approved right here — is
+     * drawn with the answer the frame or the approval carried, not offered a
+     * reset the server refuses with `member_in_other_families`.
+     */
+    @Test
+    fun `a member who arrives while the screen is open carries their password_reset`() = runTest(dispatcher) {
+        familyApi.mineResult = ApiResult.Ok(
+            FamilyMineResponse(family = mine, members = listOf(memberDto(ME, role = "owner"))),
+        )
+        val vm = viewModel()
+        runCurrent()
+
+        socket.emit(ServerFrame.MemberJoined(familyId = MINE, user = userDto(12, "dan"), passwordReset = false))
+        runCurrent()
+        assertThat(vm.state.value.canReset(12)).isFalse()
+
+        familyApi.approveResult = ApiResult.Ok(ApproveResponse(memberDto(13, "eve").copy(passwordReset = false)))
+        vm.approve(21)
+        runCurrent()
+        assertThat(vm.state.value.canReset(13)).isFalse()
+
+        // Absent — the old rule — offers it.
+        socket.emit(ServerFrame.MemberJoined(familyId = MINE, user = userDto(14, "fay")))
+        runCurrent()
+        assertThat(vm.state.value.canReset(14)).isTrue()
     }
 
     @Test

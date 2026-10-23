@@ -206,11 +206,27 @@ async fn invite_ok(ts: &TestServer, owner: &str, family_id: i64, user_id: i64) -
     body["invitation"]["id"].as_i64().expect("invitation id")
 }
 
+/// Mark every session `user_id` holds right now as one that knows about
+/// several families (0058) — what a current app's first request with
+/// `X-FC-Families: 1` does, written straight to the row so no test races the
+/// fire-and-forget write. A session opened LATER, like an old phone's
+/// `ts.login`, stays unmarked.
+async fn as_multi_app(ts: &TestServer, user_id: i64) {
+    sqlx::query("UPDATE sessions SET multi_family = true WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&ts.state.pool)
+        .await
+        .expect("marking the sessions");
+}
+
 /// Two families: Olive owns the Smiths with Bob in it; Bob then starts the
-/// Browns. Returns `(olive, olive_id, bob, bob_id, smiths, browns)`.
+/// Browns. Returns `(olive, olive_id, bob, bob_id, smiths, browns)`. Both
+/// accounts are signed in on a current app.
 async fn bob_in_two(ts: &TestServer) -> (String, i64, String, i64, i64, i64) {
     let (olive, olive_id) = ts.register("olive", "Olive").await;
     let (bob, bob_id) = ts.register("bob", "Bob").await;
+    as_multi_app(ts, olive_id).await;
+    as_multi_app(ts, bob_id).await;
     let (smiths, code) = ts.create_family(&olive, "The Smiths").await;
     ts.set_open_policy(&olive).await;
     ts.join(&bob, &code, "joined").await;
@@ -423,8 +439,8 @@ async fn an_existing_account_joins_another_family_by_code_and_approval() {
     assert_eq!(pending, vec![carols, dans]);
     assert_eq!(
         body["pending_join_request"]["family_id"].as_i64(),
-        Some(carols),
-        "the oldest request"
+        Some(dans),
+        "the newest request, as an app from before was always shown"
     );
 
     // Carol approves; Bob is in three families, Dan's request untouched.
@@ -919,6 +935,64 @@ async fn a_direct_chat_follows_the_families_the_pair_shares() {
     assert_eq!(messages["messages"][0]["body"], "see you Sunday");
 }
 
+/// A direct chat the other side has left is still the stayer's to write in,
+/// attachments included; and when the two share a family again — a different
+/// one — the row moves onto it, so nothing read off the chat (a transcript's
+/// switch, language and statistics) goes on naming a family one of them left.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_closed_direct_chat_takes_uploads_and_reopens_under_the_shared_family() {
+    let ts = spawn_server().await;
+    let (olive, _, bob, bob_id, smiths, browns) = bob_in_two(&ts).await;
+    let opened = json_of(
+        ts.post(&olive, "/chats/direct", json!({"user_id": bob_id}))
+            .await,
+        "opening a direct chat",
+    )
+    .await;
+    let direct = opened["chat"]["id"].as_i64().expect("chat id");
+
+    // Bob leaves the Smiths, the one family the two shared.
+    let response = ts
+        .post(&bob, &format!("/families/{smiths}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+
+    // Olive stayed: a photo goes where a text does.
+    let photo = attachment_id(upload_for(&ts, &olive, Some(smiths)).await).await;
+    let response = ts
+        .post(
+            &olive,
+            &format!("/chats/{direct}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "",
+                   "attachment_ids": [photo]}),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        201,
+        "a photo in the chat the stayer holds"
+    );
+
+    // They meet again in the Browns — by its code, since an invitation needs
+    // a family the two already share.
+    open_family(&ts, &bob, browns).await;
+    let code = invite_code_of(&ts, &bob, browns).await;
+    ts.join(&olive, &code, "joined").await;
+    let row_family: i64 = sqlx::query_scalar("SELECT family_id FROM chats WHERE id = $1")
+        .bind(direct)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the chat row");
+    assert_eq!(row_family, browns, "the row names a family the two share");
+    let back = chats(&ts, &bob, true)
+        .await
+        .into_iter()
+        .find(|chat| chat["id"].as_i64() == Some(direct))
+        .expect("reopened");
+    assert_eq!(back["family_ids"], json!([browns]));
+}
+
 /// Opening a direct chat needs ONE shared family, whichever it is.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
@@ -1096,6 +1170,201 @@ async fn a_password_reset_needs_every_family_of_the_member() {
         .await;
     assert_eq!(response.status(), 204);
     let _ = bob;
+}
+
+/// A newcomer arrives on the owner's screens already saying whether the owner
+/// may reset their password — on the approval's answer and on the owner's
+/// copy of `member_joined` — and on nobody else's copy at all.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_newcomer_arrives_with_the_owners_password_reset_flag() {
+    let ts = spawn_server().await;
+    let (olive, _) = ts.register("olive", "Olive").await;
+    let (kid, _) = ts.register("kid", "Kid").await;
+    let (carol, carol_id) = ts.register("carol", "Carol").await;
+    let (_smiths, code) = ts.create_family(&olive, "The Smiths").await;
+    ts.create_family(&carol, "The Carols").await;
+    // Approval is the default policy: the kid comes in by an approval too.
+    ts.join(&kid, &code, "pending").await;
+    let requests = json_of(ts.get(&olive, "/families/join-requests").await, "requests").await;
+    let kid_request = requests["requests"][0]["id"].as_i64().expect("request id");
+    let approved = json_of(
+        ts.post(
+            &olive,
+            &format!("/families/join-requests/{kid_request}/approve"),
+            json!({}),
+        )
+        .await,
+        "approving the kid",
+    )
+    .await;
+    assert_eq!(
+        approved["member"]["password_reset"],
+        json!(true),
+        "only here, so the owner may"
+    );
+
+    let mut olive_ws = connect_ws(&ts, &olive, true).await;
+    let mut kid_ws = connect_ws(&ts, &kid, true).await;
+    ts.join(&carol, &code, "pending").await;
+    let requests = json_of(ts.get(&olive, "/families/join-requests").await, "requests").await;
+    let carol_request = requests["requests"]
+        .as_array()
+        .expect("requests")
+        .iter()
+        .find(|request| request["user"]["id"].as_i64() == Some(carol_id))
+        .expect("Carol's request")["id"]
+        .as_i64()
+        .expect("request id");
+    let approved = json_of(
+        ts.post(
+            &olive,
+            &format!("/families/join-requests/{carol_request}/approve"),
+            json!({}),
+        )
+        .await,
+        "approving Carol",
+    )
+    .await;
+    assert_eq!(
+        approved["member"]["password_reset"],
+        json!(false),
+        "Carol owns a family of her own"
+    );
+    let owners = next_frame_where(&mut olive_ws, |frame| {
+        frame["type"] == "member_joined" && frame["user"]["id"].as_i64() == Some(carol_id)
+    })
+    .await;
+    assert_eq!(owners["password_reset"], json!(false));
+    let members = next_frame_where(&mut kid_ws, |frame| {
+        frame["type"] == "member_joined" && frame["user"]["id"].as_i64() == Some(carol_id)
+    })
+    .await;
+    assert!(
+        members.get("password_reset").is_none(),
+        "absent from everybody's copy but the owner's: {members}"
+    );
+}
+
+/// The invitation push is held back only by a socket that was SENT the
+/// invitation: a device whose app predates several families is never sent the
+/// frame, so its open socket must not stand in for the push.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_invitation_wakes_a_device_whose_socket_predates_several_families() {
+    let ts = spawn_server().await;
+    let (_olive, olive_id, bob, _, _smiths, browns) = bob_in_two(&ts).await;
+    let phone = ts.login("olive", "password123").await;
+    let device = ts
+        .post(
+            &phone,
+            "/devices",
+            json!({"platform": "ios", "push_token": "olive-old-phone"}),
+        )
+        .await;
+    assert_eq!(device.status(), 201);
+    let _old_app = connect_ws(&ts, &phone, false).await;
+
+    invite_ok(&ts, &bob, browns, olive_id).await;
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    while !ts
+        .push
+        .calls()
+        .iter()
+        .any(|call| matches!(call.note.event, PushEvent::Invitation { .. }))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no invitation push for a device with only a legacy socket"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// An app from before several families that was not looking when its home
+/// family went — the account still in another — is signed out rather than
+/// left holding the old family's data and cursors as the new one's. Only
+/// sessions that never said `X-FC-Families: 1` are ended, only when the HOME
+/// family moves, and their devices go with them.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn leaving_the_home_family_signs_out_apps_from_before() {
+    let ts = spawn_server().await;
+    let (_olive, _, bob, bob_id, smiths, browns) = bob_in_two(&ts).await;
+    let old_phone = ts.login("bob", "password123").await;
+    let device = ts
+        .post(
+            &old_phone,
+            "/devices",
+            json!({"platform": "android", "push_token": "bob-old-phone"}),
+        )
+        .await;
+    assert_eq!(device.status(), 201);
+    // A sign-in that says it knows about several families is marked from the
+    // start.
+    let new_phone = json_of(
+        ts.client
+            .post(ts.url("/auth/login"))
+            .header(MULTI.0, MULTI.1)
+            .json(&json!({"username": "bob", "password": "password123"}))
+            .send()
+            .await
+            .expect("request sends"),
+        "signing in on a current app",
+    )
+    .await["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+
+    // Leaving a family that is NOT home moves nothing.
+    let (carl, _) = ts.register("carl", "Carl").await;
+    let (carls, _) = ts.create_family(&carl, "The Carls").await;
+    open_family(&ts, &carl, carls).await;
+    let code = invite_code_of(&ts, &carl, carls).await;
+    ts.join(&bob, &code, "joined").await;
+    let response = ts
+        .post(&bob, &format!("/families/{carls}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+    assert_eq!(ts.get(&old_phone, "/me").await.status(), 200);
+
+    let mut old_socket = connect_ws(&ts, &old_phone, false).await;
+    let response = ts
+        .post(&bob, &format!("/families/{smiths}/leave"), json!({}))
+        .await;
+    assert_eq!(response.status(), 204);
+
+    // The old app's socket is closed as "your session no longer exists".
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    let code = loop {
+        let message = tokio::time::timeout_at(deadline, old_socket.next())
+            .await
+            .expect("the old socket closes");
+        match message {
+            Some(Ok(Message::Close(Some(frame)))) => break u16::from(frame.code),
+            Some(Ok(_)) => continue,
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    };
+    assert_eq!(code, 4401);
+    assert_eq!(ts.get(&old_phone, "/me").await.status(), 401);
+    let devices: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM devices WHERE push_token = 'bob-old-phone'")
+            .fetch_one(&ts.state.pool)
+            .await
+            .expect("counting devices");
+    assert_eq!(
+        devices, 0,
+        "the old phone's push token goes with its session"
+    );
+
+    // The current apps carry on, now at home in the Browns.
+    for token in [&bob, &new_phone] {
+        let body = me(&ts, token, true).await;
+        assert_eq!(body["family"]["id"].as_i64(), Some(browns));
+    }
+    let _ = bob_id;
 }
 
 /// Removing a member removes them from THAT family: its chat and groups go,
@@ -1305,6 +1574,9 @@ async fn a_family_the_caller_is_not_in_is_not_found() {
         "/families/999999".to_string(),
         "/families/999999/board".to_string(),
         "/families/abc".to_string(),
+        // A segment that does not even decode is not the home family.
+        "/families/%FF".to_string(),
+        "/families/%FF/board".to_string(),
     ] {
         assert_error(ts.get(&olive, &path).await, 404, "family_not_found").await;
     }

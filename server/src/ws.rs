@@ -156,6 +156,11 @@ pub enum ServerFrame {
     MemberJoined {
         family_id: i64,
         user: UserBrief,
+        /// Whether the reader may reset the newcomer's password — on the
+        /// family OWNER's copy alone, exactly as on their roster, and absent
+        /// from everybody else's (docs/protocol.md, "Several families").
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        password_reset: Option<bool>,
     },
     MemberLeft {
         family_id: i64,
@@ -393,6 +398,7 @@ pub async fn ws_upgrade(
     // life of the connection: the registry decides per connection which
     // frames an app that predates several families may be sent.
     auth.multi = says_families(query.as_deref()) || crate::auth::says_multi(&headers);
+    crate::auth::remember_multi(&state, &auth);
     // A browser that offered subprotocols must get ONE echoed back or it
     // fails the handshake on its own side — and what is echoed is the
     // product's name, never the offered token.
@@ -1431,12 +1437,34 @@ mod tests {
                 display_name: "Junior".to_string(),
                 avatar_version: 0,
             },
+            password_reset: None,
         };
         assert_serializes_to(
             &frame,
             r#"{"type": "member_joined", "family_id": 3,
                 "user": {"id": 11, "username": "junior", "display_name": "Junior",
                          "avatar_version": 0}}"#,
+        );
+    }
+
+    #[test]
+    fn the_owners_member_joined_says_whether_they_may_reset() {
+        let frame = ServerFrame::MemberJoined {
+            family_id: 3,
+            user: UserBrief {
+                id: 11,
+                username: "junior".to_string(),
+                display_name: "Junior".to_string(),
+                avatar_version: 0,
+            },
+            password_reset: Some(false),
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "member_joined", "family_id": 3,
+                "user": {"id": 11, "username": "junior", "display_name": "Junior",
+                         "avatar_version": 0},
+                "password_reset": false}"#,
         );
     }
 
@@ -1928,6 +1956,7 @@ mod tests {
                     display_name: "Junior".to_string(),
                     avatar_version: 0,
                 },
+                password_reset: Some(true),
             },
             ServerFrame::Pong,
         ];

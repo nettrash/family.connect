@@ -146,9 +146,37 @@ struct FamilyRulesTests {
         // A direct chat is listed in every family the two people share.
         #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 3))
         #expect(FamilyRules.isListed(chatFamilyIDs: [3, 5], in: 5))
-        // From before several families, and with no family known yet.
-        #expect(FamilyRules.isListed(chatFamilyIDs: [], in: 3))
+        // From before several families (nobody said), and with no family known yet.
+        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: 3))
+        #expect(FamilyRules.isListed(chatFamilyIDs: nil, in: nil))
         #expect(FamilyRules.isListed(chatFamilyIDs: [5], in: nil))
+    }
+
+    @Test("a chat the server lists in NO family is listed nowhere, not everywhere")
+    func listedInNoFamily() {
+        // `family_ids: []` — a direct chat closed for the side that left.
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: 5))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: [], in: nil))
+        // And it counts towards no family's unread.
+        let chats = [Fixture.chat([3], unread: 2), FamilyRules.ChatCount(familyIDs: [], unread: 9)]
+        #expect(FamilyRules.unread(in: 3, chats: chats) == 2)
+        #expect(FamilyRules.unread(in: 5, chats: chats) == 0)
+    }
+
+    @Test("the store keeps a chat's absent family_ids and its empty family_ids apart")
+    func listedEncoding() {
+        #expect(FamilyIDList.encodeListed(nil) == "")
+        #expect(FamilyIDList.encodeListed([]) == FamilyIDList.noFamily)
+        #expect(FamilyIDList.encodeListed([3, 5]) == "3,5")
+        #expect(FamilyIDList.decodeListed("") == nil)
+        #expect(FamilyIDList.decodeListed(FamilyIDList.noFamily) == [])
+        #expect(FamilyIDList.decodeListed("3,5") == [3, 5])
+        let chat = ChatEntity(chatID: 44, kind: "direct", pinRank: 1, title: "Boris")
+        #expect(chat.familyIDs == nil)
+        chat.familyIDs = []
+        #expect(chat.familyIDsText == FamilyIDList.noFamily)
+        #expect(chat.familyIDs == [])
     }
 
     @Test("unread per family: a direct chat counts in EACH family that lists it")
@@ -174,6 +202,11 @@ struct FamilyRulesTests {
         // Listed in another family this device does NOT hold: gone for us.
         #expect(!FamilyRules.survivesLeaving(chatFamilyIDs: [5, 9], left: 5, held: [3]))
         #expect(FamilyRules.survivesLeaving(chatFamilyIDs: [3], left: 5, held: [3]))
+        // Listed in no family (`[]`, sent just before the `member_left`):
+        // gone, whichever family is being left.
+        #expect(!FamilyRules.survivesLeaving(chatFamilyIDs: [], left: 5, held: [3]))
+        // Nobody said (a row from before several families): not this family's to take.
+        #expect(FamilyRules.survivesLeaving(chatFamilyIDs: nil, left: 5, held: [3]))
     }
 
     @Test("an upload is for the family on screen when the chat is listed there, else the chat's first")
@@ -1026,6 +1059,74 @@ struct SeveralFamiliesStoreTests {
         #expect(harness.packItems().map(\.family) == [3])
         #expect(harness.member(11)?.familyRoles == [3: "member"])
         #expect(harness.member(13)?.hasLeft == true)
+    }
+
+    @Test("removed from a family: a direct chat closed by `family_ids: []` is listed nowhere, then dropped with the family")
+    func closedDirectChatDropsWithFamily() async throws {
+        let harness = try makeHarness(host: "families-closed-direct.test")
+        defer { tearDown(harness) }
+        await harness.coordinator.resync()
+        #expect(harness.chat(44)?.familyIDs == [5])
+
+        // The server closes the direct chat with Boris for this side — they
+        // shared only the Ivanovs — BEFORE the `member_left` that drops it.
+        let closed = try APICoding.decoder().decode(ServerFrame.self, from: Data(#"""
+        {"type": "chat_updated",
+         "chat": {"id": 44, "kind": "direct", "title": "Boris", "peer_user_id": 13, "family_ids": []}}
+        """#.utf8))
+        harness.coordinator.handle(frame: closed)
+        let chat = try #require(harness.chat(44))
+        #expect(chat.familyIDs == [])
+        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 3))
+        #expect(!FamilyRules.isListed(chatFamilyIDs: chat.familyIDs, in: 5))
+
+        harness.server.families = [3]
+        harness.coordinator.handle(frame: .memberLeft(familyID: 5, userID: 7))
+
+        #expect(harness.chat(44) == nil)
+        #expect(harness.chat(42)?.familyIDs == [3])
+        #expect(harness.chat(1) != nil)
+    }
+
+    @Test("member_joined: the owner's copy stores password_reset; a copy without it keeps what is held")
+    func memberJoinedPasswordReset() async throws {
+        let harness = try makeHarness(host: "families-joined-reset.test")
+        defer { tearDown(harness) }
+        await harness.coordinator.resync()
+
+        func joined(_ userID: Int64, family: Int64, flag: String?) throws -> ServerFrame {
+            let extra = flag.map { #", "password_reset": \#($0)"# } ?? ""
+            return try APICoding.decoder().decode(ServerFrame.self, from: Data(#"""
+            {"type": "member_joined", "family_id": \#(family),
+             "user": {"id": \#(userID), "username": "u\#(userID)", "display_name": "U\#(userID)"}\#(extra)}
+            """#.utf8))
+        }
+
+        // A newcomer the owner may NOT reset (they are in a family of their own).
+        let frame = try joined(21, family: 3, flag: "false")
+        guard case .memberJoined(let payload) = frame else {
+            Issue.record("expected .memberJoined, got \(frame)")
+            return
+        }
+        #expect(payload.passwordReset == false)
+        harness.coordinator.handle(frame: frame)
+        #expect(harness.member(21)?.passwordResetAllowed(in: 3) == false)
+
+        // The same member's frame again, as another reader's copy carries it
+        // (no flag): the refusal stands.
+        harness.coordinator.handle(frame: try joined(21, family: 3, flag: nil))
+        #expect(harness.member(21)?.passwordResetAllowed(in: 3) == false)
+        // Olga's refusal from the roster survives a flagless frame too.
+        harness.coordinator.handle(frame: try joined(11, family: 3, flag: nil))
+        #expect(harness.member(11)?.passwordResetAllowed(in: 3) == false)
+
+        // The owner's copy saying true lifts it.
+        harness.coordinator.handle(frame: try joined(21, family: 3, flag: "true"))
+        #expect(harness.member(21)?.passwordResetAllowed(in: 3) == true)
+        // And a frame for one family leaves the other alone.
+        harness.coordinator.handle(frame: try joined(21, family: 5, flag: "false"))
+        #expect(harness.member(21)?.passwordResetAllowed(in: 3) == true)
+        #expect(harness.member(21)?.passwordResetAllowed(in: 5) == false)
     }
 
     @Test("somebody else leaving one family is still in the other")

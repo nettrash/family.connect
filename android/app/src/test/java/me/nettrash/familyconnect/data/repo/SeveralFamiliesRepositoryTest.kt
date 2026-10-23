@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
@@ -185,6 +186,52 @@ class SeveralFamiliesRepositoryTest {
         // the family shown — where I was always a member — is untouched.
         assertThat(settings.current.families.single { it.id == OTHER }.role).isEqualTo("member")
         assertThat(settings.current.familyStatus).isEqualTo(FamilyStatus.MEMBER)
+    }
+
+    /**
+     * The owner's copy of `member_joined` says whether they may reset the
+     * newcomer's password, top-level (docs/protocol.md, "Several families").
+     * Stored when told; a copy that says nothing — everyone else's, an older
+     * server's — never clears what is known, and a member never told about
+     * is the old rule.
+     */
+    @Test
+    fun `member joined stores password_reset when told and keeps it when not`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.familyResults[OTHER] = roster(other, ME)
+        repository.refreshFamily(OTHER)
+
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(12, "dan"), passwordReset = false))
+        runCurrent()
+        assertThat(rows(OTHER).single { it.userId == 12L }.passwordReset).isFalse()
+        assertThat(rows(OTHER).single { it.userId == 12L }.offersPasswordReset).isFalse()
+
+        // Not told: the stored false stands.
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(12, "dan")))
+        runCurrent()
+        assertThat(rows(OTHER).single { it.userId == 12L }.passwordReset).isFalse()
+
+        // Told otherwise: the newer answer is written.
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(12, "dan"), passwordReset = true))
+        runCurrent()
+        assertThat(rows(OTHER).single { it.userId == 12L }.passwordReset).isTrue()
+
+        // Never told at all: the reset is offered, as on a server from before.
+        socket.emit(ServerFrame.MemberJoined(familyId = OTHER, user = userDto(13, "eve")))
+        runCurrent()
+        assertThat(rows(OTHER).single { it.userId == 13L }.passwordReset).isNull()
+        assertThat(rows(OTHER).single { it.userId == 13L }.offersPasswordReset).isTrue()
+    }
+
+    @Test
+    fun `an approval keeps the owner's password_reset for the newcomer`() = runTest(dispatcher) {
+        val repository = repository()
+        settings.setCurrentFamilyId(OTHER)
+        familyApi.approveResult = ApiResult.Ok(ApproveResponse(memberDto(12, "dan").copy(passwordReset = false)))
+
+        repository.approve(21)
+
+        assertThat(rows(OTHER).single { it.userId == 12L }.passwordReset).isFalse()
     }
 
     @Test

@@ -785,13 +785,22 @@ final class ChatSyncCoordinator {
                 Task { await self.resync() }
                 return
             }
+            // The owner's copy carries `password_reset`, so a newcomer —
+            // approved, invited or through the open door — is never offered
+            // a reset the server would refuse. Everybody else's copy, and an
+            // older server's, does not: then whatever flag this device holds
+            // for the member stands (`.none`), never cleared by a frame that
+            // did not mention it — which `.some(nil)` would do.
+            var passwordReset: Bool?? = .none
+            if let flag = payload.passwordReset { passwordReset = .some(flag) }
             upsertMember(
                 userID: payload.user.id,
                 username: payload.user.username,
                 displayName: payload.user.displayName,
                 role: "member",
                 avatarVersion: payload.user.avatarVersion,
-                familyKey: familyKey(named: payload.familyID))
+                familyKey: familyKey(named: payload.familyID),
+                passwordReset: passwordReset)
 
         case .reaction(let payload):
             // Full-state apply under the per-message seq guard; the chat
@@ -1138,17 +1147,20 @@ final class ChatSyncCoordinator {
     /// left it or was removed (docs/protocol.md, "Several families"). Its
     /// family chat, groups and `ai` chat go with their messages; a direct
     /// chat stays while its `family_ids` still name another family this
-    /// device holds, and only loses this one. Its board and gone notes, its
-    /// pack and gone items, its roster memberships, its cursors — and
-    /// nobody else's.
+    /// device holds, and only loses this one. A direct chat the server has
+    /// already listed in NO family goes too: that `chat_updated` (`[]`)
+    /// reaches the side that left just before this, so the chat no longer
+    /// names the family it closed with (`FamilyRules.survivesLeaving`). Its
+    /// board and gone notes, its pack and gone items, its roster
+    /// memberships, its cursors — and nobody else's.
     func dropFamily(_ familyKey: Int64) {
         let held = Set(heldFamilyKeys).subtracting([familyKey])
-        for chat in (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
-        where chat.familyIDs.contains(familyKey) {
-            if FamilyRules.survivesLeaving(chatFamilyIDs: chat.familyIDs, left: familyKey, held: held) {
-                chat.familyIDs = chat.familyIDs.filter { $0 != familyKey }
-            } else {
+        for chat in (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? [] {
+            let listed = chat.familyIDs
+            if !FamilyRules.survivesLeaving(chatFamilyIDs: listed, left: familyKey, held: held) {
                 deleteChat(chat)
+            } else if let listed, listed.contains(familyKey) {
+                chat.familyIDs = listed.filter { $0 != familyKey }
             }
         }
         for note in notes(of: familyKey) {
@@ -2658,7 +2670,7 @@ final class ChatSyncCoordinator {
                 // families").
                 chatTitle: chat.kind == ChatRules.family
                     ? FamilyRules.familyName(
-                        chatFamilyIDs: chat.familyIDs, families: session?.families ?? [],
+                        chatFamilyIDs: chat.familyIDs ?? [], families: session?.families ?? [],
                         fallback: chat.title) ?? chat.title
                     : chat.title,
                 senderName: displayName(of: dto.senderID),
@@ -4453,7 +4465,13 @@ final class ChatSyncCoordinator {
                 readElsewhere[item.chat.id] = marker
             }
         }
-        dropChats(absentFrom: chatList.chats, keeping: upsertedSince)
+        // A chat a frame listed in NO family while the list was in flight
+        // (`family_ids: []`, a direct chat that closed for this reader) is
+        // not kept for having changed: it is gone for this reader, and the
+        // list that omits it is right about that.
+        dropChats(
+            absentFrom: chatList.chats,
+            keeping: upsertedSince.filter { fetchChat($0)?.familyIDs?.isEmpty != true })
         saveContext()
         // After the save, so the icon is already showing the server's number
         // when the banners go.
@@ -5076,7 +5094,8 @@ final class ChatSyncCoordinator {
         if chat.groupAdminUserID != dto.adminUserID { chat.groupAdminUserID = dto.adminUserID }
         // The families it is listed in. Absent from a server that predates
         // them — and then nothing held is cleared, because absence there
-        // means "the one family", not "none".
+        // means "the one family", not "none". `[]` IS "none", and is stored
+        // as such (`FamilyIDList.encodeListed`), never as the absent value.
         if let familyIDs = dto.familyIDs, chat.familyIDs != familyIDs { chat.familyIDs = familyIDs }
         chatsUpsertedDuringList?.insert(dto.id)
         return chat

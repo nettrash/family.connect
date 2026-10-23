@@ -316,7 +316,7 @@ async fn ring(
         // the call in (docs/protocol.md, "Several families"). The push is
         // unchanged, as every push is for such an app.
         let hidden =
-            events::legacy_hidden(state, &[callee_id], &events::Scope::Chat(chat_id)).await?;
+            events::legacy_hidden_or_all(state, &[callee_id], &events::Scope::Chat(chat_id)).await;
         state
             .registry
             .fan_out_hiding(&[callee_id], &offer_frame, None, &hidden)

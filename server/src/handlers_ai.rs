@@ -2995,9 +2995,7 @@ async fn stream_words(
     // be streamed to: decided ONCE per reply rather than per fragment — a
     // reply is a few seconds, and the families a chat is listed in do not
     // move under it (docs/protocol.md, "Several families").
-    let hidden = events::legacy_hidden(state, audience, &events::Scope::Chat(chat_id))
-        .await
-        .unwrap_or_default();
+    let hidden = events::legacy_hidden_or_all(state, audience, &events::Scope::Chat(chat_id)).await;
     let pump = {
         let state = state.clone();
         let audience = audience.to_vec();
@@ -3688,9 +3686,7 @@ async fn fan_out_ai_error(
     message_id: i64,
     reason: Option<AiErrorReason>,
 ) {
-    let hidden = events::legacy_hidden(state, audience, &events::Scope::Chat(chat_id))
-        .await
-        .unwrap_or_default();
+    let hidden = events::legacy_hidden_or_all(state, audience, &events::Scope::Chat(chat_id)).await;
     state
         .registry
         .fan_out_hiding(

@@ -123,10 +123,12 @@ pub async fn share_a_family<'e, E: PgExecutor<'e>>(
 /// server has always answered, and a list that named no family would hide it
 /// from every app that sorts by `family_ids`. So the stayer is sent the family
 /// the chat was opened in when they are still in it, and their home family when
-/// they are not (docs/protocol.md, "Several families"). Only what is SENT
-/// changes: uploads, frames and access keep reading the pair's shared list, in
-/// which a closed chat names nothing. `viewer` is the SQL placeholder of the
-/// reader's id, over a `chats` row aliased `c`.
+/// they are not (docs/protocol.md, "Several families"). What is SENT reads it,
+/// and so does what the reader may attach there — an upload is made for the
+/// family the reader's app lists the chat under; frames and access keep
+/// reading the pair's shared list, in which a closed chat names nothing.
+/// `viewer` is the SQL placeholder of the reader's id, over a `chats` row
+/// aliased `c`.
 pub fn viewer_chat_family_ids_sql(viewer: &str) -> String {
     format!(
         "COALESCE(NULLIF({CHAT_FAMILY_IDS_SQL}, '{{}}'::bigint[]),
@@ -150,6 +152,24 @@ pub async fn chat_family_ids<'e, E: PgExecutor<'e>>(
         "SELECT {CHAT_FAMILY_IDS_SQL} FROM chats c WHERE c.id = $1"
     ))
     .bind(chat_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(ids.unwrap_or_default())
+}
+
+/// The families of one chat as `viewer` is sent them — see
+/// [`viewer_chat_family_ids_sql`]. Empty for a chat that does not exist.
+pub async fn viewer_chat_family_ids<'e, E: PgExecutor<'e>>(
+    executor: E,
+    chat_id: i64,
+    viewer: i64,
+) -> Result<Vec<i64>, ApiError> {
+    let ids: Option<Vec<i64>> = sqlx::query_scalar(&format!(
+        "SELECT {} FROM chats c WHERE c.id = $1",
+        viewer_chat_family_ids_sql("$2")
+    ))
+    .bind(chat_id)
+    .bind(viewer)
     .fetch_optional(executor)
     .await?;
     Ok(ids.unwrap_or_default())

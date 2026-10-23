@@ -314,6 +314,53 @@ public class SeveralFamiliesProtocolTests : IDisposable
     }
 
     /// <summary>
+    /// The OWNER's copy of <c>member_joined</c> says whether the newcomer is theirs to reset; everybody else's says nothing, and
+    /// nothing is not "no" — nor is a value that is not a boolean, which a guess would turn into one answer or the other.
+    /// </summary>
+    [Fact]
+    public void AJoinSaysWhetherTheNewcomerIsTheOwnersToReset()
+    {
+        const string user = """{"id": 12, "username": "dana", "display_name": "Dana"}""";
+        Assert.False(Assert.IsType<ServerFrame.MemberJoined>(ServerFrame.Parse(
+            $$"""{"type": "member_joined", "family_id": 5, "user": {{user}}, "password_reset": false}""")).PasswordReset);
+        Assert.True(Assert.IsType<ServerFrame.MemberJoined>(ServerFrame.Parse(
+            $$"""{"type": "member_joined", "family_id": 5, "user": {{user}}, "password_reset": true}""")).PasswordReset);
+        Assert.Null(Assert.IsType<ServerFrame.MemberJoined>(ServerFrame.Parse(
+            $$"""{"type": "member_joined", "family_id": 5, "user": {{user}}}""")).PasswordReset);
+        Assert.Null(Assert.IsType<ServerFrame.MemberJoined>(ServerFrame.Parse(
+            $$"""{"type": "member_joined", "family_id": 5, "user": {{user}}, "password_reset": "no"}""")).PasswordReset);
+    }
+
+    /// <summary>
+    /// The flag a join carries reaches the roster, and a join WITHOUT one — everybody else's copy, or the owner's racing a
+    /// roster read that already said — keeps the flag held: a newcomer also in a family this owner does not own is never
+    /// offered a reset the server would refuse with <c>member_in_other_families</c>.
+    /// </summary>
+    [Fact]
+    public void AJoinWithoutTheFlagKeepsTheOneHeld()
+    {
+        long? shown = 5;
+        var chats = new ChatStore(database, () => 7, () => shown);
+        chats.Replace(5, [new MemberDto(7, "anna", "Anna", Role: "owner")]);
+        var router = new FrameRouter(chats, new BoardStore(database, () => shown));
+        bool? Flag() => chats.MembersOf(5).Single(member => member.Id == 12).PasswordReset;
+
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 12, "username": "dana", "display_name": "Dana"}, "password_reset": false}""")!);
+        Assert.False(Flag());
+        Assert.False(chats.Members().Single(member => member.Id == 12).PasswordReset);
+
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 12, "username": "dana", "display_name": "Dana"}}""")!);
+        Assert.False(Flag());
+
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 12, "username": "dana", "display_name": "Dana"}, "password_reset": true}""")!);
+        Assert.True(Flag());
+
+        // A newcomer nothing was ever said about: the old rule, where the reset is offered.
+        router.Hear(ServerFrame.Parse("""{"type": "member_joined", "family_id": 5, "user": {"id": 13, "username": "eve", "display_name": "Eve"}}""")!);
+        Assert.Null(chats.MembersOf(5).Single(member => member.Id == 13).PasswordReset);
+    }
+
+    /// <summary>
     /// A family frame is applied to the family it NAMES (docs/protocol.md, "Frames"): a join, a leave and an owner in family 5
     /// leave family 3's roster alone, and a note and an item go onto family 5's wall and pack whatever is shown.
     /// </summary>

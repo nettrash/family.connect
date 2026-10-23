@@ -1192,6 +1192,7 @@ class FakeBoardApi : BoardApi {
         mentions: List<MentionDto>,
         items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
+        familyCalls += "createNote" to familyId
         val kind = when {
             startsAt != null -> "event"
             attachmentId != null -> "photo"

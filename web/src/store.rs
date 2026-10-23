@@ -2407,11 +2407,25 @@ impl Store {
         self.chat_touched.insert(chat_id, self.chat_changes);
     }
 
-    pub fn member_joined(&mut self, user: &User) {
+    /// Somebody arrived. `password_reset` is the flag the family OWNER's
+    /// copy of the frame carries — whether they may reset the newcomer's
+    /// password, false when the newcomer is also in a family they do not
+    /// own (docs/protocol.md, "Several families"). Everybody else's copy,
+    /// and an older server's, carries none, and absent says NOTHING: a flag
+    /// already held for that member (the roster a resync read a moment ago
+    /// can beat the frame here) is kept, never clobbered with an unknown.
+    /// Only a newcomer with no flag at all falls back to the old rule,
+    /// where the reset is offered.
+    pub fn member_joined(&mut self, user: &User, password_reset: Option<bool>) {
         self.roster_changes += 1;
         self.names.insert(user.id, user.display_name.clone());
-        if !self.members.iter().any(|member| member.id == user.id) {
-            self.members.push(Member {
+        match self.members.iter_mut().find(|member| member.id == user.id) {
+            Some(member) => {
+                if password_reset.is_some() {
+                    member.password_reset = password_reset;
+                }
+            }
+            None => self.members.push(Member {
                 id: user.id,
                 display_name: user.display_name.clone(),
                 username: user.username.clone(),
@@ -2419,8 +2433,8 @@ impl Store {
                 deleted: false,
                 avatar_version: user.avatar_version,
                 birthday: user.birthday,
-                password_reset: None,
-            });
+                password_reset,
+            }),
         }
     }
 
@@ -3552,13 +3566,16 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_roster_follows_joins_leaves_deletions_and_a_new_owner() {
         let mut store = store();
-        store.member_joined(&User {
-            id: 11,
-            username: "junior".into(),
-            display_name: "Junior".into(),
-            deleted: false,
-            ..Default::default()
-        });
+        store.member_joined(
+            &User {
+                id: 11,
+                username: "junior".into(),
+                display_name: "Junior".into(),
+                deleted: false,
+                ..Default::default()
+            },
+            None,
+        );
         assert_eq!(store.name_of(11), "Junior");
         assert!(store.members.iter().any(|m| m.id == 11));
 
@@ -3596,6 +3613,60 @@ mod tests {
             store.name_of(11),
             "Deleted account",
             "the tombstone is written"
+        );
+    }
+
+    /// The owner's copy of `member_joined` says whether the newcomer's
+    /// password is theirs to reset — false for somebody also in a family
+    /// they do not own, whom the server would refuse with
+    /// `member_in_other_families`. A copy without the flag (everybody
+    /// else's, or one racing a resync that already read the roster) never
+    /// turns a known `false` back into the old rule's "offered".
+    #[wasm_bindgen_test]
+    fn a_newcomers_reset_flag_is_kept_and_never_clobbered() {
+        let mut store = store();
+        let junior = User {
+            id: 11,
+            display_name: "Junior".into(),
+            ..Default::default()
+        };
+        let flag = |store: &Store| {
+            store
+                .members
+                .iter()
+                .find(|m| m.id == 11)
+                .and_then(|m| m.password_reset)
+        };
+
+        store.member_joined(&junior, Some(false));
+        assert_eq!(flag(&store), Some(false), "a newcomer takes the flag");
+
+        store.member_joined(&junior, None);
+        assert_eq!(flag(&store), Some(false), "absent keeps what is held");
+
+        store.member_joined(&junior, Some(true));
+        assert_eq!(flag(&store), Some(true), "present replaces it");
+        assert_eq!(
+            store.members.iter().filter(|m| m.id == 11).count(),
+            1,
+            "still one row"
+        );
+
+        // A newcomer the frame says nothing about: the old rule, offered.
+        store.member_joined(
+            &User {
+                id: 12,
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(
+            store
+                .members
+                .iter()
+                .find(|m| m.id == 12)
+                .map(|m| m.password_reset),
+            Some(None)
         );
     }
 
@@ -4267,10 +4338,13 @@ mod tests {
         let before = store.roster_changes;
         store.family_owner(ANNA);
         assert_eq!(store.roster_changes, before + 1);
-        store.member_joined(&User {
-            id: 12,
-            ..Default::default()
-        });
+        store.member_joined(
+            &User {
+                id: 12,
+                ..Default::default()
+            },
+            None,
+        );
         store.member_left(12);
         assert_eq!(
             store.roster_changes,
@@ -5081,11 +5155,14 @@ mod tests {
         store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "member")]));
         store.members = vec![member(ME, "Me")];
         let joined = store.with_family(4, |store| {
-            store.member_joined(&User {
-                id: 12,
-                display_name: "Cleo".into(),
-                ..Default::default()
-            })
+            store.member_joined(
+                &User {
+                    id: 12,
+                    display_name: "Cleo".into(),
+                    ..Default::default()
+                },
+                None,
+            )
         });
         assert!(joined.is_some());
         assert_eq!(store.members.len(), 1, "not the family on screen");

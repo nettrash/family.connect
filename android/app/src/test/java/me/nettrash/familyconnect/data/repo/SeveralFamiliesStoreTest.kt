@@ -173,6 +173,48 @@ class SeveralFamiliesStoreTest {
         assertThat(board.observeNotes().first().map { it.id }).containsExactly(2L)
     }
 
+    /**
+     * A photo's pin reads its family ONCE, before the upload, and hands it to
+     * the note: the switcher moving while the picture goes up must not send
+     * the note — or the names in it — to the family now shown. The server
+     * claims the upload only for a note on the family it named, and answers
+     * `attachment_not_found` anywhere else (docs/protocol.md, "Uploads name
+     * their family").
+     */
+    @Test
+    fun `a note goes to the family its write began in, whichever is shown when it lands`() = runTest(dispatcher) {
+        val boardApi = FakeBoardApi()
+        val board = BoardRepository(boardApi, db.noteDao(), db.memberDao(), settings, socket, backgroundScope)
+        db.memberDao().upsertAll(listOf(member(OTHER, 9, "Ben"), member(HOME, 11, "Carl")))
+        // The pin began in OTHER; HOME is the family shown by the time it posts.
+        assertThat(settings.current.currentFamilyId).isEqualTo(HOME)
+
+        val pinned = board.addNote(
+            text = "For @Ben and @Carl", color = "yellow", size = "medium", font = "plain",
+            x = 0.1, y = 0.1, attachmentId = 34, familyId = OTHER,
+        )
+
+        assertThat(pinned).isTrue()
+        assertThat(boardApi.familyCalls).containsExactly("createNote" to OTHER)
+        // Named against OTHER's roster — Carl is not in it.
+        assertThat(boardApi.created.single().mentions?.map { it.userId }).containsExactly(9L)
+        // Filed on OTHER's board, though the answer (from a server that does
+        // not say its family) arrived while HOME was shown.
+        assertThat(db.noteDao().observeNotes(OTHER).first().map { it.id }).containsExactly(1L)
+        assertThat(board.observeNotes().first()).isEmpty()
+    }
+
+    @Test
+    fun `a note with no family named goes to the family shown`() = runTest(dispatcher) {
+        val boardApi = FakeBoardApi()
+        val board = BoardRepository(boardApi, db.noteDao(), db.memberDao(), settings, socket, backgroundScope)
+
+        board.addNote(text = "Milk", color = "yellow", size = "medium", font = "plain", x = 0.1, y = 0.1)
+
+        assertThat(boardApi.familyCalls).containsExactly("createNote" to HOME)
+        assertThat(board.observeNotes().first().map { it.id }).containsExactly(1L)
+    }
+
     @Test
     fun `a board note frame is filed under the family it names`() = runTest(dispatcher) {
         val board = BoardRepository(FakeBoardApi(), db.noteDao(), db.memberDao(), settings, socket, backgroundScope)

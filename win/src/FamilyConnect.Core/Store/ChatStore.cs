@@ -897,8 +897,13 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
     /// a frame that says nothing about a birthday leaves the one this device knows alone. The
     /// exception is <see cref="Deleted"/>, whose whole job is to wipe. <paramref name="familyId"/> is the family the frame
     /// names — never "my family" (docs/protocol.md, "Several families") — and the one shown when it names none.
+    /// <paramref name="passwordReset"/> is the family OWNER's flag for the newcomer — false when they are also in a family
+    /// the owner does not own, where the server refuses the reset with <c>member_in_other_families</c>. It comes on the
+    /// owner's copy of <c>member_joined</c> and on the member an approval answers with; null (everybody else's copy, an
+    /// older server) keeps the flag already stored, the same narrow rule as the birthday, and only a row with no flag at
+    /// all falls back to the old rule, where the reset is offered.
     /// </remarks>
-    public void Joined(UserDto user, long? familyId = null)
+    public void Joined(UserDto user, long? familyId = null, bool? passwordReset = null)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
@@ -933,12 +938,16 @@ public sealed class ChatStore(Database database, Func<long>? me = null, Func<lon
             row.Transaction = transaction;
             row.CommandText =
                 """
-                INSERT INTO family_members (family_id, user_id, role, has_left)
-                VALUES ($family, $id, 'member', 0)
-                ON CONFLICT(family_id, user_id) DO UPDATE SET role = 'member', has_left = 0
+                INSERT INTO family_members (family_id, user_id, role, has_left, password_reset)
+                VALUES ($family, $id, 'member', 0, $reset)
+                ON CONFLICT(family_id, user_id) DO UPDATE SET
+                    role = 'member', has_left = 0,
+                    password_reset = COALESCE(excluded.password_reset, family_members.password_reset)
                 """;
             row.Parameters.AddWithValue("$family", joined);
             row.Parameters.AddWithValue("$id", user.Id);
+            row.Parameters.AddWithValue(
+                "$reset", passwordReset is { } reset ? (reset ? 1 : 0) : DBNull.Value);
             row.ExecuteNonQuery();
         }
         transaction.Commit();

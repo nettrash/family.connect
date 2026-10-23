@@ -51,8 +51,26 @@ nonisolated enum FamilyIDList {
         return roles.keys.sorted().map { "\($0)=\(roles[$0] ?? "")" }.joined(separator: ";")
     }
 
-    /// The stored text of a roster row that is on no family's roster.
+    /// The stored text of a roster row that is on no family's roster, and of
+    /// a chat the server lists in no family (`encodeListed`).
     static let noFamily = "-"
+
+    /// A chat's `family_ids` as the store keeps them, keeping the two
+    /// "nothing"s apart for `encodeRoles`'s reason: nil — the field was
+    /// absent, a server or a row from before several families — is `""`,
+    /// and the chat is the one family's, listed whatever family is shown;
+    /// `[]` — the server SAID none, which it says only to the side that left
+    /// a direct chat that closed (docs/protocol.md, "Several families") — is
+    /// `"-"`, and the chat is listed nowhere. Written as one text, the two
+    /// came out the same `""`, and a closed chat was shown in every family.
+    static func encodeListed(_ ids: [Int64]?) -> String {
+        guard let ids else { return "" }
+        return ids.isEmpty ? noFamily : encode(ids)
+    }
+
+    static func decodeListed(_ text: String) -> [Int64]? {
+        text.isEmpty ? nil : decode(text)
+    }
 
     static func decodeRoles(_ text: String) -> [Int64: String] {
         var roles: [Int64: String] = [:]
@@ -145,10 +163,10 @@ nonisolated enum FamilyRules {
         let isCurrent: Bool
     }
 
-    /// One chat's share of the counting: which families list it, and how
-    /// many of its messages are unread.
+    /// One chat's share of the counting: which families list it (nil:
+    /// nobody said, see `isListed`), and how many of its messages are unread.
     struct ChatCount: Equatable, Sendable {
-        let familyIDs: [Int64]
+        let familyIDs: [Int64]?
         let unread: Int
     }
 
@@ -172,21 +190,35 @@ nonisolated enum FamilyRules {
     // MARK: - Which chats a family lists
 
     /// A chat is shown in the current family when its `family_ids` name it.
-    /// A chat that names none is from a server, or a store, that predates
-    /// several families — there is one family, and it is listed in it. With
-    /// no family known at all (an offline launch before the first `/me`),
-    /// everything held is shown, as it always was.
-    static func isListed(chatFamilyIDs: [Int64], in familyID: Int64?) -> Bool {
-        guard let familyID, !chatFamilyIDs.isEmpty else { return true }
+    /// A chat whose `family_ids` nobody sent (nil) is from a server, or a
+    /// store, that predates several families — there is one family, and it
+    /// is listed in it. One the server sent as `[]` is a direct chat that
+    /// closed for this reader, who left the last family the two shared: it
+    /// is gone for them, and is listed in no family at all — not in every
+    /// one, which is what reading `[]` as "nobody said" did. With no family
+    /// known at all (an offline launch before the first `/me`), everything
+    /// else held is shown, as it always was.
+    static func isListed(chatFamilyIDs: [Int64]?, in familyID: Int64?) -> Bool {
+        guard let chatFamilyIDs else { return true }
+        guard !chatFamilyIDs.isEmpty else { return false }
+        guard let familyID else { return true }
         return chatFamilyIDs.contains(familyID)
     }
 
     /// Whether a chat survives the account leaving `familyID`: a direct chat
     /// stays while its `family_ids` still name another family this device
-    /// holds; everything else listed only there goes.
+    /// holds; everything else listed only there goes. So does a chat listed
+    /// in NO family (`[]`), whichever family is being left: the server sends
+    /// that to the side that left, just BEFORE the `member_left` that drops
+    /// the family (docs/protocol.md, "Several families"), so by the time the
+    /// family goes the chat no longer names it — and it is gone for this
+    /// reader regardless. A chat nobody described (nil) is not this
+    /// family's to take.
     static func survivesLeaving(
-        chatFamilyIDs: [Int64], left familyID: Int64, held: Set<Int64>
+        chatFamilyIDs: [Int64]?, left familyID: Int64, held: Set<Int64>
     ) -> Bool {
+        guard let chatFamilyIDs else { return true }
+        guard !chatFamilyIDs.isEmpty else { return false }
         guard chatFamilyIDs.contains(familyID) else { return true }
         return chatFamilyIDs.contains { $0 != familyID && held.contains($0) }
     }

@@ -204,7 +204,9 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 break;
 
             case ServerFrame.MemberJoined joined:
-                chats.Joined(joined.User, Named(joined.FamilyId));
+                // The owner's copy carries whether the newcomer is theirs to reset; the store keeps what it holds when the
+                // frame says nothing (everybody else's copy), so a resync's roster read first is never undone by it.
+                chats.Joined(joined.User, Named(joined.FamilyId), joined.PasswordReset);
                 RosterChanged?.Invoke();
                 if (joined.User.Id == chats.Reader && joined.FamilyId is { } joinedFamily)
                 {

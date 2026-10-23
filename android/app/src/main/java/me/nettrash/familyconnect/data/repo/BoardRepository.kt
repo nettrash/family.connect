@@ -97,6 +97,13 @@ class BoardRepository @Inject constructor(
     fun observeNotes(): Flow<List<NoteEntity>> =
         settings.state.map { it.familyKey }.distinctUntilChanged().flatMapLatest { noteDao.observeNotes(it) }
 
+    /**
+     * ONE family's board, whichever is shown — for a caller that has already
+     * decided which family it means and must not be moved off it by the
+     * switcher between two reads (the badge's marks are per family).
+     */
+    fun observeNotes(familyId: Long): Flow<List<NoteEntity>> = noteDao.observeNotes(familyId)
+
     private suspend fun boardCursor(familyId: Long): Long = settings.state.first().boardCursor(familyId)
 
     /** The family shown — where a new note goes. */
@@ -105,9 +112,12 @@ class BoardRepository @Inject constructor(
     /** How a request path names [familyId]: its id, or nothing on a server from before. */
     private suspend fun path(familyId: Long): Long? = settings.state.first().pathFamily(familyId)
 
-    /** The path of the family a held note is on — a write goes to ITS board. */
-    private suspend fun notePath(noteId: Long): Long? =
-        path(noteDao.findById(noteId)?.familyId?.takeIf { it > 0L } ?: currentFamily())
+    /** The family a held note is on — a write goes to ITS board. */
+    private suspend fun noteFamily(noteId: Long): Long =
+        noteDao.findById(noteId)?.familyId?.takeIf { it > 0L } ?: currentFamily()
+
+    /** The path of the family a held note is on. */
+    private suspend fun notePath(noteId: Long): Long? = path(noteFamily(noteId))
 
     /**
      * Apply one note under the per-note seq guard. Returns whether anything
@@ -274,9 +284,13 @@ class BoardRepository @Inject constructor(
      * anywhere in the app names the same people: the names are read off
      * the text against the live roster, exactly as a message's are.
      */
-    private suspend fun namedMembers(text: String): List<MentionDto> {
+    // Against [familyId]'s roster — the family the note is ON, which the
+    // caller has already settled — never a fresh read of the family shown:
+    // a switch between the two reads would name members of the wrong family
+    // on the right board.
+    private suspend fun namedMembers(text: String, familyId: Long): List<MentionDto> {
         if (!text.contains('@')) return emptyList()
-        val roster = memberDao.activeMembers(currentFamily()).map { MentionDto(it.userId, it.displayName) }
+        val roster = memberDao.activeMembers(familyId).map { MentionDto(it.userId, it.displayName) }
         return MemberMention.resolve(text, roster)
     }
 
@@ -296,12 +310,25 @@ class BoardRepository @Inject constructor(
          * list; null is not one (docs/protocol.md, "Board").
          */
         items: List<TaskLineRequest>? = null,
-    ): Boolean =
-        when (
+        /**
+         * The family whose board this note goes on — null for the family
+         * shown, read ONCE here. A caller whose write began before a network
+         * round trip passes the family it began in: a photo's upload is
+         * claimed by the family it named (docs/protocol.md, "Uploads name
+         * their family"), and a switch while it was going up must not send
+         * the note to another family's board, where the server answers
+         * `attachment_not_found` and the pin is lost.
+         */
+        familyId: Long? = null,
+    ): Boolean {
+        // One read for the path, the names and the filing alike — two reads
+        // of "the family shown" are two chances for a switch to land between.
+        val family = familyId ?: currentFamily()
+        return when (
             val result =
                 boardApi.createNote(
-                    path(currentFamily()), text, color, size, font, x, y, attachmentId, startsAt, endsAt, place,
-                    namedMembers(text), items,
+                    path(family), text, color, size, font, x, y, attachmentId, startsAt, endsAt, place,
+                    namedMembers(text, family), items,
                 )
         ) {
             is ApiResult.Ok -> {
@@ -309,11 +336,12 @@ class BoardRepository @Inject constructor(
                 // (docs/protocol.md, "Board"): it says nothing about another
                 // note's lower seq, and REST works while the socket is down —
                 // exactly when the frames carrying those were missed.
-                applyNote(result.value.note)
+                applyNote(result.value.note, familyHint = family)
                 true
             }
             else -> false
         }
+    }
 
     /**
      * Move (anyone) or rewrite (the author) — which fields are sent is what
@@ -349,23 +377,27 @@ class BoardRepository @Inject constructor(
          * "Board").
          */
         items: List<TaskLineRequest>? = null,
-    ): Boolean = when (
-        val result = boardApi.patchNote(
-            notePath(id), id, text, color, size, font, x, y,
-            // A text edit carries the names again — they are re-decided on
-            // every one, and a text patch without them clears them. A move
-            // sends none, so a dragged note keeps the names it had
-            // (docs/protocol.md, "Board").
-            mentions = text?.let { namedMembers(it) },
-            items = items,
-        )
-    ) {
-        is ApiResult.Ok -> {
-            // Like a create's answer: applied, and moving no cursor.
-            applyNote(result.value.note)
-            true
+    ): Boolean {
+        // The note's own family, once, for the path and the names alike.
+        val family = noteFamily(id)
+        return when (
+            val result = boardApi.patchNote(
+                path(family), id, text, color, size, font, x, y,
+                // A text edit carries the names again — they are re-decided on
+                // every one, and a text patch without them clears them. A move
+                // sends none, so a dragged note keeps the names it had
+                // (docs/protocol.md, "Board").
+                mentions = text?.let { namedMembers(it, family) },
+                items = items,
+            )
+        ) {
+            is ApiResult.Ok -> {
+                // Like a create's answer: applied, and moving no cursor.
+                applyNote(result.value.note, familyHint = family)
+                true
+            }
+            else -> false
         }
-        else -> false
     }
 
     /**
