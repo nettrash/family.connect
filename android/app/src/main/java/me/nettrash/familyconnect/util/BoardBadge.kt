@@ -25,7 +25,7 @@
  *
  * Neither mark is the sync cursor: that advances on a background resync and
  * would clear the badge for somebody who never opened the board
- * (SettingsState.boardCursor).
+ * (SettingsState.boardCursors).
  *
  * Shared with the phone and the Mac by CONTRACT rather than by code:
  * ios/FamilyConnect/Core/BoardBadge.swift holds the same rules and
@@ -120,10 +120,13 @@ fun List<NoteEntity>.marks(): List<BoardBadge.NoteMark> =
     map { BoardBadge.NoteMark(noteId = it.id, boardSeq = it.boardSeq, contentSeq = it.contentSeq) }
 
 /**
- * The two marks as one value. Read together on purpose: a badge that used
- * one mark from before an update and one from after would be neither rule.
+ * The two marks of one family's board as one value. Read together on
+ * purpose: a badge that used one mark from before an update and one from
+ * after would be neither rule. Per family since several families
+ * (docs/protocol.md, "Several families"): seqs and note ids are server-wide,
+ * so a mark taken on one family's board would hide another's news.
  */
-fun SettingsState.badgeMarks(): BoardBadge.Marks = BoardBadge.Marks(
-    seenNoteId = boardSeenNoteId,
-    seenContentSeq = boardSeenContentSeq,
+fun SettingsState.badgeMarks(familyId: Long): BoardBadge.Marks = BoardBadge.Marks(
+    seenNoteId = boardSeenNoteIds[familyId] ?: 0L,
+    seenContentSeq = boardSeenContentSeqs[familyId] ?: 0L,
 )

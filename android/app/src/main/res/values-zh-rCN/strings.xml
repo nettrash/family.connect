@@ -122,6 +122,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">你的其他设备会退出登录，本设备保持登录。</string>
     <string name="e_action_failed">操作失败</string>
     <string name="e_already_in_family">你已经在一个家庭中了——下拉刷新</string>
+    <string name="e_already_in_that_family">你已经在这个家庭中了。</string>
     <string name="e_change_password_failed">无法更改你的密码。</string>
     <string name="e_change_policy_failed">无法更改加入方式</string>
     <string name="e_create_family_failed">无法创建家庭</string>
@@ -749,4 +750,26 @@
     <string name="e_create_group_failed">无法创建群组。</string>
     <string name="e_change_group_failed">无法更改群组。</string>
     <string name="s_everyone_already_in_group">家里的每个人都已在这个群组中。</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">家庭</string>
+    <string name="s_new_family">新建家庭…</string>
+    <string name="s_join_another_family">加入其他家庭…</string>
+    <string name="s_switch_family">切换家庭</string>
+    <string name="s_family_unread">%1$s，%2$d 条未读</string>
+    <string name="s_invited_you_to">%1$s 邀请你加入“%2$s”</string>
+    <string name="s_invitations">邀请</string>
+    <string name="s_invite">邀请…</string>
+    <string name="s_invite_to">邀请加入“%s”</string>
+    <string name="s_invite_empty">你其他家庭中尚未加入本家庭的成员会显示在这里。</string>
+    <string name="s_invited">已邀请</string>
+    <string name="s_pending_invitations">待处理的邀请</string>
+    <string name="s_withdraw_invitation">撤回邀请</string>
+    <string name="e_invitation_gone">此邀请已失效。</string>
+    <string name="e_too_many_families">你加入的家庭已达到每个账户的上限（%d 个）。</string>
+    <string name="e_already_own_a_family">你已经拥有一个家庭，因此无法再创建。</string>
+    <string name="e_member_families_disabled">此服务器不允许成员创建新家庭。</string>
+    <string name="e_member_in_other_families">此成员也在一个不属于你的家庭中，因此只有本人可以更改密码。</string>
+    <string name="s_leave_named_family">要退出“%s”吗？</string>
+    <string name="s_leave_one_of_families_explanation">你将无法再访问此家庭的聊天。与你在其他家庭中共同所在的人之间的单独对话会保留。</string>
+    <string name="s_new_family_explanation">创建你自己的家庭。你将成为它的所有者，并可邀请你其他家庭中的成员。</string>
 </resources>

@@ -93,6 +93,12 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
 {
     private readonly IStringCatalog say = words ?? EnglishCatalog.Instance;
 
+    /// <summary>
+    /// Every chat on the list as the last <see cref="Rows"/> read it — of EVERY family, before the shown one was picked out —
+    /// so the family switcher can count each family's unread without reading the list a second time.
+    /// </summary>
+    public IReadOnlyList<ChatRowDto> Held { get; private set; } = [];
+
     /// <summary>The rows, as of <paramref name="now"/> — which only the times depend on.</summary>
     /// <remarks>
     /// THE FAMILY CHAT IS FIRST, always, and everything else — groups included (docs/protocol.md,
@@ -106,7 +112,11 @@ public sealed class ChatListModel(ChatStore chats, Func<long> me, IStringCatalog
     {
         var rows = new List<ChatRow>();
         var newestId = new Dictionary<long, long>();
-        foreach (var held in chats.Chats())
+        // The family shown: its chats and no other family's (docs/protocol.md, "Several families") — so "the family chat"
+        // pinned first below is the shown family's, and so is the assistant's.
+        var shown = chats.Family;
+        Held = chats.Chats();
+        foreach (var held in Held.Where(row => FamilyRules.Lists(row.Chat, shown)))
         {
             var newest = chats.Newest(held.Chat.Id);
             newestId[held.Chat.Id] = newest?.Id ?? 0;

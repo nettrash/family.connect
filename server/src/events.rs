@@ -35,11 +35,94 @@ pub async fn chat_member_ids(pool: &PgPool, chat_id: i64) -> Result<Vec<i64>, Ap
 
 /// All current member user ids of a family.
 async fn family_member_ids(pool: &PgPool, family_id: i64) -> Result<Vec<i64>, ApiError> {
-    let ids = sqlx::query_scalar("SELECT id FROM users WHERE family_id = $1")
-        .bind(family_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(ids)
+    crate::families::member_ids(pool, family_id).await
+}
+
+/// Which families a frame is ABOUT — what decides whether a connection from
+/// an app that predates several families may be sent it (docs/protocol.md,
+/// "Several families"; decision D8).
+///
+/// Such an app is shown its account's HOME family and nothing else, so every
+/// frame about another family — its members, its board, its pack, its chats
+/// and everything that happens in them — is held back from that connection,
+/// while the same account's multi-family connections get everything. The
+/// scope is a property of the FRAME and is decided at its call site, where
+/// the family is known; `legacy_hidden` turns it into the users to skip.
+#[derive(Debug, Clone)]
+pub enum Scope {
+    /// Not about any family — a block, an account's own state. Every
+    /// connection gets it.
+    Everywhere,
+    /// Only for an app that knows about several families: a frame no older
+    /// app could make sense of, or one about a family that is not the
+    /// recipient's home.
+    MultiOnly,
+    /// About one family: its board, its pack, its roster.
+    Family(i64),
+    /// About whatever families list this chat (`Chat.family_ids`).
+    Chat(i64),
+    /// About these families — a group's one, read off a `Chat` in hand.
+    Families(Vec<i64>),
+}
+
+/// The users among `user_ids` whose LEGACY connections must not be sent a
+/// frame of this scope. Their multi-family connections are unaffected.
+///
+/// Costs nothing while no recipient holds a legacy connection — the
+/// registry answers that from memory — and one indexed query (two for a
+/// chat) when somebody does.
+pub async fn legacy_hidden(
+    state: &AppState,
+    user_ids: &[i64],
+    scope: &Scope,
+) -> Result<HashSet<i64>, ApiError> {
+    if matches!(scope, Scope::Everywhere) {
+        return Ok(HashSet::new());
+    }
+    let legacy = state.registry.legacy_users(user_ids).await;
+    if legacy.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let families: Vec<i64> = match scope {
+        Scope::Everywhere => return Ok(HashSet::new()),
+        Scope::MultiOnly => return Ok(legacy.into_iter().collect()),
+        Scope::Family(family_id) => vec![*family_id],
+        Scope::Chat(chat_id) => {
+            let family_ids = crate::families::chat_family_ids(&state.pool, *chat_id).await?;
+            // A direct chat whose pair shares no family any more is closed
+            // on the side that left and still held on the side that stayed —
+            // `GET /chats` lists it to an app from before exactly as it
+            // always did, so what happens in it reaches that app as it
+            // always did too. It is about no OTHER family, which is the
+            // only thing this rule holds back.
+            if family_ids.is_empty() {
+                return Ok(HashSet::new());
+            }
+            family_ids
+        }
+        Scope::Families(family_ids) => family_ids.clone(),
+    };
+    let homes = crate::families::homes(&state.pool, &legacy).await?;
+    Ok(legacy
+        .into_iter()
+        .filter(|user_id| !crate::families::home_in_scope(homes.get(user_id).copied(), &families))
+        .collect())
+}
+
+/// `fan_out`, scoped: the one door every family-scoped frame goes through.
+async fn send_scoped(
+    state: &AppState,
+    user_ids: &[i64],
+    frame: &ServerFrame,
+    skip_conn: Option<u64>,
+    scope: Scope,
+) -> Result<(), ApiError> {
+    let hidden = legacy_hidden(state, user_ids, &scope).await?;
+    state
+        .registry
+        .fan_out_hiding(user_ids, frame, skip_conn, &hidden)
+        .await;
+    Ok(())
 }
 
 /// One board note — created, moved, edited or tombstoned — to every member
@@ -76,12 +159,9 @@ async fn deliver_board_note_inner(
     note: &Note,
     notify: bool,
 ) -> Result<(), ApiError> {
-    let members: Vec<i64> = sqlx::query_scalar("SELECT id FROM users WHERE family_id = $1")
-        .bind(family_id)
-        .fetch_all(&state.pool)
-        .await?;
+    let members = family_member_ids(&state.pool, family_id).await?;
     let frame = ServerFrame::BoardNote { note: note.clone() };
-    state.registry.fan_out(&members, &frame, None).await;
+    send_scoped(state, &members, &frame, None, Scope::Family(family_id)).await?;
     if !notify {
         return Ok(());
     }
@@ -185,7 +265,7 @@ pub async fn deliver_pack_item(
 ) -> Result<(), ApiError> {
     let members = family_member_ids(&state.pool, family_id).await?;
     let frame = ServerFrame::PackItem { item: item.clone() };
-    state.registry.fan_out(&members, &frame, None).await;
+    send_scoped(state, &members, &frame, None, Scope::Family(family_id)).await?;
     Ok(())
 }
 
@@ -204,7 +284,14 @@ pub async fn deliver_message_edited(
     let frame = ServerFrame::MessageEdited {
         message: message.clone(),
     };
-    state.registry.fan_out(&members, &frame, origin_conn).await;
+    send_scoped(
+        state,
+        &members,
+        &frame,
+        origin_conn,
+        Scope::Chat(message.chat_id),
+    )
+    .await?;
     Ok(())
 }
 
@@ -288,18 +375,26 @@ async fn fan_out_new_message(
     let frame = ServerFrame::Message {
         message: message.clone(),
     };
-    state.registry.fan_out(&members, &frame, origin_conn).await;
+    send_scoped(
+        state,
+        &members,
+        &frame,
+        origin_conn,
+        Scope::Chat(message.chat_id),
+    )
+    .await?;
     Ok(members)
 }
 
 /// Is this message the assistant's own? The reserved account (migration
-/// 0015) is the one user with that name and no family; asked only on a
+/// 0015) is the one user with that name, in no family; asked only on a
 /// reply that quotes somebody else, which is where the second block gate
 /// lives (protocol.md, "Push notifications").
 async fn sender_is_assistant(state: &AppState, sender_id: i64) -> Result<bool, ApiError> {
     let is_assistant = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM users
-         WHERE id = $1 AND lower(username) = 'assistant' AND family_id IS NULL)",
+         WHERE id = $1 AND lower(username) = 'assistant'
+           AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = users.id))",
     )
     .bind(sender_id)
     .fetch_one(&state.pool)
@@ -389,7 +484,7 @@ async fn push_message_to(
     // GROUP the group's name takes the family's place in the title —
     // `"<Group> — <Sender>"` (protocol.md, "Groups").
     let row = sqlx::query(
-        "SELECT c.kind,
+        "SELECT c.kind, c.family_id,
                 CASE WHEN c.kind = 'group' THEN c.title ELSE f.name END AS family_name,
                 u.display_name AS sender_name
          FROM chats c
@@ -404,6 +499,12 @@ async fn push_message_to(
     let chat_kind: String = row.get("kind");
     let family_name: String = row.get("family_name");
     let sender_name: String = row.get("sender_name");
+    // The family a tap should open the app in (docs/protocol.md, "Several
+    // families"): a family chat's, a group's or an `ai` chat's own. A direct
+    // chat carries none — it belongs to the pair, is listed in every family
+    // they share, and the app picks.
+    let push_family_id: Option<i64> =
+        (chat_kind != "direct").then(|| row.get::<i64, _>("family_id"));
 
     // One notification per recipient user: both counts are that user's, so
     // they differ between recipients of the same message. Per USER and not
@@ -443,7 +544,8 @@ async fn push_message_to(
                 badge,
                 chat_unread,
             )
-        };
+        }
+        .in_family(push_family_id);
         batch.push((user_devices, note));
     }
     spawn_notify(state, batch);
@@ -898,11 +1000,14 @@ pub async fn deliver_read(
         user_id: reader_id,
         last_read_message_id,
     };
-    state
-        .registry
-        .fan_out(&recipients, &frame, origin_conn)
-        .await;
-    Ok(())
+    send_scoped(
+        state,
+        &recipients,
+        &frame,
+        origin_conn,
+        Scope::Chat(chat_id),
+    )
+    .await
 }
 
 /// Fan a message's full reaction state out to every chat member — the
@@ -919,8 +1024,7 @@ pub async fn deliver_reaction(state: &AppState, reaction: &ReactionState) -> Res
         reaction_seq: reaction.reaction_seq,
         reactions: reaction.reactions.clone(),
     };
-    state.registry.send_to_users(&members, &frame).await;
-    Ok(())
+    send_scoped(state, &members, &frame, None, Scope::Chat(reaction.chat_id)).await
 }
 
 /// Fan a poll's full current state out to every chat member — the voter's
@@ -936,8 +1040,7 @@ pub async fn deliver_poll(state: &AppState, poll: &PollState) -> Result<(), ApiE
         message_id: poll.message_id,
         poll: poll.poll.clone(),
     };
-    state.registry.send_to_users(&members, &frame).await;
-    Ok(())
+    send_scoped(state, &members, &frame, None, Scope::Chat(poll.chat_id)).await
 }
 
 /// Relay a typing notification to the other members of the chat.
@@ -953,13 +1056,19 @@ pub async fn deliver_typing(
         chat_id,
         user_id: typist_id,
     };
-    state.registry.send_to_users(&recipients, &frame).await;
-    Ok(())
+    send_scoped(state, &recipients, &frame, None, Scope::Chat(chat_id)).await
 }
 
 /// Announce a new family member to everyone now in the family — including
 /// the joiner, whose own devices use the frame as a "membership changed,
 /// refresh" signal.
+///
+/// Scoped to the family, read AFTER the membership committed: so the
+/// joiner's app from before several families hears it exactly when this is
+/// its home family — its first family, which is the only join such an app
+/// can show — and an account joining a SECOND family is told only on the
+/// connections that know there can be one (docs/protocol.md, "Several
+/// families").
 pub async fn deliver_member_joined(
     state: &AppState,
     family_id: i64,
@@ -967,27 +1076,39 @@ pub async fn deliver_member_joined(
 ) -> Result<(), ApiError> {
     let recipients = family_member_ids(&state.pool, family_id).await?;
     let frame = ServerFrame::MemberJoined { family_id, user };
-    state.registry.send_to_users(&recipients, &frame).await;
-    Ok(())
+    send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await
 }
 
 /// Announce a departure to the remaining members *and* to the departed user
 /// — a removed member's own devices learn about the removal this way.
+///
+/// `was_home` is whether this family was the departed account's HOME family
+/// BEFORE it left, decided by the caller before the write. It cannot be read
+/// afterwards — the membership it is about is gone — and it is exactly what
+/// an app from before several families needs: such an app is told it left
+/// precisely when the family it was showing is the one it left, and then
+/// re-reads `GET /me` and finds the next home (docs/protocol.md, "Several
+/// families"). The remaining members are scoped to the family as usual.
 pub async fn deliver_member_left(
     state: &AppState,
     family_id: i64,
     left_user_id: i64,
+    was_home: bool,
 ) -> Result<(), ApiError> {
-    let mut recipients = family_member_ids(&state.pool, family_id).await?;
-    // The departed user is no longer in the family, so they are never in
-    // the query result; add them explicitly.
-    recipients.push(left_user_id);
+    let recipients = family_member_ids(&state.pool, family_id).await?;
     let frame = ServerFrame::MemberLeft {
         family_id,
         user_id: left_user_id,
     };
-    state.registry.send_to_users(&recipients, &frame).await;
-    Ok(())
+    send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await?;
+    // The departed user is no longer in the family, so they are never in
+    // the query result; they are told on their own, by the rule above.
+    let own_scope = if was_home {
+        Scope::Everywhere
+    } else {
+        Scope::MultiOnly
+    };
+    send_scoped(state, &[left_user_id], &frame, None, own_scope).await
 }
 
 /// Hand the tombstone of a deleted account to everyone holding their name.
@@ -1014,9 +1135,15 @@ pub async fn deliver_member_deleted(
     member: Member,
     recipients: &[i64],
 ) -> Result<(), ApiError> {
+    // One frame per family the account was in, each scoped to that family;
+    // the family-less one (a peer in no family the account shared) goes
+    // everywhere, as it always did (docs/protocol.md, "Several families").
+    let scope = match family_id {
+        Some(family_id) => Scope::Family(family_id),
+        None => Scope::Everywhere,
+    };
     let frame = ServerFrame::MemberDeleted { family_id, member };
-    state.registry.send_to_users(recipients, &frame).await;
-    Ok(())
+    send_scoped(state, recipients, &frame, None, scope).await
 }
 
 /// Announce the family's new owner to every member of the family.
@@ -1055,7 +1182,33 @@ pub async fn deliver_chat_updated(
 ) -> Result<(), ApiError> {
     let recipients = chat.member_ids.clone().unwrap_or_default();
     let frame = ServerFrame::ChatUpdated { chat: chat.clone() };
-    state.registry.send_to_users(&recipients, &frame).await;
+    send_scoped(
+        state,
+        &recipients,
+        &frame,
+        None,
+        Scope::Families(chat.family_ids.clone()),
+    )
+    .await
+}
+
+/// `chat_updated` for a DIRECT chat whose `family_ids` changed — the two
+/// people started or stopped sharing a family (docs/protocol.md, "Several
+/// families"). One frame PER SIDE, never one for both: a direct chat's
+/// `title` and `peer_user_id` are the OTHER person, so each side is sent the
+/// chat as it reads to them.
+///
+/// Only to connections that know about several families. `family_ids` is
+/// the one thing that changed and an older app has never heard of it; what
+/// such an app shows of a direct chat does not move when the list does.
+pub async fn deliver_direct_chat_updated(
+    state: &AppState,
+    sides: [(i64, crate::models::Chat); 2],
+) -> Result<(), ApiError> {
+    for (user_id, chat) in sides {
+        let frame = ServerFrame::ChatUpdated { chat };
+        send_scoped(state, &[user_id], &frame, None, Scope::MultiOnly).await?;
+    }
     Ok(())
 }
 
@@ -1064,9 +1217,92 @@ pub async fn deliver_chat_removed(
     state: &AppState,
     chat_id: i64,
     recipients: &[i64],
+    scope: Scope,
 ) -> Result<(), ApiError> {
     let frame = ServerFrame::ChatRemoved { chat_id };
-    state.registry.send_to_users(recipients, &frame).await;
+    send_scoped(state, recipients, &frame, None, scope).await
+}
+
+/// `invitation` — to the invited person and to the inviting family's owner,
+/// and to nobody else (docs/protocol.md, "Several families").
+///
+/// The invited person's copy goes only to apps that know about several
+/// families: an older app has no screen for an invitation, and the push
+/// still reaches the person. The owner's copy is scoped to the family like
+/// everything else an owner's screens show.
+pub async fn deliver_invitation(
+    state: &AppState,
+    invitation: &crate::models::Invitation,
+    owner_user_id: i64,
+) -> Result<(), ApiError> {
+    let frame = ServerFrame::Invitation {
+        invitation: invitation.clone(),
+    };
+    send_scoped(state, &[invitation.user.id], &frame, None, Scope::MultiOnly).await?;
+    send_scoped(
+        state,
+        &[owner_user_id],
+        &frame,
+        None,
+        Scope::Family(invitation.family_id),
+    )
+    .await
+}
+
+/// `invitation_removed` — the same two parties, by the same rule. `owner`
+/// is `None` when the family itself is gone and has nobody to tell.
+pub async fn deliver_invitation_removed(
+    state: &AppState,
+    invitation_id: i64,
+    family_id: i64,
+    invited_user_id: i64,
+    owner_user_id: Option<i64>,
+) -> Result<(), ApiError> {
+    let frame = ServerFrame::InvitationRemoved { invitation_id };
+    send_scoped(state, &[invited_user_id], &frame, None, Scope::MultiOnly).await?;
+    if let Some(owner_user_id) = owner_user_id {
+        send_scoped(
+            state,
+            &[owner_user_id],
+            &frame,
+            None,
+            Scope::Family(family_id),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Push the invited person: titled with the family's name and saying
+/// `"<Owner> invited you"`, with `kind: "invitation"`, `family_id` and
+/// `invitation_id` (docs/protocol.md, "Several families"). Device by device,
+/// like every push; a block does not narrow it — the invitation itself was
+/// not refused over one, for the same reason.
+pub async fn push_invitation(
+    state: &AppState,
+    invitation: &crate::models::Invitation,
+) -> Result<(), ApiError> {
+    let invited = invitation.user.id;
+    let live_sessions = state.registry.live_sessions(&[invited]).await;
+    let devices = devices_for_users(&state.pool, &[invited]).await?;
+    let devices = devices_to_wake(devices, &live_sessions, None);
+    if devices.is_empty() {
+        return Ok(());
+    }
+    let owner_name = invitation
+        .invited_by
+        .as_ref()
+        .map(|user| user.display_name.clone())
+        .unwrap_or_default();
+    let badge = unread_badge(&state.pool, invited).await?;
+    let note = push_payload::invitation_notification(
+        &invitation.family_name,
+        &owner_name,
+        invitation.family_id,
+        invitation.id,
+        badge,
+    );
+    spawn_notify(state, vec![(devices, note)]);
     Ok(())
 }
 
@@ -1077,8 +1313,7 @@ pub async fn deliver_family_owner(
 ) -> Result<(), ApiError> {
     let recipients = family_member_ids(&state.pool, family_id).await?;
     let frame = ServerFrame::FamilyOwner { family_id, user_id };
-    state.registry.send_to_users(&recipients, &frame).await;
-    Ok(())
+    send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await
 }
 
 /// Delivery-failure logging shared by REST handlers: fan-out problems must

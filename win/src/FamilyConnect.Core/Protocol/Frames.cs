@@ -76,6 +76,15 @@ public abstract record ServerFrame
     /// </summary>
     public sealed record ChatRemoved(long ChatId) : ServerFrame;
 
+    /// <summary>
+    /// An invitation into a family, new or changed — to the invited person and to that family's owner (docs/protocol.md,
+    /// "Several families").
+    /// </summary>
+    public sealed record Invitation(InvitationDto Value) : ServerFrame;
+
+    /// <summary>An invitation that lapsed: accepted, declined, withdrawn, or gone with its family or either account.</summary>
+    public sealed record InvitationRemoved(long InvitationId) : ServerFrame;
+
     /// <summary>The assistant, mid-reply.</summary>
     public sealed record AiDelta(long ChatId, long MessageId, string Text) : ServerFrame;
 
@@ -155,6 +164,9 @@ public abstract record ServerFrame
             "family_owner" => new FamilyOwner(Optional(frame["family_id"]), Number(frame["user_id"])),
             "chat_updated" => Decode<ChatDto>(frame["chat"]) is { Id: > 0 } updated ? new ChatUpdated(updated) : null,
             "chat_removed" => Number(frame["chat_id"]) is > 0 and var removed ? new ChatRemoved(removed) : null,
+            "invitation" => Decode<InvitationDto>(frame["invitation"]) is { Id: > 0 } invitation
+                ? new Invitation(invitation) : null,
+            "invitation_removed" => Number(frame["invitation_id"]) is > 0 and var lapsed ? new InvitationRemoved(lapsed) : null,
             "member_blocked" => new MemberBlocked(
                 Number(frame["user_id"]), frame["blocked"]?.GetValue<bool>() ?? false),
             "ai_delta" => new AiDelta(

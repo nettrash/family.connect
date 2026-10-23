@@ -119,7 +119,20 @@ public sealed class Resync(
         RoundVideoLimits? RoundVideo = null,
         /// <summary>How many cached sets an older build wrote without the sticker or video-message flag were read again
         /// and changed (schema step 8).</summary>
-        int FlagsRepaired = 0)
+        int FlagsRepaired = 0,
+        /// <summary>
+        /// What step 1 answered — who I am, and every family I am in (docs/protocol.md, "Several families"). Carried out
+        /// so the SESSION can reconcile its family list with it, as it carries the assistant: the store keeps rosters, the
+        /// session keeps which families there are and which one is shown.
+        /// </summary>
+        MeResponse? Me = null,
+        /// <summary>The families whose own document this pass read, by id — every one <see cref="Me"/> names, until a read stopped.</summary>
+        IReadOnlyList<long>? FamiliesRead = null,
+        /// <summary>
+        /// The family <see cref="Assistant"/> and <see cref="RoundVideo"/> are about — the one shown when the pass began. A
+        /// session showing another by the time the pass ends does not take them.
+        /// </summary>
+        long? ShownFamily = null)
     {
         /// <summary>Whether every read finished. A flush that ran anyway is not a failure.</summary>
         public bool Complete => Stopped is null;
@@ -182,27 +195,45 @@ public sealed class Resync(
         {
             return report with { Stopped = me.Error };
         }
-        report = report with { Signed = true, HasFamily = me.Value.Family is not null };
+        // EVERY family the account is in (docs/protocol.md, "Several families") — or the one an older server describes, which
+        // knows no `/families/{id}` and is asked for `mine`.
+        var families = me.Value.AllFamilies;
+        var named = me.Value.Families is not null;
+        report = report with { Signed = true, HasFamily = families.Count > 0, Me = me.Value };
         // The block list is COMPLETE STATE and the one read where an absent list means nobody
         // rather than "leave what you hold alone" — there is no catch-up feed for it and nothing
         // to miss, which is exactly why it is re-read in full on every pass.
         chats.ReplaceBlocked(me.Value.BlockedUserIds ?? []);
 
-        // The roster and the board's high-water mark live only on `/families/mine`, and nothing
-        // else replays a roster change missed while offline — a join, a leave, a birthday, the
-        // join policy, the cap and the family's language raise no frame at all, or one a sleeping
-        // client did not get.
-        long? boardMark = null;
-        long? packMark = null;
-        var hasPacks = false;
-        if (me.Value.Family is not null)
+        // The roster and the board's high-water mark live only on each family's own document, and nothing else replays a
+        // roster change missed while offline — a join, a leave, a birthday, the join policy, the cap and the family's
+        // language raise no frame at all, or one a sleeping client did not get. One read per family, each into its own.
+        var shown = board.Family is { } current && families.Any(family => family.Id == current)
+            ? current
+            : families.FirstOrDefault()?.Id;
+        // A cache whose stores were never told of a family, talking to a server that knows of one family only, is kept the
+        // way it always was: one roster, one wall, one pack, unscoped. Anything else is kept per family.
+        var legacy = !named && board.Family is null;
+        long? Kept(long familyId) => legacy ? null : familyId;
+        var marks = new List<(long Family, long? Board, long? Pack, bool HasPacks)>();
+        var read = new List<long>();
+        foreach (var held in families)
         {
-            var family = await api.Family(ct).ConfigureAwait(false);
+            var family = named
+                ? await api.Family(held.Id, ct).ConfigureAwait(false)
+                : await api.Family(ct).ConfigureAwait(false);
             if (!family.Ok || family.Value is null)
             {
-                return report with { Stopped = family.Error };
+                if (family.Error?.Code == ErrorCodes.FamilyNotFound)
+                {
+                    // Gone between `/me` and here — left, removed, deleted. Not this pass's to stop over: the session
+                    // reconciles its list from the next `/me`, and nothing of this family is written meanwhile.
+                    continue;
+                }
+                return report with { Stopped = family.Error, FamiliesRead = read };
             }
-            chats.Replace(family.Value.Members ?? [], family.Value.FormerMembers);
+            read.Add(held.Id);
+            chats.Replace(Kept(held.Id), family.Value.Members ?? [], family.Value.FormerMembers);
             // The same list again, from the family's own document, and applied only when it is
             // THERE. `/me` is the read that always carries it, so an absence here is an older
             // server rather than an empty list — the one place on this pass where absent means
@@ -212,22 +243,27 @@ public sealed class Resync(
             {
                 chats.ReplaceBlocked(blocked);
             }
-            boardMark = family.Value.MaxBoardSeq;
-            packMark = family.Value.MaxPackSeq;
             // The two ceilings are ALWAYS there on a server that has packs, so their absence is
             // an older server — and is written down as that, because a ceiling remembered from
             // before a downgrade would offer a sticker button that leads to a 404.
-            hasPacks = family.Value is { MaxPackItems: not null, MaxPackItemBytes: not null };
-            pack?.SetLimits(family.Value is { MaxPackItems: { } items, MaxPackItemBytes: { } bytes }
+            var hasPacks = family.Value is { MaxPackItems: not null, MaxPackItemBytes: not null };
+            pack?.In(Kept(held.Id)).SetLimits(family.Value is { MaxPackItems: { } items, MaxPackItemBytes: { } bytes }
                 ? new PackLimits(items, bytes)
                 : null);
-            report = report with
+            marks.Add((held.Id, family.Value.MaxBoardSeq, family.Value.MaxPackSeq, hasPacks));
+            if (held.Id == shown)
             {
-                Assistant = family.Value.Assistant,
-                FamilyRead = true,
-                RoundVideo = RoundVideoLimits.Of(family.Value),
-            };
+                // The assistant and the video message's limits are the SHOWN family's: what the composer offers.
+                report = report with
+                {
+                    Assistant = family.Value.Assistant,
+                    FamilyRead = true,
+                    RoundVideo = RoundVideoLimits.Of(family.Value),
+                    ShownFamily = held.Id,
+                };
+            }
         }
+        report = report with { FamiliesRead = read };
 
         // 2. The list: previews, the authoritative unread counts, and the caller's own marker.
         // The mark is taken BEFORE the request: a group changed while it is in flight is not undone by its answer.
@@ -259,22 +295,39 @@ public sealed class Resync(
             }
         }
 
-        // The wall, if there is a family to have one.
-        if (me.Value.Family is not null)
+        // Each family's wall, against its own cursor (docs/protocol.md, "Several families").
+        foreach (var (familyId, boardMark, _, _) in marks)
         {
-            var notes = await BoardAsync(boardMark, ct).ConfigureAwait(false);
-            report = report with { Notes = notes.Notes, Stopped = notes.Stopped };
+            var notes = await BoardAsync(board.In(Kept(familyId)), named ? familyId : null, boardMark, ct).ConfigureAwait(false);
+            if (notes.Stopped?.Code == ErrorCodes.FamilyNotFound)
+            {
+                // The family went while this pass was reading it: nothing more of it to read, and `/me` reconciles.
+                continue;
+            }
+            report = report with { Notes = report.Notes + notes.Notes, Stopped = notes.Stopped };
             if (notes.Stopped is not null)
             {
                 return report;
             }
         }
 
-        // The sticker pack, where this server has one: the board's catch-up, one table over.
-        if (me.Value.Family is not null && pack is not null && hasPacks)
+        // Each family's sticker pack, where this server has one: the board's catch-up, one table over.
+        if (pack is not null)
         {
-            var items = await PackAsync(pack, packMark, began, ct).ConfigureAwait(false);
-            report = report with { PackItems = items.PackItems, Stopped = items.Stopped };
+            foreach (var (familyId, _, packMark, hasPacks) in marks.Where(mark => mark.HasPacks))
+            {
+                var items = await PackAsync(pack.In(Kept(familyId)), named ? familyId : null, packMark, began, ct)
+                    .ConfigureAwait(false);
+                if (items.Stopped?.Code == ErrorCodes.FamilyNotFound)
+                {
+                    continue;
+                }
+                report = report with { PackItems = report.PackItems + items.PackItems, Stopped = items.Stopped };
+                if (items.Stopped is not null)
+                {
+                    return report;
+                }
+            }
         }
 
         // Last, and only on a pass that read everything: the stickers and circles an older build cached as plain photos
@@ -537,7 +590,9 @@ public sealed class Resync(
     /// never read one — a full read REPLACES what is held, which is the only way a note somebody
     /// took down while this device was away actually leaves the wall.
     /// </summary>
-    private async Task<Report> BoardAsync(long? mark, CancellationToken ct)
+    /// <param name="board">The wall of the one family being caught up — a store held to it.</param>
+    /// <param name="familyId">That family's id for the wire, or null for a server that knows only <c>mine</c>.</param>
+    private async Task<Report> BoardAsync(BoardStore board, long? familyId, long? mark, CancellationToken ct)
     {
         var report = new Report();
         // `max_board_seq` is ABSENT while the wall is empty and untouched, and that is the whole
@@ -555,7 +610,9 @@ public sealed class Resync(
         }
         if (board.Cursor == 0)
         {
-            var whole = await api.Board(ct).ConfigureAwait(false);
+            var whole = familyId is { } named
+                ? await api.Board(named, ct).ConfigureAwait(false)
+                : await api.Board(ct).ConfigureAwait(false);
             if (!whole.Ok || whole.Value is null)
             {
                 return report with { Stopped = whole.Error };
@@ -566,7 +623,9 @@ public sealed class Resync(
         }
         while (true)
         {
-            var page = await api.BoardChanges(board.Cursor, PageSize, ct).ConfigureAwait(false);
+            var page = familyId is { } named
+                ? await api.BoardChanges(named, board.Cursor, PageSize, ct).ConfigureAwait(false)
+                : await api.BoardChanges(board.Cursor, PageSize, ct).ConfigureAwait(false);
             if (!page.Ok || page.Value is null)
             {
                 return report with { Stopped = page.Error };
@@ -602,7 +661,7 @@ public sealed class Resync(
     /// mark and the pages below were all read after that connection opened, and none of them is
     /// known to be newer than a connection that opened since.
     /// </remarks>
-    private async Task<Report> PackAsync(PackStore pack, long? mark, long began, CancellationToken ct)
+    private async Task<Report> PackAsync(PackStore pack, long? familyId, long? mark, long began, CancellationToken ct)
     {
         var report = new Report();
         // `max_pack_seq` is ABSENT while the pack is empty and untouched: there is nothing to
@@ -622,7 +681,9 @@ public sealed class Resync(
         }
         if (pack.Cursor == 0)
         {
-            var whole = await api.Pack(ct).ConfigureAwait(false);
+            var whole = familyId is { } named
+                ? await api.Pack(named, ct).ConfigureAwait(false)
+                : await api.Pack(ct).ConfigureAwait(false);
             if (!whole.Ok || whole.Value is null)
             {
                 return report with { Stopped = whole.Error };
@@ -635,7 +696,9 @@ public sealed class Resync(
         while (true)
         {
             var was = pack.Cursor;
-            var page = await api.PackChanges(was, PageSize, ct).ConfigureAwait(false);
+            var page = familyId is { } named
+                ? await api.PackChanges(named, was, PageSize, ct).ConfigureAwait(false)
+                : await api.PackChanges(was, PageSize, ct).ConfigureAwait(false);
             if (!page.Ok || page.Value is null)
             {
                 return report with { Stopped = page.Error };

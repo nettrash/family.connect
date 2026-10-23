@@ -6,6 +6,10 @@
  * The code field uppercases as you type — codes are displayed uppercase
  * everywhere.
  *
+ * Also the screen behind "New Family…" and "Join Another Family…" (#88;
+ * docs/protocol.md, "Several families"): the same field and button, one
+ * card each, under a back arrow — [FamilyGateMode].
+ *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyGate/FamilyGateView.swift
  */
 
@@ -26,7 +30,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
@@ -55,10 +65,26 @@ import me.nettrash.familyconnect.ui.components.ErrorCard
 /** Which card's action is in flight — the VM has one shared busy flag. */
 private enum class GateAction { CREATE, JOIN }
 
+/** Which doors the screen offers. */
+enum class FamilyGateMode {
+    /** No family at all: both cards, today's gate. */
+    GATE,
+
+    /** "New Family…" from inside the app: the create card, with why. */
+    NEW_FAMILY,
+
+    /** "Join Another Family…": the join card. */
+    JOIN_FAMILY,
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FamilyGateScreen(
     onJoined: () -> Unit,
     onPending: () -> Unit,
+    mode: FamilyGateMode = FamilyGateMode.GATE,
+    /** The back arrow of the in-app modes; the gate has none. */
+    onBack: () -> Unit = {},
     viewModel: FamilyGateViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -74,7 +100,22 @@ fun FamilyGateScreen(
         }
     }
 
-    Scaffold { padding ->
+    val showsCreate = mode != FamilyGateMode.JOIN_FAMILY
+    val showsJoin = mode != FamilyGateMode.NEW_FAMILY
+    Scaffold(
+        topBar = {
+            if (mode != FamilyGateMode.GATE) {
+                TopAppBar(
+                    title = {},
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
+                        }
+                    },
+                )
+            }
+        },
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -85,15 +126,29 @@ fun FamilyGateScreen(
                 .padding(24.dp),
         ) {
             Text(
-                text = stringResource(R.string.s_your_family),
+                text = stringResource(
+                    when (mode) {
+                        FamilyGateMode.GATE -> R.string.s_your_family
+                        FamilyGateMode.NEW_FAMILY -> R.string.s_create_a_family
+                        FamilyGateMode.JOIN_FAMILY -> R.string.s_join_with_an_invite_code
+                    },
+                ),
                 style = MaterialTheme.typography.headlineMedium,
             )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.s_start_a_new_family_space_or_join_one_you_were_invited_to),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (mode != FamilyGateMode.JOIN_FAMILY) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(
+                        if (mode == FamilyGateMode.NEW_FAMILY) {
+                            R.string.s_new_family_explanation
+                        } else {
+                            R.string.s_start_a_new_family_space_or_join_one_you_were_invited_to
+                        },
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             // Last message is remembered so the exit animation still has
             // content to draw while shrinking (same trick as OfflineBanner).
@@ -116,9 +171,14 @@ fun FamilyGateScreen(
             // instead of a Create card that would end in a 403 after
             // somebody has typed a name. Joining stays: the families
             // already here are what the server is for.
-            if (!state.registrationEnabled) {
+            //
+            // `registration` is about an account's FIRST family only: "New
+            // Family…" is the separate `member_families` door, which the
+            // switcher offers only while it is open (docs/protocol.md,
+            // "Several families").
+            if (showsCreate && mode == FamilyGateMode.GATE && !state.registrationEnabled) {
                 ClosedServerCard()
-            } else Card(modifier = Modifier.fillMaxWidth()) {
+            } else if (showsCreate) Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
@@ -148,38 +208,40 @@ fun FamilyGateScreen(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(stringResource(R.string.s_join_with_an_invite_code), style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = state.inviteCode,
-                        onValueChange = viewModel::onInviteCodeChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(stringResource(R.string.s_invite_code)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Characters,
-                        ),
-                        isError = state.codeError != null,
-                        supportingText = state.codeError?.let { { Text(it) } },
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    // Tonal: creating is the primary path, joining the
-                    // secondary one — same actions, quieter emphasis.
-                    FilledTonalButton(
-                        onClick = {
-                            busyAction = GateAction.JOIN
-                            viewModel.join()
-                        },
-                        enabled = !state.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        BusyButtonContent(
-                            label = stringResource(R.string.s_join),
-                            busy = state.busy && busyAction == GateAction.JOIN,
+            if (showsJoin) {
+                if (showsCreate) Spacer(Modifier.height(16.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(stringResource(R.string.s_join_with_an_invite_code), style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = state.inviteCode,
+                            onValueChange = viewModel::onInviteCodeChange,
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text(stringResource(R.string.s_invite_code)) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Characters,
+                            ),
+                            isError = state.codeError != null,
+                            supportingText = state.codeError?.let { { Text(it) } },
                         )
+                        Spacer(Modifier.height(12.dp))
+                        // Tonal: creating is the primary path, joining the
+                        // secondary one — same actions, quieter emphasis.
+                        FilledTonalButton(
+                            onClick = {
+                                busyAction = GateAction.JOIN
+                                viewModel.join()
+                            },
+                            enabled = !state.busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            BusyButtonContent(
+                                label = stringResource(R.string.s_join),
+                                busy = state.busy && busyAction == GateAction.JOIN,
+                            )
+                        }
                     }
                 }
             }
@@ -187,8 +249,9 @@ fun FamilyGateScreen(
             // The deadline, said before it is met: this server removes an
             // account that stays without a family past its grace
             // (docs/protocol.md, "Accounts without a family"). 0 is a
-            // server that never does, and says nothing.
-            if (state.familylessAccountTtlDays > 0) {
+            // server that never does, and says nothing. Only on the gate:
+            // an account already in a family has no deadline.
+            if (mode == FamilyGateMode.GATE && state.familylessAccountTtlDays > 0) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     pluralStringResource(

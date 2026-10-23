@@ -74,7 +74,8 @@ use crate::ws::{AiErrorReason, ServerFrame};
 /// up rather than hard-coded: the id is whatever the sequence gave it.
 pub async fn assistant_user_id(state: &AppState) -> Result<Option<i64>> {
     let id = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM users WHERE lower(username) = 'assistant' AND family_id IS NULL",
+        "SELECT id FROM users u WHERE lower(username) = 'assistant'
+           AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = u.id)",
     )
     .fetch_optional(&state.pool)
     .await?;
@@ -145,51 +146,44 @@ pub fn consent_stamp(at: Option<OffsetDateTime>) -> serde_json::Value {
     .unwrap_or(serde_json::Value::Null)
 }
 
-/// Make sure this member has their assistant chat, and answer with its id.
+/// Make sure this member has their assistant chat IN THIS FAMILY, and
+/// answer with its id.
 ///
 /// Created on demand rather than at registration: a server that turns the
 /// assistant on later should not need every member to re-register, and one
 /// that never turns it on should not carry an empty chat in every list.
-pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64>> {
+///
+/// One per family since 2026-10-22 (docs/protocol.md, "Several families";
+/// decision D6): "this family's assistant", under that family's owner's
+/// switches, listed in that family. A member who is not in `family_id` gets
+/// none — the assistant is not an exception to "no family, no chats".
+pub async fn ensure_ai_chat(state: &AppState, user_id: i64, family_id: i64) -> Result<Option<i64>> {
     if !state.cfg.ai.is_usable() {
         return Ok(None);
     }
-    let Some(family_id) =
-        sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .flatten()
-    else {
-        // No family, no chats of any kind — the assistant is not an
-        // exception to that.
+    if !crate::families::is_member(&state.pool, family_id, user_id)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?
+    {
         return Ok(None);
-    };
+    }
 
     let mut tx = state.pool.begin().await?;
-    let existing =
-        sqlx::query_scalar::<_, i64>("SELECT id FROM chats WHERE kind = 'ai' AND user_a_id = $1")
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let existing = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM chats WHERE kind = 'ai' AND user_a_id = $1 AND family_id = $2",
+    )
+    .bind(user_id)
+    .bind(family_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     if let Some(id) = existing {
         // Existing is not the same as reachable. Leaving a family deletes
-        // the caller's row from `chat_members` for EVERY chat of that
-        // family, this one included (handlers_family::remove_membership) —
-        // so without restoring it here a member who left and came back is
+        // the caller's row from `chat_members` for that family's own chats,
+        // this one included (handlers_family::remove_membership) — so
+        // without restoring it here a member who left and came back is
         // locked out of their own assistant thread forever, by a 403 on a
         // chat nobody else can even see. protocol.md promises history
         // "resurfaces on rejoin"; this is what makes that true here.
-        //
-        // The family_id is re-pointed for the same reason the direct-chat
-        // upsert re-points its own: the thread belongs to the member, not
-        // to the family they were in when they started it, and a stale
-        // family id would take it down with a family they have left.
-        sqlx::query("UPDATE chats SET family_id = $1 WHERE id = $2 AND family_id <> $1")
-            .bind(family_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
         sqlx::query(
             "INSERT INTO chat_members (chat_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
@@ -201,13 +195,21 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
         return Ok(Some(id));
     }
 
-    let chat_id: i64 = sqlx::query_scalar(
-        "INSERT INTO chats (family_id, kind, user_a_id) VALUES ($1, 'ai', $2) RETURNING id",
+    // ON CONFLICT against the per-family uniqueness (0057), so two listings
+    // racing to create the same family's thread end with one.
+    let created: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO chats (family_id, kind, user_a_id) VALUES ($1, 'ai', $2)
+         ON CONFLICT (user_a_id, family_id) WHERE kind = 'ai' DO NOTHING
+         RETURNING id",
     )
     .bind(family_id)
     .bind(user_id)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    let Some(chat_id) = created else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
     // Only the owner is a member. That is what makes `GET /chats` return it
     // to them and nobody else, using the membership check every other chat
     // already goes through.
@@ -1634,14 +1636,14 @@ async fn polls_for(
     // costs no extra round trip.
     //
     // Counted exactly as every client's own footer counts it: the LIVE
-    // roster. Leaving a family and deleting an account both set
-    // `users.family_id` to NULL (handlers_family, handlers_auth), so this
-    // is the same "who is still here" every membership question in this
-    // server asks — and the assistant, which belongs to no family, is not
-    // one of them. A tally must not go on counting somebody who no longer
-    // exists.
+    // roster of the chat's family. Leaving a family and deleting an account
+    // both remove the membership row (handlers_family, handlers_auth), so
+    // this is the same "who is still here" every membership question in
+    // this server asks — and the assistant, which belongs to no family, is
+    // not one of them. A tally must not go on counting somebody who no
+    // longer exists.
     let members: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users
+        "SELECT count(*) FROM family_members
          WHERE family_id = (SELECT family_id FROM chats WHERE id = $1)",
     )
     .bind(chat_id)
@@ -1787,14 +1789,17 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
         return Ok(());
     };
     // The member's own thread may look things up when the server has a
-    // source, the member's FAMILY has `ai_lookups` on, and the member gave
-    // the lookup consent (protocol.md, "Looking things up").
+    // source, the thread's FAMILY has `ai_lookups` on, and the member gave
+    // the lookup consent (protocol.md, "Looking things up"). The thread's
+    // family, not "the member's": an `ai` chat belongs to one family and is
+    // under that family's owner's switches (docs/protocol.md, "Several
+    // families").
     if let Ask::Words { lookups, .. } = &mut prompt.ask {
         let family = sqlx::query(
-            "SELECT f.id, f.ai_lookups FROM users u JOIN families f ON f.id = u.family_id
-             WHERE u.id = $1",
+            "SELECT f.id, f.ai_lookups FROM chats c JOIN families f ON f.id = c.family_id
+             WHERE c.id = $1",
         )
-        .bind(user_id)
+        .bind(chat_id)
         .fetch_optional(&state.pool)
         .await?;
         if let Some(family) = family {
@@ -2036,7 +2041,7 @@ async fn thread_prompt(
     let mut notes = Vec::new();
     let mut route = state.cfg.ai.text_route();
     if let Some(vision) = state.cfg.ai.vision_route()
-        && family_allows_vision(state, user_id).await?
+        && family_allows_vision(state, chat_id).await?
     {
         let looked = vision_images(state, question_id, VISION_MAX_IMAGES).await?;
         // The note goes whenever the member pointed at a photograph — shown
@@ -2154,18 +2159,19 @@ fn numbered_turn_content(
     })
 }
 
-/// Has this member's family allowed photographs to be shown to the model?
+/// Has this thread's family allowed photographs to be shown to the model?
 ///
 /// A column read, deliberately, rather than a value carried down from the
 /// send: the switch may have been turned off between the member pressing
 /// send and this task running, and the answer that matters is the one that
-/// holds when the bytes are about to leave. A member with no family answers
-/// false, which is also what a missing row answers.
-async fn family_allows_vision(state: &AppState, user_id: i64) -> Result<bool> {
+/// holds when the bytes are about to leave. The THREAD's family — an `ai`
+/// chat is one family's, under that family's switches (docs/protocol.md,
+/// "Several families") — and a missing row answers false.
+async fn family_allows_vision(state: &AppState, chat_id: i64) -> Result<bool> {
     let allowed = sqlx::query_scalar::<_, bool>(
-        "SELECT f.ai_vision FROM users u JOIN families f ON f.id = u.family_id WHERE u.id = $1",
+        "SELECT f.ai_vision FROM chats c JOIN families f ON f.id = c.family_id WHERE c.id = $1",
     )
-    .bind(user_id)
+    .bind(chat_id)
     .fetch_optional(&state.pool)
     .await?;
     Ok(allowed.unwrap_or(false))
@@ -2293,13 +2299,15 @@ struct LookedAtFaces {
 /// - **only members with a line in the transcript.** A face travels only for
 ///   a name the model has already been told; nobody else's is fetched, and
 ///   in particular not the whole roster's;
-/// - **only members of THIS chat's family, now.** The predicate is the one
-///   `GET /users/{id}/avatar` enforces — `u.family_id IS NOT NULL AND
-///   u.family_id = <the chat's family>` — restated here because reading
-///   `user_avatars` directly inherits none of that handler's protections, and
-///   one server hosts several families. A member who left, or whose account
-///   was scrubbed, still has lines in the transcript and sends NO face: their
-///   row's `family_id` is NULL;
+/// - **only members of THIS chat's family, now.** A membership of the
+///   chat's family in `family_members` — narrower than what
+///   `GET /users/{id}/avatar` enforces ("shares a family with the reader"),
+///   because the face goes to the model on THIS family's owner's switch, and
+///   one server hosts several families (an account may be in several since
+///   2026-10-22). Restated here because reading `user_avatars` directly
+///   inherits none of that handler's protections. A member who left, or
+///   whose account was scrubbed, still has lines in the transcript and sends
+///   NO face: their membership row is gone;
 /// - **never the assistant's own row**, which has no picture and is in no
 ///   family — excluded by the predicate, and by name here so nobody has to
 ///   reason about it;
@@ -2344,8 +2352,10 @@ async fn face_images(
     let rows = sqlx::query(
         "SELECT u.id,
                 u.username LIKE 'deleted-%' AS tombstone,
-                (u.family_id IS NOT NULL
-                   AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)) AS here,
+                EXISTS (SELECT 1 FROM family_members fm
+                         WHERE fm.user_id = u.id
+                           AND fm.family_id = (SELECT family_id FROM chats WHERE id = $2))
+                    AS here,
                 a.content_type, a.bytes
          FROM users u
          LEFT JOIN user_avatars a ON a.user_id = u.id
@@ -2981,6 +2991,13 @@ async fn stream_words(
     // rate. Draining one channel from one task fixes the order by
     // construction, and coalescing whatever is queued fixes the rate.
     let (deltas, mut queue) = mpsc::unbounded_channel::<String>();
+    // Which of the audience an app from before several families must not
+    // be streamed to: decided ONCE per reply rather than per fragment — a
+    // reply is a few seconds, and the families a chat is listed in do not
+    // move under it (docs/protocol.md, "Several families").
+    let hidden = events::legacy_hidden(state, audience, &events::Scope::Chat(chat_id))
+        .await
+        .unwrap_or_default();
     let pump = {
         let state = state.clone();
         let audience = audience.to_vec();
@@ -2993,7 +3010,7 @@ async fn stream_words(
                 if !text.is_empty() {
                     state
                         .registry
-                        .fan_out(
+                        .fan_out_hiding(
                             &audience,
                             &ServerFrame::AiDelta {
                                 chat_id,
@@ -3001,6 +3018,7 @@ async fn stream_words(
                                 text,
                             },
                             None,
+                            &hidden,
                         )
                         .await;
                 }
@@ -3670,9 +3688,12 @@ async fn fan_out_ai_error(
     message_id: i64,
     reason: Option<AiErrorReason>,
 ) {
+    let hidden = events::legacy_hidden(state, audience, &events::Scope::Chat(chat_id))
+        .await
+        .unwrap_or_default();
     state
         .registry
-        .fan_out(
+        .fan_out_hiding(
             audience,
             &ServerFrame::AiError {
                 chat_id,
@@ -3680,6 +3701,7 @@ async fn fan_out_ai_error(
                 reason,
             },
             None,
+            &hidden,
         )
         .await;
 }
@@ -3979,10 +4001,13 @@ async fn answer(
     };
 
     // What it cost, for Family Statistics. Best effort: a reply the member
-    // has already read must not fail because a counter did not save.
+    // has already read must not fail because a counter did not save. Booked
+    // to the CHAT's family — the family whose assistant answered, in its
+    // chat — since a member in several families asks each family's
+    // assistant separately (docs/protocol.md, "Several families").
     let family_id =
-        sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM users WHERE id = $1")
-            .bind(user_id)
+        sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM chats WHERE id = $1")
+            .bind(chat_id)
             .fetch_optional(&state.pool)
             .await?
             .flatten();

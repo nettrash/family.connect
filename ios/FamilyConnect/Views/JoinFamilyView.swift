@@ -28,6 +28,12 @@ struct JoinFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = JoinFamilyModel()
     @FocusState private var fieldFocused: Bool
+    /// "Join Another Family…" from inside the app (docs/protocol.md,
+    /// "Several families"): the same screen, where `already_in_family`
+    /// means THAT family, and a request that waits is a row in the switcher.
+    var anotherFamily = false
+    /// Called once the code was taken — joined, or waiting on the owner.
+    var onFinished: (() -> Void)?
 
     var body: some View {
         Form {
@@ -89,13 +95,22 @@ struct JoinFamilyView: View {
                 // Routing (active / pendingApproval) happens inside
                 // AppSession.join; nothing to do on success here.
                 try await session.join(code: code)
+                onFinished?()
+            } catch let error where FamilyRules.failureMessage(
+                error, maxFamilies: session.maxFamiliesPerAccount) != nil {
+                // `too_many_families`: the per-account cap.
+                model.errorText = FamilyRules.failureMessage(
+                    error, maxFamilies: session.maxFamiliesPerAccount)
             } catch APIError.notFound(let errorCode) {
                 model.errorText = errorCode == "invalid_invite_code"
                     ? String(localized: "That code doesn't match any family. Check it and try again.")
                     : String(localized: "That code doesn't work anymore.")
             } catch APIError.conflict(let errorCode, let message) {
                 switch errorCode {
-                case "already_in_family": model.errorText = String(localized: "You're already in a family.")
+                case "already_in_family":
+                    model.errorText = anotherFamily
+                        ? String(localized: "You're already in that family.")
+                        : String(localized: "You're already in a family.")
                 case "join_request_pending": model.errorText = String(localized: "You already have a pending request.")
                 // The one thing this endpoint tells a stranger, and
                 // deliberately: telling an invited member their code is

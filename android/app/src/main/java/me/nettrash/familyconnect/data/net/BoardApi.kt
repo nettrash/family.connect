@@ -26,12 +26,13 @@ import me.nettrash.familyconnect.ui.board.NoteKinds
 
 interface BoardApi {
     /** The whole board, tombstones excluded. */
-    suspend fun getBoard(): ApiResult<BoardResponse>
+    suspend fun getBoard(familyId: Long?): ApiResult<BoardResponse>
 
     /** The board catch-up, tombstones INCLUDED. */
-    suspend fun getBoardChanges(afterSeq: Long, limit: Int): ApiResult<BoardChangesResponse>
+    suspend fun getBoardChanges(familyId: Long?, afterSeq: Long, limit: Int): ApiResult<BoardChangesResponse>
 
     suspend fun createNote(
+        familyId: Long?,
         text: String,
         color: String,
         size: String,
@@ -58,7 +59,7 @@ interface BoardApi {
      * Say whether the caller is coming — `going`, `maybe`, `no`, or null to
      * retract. ANY member may (docs/protocol.md, "Board").
      */
-    suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse>
+    suspend fun answerNote(familyId: Long?, id: Long, answer: String?): ApiResult<NoteResponse>
 
     /**
      * Null fields are omitted, which is what decides the permission
@@ -66,6 +67,7 @@ interface BoardApi {
      * fields, so a move must leave them null.
      */
     suspend fun patchNote(
+        familyId: Long?,
         id: Long,
         text: String?,
         color: String?,
@@ -90,16 +92,16 @@ interface BoardApi {
      * not authorship, and it is a STATE rather than a toggle so two phones
      * cannot undo each other (docs/protocol.md, "Board").
      */
-    suspend fun tickTask(noteId: Long, itemId: Long, done: Boolean): ApiResult<NoteResponse>
+    suspend fun tickTask(familyId: Long?, noteId: Long, itemId: Long, done: Boolean): ApiResult<NoteResponse>
 
     /**
      * Ask the assistant for a picture to sit behind an EVENT, drawn from
      * the note's own title — the AUTHOR's, and nothing to send
      * (docs/protocol.md, "Board").
      */
-    suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse>
+    suspend fun drawBackdrop(familyId: Long?, noteId: Long): ApiResult<NoteResponse>
 
-    suspend fun deleteNote(id: Long): ApiResult<Unit>
+    suspend fun deleteNote(familyId: Long?, id: Long): ApiResult<Unit>
 }
 
 /**
@@ -150,16 +152,18 @@ class DefaultBoardApi @Inject constructor(
     private val client: ApiClient,
 ) : BoardApi {
 
-    override suspend fun getBoard(): ApiResult<BoardResponse> =
-        client.get("/families/mine/board")
+    override suspend fun getBoard(familyId: Long?): ApiResult<BoardResponse> =
+        client.get(FamilyPaths.root(familyId) + "/board")
 
     override suspend fun getBoardChanges(
+        familyId: Long?,
         afterSeq: Long,
         limit: Int,
     ): ApiResult<BoardChangesResponse> =
-        client.get("/families/mine/board/changes?after_seq=$afterSeq&limit=$limit")
+        client.get(FamilyPaths.root(familyId) + "/board/changes?after_seq=$afterSeq&limit=$limit")
 
     override suspend fun createNote(
+        familyId: Long?,
         text: String,
         color: String,
         size: String,
@@ -174,7 +178,7 @@ class DefaultBoardApi @Inject constructor(
         items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> =
         client.post(
-            "/families/mine/board/notes",
+            FamilyPaths.root(familyId) + "/board/notes",
             newNoteRequest(
                 text = text, color = color, size = size, font = font, x = x, y = y,
                 attachmentId = attachmentId,
@@ -183,14 +187,15 @@ class DefaultBoardApi @Inject constructor(
             ),
         )
 
-    override suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse> =
+    override suspend fun answerNote(familyId: Long?, id: Long, answer: String?): ApiResult<NoteResponse> =
         if (answer == null) {
-            client.delete("/families/mine/board/notes/$id/rsvp")
+            client.delete(FamilyPaths.root(familyId) + "/board/notes/$id/rsvp")
         } else {
-            client.put("/families/mine/board/notes/$id/rsvp", RsvpRequest(answer))
+            client.put(FamilyPaths.root(familyId) + "/board/notes/$id/rsvp", RsvpRequest(answer))
         }
 
     override suspend fun patchNote(
+        familyId: Long?,
         id: Long,
         text: String?,
         color: String?,
@@ -202,7 +207,7 @@ class DefaultBoardApi @Inject constructor(
         items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> =
         client.patch(
-            "/families/mine/board/notes/$id",
+            FamilyPaths.root(familyId) + "/board/notes/$id",
             PatchNoteRequest(
                 text, color, size, x, y, font,
                 mentions = mentions?.ifEmpty { null },
@@ -213,24 +218,25 @@ class DefaultBoardApi @Inject constructor(
         )
 
     override suspend fun tickTask(
+        familyId: Long?,
         noteId: Long,
         itemId: Long,
         done: Boolean,
     ): ApiResult<NoteResponse> =
         client.put(
-            "/families/mine/board/notes/$noteId/tasks/$itemId",
+            FamilyPaths.root(familyId) + "/board/notes/$noteId/tasks/$itemId",
             TaskDoneRequest(done),
         )
 
     // SLOW, and given a timeout of its own: the shared client's 20 s
     // ceiling would give up on a backdrop the server is still drawing
     // (docs/protocol.md, "Board").
-    override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> =
+    override suspend fun drawBackdrop(familyId: Long?, noteId: Long): ApiResult<NoteResponse> =
         client.postEmpty(
-            "/families/mine/board/notes/$noteId/backdrop",
+            FamilyPaths.root(familyId) + "/board/notes/$noteId/backdrop",
             timeout = ApiClient.BACKDROP_TIMEOUT,
         )
 
-    override suspend fun deleteNote(id: Long): ApiResult<Unit> =
-        client.delete("/families/mine/board/notes/$id")
+    override suspend fun deleteNote(familyId: Long?, id: Long): ApiResult<Unit> =
+        client.delete(FamilyPaths.root(familyId) + "/board/notes/$id")
 }

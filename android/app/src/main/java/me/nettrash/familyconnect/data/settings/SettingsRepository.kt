@@ -19,6 +19,11 @@
 package me.nettrash.familyconnect.data.settings
 
 import me.nettrash.familyconnect.data.net.dto.AssistantDto
+import me.nettrash.familyconnect.data.net.dto.FamilyDto
+import me.nettrash.familyconnect.data.net.dto.InvitationDto
+import me.nettrash.familyconnect.data.net.dto.PendingJoinRequestDto
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -49,6 +54,38 @@ data class SettingsState(
     val myUsername: String? = null,
     val myDisplayName: String? = null,
     val familyName: String? = null,
+    /**
+     * Every family this account is in, from `GET /me` — home family first,
+     * then in the order they were joined, each with its own `role`
+     * (docs/protocol.md, "Several families"). On a server that predates
+     * several families, the one family `/me` names. Empty means no family:
+     * the gate.
+     *
+     * [familyStatus] and [familyName] above are the CURRENT family's, kept
+     * beside it so every screen that read "the family" before still reads
+     * the one the app is showing.
+     */
+    val families: List<FamilyDto> = emptyList(),
+    /**
+     * The family the app is SHOWING, persisted per account on this device.
+     * Null before there is one. Always one of [families] once the session
+     * has reconciled: a family that disappears falls back to the first.
+     */
+    val currentFamilyId: Long? = null,
+    /** Every live join request — a row of its own in the switcher. */
+    val pendingJoinRequests: List<PendingJoinRequestDto> = emptyList(),
+    /** Invitations TO this account, oldest first — the chat list's banner. */
+    val invitations: List<InvitationDto> = emptyList(),
+    /** Whether a member may start ANOTHER family here (`member_families_enabled`). */
+    val memberFamiliesEnabled: Boolean = false,
+    /** The most families one account may be in; 0 on a server that predates the field. */
+    val maxFamiliesPerAccount: Int = 0,
+    /**
+     * Whether this server speaks several families — its `/me` carried
+     * `families`. Only then are family ids put into request paths; a server
+     * from before answers the forms without one, about the home family.
+     */
+    val multiFamilyServer: Boolean = false,
     /**
      * Everybody this account has blocked. Account-scoped and cleared with
      * the session, then restored wholesale from the next `GET /me` — a
@@ -94,8 +131,12 @@ data class SettingsState(
      * anywhere but the family's own server.
      */
     val linkPreviewsEnabled: Boolean = true,
-    /** Highest board_seq applied on this device; 0 = nothing yet. */
-    val boardCursor: Long = 0,
+    /**
+     * Highest board_seq applied on this device, PER FAMILY (docs/protocol.md,
+     * "Several families": "a board cursor and a pack cursor PER FAMILY");
+     * absent = nothing yet. Read through [boardCursor].
+     */
+    val boardCursors: Map<Long, Long> = emptyMap(),
     /**
      * Highest note id this device has actually SHOWN the user, for the
      * board badge.
@@ -104,8 +145,11 @@ data class SettingsState(
      * whenever a change is applied — including a background resync — so
      * using it here would clear the badge for someone who never opened the
      * board. This one moves only when the board is on screen.
+     *
+     * Per family, like the cursors: board seqs and note ids are server-wide,
+     * so a mark taken on one family's board would hide another's news.
      */
-    val boardSeenNoteId: Long = 0,
+    val boardSeenNoteIds: Map<Long, Long> = emptyMap(),
     /**
      * Highest `content_seq` this device has actually SHOWN — what the board
      * badge counts (docs/protocol.md, "Board").
@@ -113,15 +157,15 @@ data class SettingsState(
      * [boardSeenNoteId] above is kept beside it, and still used, for notes
      * that carry no content seq: rows cached before the column existed and
      * notes from a server that predates the field. BoardBadge holds the
-     * rule; these two are only where the numbers live.
+     * rule; these two are only where the numbers live. Per family.
      */
-    val boardSeenContentSeq: Long = 0,
+    val boardSeenContentSeqs: Map<Long, Long> = emptyMap(),
     /**
-     * Highest pack_seq applied on this device; 0 = nothing yet. The
-     * sticker pack's own sync cursor, the board's twin (docs/protocol.md,
-     * "Sticker pack").
+     * Highest pack_seq applied on this device, per family; absent = nothing
+     * yet. The sticker pack's own sync cursor, the board's twin
+     * (docs/protocol.md, "Sticker pack"). Read through [packCursor].
      */
-    val packCursor: Long = 0,
+    val packCursors: Map<Long, Long> = emptyMap(),
     /**
      * The pack's two ceilings, from `GET /families/mine`. **0 means the
      * server has no packs** (or has not said yet): the field is always
@@ -345,6 +389,56 @@ data class SettingsState(
     val roundPreviewTaught: Boolean = false,
 )
 
+/** The family the app is showing, as `/me` described it; null without one. */
+val SettingsState.currentFamily: FamilyDto?
+    get() = families.firstOrNull { it.id == currentFamilyId }
+
+/**
+ * The key this device files family-level data under: the current family, or
+ * 0 before there is one — which is also where rows cached before several
+ * families sit until they are claimed.
+ */
+val SettingsState.familyKey: Long
+    get() = currentFamilyId ?: 0L
+
+/**
+ * The key to file data about [familyId] under. Once `/me` has named the
+ * families it is the family's own id; before that — an install that has not
+ * read `/me` since several families — everything is "the one family", filed
+ * under [familyKey] for the first `/me` to claim for the home family.
+ */
+fun SettingsState.localFamilyKey(familyId: Long?): Long =
+    if (families.isEmpty()) familyKey else familyId ?: familyKey
+
+/** The board cursor of one family; 0 = nothing applied yet. */
+fun SettingsState.boardCursor(familyId: Long): Long = boardCursors[familyId] ?: 0L
+
+/** The pack cursor of one family; 0 = nothing applied yet. */
+fun SettingsState.packCursor(familyId: Long): Long = packCursors[familyId] ?: 0L
+
+/**
+ * The family to name in a request PATH: the id on a server that speaks
+ * several families, null — the form without one, the home family — on a
+ * server from before, which knows no other form (docs/protocol.md,
+ * "Several families": "Apps from before this section").
+ */
+fun SettingsState.pathFamily(familyId: Long): Long? = familyId.takeIf { multiFamilyServer && it > 0L }
+
+/**
+ * The owner's switches of [family] into the single values the composer and
+ * the bubbles read — the CURRENT family's (docs/protocol.md, "Several
+ * families": everything family-level is the current family's). Each a
+ * complete state-set, `false` included.
+ */
+suspend fun SettingsRepository.mirrorFamilySwitches(family: FamilyDto) {
+    setFamilyAiHistory(family.aiHistory)
+    setFamilyAiVision(family.aiVision)
+    setFamilyAiHistoryPhotos(family.aiHistoryPhotos)
+    setFamilyAiGreeting(family.aiGreeting)
+    setFamilyAiTranscripts(family.aiTranscripts)
+    setFamilyAiLookups(family.aiLookups)
+}
+
 interface SettingsRepository {
     val state: Flow<SettingsState>
 
@@ -365,12 +459,47 @@ interface SettingsRepository {
     suspend fun setLinkPreviewsEnabled(enabled: Boolean)
 
     /**
-     * The board catch-up cursor: the highest board_seq this device has
-     * APPLIED. Local-only and account-scoped, so it is wiped with the
-     * session — a different family's board must never be caught up from
-     * another's cursor.
+     * The board catch-up cursor of [familyId]: the highest board_seq this
+     * device has APPLIED there. Local-only and account-scoped, so it is wiped
+     * with the session — and one per family, because a family's board must
+     * never be caught up from another's cursor.
      */
-    suspend fun setBoardCursor(seq: Long)
+    suspend fun setBoardCursor(familyId: Long, seq: Long)
+
+    /**
+     * REPLACE the family list and what rides beside it on `GET /me`
+     * (docs/protocol.md, "Several families"). The current family, the status
+     * and the mirrored switches are the session's to reconcile afterwards —
+     * this only stores.
+     */
+    suspend fun setFamilies(
+        families: List<FamilyDto>,
+        pendingJoinRequests: List<PendingJoinRequestDto>,
+        invitations: List<InvitationDto>,
+        memberFamiliesEnabled: Boolean,
+        maxFamiliesPerAccount: Int,
+        multiFamilyServer: Boolean,
+    )
+
+    /** Which family the app shows; null without one. */
+    suspend fun setCurrentFamilyId(familyId: Long?)
+
+    /** REPLACE the invitations to this account (a frame, an accept, a decline). */
+    suspend fun setInvitations(invitations: List<InvitationDto>)
+
+    /**
+     * This account is out of [familyId]: it leaves the list, and its cursors
+     * and badge marks go with it — a rejoin starts from a full read.
+     */
+    suspend fun forgetFamily(familyId: Long)
+
+    /**
+     * Move what this device kept for "the family" before several families —
+     * the board and pack cursors and the badge marks, stored as single values
+     * — under the HOME family, the only one an app from before saw. A no-op
+     * once done.
+     */
+    suspend fun claimLegacyFamilyState(homeFamilyId: Long)
 
     /**
      * Session teardown: wipe everything EXCEPT the server URL (protocol:
@@ -380,19 +509,19 @@ interface SettingsRepository {
      * waiting for Firebase to deliver the token again. The device *id* is
      * account-scoped and is dropped with everything else.
      */
-    suspend fun setBoardSeenNoteId(noteId: Long)
+    suspend fun setBoardSeenNoteId(familyId: Long, noteId: Long)
 
     /** The badge's real mark. Monotonic, like the one above. */
-    suspend fun setBoardSeenContentSeq(seq: Long)
+    suspend fun setBoardSeenContentSeq(familyId: Long, seq: Long)
 
     /**
-     * The sticker pack's catch-up cursor: the highest pack_seq this device
-     * has APPLIED. Account- and family-scoped like the board's — and,
-     * unlike the board's, also set back to 0 when this member leaves a
-     * family, because pack seqs are server-wide and another family's pack
-     * must never be caught up from this one's mark.
+     * The sticker pack's catch-up cursor of [familyId]: the highest pack_seq
+     * this device has APPLIED there. Account- and family-scoped like the
+     * board's, and dropped with the family when this member leaves it,
+     * because pack seqs are server-wide and another family's pack must never
+     * be caught up from this one's mark.
      */
-    suspend fun setPackCursor(seq: Long)
+    suspend fun setPackCursor(familyId: Long, seq: Long)
 
     /**
      * Record what `GET /families/mine` said the pack's ceilings are. Null
@@ -577,7 +706,24 @@ class DataStoreSettingsRepository @Inject constructor(
         val PUSH_LANGUAGE = stringPreferencesKey("push_language")
         // Stored inverted so a missing key reads as "on".
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
+        // The four single values from before several families. Read only by
+        // claimLegacyFamilyState, which moves them under the home family and
+        // removes them.
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
+        // Per family since several families: "id:value" pairs, comma-joined
+        // (LongMapCodec) — Preferences DataStore has no map key type.
+        val BOARD_CURSORS = stringPreferencesKey("board_cursors")
+        val PACK_CURSORS = stringPreferencesKey("pack_cursors")
+        val BOARD_SEEN_NOTE_IDS = stringPreferencesKey("board_seen_note_ids")
+        val BOARD_SEEN_CONTENT_SEQS = stringPreferencesKey("board_seen_content_seqs")
+        // JSON, through FamilyListCodec: small lists of wire objects.
+        val FAMILIES = stringPreferencesKey("families")
+        val CURRENT_FAMILY_ID = longPreferencesKey("current_family_id")
+        val PENDING_JOIN_REQUESTS = stringPreferencesKey("pending_join_requests")
+        val INVITATIONS = stringPreferencesKey("invitations")
+        val MEMBER_FAMILIES_ENABLED = booleanPreferencesKey("member_families_enabled")
+        val MAX_FAMILIES_PER_ACCOUNT = intPreferencesKey("max_families_per_account")
+        val MULTI_FAMILY_SERVER = booleanPreferencesKey("multi_family_server")
         val BOARD_SEEN_NOTE_ID = longPreferencesKey("board_seen_note_id")
         // A separate key rather than a reused one: the two numbers come
         // from different spaces — a note id and a board seq — and a device
@@ -668,10 +814,17 @@ class DataStoreSettingsRepository @Inject constructor(
                 ?.toSet()
                 .orEmpty(),
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
-            boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
-            boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
-            boardSeenContentSeq = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L,
-            packCursor = prefs[Keys.PACK_CURSOR] ?: 0L,
+            boardCursors = LongMapCodec.decode(prefs[Keys.BOARD_CURSORS]),
+            boardSeenNoteIds = LongMapCodec.decode(prefs[Keys.BOARD_SEEN_NOTE_IDS]),
+            boardSeenContentSeqs = LongMapCodec.decode(prefs[Keys.BOARD_SEEN_CONTENT_SEQS]),
+            packCursors = LongMapCodec.decode(prefs[Keys.PACK_CURSORS]),
+            families = FamilyListCodec.decodeFamilies(prefs[Keys.FAMILIES]),
+            currentFamilyId = prefs[Keys.CURRENT_FAMILY_ID],
+            pendingJoinRequests = FamilyListCodec.decodePending(prefs[Keys.PENDING_JOIN_REQUESTS]),
+            invitations = FamilyListCodec.decodeInvitations(prefs[Keys.INVITATIONS]),
+            memberFamiliesEnabled = prefs[Keys.MEMBER_FAMILIES_ENABLED] == true,
+            maxFamiliesPerAccount = prefs[Keys.MAX_FAMILIES_PER_ACCOUNT] ?: 0,
+            multiFamilyServer = prefs[Keys.MULTI_FAMILY_SERVER] == true,
             packMaxItems = prefs[Keys.PACK_MAX_ITEMS] ?: 0,
             packMaxItemBytes = prefs[Keys.PACK_MAX_ITEM_BYTES] ?: 0L,
             roundVideoMaxMs = prefs[Keys.ROUND_VIDEO_MAX_MS] ?: 0L,
@@ -768,28 +921,89 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit { it[Keys.LINK_PREVIEWS_DISABLED] = !enabled }
     }
 
-    override suspend fun setBoardCursor(seq: Long) {
-        dataStore.edit { it[Keys.BOARD_CURSOR] = seq }
+    override suspend fun setBoardCursor(familyId: Long, seq: Long) {
+        dataStore.edit { prefs -> prefs.putInMap(Keys.BOARD_CURSORS, familyId, seq) }
     }
 
-    override suspend fun setBoardSeenNoteId(noteId: Long) {
+    override suspend fun setFamilies(
+        families: List<FamilyDto>,
+        pendingJoinRequests: List<PendingJoinRequestDto>,
+        invitations: List<InvitationDto>,
+        memberFamiliesEnabled: Boolean,
+        maxFamiliesPerAccount: Int,
+        multiFamilyServer: Boolean,
+    ) {
+        dataStore.edit { prefs ->
+            prefs[Keys.FAMILIES] = FamilyListCodec.encodeFamilies(families)
+            prefs[Keys.PENDING_JOIN_REQUESTS] = FamilyListCodec.encodePending(pendingJoinRequests)
+            prefs[Keys.INVITATIONS] = FamilyListCodec.encodeInvitations(invitations)
+            prefs[Keys.MEMBER_FAMILIES_ENABLED] = memberFamiliesEnabled
+            prefs[Keys.MAX_FAMILIES_PER_ACCOUNT] = maxFamiliesPerAccount
+            prefs[Keys.MULTI_FAMILY_SERVER] = multiFamilyServer
+        }
+    }
+
+    override suspend fun setCurrentFamilyId(familyId: Long?) {
+        dataStore.edit { prefs ->
+            if (familyId == null) prefs.remove(Keys.CURRENT_FAMILY_ID) else prefs[Keys.CURRENT_FAMILY_ID] = familyId
+        }
+    }
+
+    override suspend fun setInvitations(invitations: List<InvitationDto>) {
+        dataStore.edit { it[Keys.INVITATIONS] = FamilyListCodec.encodeInvitations(invitations) }
+    }
+
+    override suspend fun forgetFamily(familyId: Long) {
+        dataStore.edit { prefs ->
+            val families = FamilyListCodec.decodeFamilies(prefs[Keys.FAMILIES])
+            prefs[Keys.FAMILIES] = FamilyListCodec.encodeFamilies(families.filter { it.id != familyId })
+            for (key in listOf(Keys.BOARD_CURSORS, Keys.PACK_CURSORS, Keys.BOARD_SEEN_NOTE_IDS, Keys.BOARD_SEEN_CONTENT_SEQS)) {
+                prefs[key] = LongMapCodec.encode(LongMapCodec.decode(prefs[key]) - familyId)
+            }
+        }
+    }
+
+    override suspend fun claimLegacyFamilyState(homeFamilyId: Long) {
+        dataStore.edit { prefs ->
+            fun move(legacy: Preferences.Key<Long>, map: Preferences.Key<String>) {
+                val value = prefs[legacy] ?: return
+                val held = LongMapCodec.decode(prefs[map])
+                if (homeFamilyId !in held) prefs[map] = LongMapCodec.encode(held + (homeFamilyId to value))
+                prefs.remove(legacy)
+            }
+            move(Keys.BOARD_CURSOR, Keys.BOARD_CURSORS)
+            move(Keys.PACK_CURSOR, Keys.PACK_CURSORS)
+            move(Keys.BOARD_SEEN_NOTE_ID, Keys.BOARD_SEEN_NOTE_IDS)
+            move(Keys.BOARD_SEEN_CONTENT_SEQ, Keys.BOARD_SEEN_CONTENT_SEQS)
+        }
+    }
+
+    override suspend fun setBoardSeenNoteId(familyId: Long, noteId: Long) {
         dataStore.edit { prefs ->
             // Never goes backwards: two screens marking it at once must not
             // resurrect a badge that was already cleared.
-            val current = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L
-            if (noteId > current) prefs[Keys.BOARD_SEEN_NOTE_ID] = noteId
+            val current = LongMapCodec.decode(prefs[Keys.BOARD_SEEN_NOTE_IDS])[familyId] ?: 0L
+            if (noteId > current) prefs.putInMap(Keys.BOARD_SEEN_NOTE_IDS, familyId, noteId)
         }
     }
 
-    override suspend fun setBoardSeenContentSeq(seq: Long) {
+    override suspend fun setBoardSeenContentSeq(familyId: Long, seq: Long) {
         dataStore.edit { prefs ->
-            val current = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L
-            if (seq > current) prefs[Keys.BOARD_SEEN_CONTENT_SEQ] = seq
+            val current = LongMapCodec.decode(prefs[Keys.BOARD_SEEN_CONTENT_SEQS])[familyId] ?: 0L
+            if (seq > current) prefs.putInMap(Keys.BOARD_SEEN_CONTENT_SEQS, familyId, seq)
         }
     }
 
-    override suspend fun setPackCursor(seq: Long) {
-        dataStore.edit { it[Keys.PACK_CURSOR] = seq }
+    override suspend fun setPackCursor(familyId: Long, seq: Long) {
+        dataStore.edit { prefs -> prefs.putInMap(Keys.PACK_CURSORS, familyId, seq) }
+    }
+
+    private fun androidx.datastore.preferences.core.MutablePreferences.putInMap(
+        key: Preferences.Key<String>,
+        familyId: Long,
+        value: Long,
+    ) {
+        this[key] = LongMapCodec.encode(LongMapCodec.decode(this[key]) + (familyId to value))
     }
 
     override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
@@ -1003,5 +1217,52 @@ class DataStoreSettingsRepository @Inject constructor(
             keepRoundPreviewTaught?.let { prefs[Keys.ROUND_PREVIEW_TAUGHT] = it }
             keepVoiceSpeed?.let { prefs[VOICE_PLAYBACK_SPEED_KEY] = it }
         }
+    }
+}
+
+/**
+ * A small `Map<Long, Long>` as one Preferences string, `"3:88,5:12"`. Never
+ * throws: an unreadable pair is skipped, so a corrupt entry costs a full
+ * read rather than a crash inside the map every screen collects.
+ */
+object LongMapCodec {
+    fun encode(map: Map<Long, Long>): String =
+        map.entries.sortedBy { it.key }.joinToString(",") { "${it.key}:${it.value}" }
+
+    fun decode(raw: String?): Map<Long, Long> =
+        raw.orEmpty().split(',').mapNotNull { pair ->
+            val key = pair.substringBefore(':', "").trim().toLongOrNull()
+            val value = pair.substringAfter(':', "").trim().toLongOrNull()
+            if (key != null && value != null) key to value else null
+        }.toMap()
+}
+
+/**
+ * The family list and what rides beside it, as JSON in one Preferences
+ * string each — the wire's own objects, so nothing is lost between `/me` and
+ * the next launch. Never throws: unreadable reads as empty, and the next
+ * `/me` writes it again.
+ */
+object FamilyListCodec {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+    }
+    private val families = ListSerializer(FamilyDto.serializer())
+    private val pending = ListSerializer(PendingJoinRequestDto.serializer())
+    private val invitations = ListSerializer(InvitationDto.serializer())
+
+    fun encodeFamilies(list: List<FamilyDto>): String = json.encodeToString(families, list)
+    fun encodePending(list: List<PendingJoinRequestDto>): String = json.encodeToString(pending, list)
+    fun encodeInvitations(list: List<InvitationDto>): String = json.encodeToString(invitations, list)
+
+    fun decodeFamilies(raw: String?): List<FamilyDto> = decode(raw) { json.decodeFromString(families, it) }
+    fun decodePending(raw: String?): List<PendingJoinRequestDto> = decode(raw) { json.decodeFromString(pending, it) }
+    fun decodeInvitations(raw: String?): List<InvitationDto> =
+        decode(raw) { json.decodeFromString(invitations, it) }
+
+    private inline fun <T> decode(raw: String?, read: (String) -> List<T>): List<T> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching { read(raw) }.getOrDefault(emptyList())
     }
 }

@@ -14,14 +14,29 @@
  * is gone; one filter (MemberDao.observeActiveMembers), because nothing
  * that offers an action on a person may include them.
  *
+ * Several families (#88; docs/protocol.md, "Several families"): every
+ * family-level call names the CURRENT family, every frame is applied to
+ * the family its `family_id` names — never to "my family" — and the roster
+ * of EVERY family the account is in is kept, one row per (family, member).
+ * Creating another family, joining one with a code and accepting an
+ * invitation all add a family and switch to it; leaving drops that family
+ * alone. Invitations to this account live in settings; the owner's side of
+ * them (invite, the pending list, withdraw) is here too.
+ *
  * iOS counterpart: ios/FamilyConnect/Data/Repo/FamilyRepository.swift
  */
 
 package me.nettrash.familyconnect.data.repo
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MemberEntity
@@ -31,13 +46,20 @@ import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.AssistantReportResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
+import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.InvitationDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.settings.SettingsState
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.localFamilyKey
+import me.nettrash.familyconnect.data.settings.mirrorFamilySwitches
+import me.nettrash.familyconnect.data.settings.pathFamily
 import me.nettrash.familyconnect.di.AppScope
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -54,8 +76,26 @@ class FamilyRepository @Inject constructor(
     private val settings: SettingsRepository,
     private val sessionRepository: SessionRepository,
     socket: ChatSocket,
-    @AppScope scope: CoroutineScope,
+    @param:AppScope private val scope: CoroutineScope,
 ) {
+
+    private val _familiesAdded = MutableSharedFlow<Long>(extraBufferCapacity = 4)
+
+    /**
+     * A family this account just came into — created, joined with a code, an
+     * invitation accepted, or a `member_joined` naming us from another
+     * device. Its chats, board and pack are a resync away; ChatSocketManager
+     * runs one off this.
+     */
+    val familiesAdded: SharedFlow<Long> = _familiesAdded
+
+    private val _invitationsChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+
+    /**
+     * An `invitation` or `invitation_removed` frame arrived — the owner's
+     * pending list re-reads off this (docs/protocol.md, "Several families").
+     */
+    val invitationsChanged: SharedFlow<Unit> = _invitationsChanged
 
     init {
         scope.launch {
@@ -70,21 +110,41 @@ class FamilyRepository @Inject constructor(
                     // is re-approved. An absent field never wipes a
                     // stored one; [MemberDao.upsertLeavingBirthday] is
                     // where that rule is spelled out.
-                    is ServerFrame.MemberJoined -> memberDao.upsertLeavingBirthday(
-                        MemberEntity(
-                            userId = frame.user.id,
-                            username = frame.user.username,
-                            displayName = frame.user.displayName,
-                            // Joiners are always plain members; the
-                            // owner existed before the frame could.
-                            role = "member",
-                            avatarVersion = frame.user.avatarVersion,
-                        ),
-                    )
+                    //
+                    // Applied to the family the frame names. One naming ME
+                    // for a family this device does not hold means "you are
+                    // in a new family" (an approval, an accepted invitation,
+                    // a family created on another device): `/me` and that
+                    // family are read again (docs/protocol.md, "Several
+                    // families").
+                    is ServerFrame.MemberJoined -> {
+                        val state = settings.state.first()
+                        val held = state.families.isEmpty() || state.families.any { it.id == frame.familyId }
+                        if (frame.user.id == state.myUserId && !held) {
+                            sessionRepository.refreshMe()
+                            refreshFamily(frame.familyId)
+                            _familiesAdded.tryEmit(frame.familyId)
+                        } else if (held) {
+                            memberDao.upsertLeavingBirthday(
+                                MemberEntity(
+                                    familyId = state.localFamilyKey(frame.familyId),
+                                    userId = frame.user.id,
+                                    username = frame.user.username,
+                                    displayName = frame.user.displayName,
+                                    // Joiners are always plain members; the
+                                    // owner existed before the frame could.
+                                    role = "member",
+                                    avatarVersion = frame.user.avatarVersion,
+                                ),
+                            )
+                        }
+                    }
+                    // Out of THAT family. Naming me: only that family's
+                    // chats, board, pack, roster and cursors go.
                     is ServerFrame.MemberLeft -> {
-                        memberDao.markLeft(frame.userId)
+                        memberDao.markLeft(settings.state.first().localFamilyKey(frame.familyId), frame.userId)
                         val myId = settings.state.first().myUserId
-                        if (frame.userId == myId) sessionRepository.onRemovedFromFamily()
+                        if (frame.userId == myId) sessionRepository.leftFamily(frame.familyId)
                     }
                     // The ONE frame whose job is to wipe stored fields, so
                     // it is written deliberately rather than upserted —
@@ -97,6 +157,10 @@ class FamilyRepository @Inject constructor(
                     // that half is ChatRepository's, because the chat
                     // store is not this repository's to write.
                     is ServerFrame.MemberDeleted -> memberDao.writeTombstone(
+                        // The account is gone from every family at once; the
+                        // row this device may lack is filed under the family
+                        // the frame names, or the one shown when it names none.
+                        familyId = settings.state.first().localFamilyKey(frame.familyId),
                         userId = frame.member.id,
                         username = frame.member.username,
                         displayName = frame.member.displayName,
@@ -106,11 +170,22 @@ class FamilyRepository @Inject constructor(
                     // new owner is US the stored status flips now rather
                     // than at the next GET /me — that is the whole point
                     // of the frame (protocol.md, "Server → client").
+                    // Since several families: THAT family's owner, and the
+                    // role on that family's entry, which is the status only
+                    // when it is the family shown.
                     is ServerFrame.FamilyOwner -> {
-                        memberDao.setOwner(frame.userId)
                         val state = settings.state.first()
-                        if (state.familyStatus == FamilyStatus.MEMBER ||
-                            state.familyStatus == FamilyStatus.OWNER
+                        memberDao.setOwner(state.localFamilyKey(frame.familyId), frame.userId)
+                        val entry = state.families.firstOrNull { it.id == frame.familyId }
+                        if (entry != null) {
+                            when {
+                                frame.userId == state.myUserId ->
+                                    sessionRepository.setFamilyRole(frame.familyId, FamilyList.OWNER)
+                                entry.role == FamilyList.OWNER ->
+                                    sessionRepository.setFamilyRole(frame.familyId, "member")
+                            }
+                        } else if (state.families.isEmpty() &&
+                            (state.familyStatus == FamilyStatus.MEMBER || state.familyStatus == FamilyStatus.OWNER)
                         ) {
                             settings.setFamilyStatus(
                                 if (frame.userId == state.myUserId) {
@@ -129,6 +204,8 @@ class FamilyRepository @Inject constructor(
                     // on `/me`, so it goes through the same store.
                     is ServerFrame.MemberBlocked ->
                         applyBlockLocally(frame.userId, frame.blocked)
+                    is ServerFrame.Invitation -> onInvitation(frame.invitation)
+                    is ServerFrame.InvitationRemoved -> onInvitationRemoved(frame.invitationId)
                     else -> Unit
                 }
             }
@@ -147,6 +224,131 @@ class FamilyRepository @Inject constructor(
         val next = if (blocked) current + userId else current - userId
         if (next != current) settings.setBlockedUserIds(next)
     }
+
+    // -- Which family -----------------------------------------------------------
+
+    private suspend fun state(): SettingsState = settings.state.first()
+
+    /** The current family's local key (0 before there is one). */
+    private suspend fun currentFamily(): Long = state().familyKey
+
+    /** The current family as a request path names it — null on a server from before. */
+    private suspend fun currentPath(): Long? = state().let { it.pathFamily(it.familyKey) }
+
+    /**
+     * `family_not_found` means the family is gone for this account — or was
+     * never there (docs/protocol.md, "Several families"): re-read `/me`,
+     * which reconciles the list and drops what is no longer ours.
+     */
+    private fun <T> ApiResult<T>.resyncIfGone(): ApiResult<T> {
+        if (this is ApiResult.HttpError && code == FAMILY_NOT_FOUND) {
+            scope.launch { sessionRepository.refreshMe() }
+        }
+        return this
+    }
+
+    /** Show [familyId] — the switcher's tap. */
+    suspend fun switchTo(familyId: Long) = sessionRepository.switchFamily(familyId)
+
+    /**
+     * Open a push about [familyId] — or, for a direct chat's push that names
+     * none, about the families [chatFamilyIds] lists — in its family
+     * (docs/protocol.md, "Several families" — "Pushes").
+     */
+    suspend fun switchForPush(familyId: Long?, chatFamilyIds: List<Long>?) {
+        val state = state()
+        val target = familyId?.takeIf { id -> state.families.any { it.id == id } }
+            ?: FamilyList.familyForChat(chatFamilyIds, state.currentFamilyId, state.families)
+            ?: return
+        if (target != state.currentFamilyId) sessionRepository.switchFamily(target)
+    }
+
+    /**
+     * A family this account just came into: on the list, shown, its roster
+     * read, and a resync asked for its chats, board and pack.
+     */
+    private suspend fun adopt(family: FamilyDto, role: String) {
+        sessionRepository.addFamily(family.copy(role = family.role ?: role))
+        refreshFamily(family.id)
+        _familiesAdded.tryEmit(family.id)
+    }
+
+    // -- Invitations ------------------------------------------------------------
+
+    /**
+     * An invitation frame. Mine (I am the one invited): onto the banner.
+     * The owner's copy only tells the owner's screen to re-read its list.
+     */
+    private suspend fun onInvitation(invitation: InvitationDto) {
+        val state = state()
+        if (invitation.user.id == state.myUserId) {
+            settings.setInvitations(state.invitations.filter { it.id != invitation.id } + invitation)
+        }
+        _invitationsChanged.tryEmit(Unit)
+    }
+
+    private suspend fun onInvitationRemoved(invitationId: Long) {
+        dropInvitation(invitationId)
+        _invitationsChanged.tryEmit(Unit)
+    }
+
+    private suspend fun dropInvitation(invitationId: Long) {
+        val held = state().invitations
+        if (held.any { it.id == invitationId }) settings.setInvitations(held.filter { it.id != invitationId })
+    }
+
+    /**
+     * "Join" on an invitation: membership is immediate, the family is added
+     * and shown. `invitation_not_pending` means it is gone — accepted
+     * elsewhere, withdrawn, declined — and it leaves the banner; the caller
+     * says so.
+     */
+    suspend fun acceptInvitation(invitationId: Long): ApiResult<FamilyResponse> {
+        val result = familyApi.acceptInvitation(invitationId)
+        when (result) {
+            is ApiResult.Ok -> {
+                dropInvitation(invitationId)
+                adopt(result.value.family, role = "member")
+            }
+            is ApiResult.HttpError -> if (result.code == INVITATION_NOT_PENDING) dropInvitation(invitationId)
+            is ApiResult.NetworkError -> Unit
+        }
+        return result
+    }
+
+    /** "Decline". Idempotent on the server, so it leaves the banner either way it answers. */
+    suspend fun declineInvitation(invitationId: Long): ApiResult<Unit> {
+        val result = familyApi.declineInvitation(invitationId)
+        if (result is ApiResult.Ok ||
+            (result is ApiResult.HttpError && result.code == INVITATION_NOT_PENDING)
+        ) {
+            dropInvitation(invitationId)
+        }
+        return result
+    }
+
+    /** Owner: invite [userId] — a member of another of the owner's families — into the current one. */
+    suspend fun invite(userId: Long): ApiResult<InvitationDto> =
+        when (val result = familyApi.invite(currentPath(), userId).resyncIfGone()) {
+            is ApiResult.Ok -> ApiResult.Ok(result.value.invitation)
+            is ApiResult.HttpError -> result
+            is ApiResult.NetworkError -> result
+        }
+
+    /** Owner: the current family's pending invitations, oldest first. */
+    suspend fun pendingInvitations(): ApiResult<List<InvitationDto>> =
+        when (val result = familyApi.invitations(currentPath()).resyncIfGone()) {
+            is ApiResult.Ok -> ApiResult.Ok(result.value.invitations)
+            is ApiResult.HttpError -> result
+            is ApiResult.NetworkError -> result
+        }
+
+    /** Owner: "Withdraw Invitation". */
+    suspend fun withdrawInvitation(invitationId: Long): ApiResult<Unit> =
+        familyApi.withdrawInvitation(currentPath(), invitationId).resyncIfGone()
+
+    /** Every live membership this device holds — the Invite picker's source. */
+    fun observeAllMemberships(): Flow<List<MemberEntity>> = memberDao.observeAllActiveMemberships()
 
     /**
      * Block a member. ANY member may block any other, the OWNER INCLUDED.
@@ -171,19 +373,42 @@ class FamilyRepository @Inject constructor(
      * member").
      */
     /** Owner-only: the open reports, oldest first. */
-    suspend fun reports(): ApiResult<ReportsResponse> = familyApi.reports()
+    suspend fun reports(): ApiResult<ReportsResponse> = familyApi.reports(currentPath()).resyncIfGone()
 
     /** Owner-only: take one report off the list. */
-    suspend fun resolveReport(reportId: Long): ApiResult<Unit> = familyApi.resolveReport(reportId)
+    suspend fun resolveReport(reportId: Long): ApiResult<Unit> =
+        familyApi.resolveReport(currentPath(), reportId).resyncIfGone()
 
     /** The most members this family admits; null CLEARS the cap. */
-    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> = familyApi.setMemberCap(cap)
+    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> =
+        familyApi.setMemberCap(currentPath(), cap).resyncIfGone().alsoMirror()
 
+    /** To the CURRENT family's owner (docs/protocol.md, `POST /families/{id}/reports`). */
     suspend fun report(
         reportedUserId: Long,
         reason: String,
         messageId: Long?,
-    ): ApiResult<ReportResponse> = familyApi.report(reportedUserId, reason, messageId)
+    ): ApiResult<ReportResponse> = familyApi.report(currentPath(), reportedUserId, reason, messageId).resyncIfGone()
+
+    /** Statistics are the current family's, for every member (docs/protocol.md, "Family statistics"). */
+    suspend fun stats() = familyApi.stats(currentPath()).resyncIfGone()
+
+    /**
+     * An owner's PATCH answered with the family as it now stands: its entry
+     * on the list follows, and — when it is the family shown — the mirrored
+     * switches with it.
+     */
+    private suspend fun ApiResult<FamilyResponse>.alsoMirror(): ApiResult<FamilyResponse> {
+        if (this is ApiResult.Ok) {
+            // With no list yet the one family is the one shown.
+            if (state().families.isEmpty()) {
+                settings.mirrorFamilySwitches(value.family)
+            } else {
+                sessionRepository.updateFamily(value.family)
+            }
+        }
+        return this
+    }
 
     /**
      * Report an ASSISTANT reply. A separate path from [report]: the assistant
@@ -268,13 +493,42 @@ class FamilyRepository @Inject constructor(
     /** Everyone ever seen — the name-resolution feed. */
     fun observeMembers(): Flow<List<MemberEntity>> = memberDao.observeMembers()
 
-    /** Only those still in the family — for pickers and the admin list. */
-    fun observeActiveMembers(): Flow<List<MemberEntity>> = memberDao.observeActiveMembers()
+    /** Only those still in the CURRENT family — for pickers and the admin list. */
+    fun observeActiveMembers(): Flow<List<MemberEntity>> = memberDao.observeCurrentActiveMembers(settings)
 
-    /** GET /families/mine → roster upsert. invite_code present for owners only. */
-    suspend fun refreshMine(): ApiResult<FamilyMineResponse> {
-        val result = familyApi.mine()
+    /**
+     * Every family this account is in, for the resync to read one by one —
+     * or, on an install that has not read `/me` since several families, the
+     * one family it has.
+     */
+    suspend fun heldFamilyIds(): List<Long> = state().let { s ->
+        s.families.map { it.id }.ifEmpty { listOf(s.familyKey) }
+    }
+
+    /** The CURRENT family's roster read — what every screen that says "the family" means. */
+    suspend fun refreshMine(): ApiResult<FamilyMineResponse> = refreshFamily(currentFamily())
+
+    /**
+     * `GET /families/{id}` → that family's roster upsert. invite_code present
+     * for owners only. Resync reads EVERY family through here.
+     */
+    suspend fun refreshFamily(familyId: Long): ApiResult<FamilyMineResponse> {
+        val asked = state()
+        val result = familyApi.family(asked.pathFamily(familyId)).resyncIfGone()
         if (result is ApiResult.Ok) {
+            // Filed under the id the answer carries — the one asked for on a
+            // server with several families, the home family's on one from
+            // before, which only ever answers `mine`. An install that has not
+            // read `/me` since several families has no list yet, and files
+            // under the key it asked with, which is what its screens read and
+            // what the first `/me` claims for the home family.
+            // A server from before answers `mine` for whatever was asked, and
+            // that IS the family asked about — the one family it has.
+            val key = if (asked.families.isEmpty() || asked.pathFamily(familyId) == null) {
+                familyId
+            } else {
+                asked.localFamilyKey(result.value.family.id)
+            }
             // Upsert, then flag whoever the server no longer lists.
             //
             // NOT delete-then-insert: that dropped departed members
@@ -283,6 +537,7 @@ class FamilyRepository @Inject constructor(
             // who rejoined, since the row is replaced wholesale.
             val roster = result.value.members.map {
                 MemberEntity(
+                    familyId = key,
                     userId = it.id,
                     username = it.username,
                     displayName = it.displayName,
@@ -311,6 +566,7 @@ class FamilyRepository @Inject constructor(
             // values are gone.
             val tombstones = result.value.formerMembers.map {
                 MemberEntity(
+                    familyId = key,
                     userId = it.id,
                     username = it.username,
                     displayName = it.displayName,
@@ -329,9 +585,20 @@ class FamilyRepository @Inject constructor(
                 // Guarded: `NOT IN ()` is a syntax error in SQLite, and an
                 // empty roster cannot happen anyway — the caller is in the
                 // family they just read.
-                memberDao.markLeftExcept(roster.map { it.userId })
+                memberDao.markLeftExcept(key, roster.map { it.userId })
             }
-            settings.setFamilyName(result.value.family.name)
+            // The family's entry on the list follows the read, and the
+            // mirrored name and switches with it when it is the family
+            // shown. An account whose list is not known yet (an install
+            // that has not read `/me` since several families) has only the
+            // one family, which is the one shown.
+            val held = state()
+            if (held.families.any { it.id == key }) {
+                sessionRepository.updateFamily(result.value.family)
+            } else if (held.families.isEmpty()) {
+                settings.setFamilyName(result.value.family.name)
+                settings.mirrorFamilySwitches(result.value.family)
+            }
             // The sticker pack's two ceilings — and, by their ABSENCE, the
             // news that this server predates packs. Unconditional, null
             // included: it is the whole capability check, so a server that
@@ -371,21 +638,8 @@ class FamilyRepository @Inject constructor(
                 // things up"). Absent when the server has no source.
                 lookups = result.value.assistant?.lookups,
             )
-            // …and what this FAMILY allows, which is a different question
-            // with a different answer and its own owner-only switch —
-            // three of them now: the transcript, a pointed-at photo, and
-            // (the third, under both) the transcript's recent photos. All
-            // three mirrored, so the family composer's strip can say what
-            // a mention is about to carry without a round trip.
-            settings.setFamilyAiHistory(result.value.family.aiHistory)
-            settings.setFamilyAiVision(result.value.family.aiVision)
-            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
-            // The owner's transcripts switch, for the bubbles: whether
-            // another member's recording may be offered "Show text".
-            settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
-            // The owner's lookups switch, for the settings screen to say
-            // whether lookups are on in this family.
-            settings.setFamilyAiLookups(result.value.family.aiLookups)
+            // …and what this FAMILY allows is mirrored above, through the
+            // family's entry: those switches are the current family's.
             // The second apply of the same complete state-set. Idempotent
             // and last-writer-wins, which is why the fixed resync order
             // (/me, then /families/mine) needs no coordination — and why
@@ -396,52 +650,80 @@ class FamilyRepository @Inject constructor(
         return result
     }
 
+    /**
+     * `POST /families` — the first family from the gate, or ANOTHER one
+     * ("New Family…", docs/protocol.md, "Several families"). Either way the
+     * caller owns it, it goes on the list and it is shown. The assistant and
+     * the roster come from `GET /families/{id}`, which [adopt] reads —
+     * `POST /families` answers with the family alone.
+     */
     suspend fun create(name: String): ApiResult<FamilyResponse> {
         val result = familyApi.create(name)
         if (result is ApiResult.Ok) {
-            settings.setFamilyStatus(FamilyStatus.OWNER)
-            settings.setFamilyName(result.value.family.name)
-            // The assistant comes from `GET /families/mine`, which the call
-            // below makes anyway — `POST /families` answers with the family
-            // alone.
-            refreshMine()
+            if (state().families.isEmpty()) {
+                settings.setFamilyStatus(FamilyStatus.OWNER)
+                settings.setFamilyName(result.value.family.name)
+            }
+            adopt(result.value.family, role = FamilyList.OWNER)
         }
         return result
     }
 
+    /**
+     * `POST /families/join` — from the gate, or "Join Another Family…".
+     * `joined`: `/me` names the new family, which is then shown. `pending`:
+     * with no family that is the waiting screen; with one, a pending row in
+     * the switcher, which `/me` brings.
+     */
     suspend fun join(inviteCode: String): ApiResult<JoinResponse> {
+        val before = state().families.mapTo(HashSet()) { it.id }
         val result = familyApi.join(inviteCode)
         if (result is ApiResult.Ok) {
             when (result.value.status) {
                 // Open policy — membership immediate; refreshMe picks up
                 // family + role and flips the status.
-                "joined" -> sessionRepository.refreshMe()
-                else -> settings.setFamilyStatus(FamilyStatus.PENDING)
+                "joined" -> {
+                    sessionRepository.refreshMe()
+                    // The answer names the family; an older server's does
+                    // not, and the new entry on `/me` is the one joined.
+                    val families = state().families
+                    val added = result.value.familyId?.let { id -> families.firstOrNull { it.id == id } }
+                        ?: families.firstOrNull { it.id !in before }
+                    if (added != null && before.isNotEmpty()) {
+                        sessionRepository.switchFamily(added.id)
+                    }
+                    added?.let {
+                        refreshFamily(it.id)
+                        _familiesAdded.tryEmit(it.id)
+                    }
+                }
+                else -> if (before.isEmpty()) {
+                    settings.setFamilyStatus(FamilyStatus.PENDING)
+                } else {
+                    sessionRepository.refreshMe()
+                }
             }
         }
         return result
     }
 
     suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
-        familyApi.rotateInviteCode()
+        familyApi.rotateInviteCode(currentPath()).resyncIfGone()
 
     suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse> =
-        familyApi.setJoinPolicy(policy)
+        familyApi.setJoinPolicy(currentPath(), policy).resyncIfGone().alsoMirror()
 
     /** Owner-only. A null tag CLEARS the language back to unset. */
     suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> =
-        familyApi.setLanguage(tag)
+        familyApi.setLanguage(currentPath(), tag).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only. Mirrored onto the settings for the strip's sake: with
      * history off there is no transcript, so the third switch is inert
      * and the family composer must stop announcing recent photos.
      */
-    suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiHistory(enabled)
-        if (result is ApiResult.Ok) settings.setFamilyAiHistory(result.value.family.aiHistory)
-        return result
-    }
+    suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiHistory(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the family's half of the picture rule.
@@ -452,17 +734,11 @@ class FamilyRepository @Inject constructor(
      * owner's own device would go on hiding the affordance until the
      * next `GET /families/mine`.
      */
-    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiVision(enabled)
-        if (result is ApiResult.Ok) {
-            settings.setFamilyAiVision(result.value.family.aiVision)
-            // Turning `ai_vision` OFF turns the third switch off in the
-            // same write on the server, asked or not — so the answer is
-            // the truth for both, and both are mirrored.
-            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
-        }
-        return result
-    }
+    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> =
+        // Turning `ai_vision` OFF turns the third switch off in the same
+        // write on the server, asked or not — so the answer is the truth for
+        // both, and the whole family is mirrored.
+        familyApi.setAiVision(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the third switch (docs/protocol.md, "Recent photos from
@@ -470,13 +746,8 @@ class FamilyRepository @Inject constructor(
      * composer reads it to say that a mention may carry the chat's recent
      * photos, and the owner's own device must say so at once.
      */
-    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiHistoryPhotos(enabled)
-        if (result is ApiResult.Ok) {
-            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
-        }
-        return result
-    }
+    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiHistoryPhotos(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the fourth switch (docs/protocol.md, "The daily
@@ -484,20 +755,16 @@ class FamilyRepository @Inject constructor(
      * agrees with the server at once — no frame will tell it what it just
      * did itself.
      */
-    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiGreeting(enabled)
-        if (result is ApiResult.Ok) {
-            settings.setFamilyAiGreeting(result.value.family.aiGreeting)
-        }
-        return result
-    }
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiGreeting(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the fifth switch (docs/protocol.md, "Profile pictures of
      * members"). Nothing is mirrored into settings: no composer strip reads
      * it — the protocol asks for the switch and its sentence, nothing more.
      */
-    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> = familyApi.setAiFaces(enabled)
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiFaces(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the transcripts switch (docs/protocol.md, "Transcripts on
@@ -505,13 +772,8 @@ class FamilyRepository @Inject constructor(
      * with the server at once — no frame will tell this device what it
      * just did itself.
      */
-    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiTranscripts(enabled)
-        if (result is ApiResult.Ok) {
-            settings.setFamilyAiTranscripts(result.value.family.aiTranscripts)
-        }
-        return result
-    }
+    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiTranscripts(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * Owner-only: the lookups switch (docs/protocol.md, "Looking things
@@ -525,15 +787,10 @@ class FamilyRepository @Inject constructor(
      * from this answer.
      */
     suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> =
-        familyApi.setGreetingPlaces(places)
+        familyApi.setGreetingPlaces(currentPath(), places).resyncIfGone().alsoMirror()
 
-    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
-        val result = familyApi.setAiLookups(enabled)
-        if (result is ApiResult.Ok) {
-            settings.setFamilyAiLookups(result.value.family.aiLookups)
-        }
-        return result
-    }
+    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> =
+        familyApi.setAiLookups(currentPath(), enabled).resyncIfGone().alsoMirror()
 
     /**
      * My own birthday, mirrored onto my roster row.
@@ -568,7 +825,7 @@ class FamilyRepository @Inject constructor(
 
     /** Owner-only, and the owner may name themselves — see FamilyApi. */
     suspend fun setMemberBirthday(userId: Long, month: Int, day: Int): ApiResult<Unit> {
-        val result = familyApi.setMemberBirthday(userId, month, day)
+        val result = familyApi.setMemberBirthday(currentPath(), userId, month, day).resyncIfGone()
         return when (result) {
             is ApiResult.Ok -> {
                 val birthday = result.value.member.birthday
@@ -581,21 +838,23 @@ class FamilyRepository @Inject constructor(
     }
 
     suspend fun clearMemberBirthday(userId: Long): ApiResult<Unit> {
-        val result = familyApi.clearMemberBirthday(userId)
+        val result = familyApi.clearMemberBirthday(currentPath(), userId).resyncIfGone()
         if (result is ApiResult.Ok) memberDao.setBirthday(userId, null, null)
         return result
     }
 
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
-        familyApi.joinRequests()
+        familyApi.joinRequests(currentPath()).resyncIfGone()
 
     suspend fun approve(requestId: Long): ApiResult<Unit> {
-        val result = familyApi.approve(requestId)
+        val familyId = currentFamily()
+        val result = familyApi.approve(state().pathFamily(familyId), requestId).resyncIfGone()
         return when (result) {
             is ApiResult.Ok -> {
                 memberDao.upsertAll(
                     listOf(
                         MemberEntity(
+                            familyId = familyId,
                             userId = result.value.member.id,
                             username = result.value.member.username,
                             displayName = result.value.member.displayName,
@@ -617,7 +876,7 @@ class FamilyRepository @Inject constructor(
     }
 
     suspend fun reject(requestId: Long): ApiResult<Unit> =
-        familyApi.reject(requestId)
+        familyApi.reject(currentPath(), requestId).resyncIfGone()
 
     /**
      * Leave the family, and answer with the NAME of whoever inherited it —
@@ -633,14 +892,19 @@ class FamilyRepository @Inject constructor(
      * down" (docs/protocol.md, `POST /families/leave`).
      *
      * An owner is never refused; `owner_cannot_leave` is retired.
+     *
+     * Since several families it is the CURRENT family that is left, and only
+     * it (`POST /families/{id}/leave`): the first remaining family is shown
+     * afterwards, or the gate when none remain.
      */
     suspend fun leave(): ApiResult<String?> {
-        return when (val result = familyApi.leave()) {
+        val familyId = currentFamily()
+        return when (val result = familyApi.leave(state().pathFamily(familyId)).resyncIfGone()) {
             is ApiResult.Ok -> {
                 val name = result.value?.let { memberDao.displayName(it) }
                 // History is retained server-side and resurfaces on rejoin
                 // (protocol) — but locally these chats aren't ours to show.
-                sessionRepository.onRemovedFromFamily()
+                sessionRepository.leftFamily(familyId)
                 ApiResult.Ok(name)
             }
             is ApiResult.HttpError -> result
@@ -654,11 +918,29 @@ class FamilyRepository @Inject constructor(
      * that happens on the server.
      */
     suspend fun resetMemberPassword(userId: Long, newPassword: String): ApiResult<Unit> =
-        familyApi.resetMemberPassword(userId, newPassword)
+        familyApi.resetMemberPassword(currentPath(), userId, newPassword).resyncIfGone()
 
+    /** Out of the CURRENT family — their other families are not this owner's. */
     suspend fun removeMember(userId: Long): ApiResult<Unit> {
-        val result = familyApi.removeMember(userId)
-        if (result is ApiResult.Ok) memberDao.markLeft(userId)
+        val familyId = currentFamily()
+        val result = familyApi.removeMember(state().pathFamily(familyId), userId).resyncIfGone()
+        if (result is ApiResult.Ok) memberDao.markLeft(familyId, userId)
         return result
     }
+
+    companion object {
+        const val FAMILY_NOT_FOUND = "family_not_found"
+        const val INVITATION_NOT_PENDING = "invitation_not_pending"
+    }
 }
+
+/**
+ * The CURRENT family's live roster, following the switcher: every screen
+ * that offers something about a person reads the family it is showing.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+fun MemberDao.observeCurrentActiveMembers(settings: SettingsRepository): Flow<List<MemberEntity>> =
+    settings.state
+        .map { it.familyKey }
+        .distinctUntilChanged()
+        .flatMapLatest { observeActiveMembers(it) }

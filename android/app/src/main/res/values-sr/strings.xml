@@ -180,6 +180,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">Остали твоји уређаји биће одјављени. Овај остаје пријављен.</string>
     <string name="e_action_failed">Радња није успела</string>
     <string name="e_already_in_family">Већ си у породици — повуци да освежиш</string>
+    <string name="e_already_in_that_family">Већ си у тој породици.</string>
     <string name="e_change_password_failed">Лозинка није промењена.</string>
     <string name="e_change_policy_failed">Правило није промењено</string>
     <string name="e_create_family_failed">Породица није направљена</string>
@@ -802,4 +803,26 @@
     <string name="e_create_group_failed">Група није направљена.</string>
     <string name="e_change_group_failed">Група није промењена.</string>
     <string name="s_everyone_already_in_group">Сви из породице су већ у овој групи.</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">Породице</string>
+    <string name="s_new_family">Нова породица…</string>
+    <string name="s_join_another_family">Придружи се другој породици…</string>
+    <string name="s_switch_family">Промени породицу</string>
+    <string name="s_family_unread">%1$s, непрочитано: %2$d</string>
+    <string name="s_invited_you_to">%1$s те позива у „%2$s“</string>
+    <string name="s_invitations">Позивнице</string>
+    <string name="s_invite">Позови…</string>
+    <string name="s_invite_to">Позови у „%s“</string>
+    <string name="s_invite_empty">Овде се приказују чланови твојих других породица који нису у овој.</string>
+    <string name="s_invited">Позив послат</string>
+    <string name="s_pending_invitations">Позивнице на чекању</string>
+    <string name="s_withdraw_invitation">Повуци позивницу</string>
+    <string name="e_invitation_gone">Ова позивница више није доступна.</string>
+    <string name="e_too_many_families">Већ си у највећем броју породица за један налог (%d).</string>
+    <string name="e_already_own_a_family">Већ имаш своју породицу, па не можеш да направиш другу.</string>
+    <string name="e_member_families_disabled">Овај сервер не дозвољава члановима да праве нове породице.</string>
+    <string name="e_member_in_other_families">Овај члан је и у породици која није твоја, па лозинку може да промени само та особа.</string>
+    <string name="s_leave_named_family">Напустити „%s“?</string>
+    <string name="s_leave_one_of_families_explanation">Изгубићеш приступ разговорима ове породице. Лични разговори са онима са којима делиш другу породицу остају.</string>
+    <string name="s_new_family_explanation">Направи своју породицу. Биће твоја и моћи ћеш да позовеш чланове својих других породица.</string>
 </resources>

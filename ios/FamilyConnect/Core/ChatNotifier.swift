@@ -203,13 +203,17 @@ nonisolated enum ChatNotifier {
     /// A board note's banner (#84): who pinned it, and "New note" — never
     /// the note's words (DesktopNotificationRules). Clicking it opens the
     /// board, exactly as a `board_note` push does (PushRoute).
-    static func announceNote(noteID: Int64, title: String) {
+    static func announceNote(noteID: Int64, title: String, familyID: Int64? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = String(localized: "New note")
         content.sound = .default
         content.threadIdentifier = "board"
-        content.userInfo = ["kind": "board_note", "note_id": noteID, localKey: true]
+        var userInfo: [AnyHashable: Any] = ["kind": "board_note", "note_id": noteID, localKey: true]
+        // A tap opens the board of the family the note is on, as a push's
+        // `family_id` does (docs/protocol.md, "Several families").
+        if let familyID { userInfo["family_id"] = familyID }
+        content.userInfo = userInfo
         let request = UNNotificationRequest(identifier: "board-\(noteID)", content: content, trigger: nil)
         Task {
             do {

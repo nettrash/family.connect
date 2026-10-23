@@ -90,7 +90,44 @@ public sealed class LiveConnection : IAsyncDisposable
         socket.Disconnected += OnDisconnected;
         socket.SessionExpired += session.SessionGone;
         session.Changed += OnGateMoved;
+        router.JoinedFamily += OnJoinedFamily;
+        router.LeftFamily += OnLeftFamily;
+        router.InvitationChanged += session.ApplyInvitation;
+        router.InvitationRemoved += session.InvitationGone;
     }
+
+    /// <summary>
+    /// The reader is in a family (docs/protocol.md, "Several families"): one this session does not hold is listed by a fresh
+    /// <c>GET /me</c>, and its roster, wall, pack and chats are read by a pass. Off the socket's thread — a frame handler never
+    /// waits on a request.
+    /// </summary>
+    private void OnJoinedFamily(long familyId) => _ = Task.Run(async () =>
+    {
+        try
+        {
+            if (await session.JoinedFamilyAsync(familyId).ConfigureAwait(false))
+            {
+                Refresh();
+            }
+        }
+        catch (Exception)
+        {
+            // The next pass's `GET /me` lists it anyway.
+        }
+    });
+
+    /// <summary>The reader is out of a family: its rows go, and the session shows what is left.</summary>
+    private void OnLeftFamily(long familyId) => _ = Task.Run(async () =>
+    {
+        try
+        {
+            await session.FamilyGoneAsync(familyId).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The next pass's `GET /me` drops it anyway.
+        }
+    });
 
     /// <summary>What the corner of the window says.</summary>
     public Link Link
@@ -254,7 +291,14 @@ public sealed class LiveConnection : IAsyncDisposable
                 {
                     ResyncFailed?.Invoke(error);
                 }
-                if (report.HasFamily)
+                if (report.Me is { } me)
+                {
+                    // Which families there are, as step 1 found them: one that appeared or went while the socket was down
+                    // is listed, or dropped with its rows, here.
+                    session.Apply(me);
+                }
+                var shown = report.ShownFamily is null || report.ShownFamily == session.State.CurrentFamilyId;
+                if (report.HasFamily && shown)
                 {
                     // The one read that names the assistant is this pass's. Without this the
                     // session had none until somebody opened the Family screen, which is where
@@ -262,7 +306,7 @@ public sealed class LiveConnection : IAsyncDisposable
                     // is no consent card in Settings and no consent line over the composer.
                     session.ApplyAssistant(report.Assistant);
                 }
-                if (report.FamilyRead)
+                if (report.FamilyRead && shown)
                 {
                     // The video message's limits — or their absence, an older server — from the same read.
                     session.ApplyRoundVideo(report.RoundVideo);
@@ -302,6 +346,10 @@ public sealed class LiveConnection : IAsyncDisposable
         socket.Disconnected -= OnDisconnected;
         socket.SessionExpired -= session.SessionGone;
         session.Changed -= OnGateMoved;
+        router.JoinedFamily -= OnJoinedFamily;
+        router.LeftFamily -= OnLeftFamily;
+        router.InvitationChanged -= session.ApplyInvitation;
+        router.InvitationRemoved -= session.InvitationGone;
         await StopAsync().ConfigureAwait(false);
         due.Dispose();
         lifecycle.Dispose();

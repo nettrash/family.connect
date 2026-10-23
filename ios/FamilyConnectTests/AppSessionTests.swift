@@ -512,8 +512,8 @@ struct AppSessionTransitionTests {
         // A cursor from the account that is about to stop existing. The
         // board is family-scoped and its seqs mean nothing to the next
         // account signed in on this device.
-        AppSettings.boardCursor = 88
-        AppSettings.boardSeenNoteID = 91
+        AppSettings.setBoardCursor(88, family: Self.family.id)
+        AppSettings.setBoardMarks(.init(seenNoteID: 91, seenContentSeq: 0), family: Self.family.id)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!, session: StubURLProtocol.makeSession())
         let (session, spies) = makeSession(api: api)
@@ -544,8 +544,8 @@ struct AppSessionTransitionTests {
         }
         #expect(AppSettings.currentUserID == nil)
         #expect(AppSettings.pushDeviceID == nil)
-        #expect(AppSettings.boardCursor == 0)
-        #expect(AppSettings.boardSeenNoteID == 0)
+        #expect(AppSettings.boardCursor(family: Self.family.id) == 0)
+        #expect(AppSettings.boardMarks(family: Self.family.id).seenNoteID == 0)
         // The server URL is the family's, not the account's.
         #expect(AppSettings.serverURL != nil)
     }

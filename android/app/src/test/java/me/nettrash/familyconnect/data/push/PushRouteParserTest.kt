@@ -115,4 +115,22 @@ class PushRouteParserTest {
         assertThat(PushRouteParser.isVideoCall(mapOf("kind" to "call"))).isFalse()
         assertThat(PushRouteParser.isVideoCall(mapOf("kind" to "call", "video" to "false"))).isFalse()
     }
+
+    // -- Several families (docs/protocol.md, "Several families" — "Pushes") --
+
+    @Test
+    fun aPushSaysWhichFamilyItOpensIn() {
+        assertThat(PushRouteParser.familyId(mapOf("kind" to "message", "chat_id" to "42", "family_id" to "5")))
+            .isEqualTo(5L)
+        // A direct chat's push names none, and nor does an older server's.
+        assertThat(PushRouteParser.familyId(mapOf("kind" to "message", "chat_id" to "42"))).isNull()
+        assertThat(PushRouteParser.familyId(mapOf("family_id" to "nope"))).isNull()
+    }
+
+    @Test
+    fun anInvitationPushOpensTheInvitations() {
+        val data = mapOf("kind" to "invitation", "family_id" to "8", "invitation_id" to "4")
+        assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.Invitations)
+        assertThat(PushRouteParser.familyId(data)).isEqualTo(8L)
+    }
 }

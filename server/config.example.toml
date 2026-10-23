@@ -40,8 +40,19 @@ registration = true
 # they last left a family; an account with a join request still waiting is
 # never removed, and the removal is the same scrub POST /me/delete performs
 # (the username is freed, their words in a family chat stay under "Deleted
-# account"). Checked hourly. 0 turns it off.
+# account"). Checked hourly. 0 turns it off. An account is "without a family"
+# only once it has left its LAST one.
 familyless_account_ttl_days = 7
+# Whether a member who is already in a family may start ANOTHER one from
+# inside the app — somebody in their parents' family who marries and starts
+# their own, staying in both with one login. This is NOT `registration`:
+# that one is about a stranger's first family, so a server closed to
+# strangers can still let its members start theirs. Set both to false for
+# neither. An account may create a family only while it owns none.
+member_families = true
+# The most families one account may belong to, however it got into them —
+# creating one, an owner's invitation, or an invite code. At least 1.
+max_families_per_account = 5
 
 [greetings]
 # The assistant's one unprompted message a day (protocol.md, "The daily

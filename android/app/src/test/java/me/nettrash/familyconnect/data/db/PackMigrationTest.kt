@@ -97,6 +97,19 @@ class PackMigrationTest {
     @Test
     fun `the migrated tables have exactly the columns the entities declare`() {
         AppDatabase.MIGRATION_28_29.migrate(db)
+        // The one later step that touches these tables: several families
+        // (v35) files each item under its family. It also alters chats and
+        // notes and rebuilds members, so just enough of those is made for
+        // the real migration to run.
+        db.execSQL("CREATE TABLE chats (id INTEGER NOT NULL PRIMARY KEY)")
+        db.execSQL("CREATE TABLE notes (id INTEGER NOT NULL PRIMARY KEY)")
+        db.execSQL(
+            "CREATE TABLE members (userId INTEGER NOT NULL PRIMARY KEY, username TEXT NOT NULL, " +
+                "displayName TEXT NOT NULL, role TEXT NOT NULL, avatarVersion INTEGER NOT NULL DEFAULT 0, " +
+                "hasLeft INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, " +
+                "birthdayMonth INTEGER, birthdayDay INTEGER)",
+        )
+        AppDatabase.MIGRATION_34_35.migrate(db)
 
         // name -> (type, notnull, pk), as SQLite reports a migrated table.
         fun columns(database: SupportSQLiteDatabase, table: String): Map<String, Triple<String, Int, Int>> =

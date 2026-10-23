@@ -149,6 +149,7 @@ struct ChangePasswordView: View {
 struct ResetPasswordView: View {
     let member: MemberDTO
 
+    @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
 
@@ -222,10 +223,14 @@ struct ResetPasswordView: View {
             defer { isSaving = false }
             do {
                 try await coordinator.api.resetMemberPassword(
-                    userID: member.id, newPassword: newPassword)
+                    userID: member.id, newPassword: newPassword, family: session.apiFamilyID)
                 didSucceed = true
             } catch {
-                errorText = String(localized: "Couldn't reset that password. Try again.")
+                // `member_in_other_families` says why in words: the member is
+                // also in a family this owner does not own (docs/protocol.md,
+                // "Several families").
+                errorText = FamilyRules.failureMessage(error, maxFamilies: session.maxFamiliesPerAccount)
+                    ?? String(localized: "Couldn't reset that password. Try again.")
             }
         }
     }

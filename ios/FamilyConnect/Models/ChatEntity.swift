@@ -97,11 +97,24 @@ final class ChatEntity {
     var groupMemberIDsText: String = ""
     /// A group's `admin_user_id`; nil for every other kind.
     var groupAdminUserID: Int64?
+    /// The families this chat is listed in — the wire's `family_ids`
+    /// (docs/protocol.md, "Several families", 2026-10-22) — as decimal ids
+    /// joined by commas, for the reason `groupMemberIDsText` is a string.
+    /// "" is "nobody said": a row from before several families, or from a
+    /// server that predates them, where the chat is the one family's and
+    /// is listed whatever family is shown (`FamilyRules.isListed`).
+    var familyIDsText: String = ""
 
     /// The group's members, the reader included; [] for any other kind.
     var groupMemberIDs: [Int64] {
         get { groupMemberIDsText.split(separator: ",").compactMap { Int64($0) } }
         set { groupMemberIDsText = newValue.map(String.init).joined(separator: ",") }
+    }
+
+    /// The families this chat is listed in; [] when nobody said.
+    var familyIDs: [Int64] {
+        get { FamilyIDList.decode(familyIDsText) }
+        set { familyIDsText = FamilyIDList.encode(newValue) }
     }
 
     init(

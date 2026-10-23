@@ -206,13 +206,17 @@ pub async fn transcript(
         ));
     }
 
-    // 6: whose voice it is.
+    // 6: whose voice it is. The switch, the language hint and the family the
+    // cost is booked to are the CHAT's family's — the family whose owner
+    // decided what may be asked of its chat — and not "the asker's", which
+    // since 2026-10-22 may be several (docs/protocol.md, "Several
+    // families").
     let family = sqlx::query(
-        "SELECT u.family_id, f.language, COALESCE(f.ai_transcripts, false) AS ai_transcripts
-         FROM users u LEFT JOIN families f ON f.id = u.family_id
-         WHERE u.id = $1",
+        "SELECT c.family_id, f.language, COALESCE(f.ai_transcripts, false) AS ai_transcripts
+         FROM chats c LEFT JOIN families f ON f.id = c.family_id
+         WHERE c.id = $1",
     )
-    .bind(auth.user_id)
+    .bind(chat_id)
     .fetch_one(&state.pool)
     .await?;
     let family_id: Option<i64> = family.get("family_id");

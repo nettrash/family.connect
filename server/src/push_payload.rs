@@ -79,6 +79,11 @@ pub enum PushEvent {
     Message {
         chat_id: i64,
         message_id: i64,
+        /// The family a tap opens the app in — a family chat's, a group's
+        /// or an `ai` chat's own; `None` for a direct chat, which belongs to
+        /// the pair (docs/protocol.md, "Several families"). On the wire only
+        /// when present, so every payload pinned before it is unchanged.
+        family_id: Option<i64>,
     },
     /// A note added to the family board. Creation only — moves and edits
     /// never push (protocol.md, "Board").
@@ -98,6 +103,12 @@ pub enum PushEvent {
     Report {
         family_id: i64,
     },
+    /// An owner invited the recipient into their family (docs/protocol.md,
+    /// "Several families").
+    Invitation {
+        family_id: i64,
+        invitation_id: i64,
+    },
 }
 
 impl PushEvent {
@@ -109,6 +120,7 @@ impl PushEvent {
             PushEvent::JoinRequest { .. } => "join_request",
             PushEvent::Joined { .. } => "joined",
             PushEvent::Report { .. } => "report",
+            PushEvent::Invitation { .. } => "invitation",
         }
     }
 
@@ -121,9 +133,10 @@ impl PushEvent {
             // All board notes collapse into one entry: several notes pinned
             // at once is one thing to look at, not five alerts.
             PushEvent::BoardNote { family_id, .. } => Some(format!("board-{family_id}")),
-            PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } | PushEvent::Report { .. } => {
-                None
-            }
+            PushEvent::JoinRequest { .. }
+            | PushEvent::Joined { .. }
+            | PushEvent::Report { .. }
+            | PushEvent::Invitation { .. } => None,
         }
     }
 }
@@ -165,13 +178,31 @@ impl Notification {
             match note.event {
                 PushEvent::Message { .. } => note.body = Text::say("New message", &[]),
                 PushEvent::BoardNote { .. } => note.body = Text::say("New note", &[]),
-                // A report, a join request and a join carry no family text to withhold.
+                // A report, a join request, a join and an invitation carry no
+                // family text to withhold.
                 PushEvent::JoinRequest { .. }
                 | PushEvent::Joined { .. }
-                | PushEvent::Report { .. } => {}
+                | PushEvent::Report { .. }
+                | PushEvent::Invitation { .. } => {}
             }
         }
         note
+    }
+
+    /// The same notification, naming the family a tap should open the app
+    /// in — for a message push only, and only when there is one
+    /// (docs/protocol.md, "Several families"). A builder rather than one
+    /// more argument to every composer: the composers and their golden
+    /// tests stay exactly what they were, and the family is the caller's,
+    /// which is where the chat's row was read.
+    pub fn in_family(mut self, family_id: Option<i64>) -> Self {
+        if let PushEvent::Message {
+            family_id: slot, ..
+        } = &mut self.event
+        {
+            *slot = family_id;
+        }
+        self
     }
 }
 
@@ -302,6 +333,7 @@ pub fn message_notification(
         event: PushEvent::Message {
             chat_id: message.chat_id,
             message_id: message.id,
+            family_id: None,
         },
     }
 }
@@ -436,6 +468,28 @@ pub fn joined_notification(family_name: &str, family_id: i64, badge: i64) -> Not
     }
 }
 
+/// The invited person's alert: title = the family's name, body =
+/// `"<Owner> invited you"` in the device's language (docs/protocol.md,
+/// "Several families").
+pub fn invitation_notification(
+    family_name: &str,
+    owner_display_name: &str,
+    family_id: i64,
+    invitation_id: i64,
+    badge: i64,
+) -> Notification {
+    Notification {
+        title: Text::Verbatim(family_name.to_string()),
+        body: Text::say("%@ invited you", &[owner_display_name]),
+        badge,
+        chat_unread: None,
+        event: PushEvent::Invitation {
+            family_id,
+            invitation_id,
+        },
+    }
+}
+
 /// The APNs request body, exactly as protocol.md specifies it: the `aps`
 /// dictionary plus top-level `kind` and the event's ids — its words in `language`, the one the
 /// device registered (docs/protocol.md, "The words of a push").
@@ -453,9 +507,20 @@ pub fn apns_payload(note: &Notification, language: Option<&str>) -> Value {
         PushEvent::Message {
             chat_id,
             message_id,
+            family_id,
         } => {
             payload["chat_id"] = json!(chat_id);
             payload["message_id"] = json!(message_id);
+            if let Some(family_id) = family_id {
+                payload["family_id"] = json!(family_id);
+            }
+        }
+        PushEvent::Invitation {
+            family_id,
+            invitation_id,
+        } => {
+            payload["family_id"] = json!(family_id);
+            payload["invitation_id"] = json!(invitation_id);
         }
         PushEvent::BoardNote { family_id, note_id } => {
             payload["family_id"] = json!(family_id);
@@ -481,9 +546,20 @@ pub fn fcm_message(note: &Notification, push_token: &str, language: Option<&str>
         PushEvent::Message {
             chat_id,
             message_id,
+            family_id,
         } => {
             data["chat_id"] = json!(chat_id.to_string());
             data["message_id"] = json!(message_id.to_string());
+            if let Some(family_id) = family_id {
+                data["family_id"] = json!(family_id.to_string());
+            }
+        }
+        PushEvent::Invitation {
+            family_id,
+            invitation_id,
+        } => {
+            data["family_id"] = json!(family_id.to_string());
+            data["invitation_id"] = json!(invitation_id.to_string());
         }
         PushEvent::BoardNote { family_id, note_id } => {
             data["family_id"] = json!(family_id.to_string());
@@ -1247,6 +1323,52 @@ mod tests {
                         "sound": "default", "badge": 0},
                 "family_id": 7, "kind": "joined"
             })
+        );
+    }
+
+    /// A message push from a family chat, group or `ai` chat names its
+    /// family; a direct chat's names none (docs/protocol.md, "Several
+    /// families"). A string on FCM like every other id.
+    #[test]
+    fn a_message_push_names_its_family_only_when_it_has_one() {
+        let note =
+            message_notification(true, "family", "Smiths", "Anna", &protocol_message(), 1, 1)
+                .in_family(Some(3));
+        let apns = apns_payload(&note, None);
+        assert_eq!(apns["family_id"], 3);
+        let fcm = fcm_message(&note, "tok", None);
+        assert_eq!(fcm["message"]["data"]["family_id"], "3");
+
+        let direct =
+            message_notification(true, "direct", "Smiths", "Anna", &protocol_message(), 1, 1)
+                .in_family(None);
+        assert!(apns_payload(&direct, None).get("family_id").is_none());
+        assert!(
+            fcm_message(&direct, "tok", None)["message"]["data"]
+                .get("family_id")
+                .is_none()
+        );
+    }
+
+    /// The invitation push: the family's name over `"<Owner> invited you"`,
+    /// in the device's language, with both ids (docs/protocol.md, "Several
+    /// families").
+    #[test]
+    fn the_invitation_push_carries_its_family_and_invitation() {
+        let note = invitation_notification("Ivanovs", "Anna", 3, 4, 2);
+        let apns = apns_payload(&note, None);
+        assert_eq!(apns["kind"], "invitation");
+        assert_eq!(apns["family_id"], 3);
+        assert_eq!(apns["invitation_id"], 4);
+        assert_eq!(apns["aps"]["alert"]["title"], "Ivanovs");
+        assert_eq!(apns["aps"]["alert"]["body"], "Anna invited you");
+        assert!(apns["aps"].get("thread-id").is_none());
+        let fcm = fcm_message(&note, "tok", Some("ru"));
+        assert_eq!(fcm["message"]["data"]["invitation_id"], "4");
+        assert_eq!(fcm["message"]["data"]["family_id"], "3");
+        assert_eq!(
+            fcm["message"]["notification"]["body"],
+            "Anna приглашает тебя"
         );
     }
 

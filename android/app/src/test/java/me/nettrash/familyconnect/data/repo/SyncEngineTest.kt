@@ -70,6 +70,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import me.nettrash.familyconnect.data.settings.boardCursor
+import me.nettrash.familyconnect.data.settings.packCursor
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -77,6 +79,9 @@ class SyncEngineTest {
 
     private companion object {
         const val ME = 7L
+
+        /** The family `/me` names in [setUp] — every cursor is filed under it. */
+        const val FAMILY = 3L
         const val PEER = 9L
         const val FAMILY_CHAT = 1L
     }
@@ -510,7 +515,7 @@ class SyncEngineTest {
         val notes = db.noteDao().observeNotes().first()
         assertThat(notes.map { it.id }).containsExactly(1L, 2L)
         assertThat(notes.single { it.id == 1L }.contentSeq).isEqualTo(12)
-        assertThat(settings.state.first().boardCursor).isEqualTo(40)
+        assertThat(settings.state.first().boardCursor(FAMILY)).isEqualTo(40)
     }
 
     // -- The sticker pack (docs/protocol.md, "Sticker pack") ------------------
@@ -554,7 +559,7 @@ class SyncEngineTest {
 
         assertThat(db.packDao().items().map { it.id }).containsExactly(5L, 6L).inOrder()
         assertThat(packApi.fullReads).isEqualTo(1)
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(14)
         assertThat(settings.current.packLimits).isEqualTo(PackLimits(200, 524_288))
     }
 
@@ -573,11 +578,11 @@ class SyncEngineTest {
         socket.setOpen(true)
 
         engine.resync()
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(14)
 
         socket.emit(ServerFrame.PackItem(packItemDto(id = 7, packSeq = 15)))
         runCurrent()
-        assertThat(settings.current.packCursor).isEqualTo(15)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(15)
     }
 
     /**
@@ -601,13 +606,13 @@ class SyncEngineTest {
         }
 
         engine.resync()
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(14)
 
         socket.emit(ServerFrame.PackItem(packItemDto(id = 7, packSeq = 19)))
         runCurrent()
 
         assertThat(db.packDao().items().map { it.id }).containsExactly(5L, 7L)
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(14)
     }
 
     /** One that holds a pack loops the change feed instead — tombstones and all. */
@@ -629,7 +634,7 @@ class SyncEngineTest {
         assertThat(packApi.changeRequests).containsExactly(12L)
         assertThat(packApi.fullReads).isEqualTo(1)
         assertThat(db.packDao().items().map { it.id }).containsExactly(7L)
-        assertThat(settings.current.packCursor).isEqualTo(20)
+        assertThat(settings.current.packCursor(FAMILY)).isEqualTo(20)
     }
 
     /**

@@ -24,16 +24,20 @@ internal sealed class Connection : IAsyncDisposable
         Tokens = new LockerTokenStore(server);
         Api = new ApiClient(Http, server, Tokens);
         Cache = Database.Open(cachePath);
-        Session = new AppSession(Api, Tokens, Cache, new AwaitingJoinFile(server));
+        Session = new AppSession(Api, Tokens, Cache, new AwaitingJoinFile(server), new CurrentFamilyFile(server));
         // The reader is whoever `GET /me` last said: read when asked, never captured, because a
-        // sign-in as somebody else must not be drawn as the previous person's "You".
-        Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0);
-        Board = new BoardStore(Cache);
-        Pack = new PackStore(Cache);
+        // sign-in as somebody else must not be drawn as the previous person's "You". The family shown, the same way: the
+        // chat list, the roster, the wall and the stickers are the shown family's (docs/protocol.md, "Several families").
+        Chats = new ChatStore(Cache, () => Session.State.Me?.Id ?? 0, () => Session.State.CurrentFamilyId);
+        Board = new BoardStore(Cache, () => Session.State.CurrentFamilyId);
+        Pack = new PackStore(Cache, () => Session.State.CurrentFamilyId);
         Outbox = new OutboxStore(Cache);
         Socket = new ChatSocket(() => new ClientWebSocketAdapter(), () => Api.SocketUrl, Tokens);
         Staging = new FolderMediaStore(AppFolders.StagingPath);
-        Media = new MediaOutbox(Outbox, Api, Staging);
+        // A queued message's uploads are for the family its CHAT is in — only where the server names families at all.
+        Media = new MediaOutbox(Outbox, Api, Staging, chatId => Session.State.NamesFamilies
+            ? FamilyRules.UploadFamily(Chats.Chat(chatId)?.Chat, Session.State.CurrentFamilyId)
+            : null);
         Sending = new SendPipeline(Socket, Outbox, Chats, Api, uploads: PushMediaAsync);
         Router = new FrameRouter(Chats, Board, Pack);
         Attachments = new AttachmentCache(Api, new FileBlobStore(AppFolders.BlobsPath));

@@ -42,6 +42,7 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import org.junit.After
 import org.junit.Test
+import me.nettrash.familyconnect.data.settings.boardCursor
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AccountDeletionTest {
@@ -67,8 +68,8 @@ class AccountDeletionTest {
             pushDeviceId = 4,
             // The board catch-up cursor — the one sync cursor that lives
             // outside Room, and the one a teardown can most easily forget.
-            boardCursor = 88,
-            boardSeenNoteId = 12,
+            boardCursors = mapOf(0L to 88L),
+            boardSeenNoteIds = mapOf(0L to 12L),
         ),
     )
 
@@ -108,8 +109,8 @@ class AccountDeletionTest {
             // Every stored cursor is back to zero. A survivor here means
             // the next account signed in on this phone starts its catch-up
             // from somebody else's position and silently misses history.
-            assertThat(state.boardCursor).isEqualTo(0)
-            assertThat(state.boardSeenNoteId).isEqualTo(0)
+            assertThat(state.boardCursor(0L)).isEqualTo(0)
+            assertThat(state.boardSeenNoteIds[0L] ?: 0L).isEqualTo(0)
             assertThat(state.myUserId).isNull()
             assertThat(state.familyName).isNull()
             assertThat(state.pushDeviceId).isNull()
@@ -148,7 +149,7 @@ class AccountDeletionTest {
         assertThat(result).isInstanceOf(ApiResult.HttpError::class.java)
         assertThat(tokenStore.token).isEqualTo("tok")
         assertThat(wiper.wipeCount).isEqualTo(0)
-        assertThat(settings.state.first().boardCursor).isEqualTo(88)
+        assertThat(settings.state.first().boardCursor(0L)).isEqualTo(88)
     }
 
     // -- The other devices ------------------------------------------------------

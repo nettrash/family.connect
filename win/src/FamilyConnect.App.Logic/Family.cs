@@ -182,9 +182,13 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
     }
 
     /// <summary>Leave. The answer names the successor the server actually chose.</summary>
-    public async Task<(long? Successor, ApiError? Error)> LeaveAsync(CancellationToken ct = default)
+    /// <param name="familyId">The family to leave — the one shown — or null for the home family of a server that knows one.</param>
+    /// <param name="ct">Cancels the request.</param>
+    public async Task<(long? Successor, ApiError? Error)> LeaveAsync(long? familyId = null, CancellationToken ct = default)
     {
-        var answer = await api.LeaveFamily(ct).ConfigureAwait(false);
+        var answer = familyId is { } named
+            ? await api.LeaveFamily(named, ct).ConfigureAwait(false)
+            : await api.LeaveFamily(ct).ConfigureAwait(false);
         return answer is { Ok: true, Value: { } left }
             ? (left.NewOwnerUserId, null)
             : (null, answer.Error ?? ApiError.Transport("no answer"));

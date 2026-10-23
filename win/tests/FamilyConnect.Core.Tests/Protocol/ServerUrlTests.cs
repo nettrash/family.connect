@@ -36,12 +36,14 @@ public class ServerUrlTests
     {
         var secure = ServerUrl.Normalise("chat.example.com")!;
         Assert.Equal("https://chat.example.com/api/v1", ServerUrl.Rest(secure).ToString());
-        Assert.Equal("wss://chat.example.com/api/v1/ws", ServerUrl.Socket(secure).ToString());
+        // `families=1` (docs/protocol.md, "Several families"): the socket's counterpart of the X-FC-Families header.
+        Assert.Equal("wss://chat.example.com/api/v1/ws?families=1", ServerUrl.Socket(secure).ToString());
         // ws:// for an http server, and the port rides along.
         var plain = ServerUrl.Normalise("http://192.168.1.10:8080")!;
         Assert.Equal("http://192.168.1.10:8080/api/v1", ServerUrl.Rest(plain).ToString());
-        Assert.Equal("ws://192.168.1.10:8080/api/v1/ws", ServerUrl.Socket(plain).ToString());
-        // And the token is nowhere in either: "a token in the query string is not a token at all".
-        Assert.DoesNotContain("?", ServerUrl.Socket(secure).ToString(), StringComparison.Ordinal);
+        Assert.Equal("ws://192.168.1.10:8080/api/v1/ws?families=1", ServerUrl.Socket(plain).ToString());
+        // And the token is nowhere in either: "a token in the query string is not a token at all" — the query is the
+        // capability and nothing else.
+        Assert.Equal("?families=1", ServerUrl.Socket(secure).Query);
     }
 }

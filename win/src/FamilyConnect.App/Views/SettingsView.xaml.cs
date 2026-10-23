@@ -91,6 +91,8 @@ public sealed partial class SettingsView : UserControl
         {
             (PasswordButton, PasswordText, say.Get("Change Password…")),
             (LeaveButton, LeaveText, say.Get("Leave Family")),
+            (NewFamilyButton, NewFamilyText, say.Get("New Family…")),
+            (JoinAnotherButton, JoinAnotherText, say.Get("Join Another Family…")),
             (StatisticsButton, StatisticsText, say.Get("Statistics…")),
             (PrivacyLink, PrivacyText, say.Get("Privacy Policy")),
             (SupportLink, SupportText, say.Get("Support")),
@@ -115,6 +117,10 @@ public sealed partial class SettingsView : UserControl
         BirthdayButton.Click += (_, _) => _ = BirthdayAsync();
         PasswordButton.Click += (_, _) => _ = ChangePasswordAsync();
         LeaveButton.Click += (_, _) => _ = LeaveAsync();
+        NewFamilyButton.Click += (_, _) => _ = FamilyDialogs.NewFamilyAsync(
+            XamlRoot, say, new FamilyDoor(connection.Api, connection.Session, say));
+        JoinAnotherButton.Click += (_, _) => _ = FamilyDialogs.JoinAnotherFamilyAsync(
+            XamlRoot, say, new FamilyDoor(connection.Api, connection.Session, say));
         StatisticsButton.Click += (_, _) => _ = StatisticsAsync();
         AssistantConsentButton.Click += (_, _) => _ = AssistantConsentAsync();
         LookupsButton.Click += (_, _) => _ = LookupsAsync();
@@ -197,6 +203,9 @@ public sealed partial class SettingsView : UserControl
         FamilySection.Visibility = state.Family is null ? Visibility.Collapsed : Visibility.Visible;
         FamilyNameValue.Text = state.Family?.Name ?? string.Empty;
         LeaveButton.IsEnabled = !leaving;
+        // With ONE family and nothing pending nothing else on screen changes — this is the way in to a second.
+        NewFamilyButton.Visibility = FamilyRules.OffersNewFamily(state) ? Visibility.Visible : Visibility.Collapsed;
+        JoinAnotherButton.Visibility = FamilyRules.OffersJoinAnother(state) ? Visibility.Visible : Visibility.Collapsed;
 
         drawingSwitch = true;
         NotifySwitch.IsEnabled = Toasts.Available;
@@ -626,10 +635,17 @@ public sealed partial class SettingsView : UserControl
         LeaveError.Visibility = Visibility.Collapsed;
         try
         {
+            // The family SHOWN is the one left; with several, the dialog names it (docs/protocol.md, "Several families").
+            var state = connection.Session.State;
+            var leavingFamily = state.CurrentFamilyId;
             var (deletes, successor, error) = await family.LeaveWouldAsync();
             var context = error is null
-                ? LeaveContext.For(connection.Session.State.IsOwner, deletes, successor)
+                ? LeaveContext.For(state.IsOwner, deletes, successor)
                 : null;
+            if (context is not null && state.AllFamilies.Count > 1)
+            {
+                context = context with { FamilyName = state.Family?.Name };
+            }
             if (context is null)
             {
                 ShowProblem(LeaveError, SettingsText.LeaveFailed(say));
@@ -643,7 +659,7 @@ public sealed partial class SettingsView : UserControl
             {
                 return;
             }
-            var (chosen, failed) = await family.LeaveAsync();
+            var (chosen, failed) = await family.LeaveAsync(state.NamesFamilies ? leavingFamily : null);
             if (failed is not null)
             {
                 ShowProblem(LeaveError, SettingsText.LeaveFailed(say));
@@ -658,7 +674,8 @@ public sealed partial class SettingsView : UserControl
                 notice.DefaultButton = ContentDialogButton.Close;
                 await notice.ShowAsync();
             }
-            // The gate moves on what `GET /me` now says: no family, and the window follows it.
+            // The gate moves on what `GET /me` now says: no family, and the window follows it — or, with several, the family
+            // left goes with its rows and the first that remains is shown.
             await connection.Session.RefreshAsync();
         }
         catch (Exception e)

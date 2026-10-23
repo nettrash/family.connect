@@ -51,6 +51,9 @@ final class PackItemEntity {
     var createdAt: Date
     /// Highest pack_seq applied to this row. The per-item guard.
     var packSeq: Int64
+    /// Whose pack it is in (docs/protocol.md, "Several families",
+    /// 2026-10-22); `0` is "not attributed yet", as on `NoteEntity`.
+    var familyID: Int64 = 0
 
     init(
         itemID: Int64,
@@ -62,8 +65,10 @@ final class PackItemEntity {
         height: Int? = nil,
         label: String? = nil,
         createdAt: Date,
-        packSeq: Int64
+        packSeq: Int64,
+        familyID: Int64 = 0
     ) {
+        self.familyID = familyID
         self.itemID = itemID
         self.addedBy = addedBy
         self.attachmentID = attachmentID
@@ -139,8 +144,13 @@ nonisolated struct PackItemSnapshot: Equatable, Hashable, Identifiable, Sendable
 final class GonePackItemEntity {
     /// The removed item's server id — the natural key, and the whole row.
     @Attribute(.unique) var itemID: Int64
+    /// Whose pack it was taken from, so leaving one family forgets that
+    /// family's gone set with its items and nobody else's. `0` is "not
+    /// attributed yet", as on `PackItemEntity`.
+    var familyID: Int64 = 0
 
-    init(itemID: Int64) {
+    init(itemID: Int64, familyID: Int64 = 0) {
         self.itemID = itemID
+        self.familyID = familyID
     }
 }

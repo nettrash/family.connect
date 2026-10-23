@@ -365,6 +365,10 @@ class ChatRepository @Inject constructor(
                         // its title — overwritten, never merged.
                         memberIdsJson = GroupMembersCodec.encode(item.chat.memberIds),
                         adminUserId = item.chat.adminUserId,
+                        // Which families list it — the server's too
+                        // (docs/protocol.md, "Several families"). Absent from
+                        // a server from before, and then left unsaid.
+                        familyIdsJson = GroupMembersCodec.encode(item.chat.familyIds),
                     )
                 }
                 chatDao.upsertAll(merged)
@@ -497,6 +501,26 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * This account is out of [familyId] (docs/protocol.md, "Several
+     * families"): that family's chats go — its family chat, its groups, its
+     * `ai` chat — and a DIRECT chat stays, narrowed, while its `family_ids`
+     * still name one of [remainingFamilyIds]. A chat that never said its
+     * families (a server from before) was the one family's, and goes.
+     */
+    suspend fun dropFamily(familyId: Long, remainingFamilyIds: Set<Long>) {
+        for (chat in chatDao.allChats()) {
+            val ids = chat.familyIds
+            if (ids != null && familyId !in ids) continue
+            val kept = ids.orEmpty().filter { it != familyId }
+            if (chat.kind == "direct" && kept.any { it in remainingFamilyIds }) {
+                chatDao.setFamilyIds(chat.id, GroupMembersCodec.encode(kept))
+            } else {
+                deleteChat(chat.id)
+            }
+        }
+    }
+
+    /**
      * Store a GROUP as the server now describes it — the `chat_updated`
      * frame, or the answer to a group endpoint (docs/protocol.md,
      * "Groups").
@@ -509,16 +533,28 @@ class ChatRepository @Inject constructor(
      * unread, which is what the server set its marker to, and the next
      * `GET /chats` brings its preview.
      *
-     * Groups only: the frame is defined for groups, and a row for any
-     * other kind is `GET /chats`'s to write.
+     * Since several families `chat_updated` also REPLACES a chat of any
+     * other kind whose `family_ids` changed — a direct chat whose two people
+     * stopped, or started, sharing a family (docs/protocol.md, "Several
+     * families"). A row of another kind this device does not hold is still
+     * `GET /chats`'s to write: it brings the preview and the count with it.
      */
     suspend fun applyChat(dto: ChatDto): ChatEntity? {
-        if (!GroupRules.isGroup(dto.kind)) return null
         val existing = chatDao.getById(dto.id)
+        if (!GroupRules.isGroup(dto.kind)) {
+            if (existing == null) return null
+            val replaced = existing.copy(
+                title = dto.title,
+                familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: existing.familyIdsJson,
+            )
+            chatDao.upsertAll(listOf(replaced))
+            return replaced
+        }
         val entity = existing?.copy(
             title = dto.title,
             memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
             adminUserId = dto.adminUserId,
+            familyIdsJson = dto.familyIds?.let(GroupMembersCodec::encode) ?: existing.familyIdsJson,
         ) ?: ChatEntity(
             id = dto.id,
             kind = dto.kind,
@@ -532,6 +568,7 @@ class ChatRepository @Inject constructor(
             lastMessageSenderId = null,
             memberIdsJson = GroupMembersCodec.encode(dto.memberIds),
             adminUserId = dto.adminUserId,
+            familyIdsJson = GroupMembersCodec.encode(dto.familyIds),
         )
         chatDao.upsertAll(listOf(entity))
         return entity
@@ -553,6 +590,8 @@ class ChatRepository @Inject constructor(
                     lastMessageBody = null,
                     lastMessageAt = null,
                     lastMessageSenderId = null,
+                    // Listed in every family the two share.
+                    familyIdsJson = GroupMembersCodec.encode(dto.familyIds),
                 )
                 chatDao.upsertAll(listOf(entity))
                 ApiResult.Ok(entity)

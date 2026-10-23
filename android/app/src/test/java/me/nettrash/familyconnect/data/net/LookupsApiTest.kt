@@ -126,7 +126,7 @@ class LookupsApiTest {
     fun `the switch patches the family with exactly that key and reads the answer`() = runTest {
         reply = 200 to """{"family":{"id":3,"name":"The Smiths","join_policy":"open","ai_lookups":true}}"""
 
-        val result = DefaultFamilyApi(client()).setAiLookups(true)
+        val result = DefaultFamilyApi(client()).setAiLookups(null, true)
 
         val request = seen.single()
         assertThat(request.method).isEqualTo("PATCH")
@@ -139,7 +139,7 @@ class LookupsApiTest {
     fun `a non-owner is refused`() = runTest {
         reply = 403 to error("not_family_owner")
 
-        val result = DefaultFamilyApi(client()).setAiLookups(false)
+        val result = DefaultFamilyApi(client()).setAiLookups(null, false)
 
         assertThat(seen.single().body).isEqualTo("""{"ai_lookups":false}""")
         assertThat((result as ApiResult.HttpError).code).isEqualTo("not_family_owner")

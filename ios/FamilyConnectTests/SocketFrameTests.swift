@@ -270,7 +270,33 @@ struct SocketFrameTests {
     @Test("member_left decodes")
     func decodeMemberLeft() throws {
         let frame = try decode(#"{"type": "member_left", "family_id": 3, "user_id": 11}"#)
-        #expect(frame == .memberLeft(userID: 11))
+        // THAT family, never "my family" (docs/protocol.md, "Several families").
+        #expect(frame == .memberLeft(familyID: 3, userID: 11))
+    }
+
+    @Test("member_left from a server before several families decodes with no family")
+    func decodeMemberLeftWithoutFamily() throws {
+        let frame = try decode(#"{"type": "member_left", "user_id": 11}"#)
+        #expect(frame == .memberLeft(familyID: nil, userID: 11))
+    }
+
+    @Test("invitation and invitation_removed decode")
+    func decodeInvitationFrames() throws {
+        let frame = try decode(#"""
+        {"type": "invitation", "invitation": {"id": 4, "family_id": 3, "family_name": "The Smiths",
+         "invited_by": {"id": 9, "username": "anna", "display_name": "Anna"},
+         "user": {"id": 7, "username": "kid", "display_name": "Kid"}, "created_at": "2026-10-22T08:00:00Z"}}
+        """#)
+        guard case .invitation(let invitation) = frame else {
+            Issue.record("expected .invitation, got \(frame)")
+            return
+        }
+        #expect(invitation.id == 4)
+        #expect(invitation.familyID == 3)
+        #expect(invitation.familyName == "The Smiths")
+        #expect(invitation.invitedBy.displayName == "Anna")
+        #expect(invitation.user.id == 7)
+        #expect(try decode(#"{"type": "invitation_removed", "invitation_id": 4}"#) == .invitationRemoved(invitationID: 4))
     }
 
     @Test("reaction decodes the full-state payload")

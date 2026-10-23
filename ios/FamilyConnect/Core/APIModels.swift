@@ -146,6 +146,13 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
     /// exists there for one reason — so a stored message, note or reaction
     /// can still be given a sender. Absent on the wire when false.
     var deleted: Bool = false
+    /// Whether the reader — an owner reading their own family — may reset
+    /// this member's password, which needs them to own EVERY family the
+    /// member is in (docs/protocol.md, "Several families", 2026-10-22).
+    /// Present in the owner's own read only; nil everywhere else, and from
+    /// a server that predates several families, where an owner's reset
+    /// works exactly as it always did (`FamilyRules.offersPasswordReset`).
+    var passwordReset: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -155,6 +162,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         case avatarVersion = "avatar_version"
         case birthday
         case deleted
+        case passwordReset = "password_reset"
     }
 
     init(
@@ -164,7 +172,8 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         role: String?,
         avatarVersion: Int64 = 0,
         birthday: BirthdayDTO? = nil,
-        deleted: Bool = false
+        deleted: Bool = false,
+        passwordReset: Bool? = nil
     ) {
         self.id = id
         self.username = username
@@ -173,6 +182,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         self.avatarVersion = avatarVersion
         self.birthday = birthday
         self.deleted = deleted
+        self.passwordReset = passwordReset
     }
 
     /// See UserDTO.init(from:) — a defaulted property is not a decoding
@@ -186,6 +196,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
         birthday = try container.decodeIfPresent(BirthdayDTO.self, forKey: .birthday)
         deleted = try container.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
+        passwordReset = try container.decodeIfPresent(Bool.self, forKey: .passwordReset)
     }
 
     /// The same member wearing a different birthday. The roster screens
@@ -201,7 +212,8 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
             role: role,
             avatarVersion: avatarVersion,
             birthday: birthday,
-            deleted: deleted)
+            deleted: deleted,
+            passwordReset: passwordReset)
     }
 }
 
@@ -330,10 +342,16 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// of strings, rather than failing the whole family — the Family object
     /// rides on `/me`, which the app bootstraps from.
     let greetingPlaces: [String]
+    /// "owner" | "member" — the CALLER's role in this family, carried by
+    /// each entry of `GET /me`'s `families` (docs/protocol.md, "Several
+    /// families", 2026-10-22). Nil on every other read of a family, where
+    /// the role arrives beside it rather than inside it.
+    var role: String?
 
     enum CodingKeys: String, CodingKey {
         case id
         case name
+        case role
         case joinPolicy = "join_policy"
         case createdAt = "created_at"
         case inviteCode = "invite_code"
@@ -398,10 +416,12 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // empty list, and the owner's next added place would replace the
         // ones the server holds.
         greetingPlaces: [String],
-        maxMembers: Int?
+        maxMembers: Int?,
+        role: String? = nil
     ) {
         self.id = id
         self.name = name
+        self.role = role
         self.joinPolicy = joinPolicy
         self.createdAt = createdAt
         self.inviteCode = inviteCode
@@ -459,6 +479,15 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // field sends no place anywhere. Tolerant of a malformed value for
         // the same reason, so a bad list costs the editor, not the family.
         greetingPlaces = ((try? container.decodeIfPresent([String].self, forKey: .greetingPlaces)) ?? nil) ?? []
+        role = try container.decodeIfPresent(String.self, forKey: .role)
+    }
+
+    /// The same family, as the caller now holds it in a different role —
+    /// what a `family_owner` frame does to one entry of the family list.
+    func withRole(_ role: String?) -> FamilyDTO {
+        var copy = self
+        copy.role = role
+        return copy
     }
 }
 
@@ -640,6 +669,12 @@ nonisolated struct ChatDTO: Codable, Equatable, Sendable {
     /// A GROUP's admin: the one member who may rename it, add and remove
     /// members, and delete it. Absent on every other kind.
     var adminUserID: Int64? = nil
+    /// The families this chat is listed in (docs/protocol.md, "Several
+    /// families", 2026-10-22): exactly one for a family chat, a group and
+    /// an `ai` chat, and every family the two people share for a direct
+    /// chat. Nil from a server that predates it, where it means the one
+    /// family the account has.
+    var familyIDs: [Int64]? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -648,6 +683,7 @@ nonisolated struct ChatDTO: Codable, Equatable, Sendable {
         case peerUserID = "peer_user_id"
         case memberIDs = "member_ids"
         case adminUserID = "admin_user_id"
+        case familyIDs = "family_ids"
     }
 }
 
@@ -1341,12 +1377,36 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// Null both when they have not agreed and when the server has no
     /// lookup source; absent — nil — on a server that predates it.
     var assistantLookupConsentAt: Date?
+    /// Every family the caller is in, home family first, each with its own
+    /// `role` (docs/protocol.md, "Several families", 2026-10-22). NIL — not
+    /// empty — from a server that predates several families: that is how
+    /// this client knows to speak to it about `family` alone, by the old
+    /// paths (`FamilyRules.families(from:)`). `[]` is an account in none.
+    var families: [FamilyDTO]?
+    /// The caller's pending join requests, to any number of families.
+    /// Always present beside `families`; `[]` from an older server, which
+    /// carries its one request in `pendingJoinRequest`.
+    var pendingJoinRequests: [PendingJoinRequestDTO] = []
+    /// Invitations waiting on the caller, oldest first.
+    var invitations: [InvitationDTO] = []
+    /// `[families] member_families`: whether a member may start another
+    /// family in the app. False from a server that predates it, which has
+    /// no such door.
+    var memberFamiliesEnabled: Bool = false
+    /// The most families one account may be in; 1 from a server that
+    /// predates several families, which is the truth there.
+    var maxFamiliesPerAccount: Int = 1
 
     enum CodingKeys: String, CodingKey {
         case user
         case family
         case role
         case pendingJoinRequest = "pending_join_request"
+        case families
+        case pendingJoinRequests = "pending_join_requests"
+        case invitations
+        case memberFamiliesEnabled = "member_families_enabled"
+        case maxFamiliesPerAccount = "max_families_per_account"
         case callsEnabled = "calls_enabled"
         case videoCallsEnabled = "video_calls_enabled"
         case blockedUserIDs = "blocked_user_ids"
@@ -1373,8 +1433,18 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         familylessAccountTTLDays: Int = 0,
         greetingsEnabled: Bool = false,
         assistantConsentAt: Date? = nil,
-        assistantLookupConsentAt: Date? = nil
+        assistantLookupConsentAt: Date? = nil,
+        families: [FamilyDTO]? = nil,
+        pendingJoinRequests: [PendingJoinRequestDTO] = [],
+        invitations: [InvitationDTO] = [],
+        memberFamiliesEnabled: Bool = false,
+        maxFamiliesPerAccount: Int = 1
     ) {
+        self.families = families
+        self.pendingJoinRequests = pendingJoinRequests
+        self.invitations = invitations
+        self.memberFamiliesEnabled = memberFamiliesEnabled
+        self.maxFamiliesPerAccount = maxFamiliesPerAccount
         self.user = user
         self.family = family
         self.role = role
@@ -1419,7 +1489,46 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         // the same answer as null.
         assistantLookupConsentAt = try container.decodeIfPresent(
             Date.self, forKey: .assistantLookupConsentAt)
+        // Several families (2026-10-22). Absent on a server from before
+        // them — `families` stays nil, which is the one signal that this
+        // server must be spoken to about the home family alone.
+        families = try container.decodeIfPresent([FamilyDTO].self, forKey: .families)
+        pendingJoinRequests = try container.decodeIfPresent(
+            [PendingJoinRequestDTO].self, forKey: .pendingJoinRequests) ?? []
+        invitations = try container.decodeIfPresent([InvitationDTO].self, forKey: .invitations) ?? []
+        memberFamiliesEnabled = try container.decodeIfPresent(Bool.self, forKey: .memberFamiliesEnabled) ?? false
+        maxFamiliesPerAccount = try container.decodeIfPresent(Int.self, forKey: .maxFamiliesPerAccount) ?? 1
     }
+}
+
+/// An owner's invitation into their family, pending until the invited
+/// person accepts or declines (docs/protocol.md, "Several families",
+/// 2026-10-22). `user` is the invited person; the owner's own list and the
+/// invited person's list carry the same object.
+nonisolated struct InvitationDTO: Codable, Equatable, Identifiable, Sendable {
+    let id: Int64
+    let familyID: Int64
+    let familyName: String
+    let invitedBy: UserDTO
+    let user: UserDTO
+    let createdAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case familyID = "family_id"
+        case familyName = "family_name"
+        case invitedBy = "invited_by"
+        case user
+        case createdAt = "created_at"
+    }
+}
+
+nonisolated struct InvitationResponse: Codable, Equatable, Sendable {
+    let invitation: InvitationDTO
+}
+
+nonisolated struct InvitationsResponse: Codable, Equatable, Sendable {
+    let invitations: [InvitationDTO]
 }
 
 /// The body of a `POST /families/leave` that handed the family on. Absent
@@ -1440,6 +1549,15 @@ nonisolated struct FamilyResponse: Codable, Equatable, Sendable {
 nonisolated struct JoinResponse: Codable, Equatable, Sendable {
     /// "joined" | "pending"
     let status: String
+    /// The family the code belongs to — the one joined, or waited on
+    /// (docs/protocol.md, `POST /families/join`, 2026-10-22). Nil from a
+    /// server that predates it.
+    var familyID: Int64? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case familyID = "family_id"
+    }
 }
 
 /// The assistant, as `GET /families/mine` reports it.
@@ -1778,6 +1896,10 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     /// makes it, and not `boardSeq`, the number a badge may count.
     let contentSeq: Int64?
     let deleted: Bool?
+    /// The family whose board the note is on (docs/protocol.md, "Several
+    /// families", 2026-10-22). Nil from a server that predates it, where
+    /// the board is the one family's.
+    var familyID: Int64? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1801,6 +1923,7 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case boardSeq = "board_seq"
         case contentSeq = "content_seq"
         case deleted
+        case familyID = "family_id"
     }
 
     var isTombstone: Bool { deleted == true }
@@ -1880,6 +2003,9 @@ nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
     let createdAt: Date?
     let packSeq: Int64
     let deleted: Bool?
+    /// Whose pack it is in (docs/protocol.md, "Several families",
+    /// 2026-10-22). Nil from a server that predates it.
+    var familyID: Int64?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1889,6 +2015,7 @@ nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case packSeq = "pack_seq"
         case deleted
+        case familyID = "family_id"
     }
 
     var isTombstone: Bool { deleted == true }
@@ -1900,7 +2027,8 @@ nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
         label: String? = nil,
         createdAt: Date? = nil,
         packSeq: Int64,
-        deleted: Bool? = nil
+        deleted: Bool? = nil,
+        familyID: Int64? = nil
     ) {
         self.id = id
         self.addedBy = addedBy
@@ -1909,6 +2037,7 @@ nonisolated struct PackItemDTO: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.packSeq = packSeq
         self.deleted = deleted
+        self.familyID = familyID
     }
 }
 

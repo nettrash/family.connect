@@ -169,4 +169,41 @@ class FamilyGateViewModelTest {
         )
         assertThat(week.familylessAccountTtlDays).isEqualTo(7)
     }
+
+    // -- Several families: the doors to another family (docs/protocol.md) ----
+
+    @Test
+    fun anotherFamilyAtTheCapIsRefusedWithTheCapNamed() = runTest(dispatcher) {
+        settings.setFamilies(emptyList(), emptyList(), emptyList(), true, 5, true)
+        familyApi.joinResult = ApiResult.HttpError(409, "too_many_families", null)
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.onInviteCodeChange("abc123")
+        viewModel.join()
+        runCurrent()
+
+        assertThat(viewModel.state.value.generalError)
+            .isEqualTo("You've reached the most families one account can be in (5).")
+        assertThat(viewModel.state.value.outcome).isNull()
+    }
+
+    @Test
+    fun startingAnotherFamilySaysWhyItCannot() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        viewModel.onFamilyNameChange("The Browns")
+
+        familyApi.createResult = ApiResult.HttpError(409, "already_own_a_family", null)
+        viewModel.createFamily()
+        runCurrent()
+        assertThat(viewModel.state.value.generalError)
+            .isEqualTo("You already own a family, so you can't start another.")
+
+        familyApi.createResult = ApiResult.HttpError(403, "member_families_disabled", null)
+        viewModel.createFamily()
+        runCurrent()
+        assertThat(viewModel.state.value.generalError)
+            .isEqualTo("This server doesn't let members start new families.")
+    }
 }

@@ -25,6 +25,12 @@ struct CreateFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = CreateFamilyModel()
     @FocusState private var fieldFocused: Bool
+    /// "New Family…" from inside the app — an account already in a family
+    /// starting ANOTHER one (docs/protocol.md, "Several families"): the same
+    /// field and button, with a line saying what owning it means.
+    var anotherFamily = false
+    /// Called once the family exists; the sheet that presented this closes.
+    var onFinished: (() -> Void)?
 
     var body: some View {
         Form {
@@ -40,6 +46,9 @@ struct CreateFamilyView: View {
                 Text("Family name")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
+                    if anotherFamily {
+                        Text("Start your own family. You'll be its owner and can invite members of your other families.")
+                    }
                     Text("This names your family chat too. 1–64 characters.")
                     if let error = model.errorText {
                         Label(error, systemImage: "xmark.circle")
@@ -82,6 +91,13 @@ struct CreateFamilyView: View {
             defer { model.isWorking = false }
             do {
                 try await session.createFamily(name: name)
+                onFinished?()
+            } catch let error where FamilyRules.failureMessage(
+                error, maxFamilies: session.maxFamiliesPerAccount) != nil {
+                // The several-families refusals: the cap, "you already own
+                // one", and a server that keeps this door shut.
+                model.errorText = FamilyRules.failureMessage(
+                    error, maxFamilies: session.maxFamiliesPerAccount)
             } catch APIError.forbidden(let code) where code == "family_registration_disabled" {
                 // Reachable only on a server that closed its door after
                 // this screen was pushed — the gate itself hides the way

@@ -311,9 +311,15 @@ async fn ring(
     // VoIP push, and — see `ws::call_replays` — no replay to a device that
     // connects while this is still ringing.
     if !suppressed {
+        // An app from before several families is not offered a call from a
+        // direct chat its home family does not list — it has no chat to put
+        // the call in (docs/protocol.md, "Several families"). The push is
+        // unchanged, as every push is for such an app.
+        let hidden =
+            events::legacy_hidden(state, &[callee_id], &events::Scope::Chat(chat_id)).await?;
         state
             .registry
-            .send_to_users(&[callee_id], &offer_frame)
+            .fan_out_hiding(&[callee_id], &offer_frame, None, &hidden)
             .await;
         events::push_incoming_call(
             state,

@@ -57,6 +57,10 @@ struct MacFamilyView: View {
     @State private var editingBirthday: MemberDTO?
     /// The family's sticker pack, on a sheet of its own.
     @State private var showsStickers = false
+    /// The owner's invitations into this family, and the picker behind
+    /// "Invite…" (docs/protocol.md, "Several families").
+    @State private var invitations = OwnerInvitationsModel()
+    @State private var showsInvite = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,6 +69,7 @@ struct MacFamilyView: View {
             List {
                 if session.isOwner {
                     inviteSection
+                    PendingInvitationsSection(model: invitations)
                     if !requests.isEmpty { requestsSection }
                     reportsSection
                     policySection
@@ -104,6 +109,14 @@ struct MacFamilyView: View {
         // Esc closes the sheet too; Return was the only key bound.
         .onExitCommand { dismiss() }
         .task { await reload() }
+        // An invitation frame says the owner's pending list moved.
+        .task(id: session.invitationsGeneration) {
+            guard session.isOwner, !session.isLegacyServer else { return }
+            await invitations.load(api: coordinator.api, family: session.apiFamilyID)
+        }
+        .sheet(isPresented: $showsInvite) {
+            InviteToFamilyView(model: invitations)
+        }
         .sheet(item: $reportingMember) { member in
             ReportSheet(
                 target: ReportTarget(
@@ -178,6 +191,12 @@ struct MacFamilyView: View {
             Text("Rotating invalidates the current code immediately.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // The other door in, for an owner with another family to invite
+            // from (docs/protocol.md, "Several families").
+            if FamilyRules.offersInvite(isOwner: session.isOwner, familyCount: session.families.count),
+               !session.isLegacyServer {
+                Button("Invite…") { showsInvite = true }
+            }
         }
     }
 
@@ -204,7 +223,7 @@ struct MacFamilyView: View {
             set: { policy in
                 guard policy != session.family?.joinPolicy else { return }
                 run {
-                    let updated = try await coordinator.api.setJoinPolicy(policy)
+                    let updated = try await coordinator.api.setJoinPolicy(policy, family: session.apiFamilyID)
                     await MainActor.run { session.applyFamily(merged(updated)) }
                 }
             })
@@ -272,7 +291,7 @@ struct MacFamilyView: View {
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled else { return }
             do {
-                let updated = try await coordinator.api.setMemberCap(cap)
+                let updated = try await coordinator.api.setMemberCap(cap, family: session.apiFamilyID)
                 session.applyFamily(merged(updated))
                 capDraft = nil
             } catch {
@@ -404,7 +423,7 @@ struct MacFamilyView: View {
     private func resolve(_ report: ReportDTO) {
         resolvingReports.insert(report.id)
         run {
-            try await coordinator.api.resolveReport(id: report.id)
+            try await coordinator.api.resolveReport(id: report.id, family: session.apiFamilyID)
             await MainActor.run {
                 reports.removeAll { $0.id == report.id }
                 resolvingReports.remove(report.id)
@@ -528,7 +547,11 @@ struct MacFamilyView: View {
                             Button("Birthday…") { editingBirthday = member.dto }
                             if !member.isCurrentUser, member.role != "owner" {
                                 Divider()
-                                Button("Reset Password…") { resetting = member.dto }
+                                // Only where it will work (docs/protocol.md,
+                                // "Several families": `password_reset`).
+                                if member.passwordResetAllowed(in: coordinator.currentFamilyKey) {
+                                    Button("Reset Password…") { resetting = member.dto }
+                                }
                                 Button("Remove from Family", role: .destructive) {
                                     remove(member)
                                 }
@@ -552,15 +575,15 @@ struct MacFamilyView: View {
         // Re-read the family rather than trusting the cached one: the
         // invite code can be rotated from another device, and so can the
         // two assistant settings drawn above.
-        if let mine = try? await coordinator.api.myFamily() {
+        if let mine = try? await coordinator.api.myFamily(family: session.apiFamilyID) {
             session.applyFamily(mine.family)
         }
         inviteCode = session.family?.inviteCode
-        requests = (try? await coordinator.api.joinRequests()) ?? []
+        requests = (try? await coordinator.api.joinRequests(family: session.apiFamilyID)) ?? []
         // Owner-only, like the requests above: a plain member never gets
         // here (`reload` returns early for them), so the 403 is unreachable
         // rather than swallowed.
-        reports = (try? await coordinator.api.reports()) ?? []
+        reports = (try? await coordinator.api.reports(family: session.apiFamilyID)) ?? []
     }
 
     private func openDirect(_ member: MemberEntity) {
@@ -576,7 +599,7 @@ struct MacFamilyView: View {
 
     private func rotate() {
         run {
-            inviteCode = try await coordinator.api.rotateInviteCode()
+            inviteCode = try await coordinator.api.rotateInviteCode(family: session.apiFamilyID)
         }
     }
 
@@ -593,12 +616,12 @@ struct MacFamilyView: View {
             defer { busy = false }
             do {
                 if approve {
-                    _ = try await coordinator.api.approveJoinRequest(id: request.id)
+                    _ = try await coordinator.api.approveJoinRequest(id: request.id, family: session.apiFamilyID)
                 } else {
-                    try await coordinator.api.rejectJoinRequest(id: request.id)
+                    try await coordinator.api.rejectJoinRequest(id: request.id, family: session.apiFamilyID)
                 }
                 await coordinator.resync()
-                requests = (try? await coordinator.api.joinRequests()) ?? []
+                requests = (try? await coordinator.api.joinRequests(family: session.apiFamilyID)) ?? []
             } catch APIError.conflict(let code, _) where code == "family_full" {
                 errorText = String(localized: "The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.", comment: "Error when approving a join request would exceed the family's member cap.")
             } catch {
@@ -609,7 +632,7 @@ struct MacFamilyView: View {
 
     private func remove(_ member: MemberEntity) {
         run { [userID = member.userID] in
-            try await coordinator.api.removeMember(userID: userID)
+            try await coordinator.api.removeMember(userID: userID, family: session.apiFamilyID)
             await coordinator.resync()
         }
     }

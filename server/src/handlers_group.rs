@@ -36,6 +36,11 @@ pub struct CreateGroupRequest {
     pub title: String,
     #[serde(default)]
     pub member_ids: Vec<i64>,
+    /// The family the group is made in (docs/protocol.md, "Several
+    /// families"): absent means the home family, and a family the caller is
+    /// not in is `family_not_found`.
+    #[serde(default)]
+    pub family_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +59,8 @@ pub struct AddMembersRequest {
 #[derive(Debug)]
 pub struct GroupExit {
     pub chat_id: i64,
+    /// The family the group is in.
+    pub family_id: i64,
     /// Nobody was left, so the group went with the last member.
     pub deleted: bool,
     /// The files only the deleted group's messages named — swept, each one
@@ -87,15 +94,17 @@ fn others(ids: &[i64], caller: i64) -> Vec<i64> {
 
 /// Every id is a current member of this family: never somebody who has
 /// left, a deleted account (it has no family) or the assistant (it belongs
-/// to none).
+/// to none) — and never a member of the caller's OTHER family, since a
+/// group is inside one family (docs/protocol.md, "Groups").
 async fn ensure_family_members(
     conn: &mut PgConnection,
     family_id: i64,
     ids: &[i64],
 ) -> Result<(), ApiError> {
     let found: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users
-          WHERE id = ANY($1) AND family_id = $2 AND deleted_at IS NULL",
+        "SELECT count(*) FROM family_members fm
+           JOIN users u ON u.id = fm.user_id
+          WHERE fm.user_id = ANY($1) AND fm.family_id = $2 AND u.deleted_at IS NULL",
     )
     .bind(ids)
     .bind(family_id)
@@ -114,7 +123,7 @@ async fn ensure_family_members(
 /// and its admin.
 pub async fn group_chat(conn: &mut PgConnection, chat_id: i64) -> Result<Chat, ApiError> {
     let row = sqlx::query(
-        "SELECT c.title, c.admin_user_id,
+        "SELECT c.title, c.admin_user_id, c.family_id,
                 COALESCE((SELECT array_agg(gm.user_id ORDER BY gm.joined_at, gm.user_id)
                             FROM chat_members gm WHERE gm.chat_id = c.id), '{}') AS member_ids
            FROM chats c
@@ -133,6 +142,8 @@ pub async fn group_chat(conn: &mut PgConnection, chat_id: i64) -> Result<Chat, A
         peer_user_id: None,
         member_ids: Some(row.get("member_ids")),
         admin_user_id: row.get("admin_user_id"),
+        // A group is inside exactly one family.
+        family_ids: vec![row.get::<i64, _>("family_id")],
     })
 }
 
@@ -221,6 +232,7 @@ async fn group_storage_keys(
 async fn exit_group(
     conn: &mut PgConnection,
     chat_id: i64,
+    family_id: i64,
     user_id: i64,
 ) -> Result<GroupExit, ApiError> {
     sqlx::query("DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2")
@@ -243,6 +255,7 @@ async fn exit_group(
             .await?;
         return Ok(GroupExit {
             chat_id,
+            family_id,
             deleted: true,
             storage_keys,
         });
@@ -258,32 +271,40 @@ async fn exit_group(
     .await?;
     Ok(GroupExit {
         chat_id,
+        family_id,
         deleted: false,
         storage_keys: Vec::new(),
     })
 }
 
-/// A member out of EVERY group they are in — leaving the family, being
-/// removed from it, or deleting their account — inside that transaction,
-/// BEFORE their `chat_members` rows go. Each group is locked in id order,
-/// the order every group write takes, so two of these never deadlock.
+/// A member out of every group of ONE family — leaving it or being removed
+/// from it — or, with `None`, out of every group they are in anywhere, which
+/// is what deleting their account means. Inside that transaction, BEFORE
+/// their `chat_members` rows go. Each group is locked in id order, the order
+/// every group write takes, so two of these never deadlock.
+///
+/// Per family since 2026-10-22: leaving one family leaves its groups and no
+/// other's (docs/protocol.md, "Several families").
 pub async fn leave_every_group(
     conn: &mut PgConnection,
     user_id: i64,
+    family_id: Option<i64>,
 ) -> Result<Vec<GroupExit>, ApiError> {
-    let chat_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT c.id FROM chats c
+    let groups: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT c.id, c.family_id FROM chats c
            JOIN chat_members cm ON cm.chat_id = c.id
           WHERE c.kind = 'group' AND cm.user_id = $1
+            AND ($2::BIGINT IS NULL OR c.family_id = $2)
           ORDER BY c.id
           FOR UPDATE OF c",
     )
     .bind(user_id)
+    .bind(family_id)
     .fetch_all(&mut *conn)
     .await?;
-    let mut exits = Vec::with_capacity(chat_ids.len());
-    for chat_id in chat_ids {
-        exits.push(exit_group(conn, chat_id, user_id).await?);
+    let mut exits = Vec::with_capacity(groups.len());
+    for (chat_id, group_family) in groups {
+        exits.push(exit_group(conn, chat_id, group_family, user_id).await?);
     }
     Ok(exits)
 }
@@ -291,11 +312,28 @@ pub async fn leave_every_group(
 /// After the commit: the member who left is told each group is gone from
 /// their list, the members who stay get the group as it now is, and the
 /// files of a group that went with its last member are swept.
-pub async fn announce_exits(state: &AppState, user_id: i64, exits: Vec<GroupExit>) {
+///
+/// `departed` is the family a member left and whether it was their HOME
+/// family before they left: an app from before several families is told
+/// about a group of its home family and of no other (docs/protocol.md,
+/// "Several families"). `None` — a member leaving one group, or deleting
+/// their account — scopes the leaver's frame to the group's family as it
+/// stands, which for a deleted account reaches nobody's socket anyway.
+pub async fn announce_exits(
+    state: &AppState,
+    user_id: i64,
+    exits: Vec<GroupExit>,
+    departed: Option<(i64, bool)>,
+) {
     for exit in exits {
+        let scope = match departed {
+            Some((family_id, true)) if family_id == exit.family_id => events::Scope::Everywhere,
+            Some(_) => events::Scope::MultiOnly,
+            None => events::Scope::Family(exit.family_id),
+        };
         events::log_fanout_error(
             "chat_removed",
-            events::deliver_chat_removed(state, exit.chat_id, &[user_id]).await,
+            events::deliver_chat_removed(state, exit.chat_id, &[user_id], scope).await,
         );
         if exit.deleted {
             if let Err(error) =
@@ -331,7 +369,10 @@ pub async fn create_group(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateGroupRequest>,
 ) -> Result<Response, ApiError> {
-    let Some(family_id) = auth.family_id else {
+    // The family the body names, or the home family — NOT `auth.family_id`
+    // blindly: this route has no `{family}`, so the body is where a
+    // multi-family client says which family it is showing.
+    let Some(family_id) = auth.family_or_home(req.family_id)? else {
         return Err(ApiError::conflict(
             codes::NOT_IN_FAMILY,
             "you do not belong to a family",
@@ -505,9 +546,9 @@ pub async fn remove_member(
     let group = lock_group(&mut tx, chat_id, auth.user_id).await?;
 
     if user_id == auth.user_id {
-        let exit = exit_group(&mut tx, chat_id, user_id).await?;
+        let exit = exit_group(&mut tx, chat_id, group.family_id, user_id).await?;
         tx.commit().await?;
-        announce_exits(&state, user_id, vec![exit]).await;
+        announce_exits(&state, user_id, vec![exit], None).await;
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
 
@@ -529,7 +570,13 @@ pub async fn remove_member(
 
     events::log_fanout_error(
         "chat_removed",
-        events::deliver_chat_removed(&state, chat_id, &[user_id]).await,
+        events::deliver_chat_removed(
+            &state,
+            chat_id,
+            &[user_id],
+            events::Scope::Family(group.family_id),
+        )
+        .await,
     );
     events::log_fanout_error(
         "chat_updated",
@@ -563,7 +610,13 @@ pub async fn delete_group(
 
     events::log_fanout_error(
         "chat_removed",
-        events::deliver_chat_removed(&state, chat_id, &members).await,
+        events::deliver_chat_removed(
+            &state,
+            chat_id,
+            &members,
+            events::Scope::Family(group.family_id),
+        )
+        .await,
     );
     if let Err(error) =
         crate::handlers_attachment::remove_all_if_unreferenced(&state, &storage_keys).await

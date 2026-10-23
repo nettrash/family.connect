@@ -55,6 +55,11 @@ pub struct UploadParams {
     /// note's waveform"). Checked for its form and stored; never computed
     /// here, because this server decodes nothing.
     pub waveform: Option<String>,
+    /// The family the upload is FOR (docs/protocol.md, "Several families"):
+    /// absent means the home family, and a family the caller is not in is
+    /// `family_not_found`. It decides where the file may be used — a chat
+    /// that family lists, its board, its pack — and the dedup scope.
+    pub family_id: Option<i64>,
 }
 
 const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, \
@@ -127,13 +132,12 @@ pub(crate) fn matches_magic(mime: &str, head: &[u8]) -> bool {
 /// self-hosted server — can fill the disk 100 MB at a time, and the sweeper
 /// would not touch it for 24 hours. protocol.md has listed `not_in_family`
 /// here all along.
-async fn uploader_family(state: &AppState, user_id: i64) -> Result<i64, ApiError> {
-    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
-    family_id.ok_or_else(|| {
+///
+/// Since 2026-10-22 the family is the one the upload NAMES, or the home
+/// family — the membership read by the `AuthUser` extractor on this very
+/// request, as fresh as the column read it replaces.
+fn uploader_family(auth: &AuthUser, params: &UploadParams) -> Result<i64, ApiError> {
+    auth.family_or_home(params.family_id)?.ok_or_else(|| {
         ApiError::forbidden(
             codes::NOT_IN_FAMILY,
             "join a family before sending attachments",
@@ -156,9 +160,10 @@ async fn uploader_family(state: &AppState, user_id: i64) -> Result<i64, ApiError
 /// pipeline whose whole subject is bytes.
 async fn upload_location(
     state: &AppState,
-    user_id: i64,
+    auth: &AuthUser,
     params: &UploadParams,
 ) -> Result<Response, ApiError> {
+    let user_id = auth.user_id;
     checked_waveform(Attachment::KIND_LOCATION, params.waveform.as_deref())?;
     let (Some(latitude), Some(longitude)) = (params.latitude, params.longitude) else {
         return Err(ApiError::bad_request(
@@ -189,7 +194,7 @@ async fn upload_location(
         .map(str::trim)
         .filter(|name| !name.is_empty() && name.chars().count() <= Attachment::MAX_NAME_LEN);
 
-    let family_id = uploader_family(state, user_id).await?;
+    let family_id = uploader_family(auth, params)?;
 
     // A storage_key is still allocated, because the column is NOT NULL and
     // every shared path reads it. Nothing is ever written there, and
@@ -268,7 +273,7 @@ pub async fn upload_attachment(
     // Taken before anything reads a header or a byte: a location declares
     // itself in the query string and has neither.
     if params.kind.as_deref() == Some(Attachment::KIND_LOCATION) {
-        return upload_location(&state, auth.user_id, &params).await;
+        return upload_location(&state, &auth, &params).await;
     }
 
     // After the location branch on purpose: a location is three numbers in
@@ -330,7 +335,7 @@ pub async fn upload_attachment(
     // Which family the bytes are being uploaded INTO — the dedup scope.
     // Read now rather than derived later: the uploader can leave or move
     // family, and the file belongs to the family that received it.
-    let family_id = uploader_family(&state, auth.user_id).await?;
+    let family_id = uploader_family(&auth, &params)?;
 
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
@@ -595,11 +600,10 @@ async fn serve(
            AND (a.uploader_id = $2
                 OR EXISTS (SELECT 1 FROM chat_members cm
                            WHERE cm.chat_id = m.chat_id AND cm.user_id = $2)
-                OR EXISTS (SELECT 1 FROM users u
-                           WHERE u.id = $2
-                             AND u.family_id IS NOT NULL
-                             AND (u.family_id = n.family_id
-                                  OR u.family_id = p.family_id)))",
+                OR EXISTS (SELECT 1 FROM family_members fm
+                           WHERE fm.user_id = $2
+                             AND (fm.family_id = n.family_id
+                                  OR fm.family_id = p.family_id)))",
     )
     .bind(id)
     .bind(auth.user_id)

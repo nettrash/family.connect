@@ -73,6 +73,10 @@
 //!   offers (a group is the family chat less calls and "seen"), who in a
 //!   group may rename, add, remove, delete and leave, the name's bounds, and
 //!   what each refusal is told as.
+//! - [`families`] — one account in several families (#88): which family
+//!   is shown, which chats are listed in it, when the switcher is drawn,
+//!   when "New Family…" and "Join Another Family…" are offered, and what
+//!   each new refusal is told as.
 //! - [`greeting_places`] — the places the owner names for today's weather
 //!   in the daily greeting (#72): when the field is offered, and what a name
 //!   may be, by the server's own rules.
@@ -101,6 +105,7 @@ pub mod composer;
 pub mod emoji;
 pub mod emoji_typing;
 pub mod excerpt;
+pub mod families;
 pub mod greeting_places;
 pub mod groups;
 pub mod i18n;

@@ -37,6 +37,7 @@ import android.net.Uri
 import me.nettrash.familyconnect.data.repo.AvatarImage
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.FamilyList
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -130,6 +131,16 @@ class SettingsViewModel @Inject constructor(
         val assistantLookups: List<String> = emptyList(),
         /** When this member allowed lookups, or null until they have. */
         val assistantLookupConsentAt: String? = null,
+        /**
+         * How many families this account is in (docs/protocol.md, "Several
+         * families"). With more than one, leaving names the family and says
+         * that direct chats stay with anyone shared elsewhere.
+         */
+        val familyCount: Int = 0,
+        /** "New Family…" — the way in to a second family, when it is allowed. */
+        val canStartAnother: Boolean = false,
+        /** "Join Another Family…", while under the cap. */
+        val canJoinAnother: Boolean = false,
     ) {
         /** The member's lookup row ([AssistantLookups.settingsRow]). */
         val lookupRow: AssistantLookups.SettingsRow
@@ -172,6 +183,12 @@ class SettingsViewModel @Inject constructor(
                         // consent — lands on `/me`.
                         assistantLookups = stored.assistantLookups,
                         assistantLookupConsentAt = stored.assistantLookupConsentAt,
+                        // The family section follows the family shown —
+                        // the switcher can change it under this screen.
+                        familyName = stored.familyName ?: it.familyName,
+                        familyCount = stored.families.size,
+                        canStartAnother = FamilyList.canStartAnother(stored),
+                        canJoinAnother = FamilyList.canJoinAnother(stored),
                     )
                 }
             }

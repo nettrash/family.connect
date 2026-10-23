@@ -24,10 +24,10 @@ import javax.inject.Singleton
 
 interface PackApi {
     /** The whole pack, tombstones excluded, in the order added. */
-    suspend fun getPack(): ApiResult<PackResponse>
+    suspend fun getPack(familyId: Long?): ApiResult<PackResponse>
 
     /** The pack catch-up, tombstones INCLUDED. */
-    suspend fun getPackChanges(afterSeq: Long, limit: Int): ApiResult<PackChangesResponse>
+    suspend fun getPackChanges(familyId: Long?, afterSeq: Long, limit: Int): ApiResult<PackChangesResponse>
 
     /**
      * Claim an upload for the pack. ANY member may. `201` and `200` are
@@ -35,10 +35,10 @@ interface PackApi {
      * holding those bytes, and the item then names the attachment the pack
      * HAD rather than the one sent (docs/protocol.md, "Sticker pack").
      */
-    suspend fun addItem(attachmentId: Long, label: String?): ApiResult<PackItemResponse>
+    suspend fun addItem(familyId: Long?, attachmentId: Long, label: String?): ApiResult<PackItemResponse>
 
     /** Whoever added it, or the family owner. Idempotent. */
-    suspend fun removeItem(id: Long): ApiResult<Unit>
+    suspend fun removeItem(familyId: Long?, id: Long): ApiResult<Unit>
 }
 
 @Singleton
@@ -46,23 +46,24 @@ class DefaultPackApi @Inject constructor(
     private val client: ApiClient,
 ) : PackApi {
 
-    override suspend fun getPack(): ApiResult<PackResponse> =
-        client.get("/families/mine/pack")
+    override suspend fun getPack(familyId: Long?): ApiResult<PackResponse> =
+        client.get(FamilyPaths.root(familyId) + "/pack")
 
     override suspend fun getPackChanges(
+        familyId: Long?,
         afterSeq: Long,
         limit: Int,
     ): ApiResult<PackChangesResponse> =
-        client.get("/families/mine/pack/changes?after_seq=$afterSeq&limit=$limit")
+        client.get(FamilyPaths.root(familyId) + "/pack/changes?after_seq=$afterSeq&limit=$limit")
 
-    override suspend fun addItem(attachmentId: Long, label: String?): ApiResult<PackItemResponse> =
+    override suspend fun addItem(familyId: Long?, attachmentId: Long, label: String?): ApiResult<PackItemResponse> =
         client.post(
-            "/families/mine/pack",
+            FamilyPaths.root(familyId) + "/pack",
             // An empty label is no label, and the wire's spelling of "none"
             // is absence.
             AddPackItemRequest(attachmentId, label?.trim()?.ifEmpty { null }),
         )
 
-    override suspend fun removeItem(id: Long): ApiResult<Unit> =
-        client.delete("/families/mine/pack/$id")
+    override suspend fun removeItem(familyId: Long?, id: Long): ApiResult<Unit> =
+        client.delete(FamilyPaths.root(familyId) + "/pack/$id")
 }

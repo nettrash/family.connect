@@ -43,7 +43,13 @@ struct MacBoardView: View {
     /// else has shown nobody anything.
     @Environment(\.controlActiveState) private var windowActivation
 
-    @Query(sort: [SortDescriptor(\NoteEntity.createdAt)]) private var notes: [NoteEntity]
+    @Query(sort: [SortDescriptor(\NoteEntity.createdAt)]) private var allNotes: [NoteEntity]
+    /// The wall of the family on screen — every family has its own board
+    /// (docs/protocol.md, "Several families").
+    private var notes: [NoteEntity] {
+        let familyKey = coordinator.currentFamilyKey
+        return allNotes.filter { $0.familyID == familyKey }
+    }
     @Query private var members: [MemberEntity]
 
     @State private var editing: NoteEntity?
@@ -168,7 +174,7 @@ struct MacBoardView: View {
                 ProgressView().controlSize(.large)
             }
         }
-        .task { await coordinator.loadBoard() }
+        .task(id: coordinator.currentFamilyKey) { await coordinator.loadBoard() }
         // The board on the Mac is a WINDOW, not a sheet: it is opened once
         // and left open, and notes land on a wall somebody is already
         // looking at. Marking seen only where it is OPENED (MacChatView's
@@ -382,8 +388,10 @@ struct MacBoardView: View {
 
     private func markSeenIfFrontmost() {
         guard windowActivation == .key else { return }
-        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
-            notes: notes, marks: AppSettings.boardMarks)
+        let familyKey = coordinator.currentFamilyKey
+        AppSettings.setBoardMarks(
+            BoardBadge.marksAfterShowing(notes: notes, marks: AppSettings.boardMarks(family: familyKey)),
+            family: familyKey)
     }
 
     private func displayName(for userID: Int64) -> String {

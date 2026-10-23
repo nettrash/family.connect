@@ -50,6 +50,8 @@ win/
                                 one compositor, BT.709 NV12, and the MP4's sample table made exact on the 1/30 s grid
                 AttachmentCache — downloaded bytes, kept, with the preview rule in ONE place
                 Family — the door, the owner's console, and the numbers everybody may see
+                Families — one account in several families (#88): which chats a family lists, the switcher's rows,
+                                the doors to another family, invitations and the owner's "Invite…"
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
                 StartupSetting — what the "start when I sign in" row shows, and who may change it

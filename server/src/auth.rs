@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, RawPathParams};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use sqlx::{PgPool, Row};
@@ -32,15 +32,104 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::error::ApiError;
+use crate::error::{ApiError, codes};
 use crate::state::AppState;
 use crate::tokens;
 
 /// The authenticated caller, extracted from `Authorization: Bearer <token>`.
+///
+/// Since 2026-10-22 an account may be in several families (docs/protocol.md,
+/// "Several families"), so "the caller's family" is no longer a fact about
+/// the account. Two things replace it:
+///
+/// - `family_ids` — EVERY family the account is in, home first: the earliest
+///   membership, ties to the lower family id. Read from `family_members` on
+///   every request, exactly as the one `users.family_id` used to be, so a
+///   membership change is seen by the very next request;
+/// - `family_id` — the family THIS REQUEST is about. On a route with a
+///   `{family}` segment it is that family (`mine` is the home family, and a
+///   family the caller is not in has already been refused with
+///   `family_not_found` before any handler runs); on every other route it is
+///   the HOME family, which is what an endpoint that names no family has
+///   meant since several families existed. `None` only for an account in no
+///   family at all.
+///
+/// So a handler that is about "the family" keeps reading `family_id` and is
+/// automatically right for both `/families/mine/…` and `/families/3/…`; a
+/// handler whose family comes from somewhere else — a CHAT's family, an
+/// upload's `family_id`, a group's body — must not read it, and says so
+/// where it does not.
 pub struct AuthUser {
     pub user_id: i64,
     pub family_id: Option<i64>,
+    pub family_ids: Vec<i64>,
     pub session_id: i64,
+    /// The client said `X-FC-Families: 1` — it knows about several families
+    /// and is answered about all of them. Without it the server answers as
+    /// it did before 2026-10-22, about the home family alone (decision D8).
+    pub multi: bool,
+}
+
+/// The header a client that knows about several families sends on every
+/// request (docs/protocol.md, "Several families"). The WebSocket upgrade
+/// carries the same statement as the query parameter `families=1`, because a
+/// browser cannot set headers there.
+pub const FAMILIES_HEADER: &str = "x-fc-families";
+
+impl AuthUser {
+    /// The family the account joined first, or `None` with no family at all.
+    pub fn home_family(&self) -> Option<i64> {
+        self.family_ids.first().copied()
+    }
+
+    /// Is the caller a member of `family_id` right now?
+    pub fn in_family(&self, family_id: i64) -> bool {
+        self.family_ids.contains(&family_id)
+    }
+
+    /// A family named by a request BODY or QUERY (an upload's `family_id`,
+    /// a group's `family_id`): absent means the home family, and a family
+    /// the caller is not in is `family_not_found` — the same answer an id
+    /// that never existed gets.
+    pub fn family_or_home(&self, named: Option<i64>) -> Result<Option<i64>, ApiError> {
+        match named {
+            None => Ok(self.home_family()),
+            Some(id) if self.in_family(id) => Ok(Some(id)),
+            Some(_) => Err(family_not_found()),
+        }
+    }
+}
+
+/// `family_not_found` (404): a family the caller is not in, worded and coded
+/// exactly as one that never existed (docs/protocol.md, "Several families").
+pub fn family_not_found() -> ApiError {
+    ApiError::not_found(codes::FAMILY_NOT_FOUND, "no such family")
+}
+
+/// Resolve the `{family}` path segment against the caller's memberships.
+///
+/// `mine` is the home family — `None` when the account has none, which every
+/// handler already answers with its own `not_in_family`, exactly as the
+/// form without an id always did. A number must be a family the caller is
+/// in; anything else, a number they are not in, or a word that is not
+/// `mine`, is `family_not_found`. Pure, so the rule is pinned by a unit test
+/// rather than discovered through a route.
+pub fn resolve_family_segment(family_ids: &[i64], segment: &str) -> Result<Option<i64>, ApiError> {
+    if segment == "mine" {
+        return Ok(family_ids.first().copied());
+    }
+    match segment.parse::<i64>() {
+        Ok(id) if family_ids.contains(&id) => Ok(Some(id)),
+        _ => Err(family_not_found()),
+    }
+}
+
+/// Did the client say it knows about several families?
+pub fn says_multi(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(FAMILIES_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim() == "1")
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -51,7 +140,20 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer_token(parts).ok_or_else(ApiError::unauthorized)?;
-        authenticate(state, &token).await
+        let mut auth = authenticate(state, &token).await?;
+        auth.multi = says_multi(&parts.headers);
+        // The `{family}` segment, when this route has one. Resolved HERE,
+        // once, so no handler can forget to check that the caller is in the
+        // family it names — the one check every family endpoint shares and
+        // the one whose absence would let a member read a stranger's board.
+        // A route with no parameters at all has no `UrlParams` extension,
+        // which reads as "no `{family}`", not as an error.
+        if let Ok(params) = RawPathParams::from_request_parts(parts, state).await
+            && let Some((_, segment)) = params.iter().find(|(name, _)| *name == "family")
+        {
+            auth.family_id = resolve_family_segment(&auth.family_ids, segment)?;
+        }
+        Ok(auth)
     }
 }
 
@@ -101,10 +203,15 @@ pub fn bearer_from_subprotocols(headers: &axum::http::HeaderMap) -> Option<Strin
 /// Resolve a bearer token to its session + user, sliding the expiry.
 pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, ApiError> {
     let token_hash = tokens::hash_token(token);
+    // The memberships ride the same round trip, home first — the order
+    // every "which family does an endpoint without one mean" question reads.
+    // `ARRAY(subquery)` is `{}` rather than NULL for an account in none.
     let row = sqlx::query(
-        "SELECT s.id AS session_id, s.user_id, s.last_used_at, u.family_id
+        "SELECT s.id AS session_id, s.user_id, s.last_used_at,
+                ARRAY(SELECT fm.family_id FROM family_members fm
+                       WHERE fm.user_id = s.user_id
+                       ORDER BY fm.joined_at, fm.family_id) AS family_ids
          FROM sessions s
-         JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = $1 AND s.expires_at > now()",
     )
     .bind(&token_hash)
@@ -117,7 +224,7 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, Api
 
     let session_id: i64 = row.get("session_id");
     let user_id: i64 = row.get("user_id");
-    let family_id: Option<i64> = row.get("family_id");
+    let family_ids: Vec<i64> = row.get("family_ids");
     let last_used_at: OffsetDateTime = row.get("last_used_at");
 
     let touch_interval = Duration::minutes(state.cfg.auth.session_touch_interval_mins);
@@ -143,8 +250,10 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, Api
 
     Ok(AuthUser {
         user_id,
-        family_id,
+        family_id: family_ids.first().copied(),
+        family_ids,
         session_id,
+        multi: false,
     })
 }
 
@@ -275,6 +384,40 @@ fn dummy_hash() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `mine` is home, a membership is itself, and everything else — a
+    /// stranger's family, a word, a number out of range — is the one 404 an
+    /// id that never existed gets (docs/protocol.md, "Several families").
+    #[test]
+    fn the_family_segment_resolves_to_a_membership_or_family_not_found() {
+        let families = [7, 3];
+        assert_eq!(resolve_family_segment(&families, "mine").unwrap(), Some(7));
+        assert_eq!(resolve_family_segment(&families, "3").unwrap(), Some(3));
+        assert_eq!(resolve_family_segment(&families, "7").unwrap(), Some(7));
+        for stranger in ["4", "0", "-3", "abc", "", "3.0", "99999999999999999999"] {
+            let error = resolve_family_segment(&families, stranger).expect_err(stranger);
+            assert!(
+                matches!(error, ApiError::NotFound { code, .. } if code == codes::FAMILY_NOT_FOUND),
+                "{stranger:?} must be family_not_found"
+            );
+        }
+        // No family at all: `mine` is nobody's, and the handler answers
+        // `not_in_family` exactly as the form without an id always did.
+        assert_eq!(resolve_family_segment(&[], "mine").unwrap(), None);
+        assert!(resolve_family_segment(&[], "7").is_err());
+    }
+
+    #[test]
+    fn only_a_literal_one_says_multi() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(!says_multi(&headers));
+        headers.insert(FAMILIES_HEADER, "1".parse().unwrap());
+        assert!(says_multi(&headers));
+        headers.insert(FAMILIES_HEADER, "0".parse().unwrap());
+        assert!(!says_multi(&headers));
+        headers.insert(FAMILIES_HEADER, "true".parse().unwrap());
+        assert!(!says_multi(&headers));
+    }
 
     /// The bound is process-wide by design, so the tests that manipulate
     /// it cannot run beside each other: each one takes "every permit", and

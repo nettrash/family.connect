@@ -32,6 +32,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
 import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
+import me.nettrash.familyconnect.data.net.dto.InvitationDto
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
@@ -324,6 +325,21 @@ sealed interface ServerFrame {
     @Serializable
     @SerialName("chat_removed")
     data class ChatRemoved(@SerialName("chat_id") val chatId: Long) : ServerFrame
+
+    /**
+     * An invitation into a family, pending — to the invited person's
+     * connections and to the inviting family's owner's (docs/protocol.md,
+     * "Several families"; added 2026-10-22). The invited person shows it as
+     * a banner; the owner's pending list follows it.
+     */
+    @Serializable
+    @SerialName("invitation")
+    data class Invitation(val invitation: InvitationDto) : ServerFrame
+
+    /** That invitation is gone — accepted, declined, withdrawn or lapsed. */
+    @Serializable
+    @SerialName("invitation_removed")
+    data class InvitationRemoved(@SerialName("invitation_id") val invitationId: Long) : ServerFrame
 
     /**
      * One board note in whatever state it now has — created, edited, moved,

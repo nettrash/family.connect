@@ -93,6 +93,12 @@ final class NoteEntity {
     /// written", and both fall back to the note-id rule the badge used
     /// before — see BoardBadge.
     var contentSeq: Int64 = 0
+    /// The family whose board this note is on (docs/protocol.md, "Several
+    /// families", 2026-10-22). `0` is "not attributed yet": a row cached by
+    /// a build from before several families, which SwiftData fills in as a
+    /// lightweight migration and the first `GET /me` hands to the home
+    /// family — the only board that build ever read.
+    var familyID: Int64 = 0
 
     init(
         noteID: Int64,
@@ -116,8 +122,10 @@ final class NoteEntity {
         createdAt: Date,
         updatedAt: Date,
         boardSeq: Int64,
-        contentSeq: Int64 = 0
+        contentSeq: Int64 = 0,
+        familyID: Int64 = 0
     ) {
+        self.familyID = familyID
         self.noteID = noteID
         self.authorID = authorID
         self.text = text

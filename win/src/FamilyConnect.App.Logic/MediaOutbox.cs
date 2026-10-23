@@ -83,7 +83,7 @@ public interface IMediaStore
 /// to wait for.
 /// </para>
 /// </remarks>
-public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore media)
+public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore media, Func<long, long?>? familyFor = null)
 {
     /// <summary>How many times a preview is sent before this device stops trying.</summary>
     public const int PreviewAttempts = 3;
@@ -145,12 +145,15 @@ public sealed class MediaOutbox(OutboxStore outbox, ApiClient api, IMediaStore m
                         new ApiError(ErrorCodes.MediaMissing, "the file is no longer here"));
                     break;
                 }
+                // For the family the CHAT is in, not whichever is shown by the time the upload goes (docs/protocol.md,
+                // "Several families"): a message may use an attachment only in a chat its family lists.
+                var family = familyFor?.Invoke(row.ChatId);
                 var answer = staged is { Kind: "location", Latitude: { } latitude, Longitude: { } longitude }
                     // A place has no bytes: its three numbers are the whole upload.
-                    ? await api.UploadLocation(latitude, longitude, staged.AccuracyM, staged.Name, ct).ConfigureAwait(false)
+                    ? await api.UploadLocation(latitude, longitude, staged.AccuracyM, staged.Name, ct, family).ConfigureAwait(false)
                     : await api.Upload(
                         staged.Kind, staged.Mime, staged.Bytes,
-                        staged.Width, staged.Height, staged.DurationMs, staged.Name, ct, staged.Waveform)
+                        staged.Width, staged.Height, staged.DurationMs, staged.Name, ct, staged.Waveform, family)
                         .ConfigureAwait(false);
                 if (answer.Ok && answer.Value is not null)
                 {

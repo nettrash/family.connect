@@ -24,10 +24,16 @@
  *   clearSession  — token + Room wipe + settings reset EXCEPT serverUrl
  *                   (protocol: on 401 "the client wipes local state,
  *                   keeping the server URL").
- *   refreshMe     — reconciles status and emits the session events the
- *                   nav host / waiting screen react to:
+ *   refreshMe     — reconciles the FAMILY LIST (docs/protocol.md,
+ *                   "Several families") and the current family, and emits
+ *                   the session events the nav host / waiting screen react
+ *                   to:
  *                     PENDING → NONE  = join request was rejected
- *                     MEMBER/OWNER → NONE = removed from the family
+ *                     MEMBER/OWNER → NONE = out of the last family
+ *                     the current family gone, others left = back to the
+ *                     chat list, now the next family's
+ *                   A family that disappears takes only ITS data with it
+ *                   (FamilyLocalData); the last one takes everything.
  *
  * iOS counterpart: ios/FamilyConnect/Data/Repo/SessionRepository.swift
  */
@@ -47,6 +53,9 @@ import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.net.dto.FamilyDto
+import me.nettrash.familyconnect.data.net.dto.MeResponse
+import me.nettrash.familyconnect.data.net.dto.PendingJoinRequestDto
 import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenRepository
@@ -55,6 +64,7 @@ import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.data.settings.TokenStore
+import me.nettrash.familyconnect.data.settings.mirrorFamilySwitches
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.di.UnauthorizedEvents
 import javax.inject.Inject
@@ -86,6 +96,14 @@ sealed interface SessionEvent {
 
     /** Was PENDING, now nothing — the join request was declined. */
     data object JoinRequestRejected : SessionEvent
+
+    /**
+     * The family the app was SHOWING is gone — left, removed, or deleted —
+     * and the account is still in others (docs/protocol.md, "Several
+     * families"). The app has already switched to the first remaining one;
+     * screens of the old family make way for its chat list.
+     */
+    data object CurrentFamilyGone : SessionEvent
 }
 
 data class SessionSnapshot(
@@ -130,6 +148,9 @@ class SessionRepository @Inject constructor(
     // get a private epoch; production shares the singleton with the
     // repositories whose writes it guards (TranscriptRepository).
     private val epoch: SessionEpoch = SessionEpoch(),
+    // Same trick once more: a test that never holds two families gets the
+    // no-op; production drops one family's rows through Room.
+    private val familyData: FamilyLocalData = FamilyLocalData.NONE,
 ) {
 
     // Bumped on every token save/clear so sessionFlow re-emits — the
@@ -332,37 +353,13 @@ class SessionRepository @Inject constructor(
                 settings.setBlockedUserIds(me.blockedUserIds)
                 settings.setMaxFamilyMembers(me.maxFamilyMembers)
                 settings.setSupportContact(me.supportContact)
-                val next = when {
-                    me.family != null ->
-                        if (me.role == "owner") FamilyStatus.OWNER else FamilyStatus.MEMBER
-                    me.pendingJoinRequest != null -> FamilyStatus.PENDING
-                    else -> FamilyStatus.NONE
-                }
-                settings.setFamilyStatus(next)
-                settings.setFamilyName(me.family?.name ?: me.pendingJoinRequest?.familyName)
-                // The owner's transcripts switch rides on `/me` too
-                // (docs/protocol.md, "Transcripts on request"). Only from a
-                // family that is there: without one the teardown below
-                // takes it with everything else.
-                me.family?.let { settings.setFamilyAiTranscripts(it.aiTranscripts) }
+                val before = settings.state.first()
+                val next = applyFamilies(me, before)
                 if (previous == FamilyStatus.PENDING && next == FamilyStatus.NONE) {
                     // Neither family nor pending request: the request was
                     // rejected (protocol GET /me note). The waiting screen
                     // shows "declined" off this event.
                     _sessionEvents.tryEmit(SessionEvent.JoinRequestRejected)
-                }
-                if ((previous == FamilyStatus.MEMBER || previous == FamilyStatus.OWNER) &&
-                    next == FamilyStatus.NONE
-                ) {
-                    // Removed while we weren't looking — the chats aren't
-                    // ours to show any more.
-                    wipe()
-                    // The pack's cursor goes with the pack: its seqs are
-                    // server-wide, so the next family's must not be caught
-                    // up from this one's mark (docs/protocol.md, "Sticker
-                    // pack").
-                    settings.setPackCursor(0L)
-                    _sessionEvents.tryEmit(SessionEvent.RemovedFromFamily)
                 }
                 ApiResult.Ok(snapshot())
             }
@@ -371,15 +368,201 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    /** Live `member_left` for *my* user id — FamilyRepository calls this. */
-    fun onRemovedFromFamily() {
-        scope.launch {
+    /**
+     * Store what `/me` said about families and reconcile everything that
+     * hangs off it; answers the new status.
+     *
+     * A server that predates several families sends no `families`, and its
+     * one `family` (with `role`) becomes a one-entry list — so everything
+     * below runs the same on both, and only [SettingsState.multiFamilyServer]
+     * remembers the difference (request paths keep their old form there).
+     */
+    private suspend fun applyFamilies(me: MeResponse, before: SettingsState): FamilyStatus {
+        val families: List<FamilyDto> = me.families
+            ?: listOfNotNull(me.family?.let { it.copy(role = it.role ?: me.role) })
+        val pending: List<PendingJoinRequestDto> = me.pendingJoinRequests
+            ?: listOfNotNull(me.pendingJoinRequest)
+        // Rows cached before several families are the home family's — the
+        // only one an app from before saw. Before anything is filed under a
+        // real id, so a roster refresh never meets an unclaimed twin.
+        families.firstOrNull()?.let { home ->
+            familyData.claimLegacy(home.id)
+            settings.claimLegacyFamilyState(home.id)
+        }
+        settings.setFamilies(
+            families = families,
+            pendingJoinRequests = pending,
+            invitations = me.invitations,
+            memberFamiliesEnabled = me.memberFamiliesEnabled,
+            maxFamiliesPerAccount = me.maxFamiliesPerAccount ?: 0,
+            multiFamilyServer = me.families != null,
+        )
+        val current = FamilyList.current(families, before.currentFamilyId)
+        settings.setCurrentFamilyId(current)
+        val next = mirrorCurrent(families, current, pending)
+
+        val remaining = families.mapTo(HashSet()) { it.id }
+        val gone = before.families.map { it.id }.filter { it !in remaining }
+        val wasInFamily = before.familyStatus == FamilyStatus.MEMBER || before.familyStatus == FamilyStatus.OWNER
+        if (families.isEmpty() && (wasInFamily || before.families.isNotEmpty())) {
+            // Out of the LAST family while we weren't looking — the chats
+            // aren't ours to show any more.
             wipe()
-            // See refreshMe: the pack's cursor goes with the pack.
-            settings.setPackCursor(0L)
-            settings.setFamilyStatus(FamilyStatus.NONE)
+            forgetFamilies(gone)
+            _sessionEvents.tryEmit(SessionEvent.RemovedFromFamily)
+        } else if (gone.isNotEmpty()) {
+            // Out of SOME: each takes only its own data.
+            for (familyId in gone) familyData.dropFamily(familyId, remaining)
+            forgetFamilies(gone)
+            if (before.currentFamilyId in gone) _sessionEvents.tryEmit(SessionEvent.CurrentFamilyGone)
+        }
+        return next
+    }
+
+    /**
+     * The current family's status, name and switches into the single values
+     * every screen reads "the family" from. Answers the status.
+     */
+    private suspend fun mirrorCurrent(
+        families: List<FamilyDto>,
+        current: Long?,
+        pending: List<PendingJoinRequestDto>,
+    ): FamilyStatus {
+        val family = families.firstOrNull { it.id == current }
+        val status = FamilyList.status(families, current, pending)
+        settings.setFamilyStatus(status)
+        settings.setFamilyName(family?.name ?: pending.firstOrNull()?.familyName)
+        // The owner's switches ride on every Family object, `/me`'s
+        // included (docs/protocol.md, "Transcripts on request"). Only from a
+        // family that is there: without one the teardown takes them.
+        family?.let { settings.mirrorFamilySwitches(it) }
+        return status
+    }
+
+    /**
+     * The cursors and badge marks of families this account is out of. With
+     * none left, also the single values from before several families, which
+     * must never be claimed for a family joined later (pack and board seqs
+     * are server-wide).
+     */
+    private suspend fun forgetFamilies(familyIds: Collection<Long>) {
+        for (familyId in familyIds) settings.forgetFamily(familyId)
+        if (settings.state.first().families.isEmpty()) {
+            settings.claimLegacyFamilyState(0L)
+            settings.forgetFamily(0L)
+        }
+    }
+
+    /**
+     * Show [familyId] — the switcher's tap, a push's family, a family just
+     * joined. Nothing when it is not one of this account's families.
+     */
+    suspend fun switchFamily(familyId: Long) {
+        val state = settings.state.first()
+        if (state.families.none { it.id == familyId }) return
+        settings.setCurrentFamilyId(familyId)
+        mirrorCurrent(state.families, familyId, state.pendingJoinRequests)
+    }
+
+    /**
+     * A family this account just came into — created here, or an invitation
+     * accepted — onto the list and shown, before any `/me` has said so. Its
+     * join request and its invitation, if any, are answered by it.
+     */
+    suspend fun addFamily(family: FamilyDto) {
+        val state = settings.state.first()
+        val families = state.families.filter { it.id != family.id } + family
+        val pending = state.pendingJoinRequests.filter { it.familyId != family.id }
+        settings.setFamilies(
+            families = families,
+            pendingJoinRequests = pending,
+            invitations = state.invitations.filter { it.familyId != family.id },
+            memberFamiliesEnabled = state.memberFamiliesEnabled,
+            maxFamiliesPerAccount = state.maxFamiliesPerAccount,
+            multiFamilyServer = state.multiFamilyServer,
+        )
+        settings.setCurrentFamilyId(family.id)
+        mirrorCurrent(families, family.id, pending)
+    }
+
+    /**
+     * Re-mirror the current family after its entry changed — a roster read
+     * or an owner's PATCH answered with a newer Family.
+     */
+    suspend fun updateFamily(family: FamilyDto) {
+        val state = settings.state.first()
+        val held = state.families.firstOrNull { it.id == family.id } ?: return
+        // A Family read anywhere but `/me` carries no role: keep the one held.
+        val families = state.families.map { if (it.id == family.id) family.copy(role = family.role ?: held.role) else it }
+        settings.setFamilies(
+            families = families,
+            pendingJoinRequests = state.pendingJoinRequests,
+            invitations = state.invitations,
+            memberFamiliesEnabled = state.memberFamiliesEnabled,
+            maxFamiliesPerAccount = state.maxFamiliesPerAccount,
+            multiFamilyServer = state.multiFamilyServer,
+        )
+        if (state.currentFamilyId == family.id) mirrorCurrent(families, family.id, state.pendingJoinRequests)
+    }
+
+    /**
+     * The owner of [familyId] changed (`family_owner`): the role on that
+     * family's entry follows, and the status with it when it is the one
+     * shown.
+     */
+    suspend fun setFamilyRole(familyId: Long, role: String) {
+        val state = settings.state.first()
+        val held = state.families.firstOrNull { it.id == familyId } ?: return
+        if (held.role == role) return
+        updateFamily(held.copy(role = role))
+    }
+
+    /** Live `member_left` for *my* user id — FamilyRepository calls this. */
+    fun onRemovedFromFamily(familyId: Long) {
+        scope.launch { leftFamily(familyId) }
+    }
+
+    /**
+     * This account is out of [familyId] — it left, or was removed. Only that
+     * family's chats, board, pack, roster and cursors go (docs/protocol.md,
+     * "Several families"); if it was the one shown, the first remaining
+     * family is shown instead. Out of the LAST family, everything goes and
+     * the app returns to the gate, exactly as leaving "the family" always
+     * did.
+     */
+    suspend fun leftFamily(familyId: Long) {
+        val state = settings.state.first()
+        // Already done: our own leave tears down before the `member_left`
+        // that confirms it arrives. An install that has not read `/me` since
+        // several families holds no list yet, and its one family is this one.
+        val legacyMember = state.families.isEmpty() &&
+            (state.familyStatus == FamilyStatus.MEMBER || state.familyStatus == FamilyStatus.OWNER)
+        if (state.families.none { it.id == familyId } && !legacyMember) return
+        val remaining = state.families.filter { it.id != familyId }
+        if (remaining.isEmpty()) {
+            wipe()
+            settings.setFamilies(
+                families = emptyList(),
+                pendingJoinRequests = state.pendingJoinRequests,
+                invitations = state.invitations,
+                memberFamiliesEnabled = state.memberFamiliesEnabled,
+                maxFamiliesPerAccount = state.maxFamiliesPerAccount,
+                multiFamilyServer = state.multiFamilyServer,
+            )
+            forgetFamilies(state.families.map { it.id } + familyId)
+            settings.setCurrentFamilyId(null)
+            settings.setFamilyStatus(FamilyList.status(emptyList(), null, state.pendingJoinRequests))
             settings.setFamilyName(null)
             _sessionEvents.emit(SessionEvent.RemovedFromFamily)
+            return
+        }
+        familyData.dropFamily(familyId, remaining.mapTo(HashSet()) { it.id })
+        forgetFamilies(listOf(familyId))
+        if (state.currentFamilyId == familyId || state.currentFamilyId == null) {
+            val next = remaining.first().id
+            settings.setCurrentFamilyId(next)
+            mirrorCurrent(remaining, next, state.pendingJoinRequests)
+            _sessionEvents.emit(SessionEvent.CurrentFamilyGone)
         }
     }
 }

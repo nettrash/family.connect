@@ -27,6 +27,7 @@ import me.nettrash.familyconnect.testutil.FakeFamilyApi
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class StatisticsViewModelTest {
@@ -61,7 +62,7 @@ class StatisticsViewModelTest {
     fun `starts loading and lands on the numbers`() = runTest(dispatcher) {
         api.statsResult = ApiResult.Ok(stats())
 
-        val vm = StatisticsViewModel(api)
+        val vm = StatisticsViewModel(api, FakeSettingsRepository())
         assertThat(vm.state.value).isEqualTo(StatisticsViewModel.State.Loading)
 
         runCurrent()
@@ -75,7 +76,7 @@ class StatisticsViewModelTest {
     fun `a network failure is Failed, not an empty screen`() = runTest(dispatcher) {
         api.statsResult = ApiResult.NetworkError(java.io.IOException("offline"))
 
-        val vm = StatisticsViewModel(api)
+        val vm = StatisticsViewModel(api, FakeSettingsRepository())
         runCurrent()
 
         assertThat(vm.state.value).isEqualTo(StatisticsViewModel.State.Failed)
@@ -86,7 +87,7 @@ class StatisticsViewModelTest {
     fun `an http failure is Failed too`() = runTest(dispatcher) {
         api.statsResult = ApiResult.HttpError(500, null, null)
 
-        val vm = StatisticsViewModel(api)
+        val vm = StatisticsViewModel(api, FakeSettingsRepository())
         runCurrent()
 
         assertThat(vm.state.value).isEqualTo(StatisticsViewModel.State.Failed)
@@ -96,7 +97,7 @@ class StatisticsViewModelTest {
     @Test
     fun `load fetches again`() = runTest(dispatcher) {
         api.statsResult = ApiResult.NetworkError(java.io.IOException("offline"))
-        val vm = StatisticsViewModel(api)
+        val vm = StatisticsViewModel(api, FakeSettingsRepository())
         runCurrent()
         assertThat(api.statsCalls).isEqualTo(1)
 

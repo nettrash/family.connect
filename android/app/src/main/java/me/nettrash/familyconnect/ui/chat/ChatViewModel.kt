@@ -142,6 +142,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.repo.roundVideoLimits
+import me.nettrash.familyconnect.data.repo.observeCurrentActiveMembers
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -403,7 +404,7 @@ class ChatViewModel @Inject constructor(
      * like the name map it sits beside: `items` is built on it, and a
      * lazily started flow would hand the first build a zero.
      */
-    val familyMemberCount: StateFlow<Int> = memberDao.observeActiveMembers()
+    val familyMemberCount: StateFlow<Int> = memberDao.observeCurrentActiveMembers(settings)
         .map { it.size }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
@@ -1053,7 +1054,7 @@ class ChatViewModel @Inject constructor(
     // -- Member mentions (docs/protocol.md, "Mentioning a member") ---------
 
     /** Everybody a mention may name: the active roster, by the name the app calls them. */
-    private val mentionRoster: StateFlow<List<MentionDto>> = memberDao.observeActiveMembers()
+    private val mentionRoster: StateFlow<List<MentionDto>> = memberDao.observeCurrentActiveMembers(settings)
         .map { members -> members.map { MentionDto(it.userId, it.resolvedDisplayName(appContext)) } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 

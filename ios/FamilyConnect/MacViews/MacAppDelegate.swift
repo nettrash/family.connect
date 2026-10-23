@@ -166,11 +166,13 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
             return
         }
         let route = PushRoute.parse(userInfo: content.userInfo)
+        let familyID = PushRoute.familyID(userInfo: content.userInfo)
         Task { @MainActor in
             // The window first — hidden in the menu bar, or really closed —
             // because only the main window's chat view applies a route (#80).
             MacMenuBar.shared.showMainWindow()
-            MacAppDelegate.session?.pendingPushRoute = route
+            // In ITS family (docs/protocol.md, "Several families").
+            MacAppDelegate.session?.routePush(route, familyID: familyID)
             completionHandler()
         }
     }

@@ -53,6 +53,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.outlined.GroupAdd
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -147,6 +151,10 @@ fun FamilyAdminScreen(
     val members by viewModel.members.collectAsStateWithLifecycle()
     val isOwner by viewModel.isOwner.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
+    val canInvite by viewModel.canInvite.collectAsStateWithLifecycle()
+    val inviteCandidates by viewModel.inviteCandidates.collectAsStateWithLifecycle()
+    val familyName by viewModel.familyName.collectAsStateWithLifecycle()
+    var inviting by remember { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
     // What a reported message carried, said in this reader's own language —
@@ -360,6 +368,45 @@ fun FamilyAdminScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
                 SectionDivider()
+
+                // -- Invitations ------------------------------------------------------
+                // The members of the owner's OTHER families, invited into
+                // this one (docs/protocol.md, "Several families"). Hidden
+                // while the owner holds no other family to invite from.
+                if (canInvite) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_invite)) },
+                        leadingContent = { Icon(Icons.Outlined.GroupAdd, contentDescription = null) },
+                        modifier = Modifier.clickable(enabled = !state.busy) { inviting = true },
+                    )
+                }
+                if (state.invitations.isNotEmpty()) {
+                    Text(
+                        text = stringResource(R.string.s_pending_invitations),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                    )
+                    state.invitations.forEach { invitation ->
+                        key(invitation.id) {
+                            ListItem(
+                                headlineContent = { Text(invitation.user.displayName) },
+                                leadingContent = {
+                                    Avatar(name = invitation.user.displayName, userId = invitation.user.id)
+                                },
+                                trailingContent = {
+                                    TextButton(
+                                        onClick = { viewModel.withdrawInvitation(invitation.id) },
+                                        enabled = !state.busy,
+                                    ) {
+                                        Text(stringResource(R.string.s_withdraw_invitation))
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+                if (canInvite || state.invitations.isNotEmpty()) SectionDivider()
 
                 // -- Reports -----------------------------------------------------------
                 // The owner is the moderator. Above the policy controls
@@ -1036,16 +1083,23 @@ fun FamilyAdminScreen(
                                             // The owner changes their own
                                             // password in Settings, with the
                                             // current one — hence the same
-                                            // gate as Remove.
-                                            IconButton(
-                                                onClick = { resetTarget = member },
-                                                enabled = !state.busy,
-                                            ) {
-                                                Icon(
-                                                    Icons.Filled.Key,
-                                                    contentDescription =
-                                                        stringResource(R.string.s_reset_password_of, member.displayName),
-                                                )
+                                            // gate as Remove. And only where
+                                            // it will work: a member also in
+                                            // a family this owner does not
+                                            // own changes it themselves
+                                            // (docs/protocol.md, "Several
+                                            // families").
+                                            if (state.canReset(member.userId)) {
+                                                IconButton(
+                                                    onClick = { resetTarget = member },
+                                                    enabled = !state.busy,
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.Key,
+                                                        contentDescription =
+                                                            stringResource(R.string.s_reset_password_of, member.displayName),
+                                                    )
+                                                }
                                             }
                                             IconButton(
                                                 onClick = { confirmRemove = member },
@@ -1068,6 +1122,17 @@ fun FamilyAdminScreen(
             SectionDivider()
             Spacer(Modifier.height(24.dp))
         }
+    }
+
+    if (inviting) {
+        InvitePickerDialog(
+            familyName = familyName.orEmpty(),
+            candidates = inviteCandidates,
+            invitedUserIds = state.invitations.mapTo(HashSet()) { it.user.id },
+            busy = state.busy,
+            onInvite = viewModel::invite,
+            onDismiss = { inviting = false },
+        )
     }
 
     if (confirmRotate) {
@@ -1604,4 +1669,65 @@ private fun GreetingPlacesEditor(
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
         )
     }
+}
+
+/**
+ * "Invite to “<Family>”": the members of the owner's other families who are
+ * not in this one, each either tappable or marked "Invited" while an
+ * invitation to them is pending (docs/protocol.md, "Several families").
+ */
+@Composable
+private fun InvitePickerDialog(
+    familyName: String,
+    candidates: List<MemberEntity>,
+    invitedUserIds: Set<Long>,
+    busy: Boolean,
+    onInvite: (Long) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.s_invite_to, familyName)) },
+        text = {
+            if (candidates.isEmpty()) {
+                Text(
+                    stringResource(R.string.s_invite_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                    candidates.forEach { member ->
+                        val invited = member.userId in invitedUserIds
+                        ListItem(
+                            headlineContent = { Text(member.displayName) },
+                            leadingContent = {
+                                Avatar(
+                                    name = member.displayName,
+                                    userId = member.userId,
+                                    avatarVersion = member.avatarVersion,
+                                )
+                            },
+                            trailingContent = if (invited) {
+                                {
+                                    Text(
+                                        stringResource(R.string.s_invited),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clickable(enabled = !invited && !busy) { onInvite(member.userId) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_close)) }
+        },
+    )
 }

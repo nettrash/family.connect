@@ -119,6 +119,29 @@ actor APIClient {
     /// asking again a little later returns it at once.
     static let transcriptTimeout: TimeInterval = 310
 
+    /// Says, on EVERY request, that this client knows about several
+    /// families (docs/protocol.md, "Several families", 2026-10-22). A
+    /// request without it is answered about the home family alone, as for
+    /// an app from before; the WebSocket says the same with `families=1`.
+    static let familiesHeader = (name: "X-FC-Families", value: "1")
+
+    /// `/families/{id}{rest}`, or — for nil, which is the home family — the
+    /// form this endpoint had before several families: `/families/mine{rest}`
+    /// for the family read, its PATCH, the board, the pack and the
+    /// statistics, which always spelled the family `mine`.
+    private static func minePath(_ family: Int64?, _ rest: String = "") -> String {
+        "/families/\(family.map(String.init) ?? "mine")\(rest)"
+    }
+
+    /// The same for the endpoints whose old form named no family at all
+    /// (`/families/leave`, `/families/members/{id}`, `/families/join-requests`,
+    /// `/families/reports`, `/families/invite-code/rotate`). A server that
+    /// predates several families knows only that form, so nil keeps it.
+    private static func familyPath(_ family: Int64?, _ rest: String) -> String {
+        guard let family else { return "/families\(rest)" }
+        return "/families/\(family)\(rest)"
+    }
+
     /// `session` is the only test seam — see file header.
     init(serverURL: URL?, session: URLSession = .shared) {
         self.serverURL = serverURL
@@ -149,6 +172,7 @@ actor APIClient {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 401 else { return false }
@@ -316,13 +340,55 @@ actor APIClient {
         try await request("POST", "/families/join", body: JoinFamilyRequest(inviteCode: inviteCode))
     }
 
-    func myFamily() async throws -> FamilyMineResponse {
-        try await request("GET", "/families/mine")
+    /// `GET /families/{id}` — one family's roster and marks; nil is the
+    /// home family (`/families/mine`).
+    func myFamily(family: Int64? = nil) async throws -> FamilyMineResponse {
+        try await request("GET", Self.minePath(family))
     }
 
-    func rotateInviteCode() async throws -> String {
-        let response: InviteCodeResponse = try await request("POST", "/families/invite-code/rotate")
+    func rotateInviteCode(family: Int64? = nil) async throws -> String {
+        let response: InviteCodeResponse = try await request(
+            "POST", Self.familyPath(family, "/invite-code/rotate"))
         return response.inviteCode
+    }
+
+    // MARK: - Invitations (docs/protocol.md, "Several families", 2026-10-22)
+
+    private struct InviteRequest: Encodable {
+        let userID: Int64
+        enum CodingKeys: String, CodingKey { case userID = "user_id" }
+    }
+
+    /// The owner invites a member of one of their OTHER families. `201`
+    /// with the new invitation, or `200` with the pending one — both are
+    /// the invitation, and neither is an error.
+    func invite(userID: Int64, family: Int64) async throws -> InvitationDTO {
+        let response: InvitationResponse = try await request(
+            "POST", Self.familyPath(family, "/invitations"), body: InviteRequest(userID: userID))
+        return response.invitation
+    }
+
+    /// The owner's pending invitations, oldest first.
+    func invitations(family: Int64) async throws -> [InvitationDTO] {
+        let response: InvitationsResponse = try await request(
+            "GET", Self.familyPath(family, "/invitations"))
+        return response.invitations
+    }
+
+    /// Withdraw one; idempotent.
+    func withdrawInvitation(id: Int64, family: Int64) async throws {
+        try await requestVoid("DELETE", Self.familyPath(family, "/invitations/\(id)"))
+    }
+
+    /// The invited person says yes: membership is immediate, and the answer
+    /// is the family they are now in.
+    func acceptInvitation(id: Int64) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request("POST", "/invitations/\(id)/accept")
+        return response.family
+    }
+
+    func declineInvitation(id: Int64) async throws {
+        try await requestVoid("POST", "/invitations/\(id)/decline")
     }
 
     /// The body of `PATCH /families/mine`. Which fields are PRESENT decides
@@ -429,9 +495,9 @@ actor APIClient {
         }
     }
 
-    func setJoinPolicy(_ policy: String) async throws -> FamilyDTO {
+    func setJoinPolicy(_ policy: String, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(joinPolicy: policy))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(joinPolicy: policy))
         return response.family
     }
 
@@ -443,25 +509,25 @@ actor APIClient {
     /// patch carries exactly one field. That rule is worth keeping: a
     /// request that sent two would make "which of these did the user
     /// actually change" a question the server has to guess at.
-    func setMemberCap(_ cap: Int?) async throws -> FamilyDTO {
+    func setMemberCap(_ cap: Int?, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(maxMembers: .some(cap)))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(maxMembers: .some(cap)))
         return response.family
     }
 
     /// Block a member of this family. Any member may block any other, the
     /// OWNER INCLUDED — there is no owner check here and that is the point
     /// (protocol.md, "Blocking a member").
-    func blockMember(userID: Int64) async throws {
-        try await requestVoid("PUT", "/families/members/\(userID)/block")
+    func blockMember(userID: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("PUT", Self.familyPath(family, "/members/\(userID)/block"))
     }
 
     /// Unblock. Idempotent, and deliberately raises no membership error:
     /// any id on the caller's own list may be cleared, including one that
     /// has since left the family, or the blocker holds a permanent entry
     /// they cannot remove.
-    func unblockMember(userID: Int64) async throws {
-        try await requestVoid("DELETE", "/families/members/\(userID)/block")
+    func unblockMember(userID: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("DELETE", Self.familyPath(family, "/members/\(userID)/block"))
     }
 
     /// File a report. `messageID` names one message of theirs, or nil to
@@ -495,7 +561,9 @@ actor APIClient {
         return response.report
     }
 
-    func createReport(reportedUserID: Int64, reason: String, messageID: Int64?) async throws -> ReportDTO {
+    func createReport(
+        reportedUserID: Int64, reason: String, messageID: Int64?, family: Int64? = nil
+    ) async throws -> ReportDTO {
         struct Body: Encodable {
             let reportedUserID: Int64
             let reason: String
@@ -507,39 +575,39 @@ actor APIClient {
             }
         }
         let response: ReportResponse = try await request(
-            "POST", "/families/reports",
+            "POST", Self.familyPath(family, "/reports"),
             body: Body(reportedUserID: reportedUserID, reason: reason, messageID: messageID))
         return response.report
     }
 
     /// Owner-only: the open reports, oldest first. Reports naming the owner
     /// themselves are not listed — see protocol.md, "Reporting a member".
-    func reports() async throws -> [ReportDTO] {
-        let response: ReportsResponse = try await request("GET", "/families/reports")
+    func reports(family: Int64? = nil) async throws -> [ReportDTO] {
+        let response: ReportsResponse = try await request("GET", Self.familyPath(family, "/reports"))
         return response.reports
     }
 
     /// Owner-only: take a report off the list. What "dealt with" MEANS is
     /// the owner's business; this protocol has removing a member, resetting
     /// a password and closing the family, not deleting somebody's message.
-    func resolveReport(id: Int64) async throws {
-        try await requestVoid("POST", "/families/reports/\(id)/resolve")
+    func resolveReport(id: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("POST", Self.familyPath(family, "/reports/\(id)/resolve"))
     }
 
     /// Owner-only: the language `@ai` answers in when it is asked in the
     /// family chat. `nil` CLEARS it back to unset, which is not the same
     /// as choosing English — see FamilyPatchRequest.
-    func setFamilyLanguage(_ tag: String?) async throws -> FamilyDTO {
+    func setFamilyLanguage(_ tag: String?, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(language: .some(tag)))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(language: .some(tag)))
         return response.family
     }
 
     /// Owner-only: whether a mention of `@ai` in the family chat is shown
     /// the last month of that chat, or only the message that mentioned it.
-    func setAIHistory(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAIHistory(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistory: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiHistory: enabled))
         return response.family
     }
 
@@ -551,9 +619,9 @@ actor APIClient {
     /// `assistant.vision` on `GET /families/mine`. Neither is consent for a
     /// particular photograph — that is the member attaching it, one send at
     /// a time, and it is deliberately not a setting anywhere.
-    func setAIVision(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAIVision(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiVision: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiVision: enabled))
         return response.family
     }
 
@@ -567,9 +635,9 @@ actor APIClient {
     /// that calls this is disabled in that state rather than left to find
     /// out; and the family it answers with is the truth for BOTH switches,
     /// since turning `ai_vision` off turns this off in the same write.
-    func setAIHistoryPhotos(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAIHistoryPhotos(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistoryPhotos: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiHistoryPhotos: enabled))
         return response.family
     }
 
@@ -581,9 +649,9 @@ actor APIClient {
     /// to none of them. What it CANNOT promise is that a greeting will
     /// arrive; that also needs the operator's half, which the caller reads
     /// from `MeResponse.greetingsEnabled`.
-    func setAIGreeting(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAIGreeting(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiGreeting: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiGreeting: enabled))
         return response.family
     }
 
@@ -593,9 +661,9 @@ actor APIClient {
     /// the server answers `validation` (400) to `true` while `ai_vision` is
     /// off, which is why the switch that calls this is disabled in that
     /// state rather than left to find out.
-    func setAIFaces(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAIFaces(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiFaces: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiFaces: enabled))
         return response.family
     }
 
@@ -603,9 +671,9 @@ actor APIClient {
     /// text of OTHER members' recordings in the family chat (protocol.md,
     /// "Transcripts on request"). Sends this one key and nothing else. Bound
     /// to no other switch, so no state of them can refuse it.
-    func setAITranscripts(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAITranscripts(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiTranscripts: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiTranscripts: enabled))
         return response.family
     }
 
@@ -613,9 +681,9 @@ actor APIClient {
     /// things up for this family (protocol.md, "Looking things up"). Sends
     /// this one key and nothing else; owner-only (`not_family_owner`, 403),
     /// and bound to no other switch.
-    func setAILookups(_ enabled: Bool) async throws -> FamilyDTO {
+    func setAILookups(_ enabled: Bool, family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(aiLookups: enabled))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(aiLookups: enabled))
         return response.family
     }
 
@@ -629,24 +697,26 @@ actor APIClient {
     /// repeats dropped — and that, not what was sent, is what to show. A
     /// server that predates the field ignores the key, which the answer
     /// shows too.
-    func setGreetingPlaces(_ places: [String]) async throws -> FamilyDTO {
+    func setGreetingPlaces(_ places: [String], family: Int64? = nil) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
-            "PATCH", "/families/mine", body: FamilyPatchRequest(greetingPlaces: places))
+            "PATCH", Self.minePath(family), body: FamilyPatchRequest(greetingPlaces: places))
         return response.family
     }
 
-    func joinRequests() async throws -> [JoinRequestDTO] {
-        let response: JoinRequestsResponse = try await request("GET", "/families/join-requests")
+    func joinRequests(family: Int64? = nil) async throws -> [JoinRequestDTO] {
+        let response: JoinRequestsResponse = try await request(
+            "GET", Self.familyPath(family, "/join-requests"))
         return response.requests
     }
 
-    func approveJoinRequest(id: Int64) async throws -> MemberDTO {
-        let response: MemberResponse = try await request("POST", "/families/join-requests/\(id)/approve")
+    func approveJoinRequest(id: Int64, family: Int64? = nil) async throws -> MemberDTO {
+        let response: MemberResponse = try await request(
+            "POST", Self.familyPath(family, "/join-requests/\(id)/approve"))
         return response.member
     }
 
-    func rejectJoinRequest(id: Int64) async throws {
-        try await requestVoid("POST", "/families/join-requests/\(id)/reject")
+    func rejectJoinRequest(id: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("POST", Self.familyPath(family, "/join-requests/\(id)/reject"))
     }
 
     /// Leave the family, and learn who inherited it.
@@ -660,8 +730,9 @@ actor APIClient {
     ///
     /// An owner is never refused: `owner_cannot_leave` is retired and no
     /// endpoint raises it any more.
-    func leaveFamily() async throws -> Int64? {
-        let (data, _) = try await perform("POST", "/families/leave", query: [], bodyData: nil)
+    func leaveFamily(family: Int64? = nil) async throws -> Int64? {
+        let (data, _) = try await perform(
+            "POST", Self.familyPath(family, "/leave"), query: [], bodyData: nil)
         // A 204 has no body at all, and a 200 has one — so an empty
         // payload is the ordinary case here rather than a malformed
         // answer, and must not be decoded as a failure.
@@ -670,8 +741,8 @@ actor APIClient {
         return response?.newOwnerUserID
     }
 
-    func removeMember(userID: Int64) async throws {
-        try await requestVoid("DELETE", "/families/members/\(userID)")
+    func removeMember(userID: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("DELETE", Self.familyPath(family, "/members/\(userID)"))
     }
 
     /// Change my own password. The current one is required — a live
@@ -688,9 +759,9 @@ actor APIClient {
     /// Owner-only: set a member's password without knowing their old one.
     /// Every session that member has is revoked, so their devices return
     /// to login — which is what makes this a recovery.
-    func resetMemberPassword(userID: Int64, newPassword: String) async throws {
+    func resetMemberPassword(userID: Int64, newPassword: String, family: Int64? = nil) async throws {
         try await requestVoid(
-            "POST", "/families/members/\(userID)/password",
+            "POST", Self.familyPath(family, "/members/\(userID)/password"),
             body: ResetPasswordRequest(newPassword: newPassword))
     }
 
@@ -734,15 +805,17 @@ actor APIClient {
     /// since the child is never going to open a settings screen to type it.
     /// The owner MAY name themselves here, unlike the password reset:
     /// there is no proof being skipped.
-    func setMemberBirthday(userID: Int64, month: Int, day: Int) async throws -> MemberDTO {
+    func setMemberBirthday(
+        userID: Int64, month: Int, day: Int, family: Int64? = nil
+    ) async throws -> MemberDTO {
         let response: MemberResponse = try await request(
-            "PUT", "/families/members/\(userID)/birthday",
+            "PUT", Self.familyPath(family, "/members/\(userID)/birthday"),
             body: BirthdayRequest(month: month, day: day))
         return response.member
     }
 
-    func clearMemberBirthday(userID: Int64) async throws {
-        try await requestVoid("DELETE", "/families/members/\(userID)/birthday")
+    func clearMemberBirthday(userID: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("DELETE", Self.familyPath(family, "/members/\(userID)/birthday"))
     }
 
     private struct BirthdayRequest: Encodable {
@@ -771,9 +844,14 @@ actor APIClient {
     private struct CreateGroupRequest: Encodable {
         let title: String
         let memberIDs: [Int64]
+        /// The family the group is in (docs/protocol.md, "Several
+        /// families"): the one on screen. Omitted when nil, which is the
+        /// home family — and the only form an older server knows.
+        let familyID: Int64?
         enum CodingKeys: String, CodingKey {
             case title
             case memberIDs = "member_ids"
+            case familyID = "family_id"
         }
     }
 
@@ -788,9 +866,10 @@ actor APIClient {
 
     /// `POST /chats/groups` → `201 {chat}`. The caller is added and becomes
     /// the admin; `memberIDs` names the others.
-    func createGroup(title: String, memberIDs: [Int64]) async throws -> ChatDTO {
+    func createGroup(title: String, memberIDs: [Int64], family: Int64? = nil) async throws -> ChatDTO {
         let response: ChatResponse = try await request(
-            "POST", "/chats/groups", body: CreateGroupRequest(title: title, memberIDs: memberIDs))
+            "POST", "/chats/groups",
+            body: CreateGroupRequest(title: title, memberIDs: memberIDs, familyID: family))
         return response.chat
     }
 
@@ -940,7 +1019,8 @@ actor APIClient {
         latitude: Double,
         longitude: Double,
         accuracyM: Int?,
-        name: String?
+        name: String?,
+        family: Int64? = nil
     ) async throws -> AttachmentDTO {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [
@@ -953,12 +1033,14 @@ actor APIClient {
         ]
         if let accuracyM { query.append(URLQueryItem(name: "accuracy_m", value: String(accuracyM))) }
         if let name, !name.isEmpty { query.append(URLQueryItem(name: "name", value: name)) }
+        if let family { query.append(URLQueryItem(name: "family_id", value: String(family))) }
         guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
             throw APIError.notConfigured
         }
         var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -989,7 +1071,8 @@ actor APIClient {
         height: Int?,
         durationMS: Int?,
         name: String? = nil,
-        waveform: String? = nil
+        waveform: String? = nil,
+        family: Int64? = nil
     ) throws -> URLRequest {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [URLQueryItem(name: "kind", value: kind)]
@@ -1010,6 +1093,10 @@ actor APIClient {
         if let waveform, kind == AttachmentDTO.Kind.audio, Waveform.parse(waveform) != nil {
             query.append(URLQueryItem(name: "waveform", value: waveform))
         }
+        // The family the upload is for (docs/protocol.md, "Several
+        // families"): a message may use it only in a chat that family's id
+        // is in. Absent — the home family — on a server that predates it.
+        if let family { query.append(URLQueryItem(name: "family_id", value: String(family))) }
         guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
             throw APIError.notConfigured
         }
@@ -1018,6 +1105,7 @@ actor APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(mime, forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -1032,11 +1120,12 @@ actor APIClient {
         height: Int?,
         durationMS: Int?,
         name: String? = nil,
-        waveform: String? = nil
+        waveform: String? = nil,
+        family: Int64? = nil
     ) async throws -> AttachmentDTO {
         let request = try attachmentUploadRequest(
             mime: mime, kind: kind, width: width, height: height,
-            durationMS: durationMS, name: name, waveform: waveform)
+            durationMS: durationMS, name: name, waveform: waveform, family: family)
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {
@@ -1077,6 +1166,7 @@ actor APIClient {
         else { throw APIError.notConfigured }
         var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
         request.httpMethod = "GET"
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -1111,7 +1201,7 @@ actor APIClient {
         guard let serverURL,
               let url = Self.endpointURL(base: serverURL, path: "/attachments/\(id)")
         else { return nil }
-        var headers: [String: String] = [:]
+        var headers = [Self.familiesHeader.name: Self.familiesHeader.value]
         if let token { headers["Authorization"] = "Bearer \(token)" }
         return (url, headers)
     }
@@ -1239,19 +1329,19 @@ actor APIClient {
         }
     }
 
-    func board() async throws -> BoardResponse {
-        try await request("GET", "/families/mine/board")
+    func board(family: Int64? = nil) async throws -> BoardResponse {
+        try await request("GET", Self.minePath(family, "/board"))
     }
 
     /// What the family has sent. Visible to every member, not just the
     /// owner (docs/protocol.md, "Family statistics").
-    func familyStats() async throws -> FamilyStatsDTO {
-        try await request("GET", "/families/mine/stats")
+    func familyStats(family: Int64? = nil) async throws -> FamilyStatsDTO {
+        try await request("GET", Self.minePath(family, "/stats"))
     }
 
-    func boardChanges(afterSeq: Int64, limit: Int) async throws -> [NoteDTO] {
+    func boardChanges(afterSeq: Int64, limit: Int, family: Int64? = nil) async throws -> [NoteDTO] {
         let response: BoardChangesResponse = try await request(
-            "GET", "/families/mine/board/changes",
+            "GET", Self.minePath(family, "/board/changes"),
             query: [
                 URLQueryItem(name: "after_seq", value: String(afterSeq)),
                 URLQueryItem(name: "limit", value: String(limit)),
@@ -1272,10 +1362,11 @@ actor APIClient {
         endsAt: Date? = nil,
         place: String? = nil,
         mentions: [MentionDTO] = [],
-        items: [TaskLineRequest]? = nil
+        items: [TaskLineRequest]? = nil,
+        family: Int64? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
-            "POST", "/families/mine/board/notes",
+            "POST", Self.minePath(family, "/board/notes"),
             body: CreateNoteRequest(
                 text: text, color: color, size: size, font: font, x: x, y: y,
                 kind: kind, attachmentID: attachmentID,
@@ -1288,22 +1379,22 @@ actor APIClient {
     /// Tick or untick one line of a task list. ANY member may; ticking is
     /// not authorship, and it is a STATE rather than a toggle so two
     /// phones cannot undo each other (docs/protocol.md, "Board").
-    func tickTask(noteID: Int64, itemID: Int64, done: Bool) async throws -> NoteDTO {
+    func tickTask(noteID: Int64, itemID: Int64, done: Bool, family: Int64? = nil) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
-            "PUT", "/families/mine/board/notes/\(noteID)/tasks/\(itemID)",
+            "PUT", Self.minePath(family, "/board/notes/\(noteID)/tasks/\(itemID)"),
             body: TaskDoneRequest(done: done))
         return response.note
     }
 
     /// `nil` retracts. Any member may send either.
-    func answerNote(id: Int64, answer: String?) async throws -> NoteDTO {
+    func answerNote(id: Int64, answer: String?, family: Int64? = nil) async throws -> NoteDTO {
         let response: NoteResponse
         if let answer {
             response = try await request(
-                "PUT", "/families/mine/board/notes/\(id)/rsvp",
+                "PUT", Self.minePath(family, "/board/notes/\(id)/rsvp"),
                 body: RsvpRequest(answer: answer))
         } else {
-            response = try await request("DELETE", "/families/mine/board/notes/\(id)/rsvp")
+            response = try await request("DELETE", Self.minePath(family, "/board/notes/\(id)/rsvp"))
         }
         return response.note
     }
@@ -1320,10 +1411,11 @@ actor APIClient {
         endsAt: Date?? = nil,
         place: String? = nil,
         mentions: [MentionDTO]? = nil,
-        items: [TaskLineRequest]? = nil
+        items: [TaskLineRequest]? = nil,
+        family: Int64? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
-            "PATCH", "/families/mine/board/notes/\(id)",
+            "PATCH", Self.minePath(family, "/board/notes/\(id)"),
             body: PatchNoteRequest(
                 text: text, color: color, size: size, font: font, x: x, y: y,
                 startsAt: startsAt, endsAt: endsAt, place: place,
@@ -1341,9 +1433,9 @@ actor APIClient {
     /// (403) when the author has not agreed that their words may go to the
     /// model — the title is their words (protocol.md, "Consenting to the
     /// assistant").
-    func drawBackdrop(noteID: Int64) async throws -> NoteDTO {
+    func drawBackdrop(noteID: Int64, family: Int64? = nil) async throws -> NoteDTO {
         let (data, _) = try await perform(
-            "POST", "/families/mine/board/notes/\(noteID)/backdrop",
+            "POST", Self.minePath(family, "/board/notes/\(noteID)/backdrop"),
             query: [], bodyData: nil, timeout: backdropTimeout)
         let response: NoteResponse = try decodeResponse(data)
         return response.note
@@ -1403,6 +1495,7 @@ actor APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(
             "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -1438,8 +1531,8 @@ actor APIClient {
         out.write(Data("\r\n--\(boundary)--\r\n".utf8))
     }
 
-    func deleteNote(id: Int64) async throws {
-        try await requestVoid("DELETE", "/families/mine/board/notes/\(id)")
+    func deleteNote(id: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("DELETE", Self.minePath(family, "/board/notes/\(id)"))
     }
 
     private struct EditMessageRequest: Encodable {
@@ -1489,15 +1582,15 @@ actor APIClient {
 
     /// `GET /families/mine/pack` — the whole pack as it now stands, in the
     /// order added, tombstones excluded (docs/protocol.md, "Sticker pack").
-    func pack() async throws -> PackResponse {
-        try await request("GET", "/families/mine/pack")
+    func pack(family: Int64? = nil) async throws -> PackResponse {
+        try await request("GET", Self.minePath(family, "/pack"))
     }
 
     /// One catch-up page, ascending by `pack_seq` and INCLUDING tombstones;
     /// the caller loops (advancing `afterSeq`) until a short page.
-    func packChanges(afterSeq: Int64, limit: Int) async throws -> [PackItemDTO] {
+    func packChanges(afterSeq: Int64, limit: Int, family: Int64? = nil) async throws -> [PackItemDTO] {
         let response: PackChangesResponse = try await request(
-            "GET", "/families/mine/pack/changes",
+            "GET", Self.minePath(family, "/pack/changes"),
             query: [
                 URLQueryItem(name: "after_seq", value: String(afterSeq)),
                 URLQueryItem(name: "limit", value: String(limit)),
@@ -1511,19 +1604,19 @@ actor APIClient {
     /// may carry a DIFFERENT attachment id from the one sent, because the
     /// fresh upload was dropped for the one the pack already had.
     func addPackItem(
-        attachmentID: Int64, label: String?
+        attachmentID: Int64, label: String?, family: Int64? = nil
     ) async throws -> (item: PackItemDTO, alreadyHeld: Bool) {
         let bodyData = try? APICoding.encoder().encode(
             AddPackItemRequest(attachmentID: attachmentID, label: label))
         let (data, http) = try await perform(
-            "POST", "/families/mine/pack", query: [], bodyData: bodyData)
+            "POST", Self.minePath(family, "/pack"), query: [], bodyData: bodyData)
         let response: PackItemResponse = try decodeResponse(data)
         return (response.item, http.statusCode == 200)
     }
 
     /// Remove one. Whoever added it, or the family owner; idempotent.
-    func deletePackItem(id: Int64) async throws {
-        try await requestVoid("DELETE", "/families/mine/pack/\(id)")
+    func deletePackItem(id: Int64, family: Int64? = nil) async throws {
+        try await requestVoid("DELETE", Self.minePath(family, "/pack/\(id)"))
     }
 
     // MARK: - Reactions
@@ -1757,6 +1850,7 @@ actor APIClient {
         var request = URLRequest(url: url, timeoutInterval: requestTimeout ?? timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(Self.familiesHeader.value, forHTTPHeaderField: Self.familiesHeader.name)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

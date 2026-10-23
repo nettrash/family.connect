@@ -59,10 +59,14 @@ public static class ServerUrl
     /// upgrade. "A token in the query string is not a token at all" (docs/protocol.md,
     /// "WebSocket protocol"), and a URL is written into every proxy log there is.
     /// </summary>
+    /// <remarks>
+    /// The one thing the query does carry is <c>families=1</c>: the socket's counterpart of the <c>X-FC-Families: 1</c>
+    /// header, without which the server sends only what concerns the home family (docs/protocol.md, "Several families").
+    /// </remarks>
     public static Uri Socket(Uri baseUrl)
     {
         var scheme = baseUrl.Scheme == Uri.UriSchemeHttps ? "wss" : "ws";
-        var builder = new UriBuilder(baseUrl) { Scheme = scheme, Path = "/api/v1/ws" };
+        var builder = new UriBuilder(baseUrl) { Scheme = scheme, Path = "/api/v1/ws", Query = "families=1" };
         return builder.Uri;
     }
 }

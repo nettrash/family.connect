@@ -37,8 +37,13 @@ public readonly record struct PackLimits(int MaxItems, long MaxItemBytes);
 /// (<c>App.Logic.Sticker</c>); these tables and this class say <c>pack</c>, as the wire does, so
 /// that nobody has to read a name twice to know which is meant.
 /// </para>
+/// <para>
+/// <b>ONE PACK PER FAMILY</b> (docs/protocol.md, "Several families"): its own items, seqs, cursor, ceilings and catch-up. A
+/// store reads and writes the pack of the family shown, and <see cref="In"/> is the same store held to one family; the
+/// connection's count and which families have caught up on it are SHARED between them, because they are one socket's.
+/// </para>
 /// </remarks>
-public sealed class PackStore(Database database)
+public sealed class PackStore
 {
     private const string CursorSeq = "pack.cursor.pack_seq";
 
@@ -48,17 +53,48 @@ public sealed class PackStore(Database database)
     private const string LimitItems = "pack.limit.items";
     private const string LimitBytes = "pack.limit.item_bytes";
 
-    /// <summary>
-    /// Whether this CONNECTION has caught up — read and written under the cache's own lock, and
-    /// deliberately not kept in the file: a relaunch is a new connection, and it has not.
-    /// </summary>
-    private bool caughtUp;
+    /// <summary>Every key this store keeps in <c>meta</c>, before a family's suffix — what <see cref="Database.AdoptLegacy"/> moves.</summary>
+    internal static readonly string[] MetaKeys = [CursorSeq, FullMark, LimitItems, LimitBytes];
+
+    private readonly Database database;
+    private readonly Func<long?> family;
+    private readonly Link link;
+
+    /// <summary>A pack store over <paramref name="database"/>, for the family <paramref name="current"/> says is shown.</summary>
+    public PackStore(Database database, Func<long?>? current = null)
+        : this(database, current ?? (() => null), new Link())
+    {
+    }
+
+    private PackStore(Database database, Func<long?> family, Link link)
+    {
+        this.database = database;
+        this.family = family;
+        this.link = link;
+    }
+
+    /// <summary>The family whose pack this is — the one shown, or the one <see cref="In"/> held it to.</summary>
+    public long? Family => family();
+
+    /// <summary>This store, held to ONE family's pack whatever is shown — sharing this connection's catch-up.</summary>
+    public PackStore In(long? familyId) => new(database, () => familyId, link);
+
+    private string Key(string key) => FamilyKeys.Of(key, family());
 
     /// <summary>
-    /// Which connection that is: counted up each time a socket opens, so a pass can say which one
-    /// it caught up WITH. Not kept in the file either, and for the same reason.
+    /// One socket's catch-up, shared by every family's store: which connection it is — counted up each time a socket opens,
+    /// so a pass can say which one it caught up WITH — and which families have caught up on it. Read and written under the
+    /// cache's own lock, and deliberately not kept in the file: a relaunch is a new connection, and it has not.
     /// </summary>
-    private long connection;
+    private sealed class Link
+    {
+        public long Connection;
+
+        /// <summary>The families caught up on this connection; 0 stands for the unscoped pack of an older cache.</summary>
+        public readonly HashSet<long> CaughtUp = [];
+    }
+
+    private long Caught => family() ?? 0;
 
     /// <summary>The pack as it stands, in the order the items were added — the order a panel shows them in.</summary>
     public IReadOnlyList<PackItemDto> Items()
@@ -66,7 +102,8 @@ public sealed class PackStore(Database database)
         using var serialised = database.Hold();
         var items = new List<PackItemDto>();
         using var command = database.Connection.CreateCommand();
-        command.CommandText = "SELECT * FROM pack_items ORDER BY item_id ASC";
+        command.CommandText = "SELECT * FROM pack_items" + Only() + " ORDER BY item_id ASC";
+        Scope(command);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -90,7 +127,8 @@ public sealed class PackStore(Database database)
     {
         using var serialised = database.Hold();
         using var command = database.Connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM pack_items";
+        command.CommandText = "SELECT COUNT(*) FROM pack_items" + Only();
+        Scope(command);
         return Convert.ToInt32(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
     }
 
@@ -108,7 +146,7 @@ public sealed class PackStore(Database database)
         // full read, a catch-up page, or a frame on a caught-up connection: a read taken before
         // any of those knows less than this device does, and would set the cursor back behind
         // changes it has already applied.
-        if (maxPackSeq < Math.Max(Number(Meta(FullMark)), Cursor))
+        if (maxPackSeq < Math.Max(Number(Meta(Key(FullMark))), Cursor))
         {
             return false;
         }
@@ -121,8 +159,9 @@ public sealed class PackStore(Database database)
         using (var held = database.Connection.CreateCommand())
         {
             held.Transaction = transaction;
-            held.CommandText = "SELECT item_id FROM pack_items WHERE pack_seq <= $mark";
+            held.CommandText = "SELECT item_id FROM pack_items WHERE pack_seq <= $mark" + Only("AND");
             held.Parameters.AddWithValue("$mark", maxPackSeq);
+            Scope(held);
             using var reader = held.ExecuteReader();
             while (reader.Read())
             {
@@ -140,8 +179,9 @@ public sealed class PackStore(Database database)
         using (var clear = database.Connection.CreateCommand())
         {
             clear.Transaction = transaction;
-            clear.CommandText = "DELETE FROM pack_items WHERE pack_seq <= $mark";
+            clear.CommandText = "DELETE FROM pack_items WHERE pack_seq <= $mark" + Only("AND");
             clear.Parameters.AddWithValue("$mark", maxPackSeq);
+            Scope(clear);
             clear.ExecuteNonQuery();
         }
         foreach (var item in items.Where(item => !item.Deleted))
@@ -150,8 +190,8 @@ public sealed class PackStore(Database database)
             // resurrection.
             Apply(item, transaction);
         }
-        SetMeta(CursorSeq, Text(maxPackSeq), transaction);
-        SetMeta(FullMark, Text(maxPackSeq), transaction);
+        SetMeta(Key(CursorSeq), Text(maxPackSeq), transaction);
+        SetMeta(Key(FullMark), Text(maxPackSeq), transaction);
         transaction.Commit();
         return true;
     }
@@ -174,12 +214,12 @@ public sealed class PackStore(Database database)
             // ONLY ONCE THIS CONNECTION HAS CAUGHT UP. Before that the cursor is where the
             // catch-up starts from, and a frame that jumped it would leave everything between the
             // two unread for good (docs/protocol.md, "The cursor moves in three ways and no others").
-            SeqRoute.LiveFrame => caughtUp,
+            SeqRoute.LiveFrame => link.CaughtUp.Contains(Caught),
             _ => true,
         };
         if (mayMove && item.PackSeq > Cursor)
         {
-            SetMeta(CursorSeq, Text(item.PackSeq), transaction);
+            SetMeta(Key(CursorSeq), Text(item.PackSeq), transaction);
         }
         transaction.Commit();
         return changed;
@@ -203,7 +243,7 @@ public sealed class PackStore(Database database)
         }
         if (route != SeqRoute.Evidence)
         {
-            SetMeta(CursorSeq, Text(highest), transaction);
+            SetMeta(Key(CursorSeq), Text(highest), transaction);
         }
         transaction.Commit();
         return changed;
@@ -291,7 +331,7 @@ public sealed class PackStore(Database database)
     }
 
     /// <summary>Where the change feed should carry on from; 0 until this device has read the pack at all.</summary>
-    public long Cursor => Number(Meta(CursorSeq));
+    public long Cursor => Number(Meta(Key(CursorSeq)));
 
     // ---- one connection's catch-up ---------------------------------------
 
@@ -302,8 +342,8 @@ public sealed class PackStore(Database database)
     public void Reconnected()
     {
         using var serialised = database.Hold();
-        connection++;
-        caughtUp = false;
+        link.Connection++;
+        link.CaughtUp.Clear();
     }
 
     /// <summary>
@@ -316,7 +356,7 @@ public sealed class PackStore(Database database)
         get
         {
             using var serialised = database.Hold();
-            return connection;
+            return link.Connection;
         }
     }
 
@@ -339,11 +379,11 @@ public sealed class PackStore(Database database)
     public bool CaughtUp(long began)
     {
         using var serialised = database.Hold();
-        if (began != connection)
+        if (began != link.Connection)
         {
             return false;
         }
-        caughtUp = true;
+        link.CaughtUp.Add(Caught);
         return true;
     }
 
@@ -353,7 +393,7 @@ public sealed class PackStore(Database database)
         get
         {
             using var serialised = database.Hold();
-            return caughtUp;
+            return link.CaughtUp.Contains(Caught);
         }
     }
 
@@ -370,8 +410,8 @@ public sealed class PackStore(Database database)
         get
         {
             using var serialised = database.Hold();
-            var items = Meta(LimitItems);
-            var bytes = Meta(LimitBytes);
+            var items = Meta(Key(LimitItems));
+            var bytes = Meta(Key(LimitBytes));
             return items is null || bytes is null
                 ? null
                 : new PackLimits((int)Math.Min(Number(items), int.MaxValue), Number(bytes));
@@ -385,16 +425,16 @@ public sealed class PackStore(Database database)
         using var transaction = database.Connection.BeginTransaction();
         if (limits is { } known)
         {
-            SetMeta(LimitItems, Text(known.MaxItems), transaction);
-            SetMeta(LimitBytes, Text(known.MaxItemBytes), transaction);
+            SetMeta(Key(LimitItems), Text(known.MaxItems), transaction);
+            SetMeta(Key(LimitBytes), Text(known.MaxItemBytes), transaction);
         }
         else
         {
             using var clear = database.Connection.CreateCommand();
             clear.Transaction = transaction;
             clear.CommandText = "DELETE FROM meta WHERE key IN ($items, $bytes)";
-            clear.Parameters.AddWithValue("$items", LimitItems);
-            clear.Parameters.AddWithValue("$bytes", LimitBytes);
+            clear.Parameters.AddWithValue("$items", Key(LimitItems));
+            clear.Parameters.AddWithValue("$bytes", Key(LimitBytes));
             clear.ExecuteNonQuery();
         }
         transaction.Commit();
@@ -427,8 +467,10 @@ public sealed class PackStore(Database database)
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             "SELECT r.item_id FROM pack_recents r JOIN pack_items i ON i.item_id = r.item_id " +
+            (family() is null ? string.Empty : "WHERE i.family_id = $family ") +
             "ORDER BY r.used_at DESC, r.item_id DESC LIMIT $limit";
         command.Parameters.AddWithValue("$limit", Math.Max(0, limit));
+        Scope(command);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -463,13 +505,16 @@ public sealed class PackStore(Database database)
         command.Transaction = transaction;
         command.CommandText =
             """
-            INSERT INTO pack_items (item_id, added_by, label, created_at, pack_seq, attachment_json)
-            VALUES ($id, $by, $label, $created, $seq, $attachment)
+            INSERT INTO pack_items (item_id, added_by, label, created_at, pack_seq, attachment_json, family_id)
+            VALUES ($id, $by, $label, $created, $seq, $attachment, $family)
             ON CONFLICT(item_id) DO UPDATE SET
                 added_by = excluded.added_by, label = excluded.label,
                 created_at = excluded.created_at, pack_seq = excluded.pack_seq,
-                attachment_json = excluded.attachment_json
+                attachment_json = excluded.attachment_json,
+                family_id = COALESCE(excluded.family_id, pack_items.family_id)
             """;
+        // Whose pack: the family this store is held to, else what the item says.
+        command.Parameters.AddWithValue("$family", family() ?? item.FamilyId ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$id", item.Id);
         command.Parameters.AddWithValue("$by", item.AddedBy);
         // Absent and empty are the same answer here: the server never sends an empty label.
@@ -490,7 +535,23 @@ public sealed class PackStore(Database database)
             Attachment: Wire.Decode<AttachmentDto>(Convert.ToString(reader["attachment_json"]) ?? "null"),
             CreatedAt: created == 0 ? null : Times.Rfc3339(created),
             PackSeq: Convert.ToInt64(reader["pack_seq"], CultureInfo.InvariantCulture),
-            Label: reader["label"] is DBNull ? null : Convert.ToString(reader["label"]));
+            Label: reader["label"] is DBNull ? null : Convert.ToString(reader["label"]),
+            FamilyId: reader["family_id"] is DBNull ? null : Convert.ToInt64(reader["family_id"], CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// The clause that keeps a read to this store's family — <c> WHERE family_id = $family</c>, or with <c>AND</c> after a
+    /// clause of its own — and nothing for the unscoped pack of an older cache.
+    /// </summary>
+    private string Only(string join = "WHERE") => family() is null ? string.Empty : $" {join} family_id = $family";
+
+    /// <summary>The <c>$family</c> that <see cref="Only"/> names, when it names one.</summary>
+    private void Scope(SqliteCommand command)
+    {
+        if (family() is { } scoped)
+        {
+            command.Parameters.AddWithValue("$family", scoped);
+        }
     }
 
     // ---- meta ------------------------------------------------------------

@@ -44,6 +44,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import java.io.File
+import me.nettrash.familyconnect.data.settings.packCursor
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -200,7 +201,7 @@ class PackRepositoryTest {
         repository.applyItem(packItemDto(id = 2, packSeq = 11))
         // Arrived AFTER the read below was taken: above its mark, it stays.
         repository.applyItem(packItemDto(id = 9, packSeq = 30))
-        settings.setPackCursor(11)
+        settings.setPackCursor(0L, 11)
 
         // The read left item 2 out: it was removed while this device was
         // not listening, and a full read never returns tombstones.
@@ -211,7 +212,7 @@ class PackRepositoryTest {
         assertThat(repository.loadPack()).isTrue()
 
         assertThat(heldIds()).containsExactly(1L, 3L, 9L).inOrder()
-        assertThat(settings.current.packCursor).isEqualTo(20)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(20)
         // Left out by the read is gone for good, exactly like a tombstone.
         assertThat(repository.applyItem(packItemDto(id = 2, packSeq = 11))).isFalse()
     }
@@ -231,7 +232,7 @@ class PackRepositoryTest {
         val repository = repository()
         repository.applyItem(packItemDto(id = 1, packSeq = 5))
         repository.applyItem(packItemDto(id = 2, packSeq = 25))
-        settings.setPackCursor(25)
+        settings.setPackCursor(0L, 25)
 
         // A read whose mark is behind what this device has applied is
         // ignored WHOLE: applied as a replacement it would drop item 1
@@ -241,7 +242,7 @@ class PackRepositoryTest {
         assertThat(repository.loadPack()).isTrue()
 
         assertThat(heldIds()).containsExactly(1L, 2L)
-        assertThat(settings.current.packCursor).isEqualTo(25)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(25)
         assertThat(packDao.isGone(1)).isFalse()
     }
 
@@ -250,7 +251,7 @@ class PackRepositoryTest {
         val repository = repository()
         // Every sticker was removed and this device has seen it happen: it
         // holds nothing, at 25.
-        settings.setPackCursor(25)
+        settings.setPackCursor(0L, 25)
 
         // A read taken at 9, arriving late, still lists an item removed
         // since — one this device never held and so never remembered as
@@ -259,7 +260,7 @@ class PackRepositoryTest {
         assertThat(repository.loadPack()).isTrue()
 
         assertThat(heldIds()).isEmpty()
-        assertThat(settings.current.packCursor).isEqualTo(25)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(25)
     }
 
     @Test
@@ -271,7 +272,7 @@ class PackRepositoryTest {
         assertThat(repository.loadPack()).isFalse()
 
         assertThat(heldIds()).containsExactly(1L)
-        assertThat(settings.current.packCursor).isEqualTo(0)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(0)
     }
 
     // -- The reconnect step ----------------------------------------------------
@@ -286,7 +287,7 @@ class PackRepositoryTest {
         assertThat(packApi.fullReads).isEqualTo(1)
         assertThat(packApi.changeRequests).isEmpty()
         assertThat(heldIds()).containsExactly(1L)
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(14)
     }
 
     @Test
@@ -306,7 +307,7 @@ class PackRepositoryTest {
         val repository = repository()
         repository.applyItem(packItemDto(id = 1, packSeq = 10))
         repository.applyItem(packTombstone(id = 1, packSeq = 14))
-        settings.setPackCursor(14)
+        settings.setPackCursor(0L, 14)
 
         repository.catchUpPack(serverMaxSeq = 14)
 
@@ -318,7 +319,7 @@ class PackRepositoryTest {
         val repository = repository()
         repository.applyItem(packItemDto(id = 1, packSeq = 10))
         repository.applyItem(packItemDto(id = 2, packSeq = 11))
-        settings.setPackCursor(11)
+        settings.setPackCursor(0L, 11)
         // One FULL page and one short one: the loop ends on the short page.
         val firstPage = (0 until PackRepository.PACK_PAGE).map { index ->
             packItemDto(id = 100L + index, packSeq = 12L + index)
@@ -336,14 +337,14 @@ class PackRepositoryTest {
         assertThat(packApi.changeRequests).containsExactly(11L, lastSeq - 1).inOrder()
         assertThat(packDao.findById(2)).isNull()
         assertThat(packDao.count()).isEqualTo(1 + PackRepository.PACK_PAGE)
-        assertThat(settings.current.packCursor).isEqualTo(lastSeq)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(lastSeq)
     }
 
     @Test
     fun `catch-up asks nothing when the cursor is level`() = runTest(dispatcher) {
         val repository = repository()
         repository.applyItem(packItemDto(id = 1, packSeq = 10))
-        settings.setPackCursor(14)
+        settings.setPackCursor(0L, 14)
 
         repository.catchUpPack(serverMaxSeq = 14)
 
@@ -356,13 +357,13 @@ class PackRepositoryTest {
         val repository = repository()
         // Pack seqs are server-wide: the family just joined may sit far
         // below the mark the last one left behind.
-        settings.setPackCursor(900)
+        settings.setPackCursor(0L, 900)
         packApi.pack = PackResponse(listOf(packItemDto(id = 1, packSeq = 40)), maxPackSeq = 41)
 
         repository.catchUpPack(serverMaxSeq = 41)
 
         assertThat(heldIds()).containsExactly(1L)
-        assertThat(settings.current.packCursor).isEqualTo(41)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(41)
     }
 
     // -- Frames ---------------------------------------------------------------
@@ -373,7 +374,7 @@ class PackRepositoryTest {
             repository()
             runCurrent()
             socket.setOpen(true)
-            settings.setPackCursor(11)
+            settings.setPackCursor(0L, 11)
 
             socket.emit(ServerFrame.PackItem(packItemDto(id = 5, packSeq = 12)))
             runCurrent()
@@ -385,7 +386,7 @@ class PackRepositoryTest {
             // A frame that jumped the cursor before the catch-up read it
             // would have the catch-up start past everything it was there
             // to fetch.
-            assertThat(settings.current.packCursor).isEqualTo(11)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(11)
         }
 
     @Test
@@ -396,11 +397,11 @@ class PackRepositoryTest {
             socket.setOpen(true)
             packApi.pack = PackResponse(listOf(packItemDto(id = 1, packSeq = 10)), maxPackSeq = 14)
             repository.catchUpPack(serverMaxSeq = 14, connection = repository.connectionNow())
-            assertThat(settings.current.packCursor).isEqualTo(14)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(14)
 
             socket.emit(ServerFrame.PackItem(packItemDto(id = 5, packSeq = 17)))
             runCurrent()
-            assertThat(settings.current.packCursor).isEqualTo(17)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(17)
 
             // A tombstone is a frame like any other.
             socket.emit(ServerFrame.PackItem(packTombstone(id = 5, packSeq = 19)))
@@ -408,13 +409,13 @@ class PackRepositoryTest {
             // Waited for rather than read: removing the item also deletes
             // its picture, on a real IO thread that virtual time does not
             // drive, and the cursor moves only after the apply is done.
-            settings.state.first { it.packCursor == 19L }
+            settings.state.first { it.packCursor(0L) == 19L }
             assertThat(heldIds()).containsExactly(1L)
 
             // And never BACK: a frame repeated late says nothing new.
             socket.emit(ServerFrame.PackItem(packItemDto(id = 1, packSeq = 10)))
             runCurrent()
-            assertThat(settings.current.packCursor).isEqualTo(19)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(19)
         }
 
     @Test
@@ -432,7 +433,7 @@ class PackRepositoryTest {
         socket.emit(ServerFrame.PackItem(packItemDto(id = 9, packSeq = 30)))
         runCurrent()
         assertThat(heldIds()).containsExactly(1L, 9L)
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(14)
 
         // Its catch-up reads what was missed FROM THE OLD CURSOR, and only
         // then do frames move it again.
@@ -445,7 +446,7 @@ class PackRepositoryTest {
 
         socket.emit(ServerFrame.PackItem(packItemDto(id = 11, packSeq = 33)))
         runCurrent()
-        assertThat(settings.current.packCursor).isEqualTo(33)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(33)
     }
 
     @Test
@@ -464,7 +465,7 @@ class PackRepositoryTest {
                 ApiResult.Ok(PackResponse(listOf(packItemDto(id = 1, packSeq = 10)), maxPackSeq = 14))
             }
             repository.catchUpPack(serverMaxSeq = 14, connection = startedOn)
-            assertThat(settings.current.packCursor).isEqualTo(14)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(14)
 
             socket.emit(ServerFrame.PackItem(packItemDto(id = 5, packSeq = 17)))
             runCurrent()
@@ -472,7 +473,7 @@ class PackRepositoryTest {
             // Applied, as every frame is — and the cursor stays where the
             // read left it, for the new connection's own catch-up to move.
             assertThat(heldIds()).containsExactly(1L, 5L)
-            assertThat(settings.current.packCursor).isEqualTo(14)
+            assertThat(settings.current.packCursor(0L)).isEqualTo(14)
         }
 
     @Test
@@ -489,7 +490,7 @@ class PackRepositoryTest {
         socket.emit(ServerFrame.PackItem(packItemDto(id = 5, packSeq = 17)))
         runCurrent()
 
-        assertThat(settings.current.packCursor).isEqualTo(14)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(14)
     }
 
     @Test
@@ -505,7 +506,7 @@ class PackRepositoryTest {
 
         // Had the frame moved the cursor, the next catch-up would start at
         // 17 and never read what the failed one was there to fetch.
-        assertThat(settings.current.packCursor).isEqualTo(0)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(0)
     }
 
     @Test
@@ -614,12 +615,12 @@ class PackRepositoryTest {
     @Test
     fun `the answer to this device's own add moves no cursor`() = runTest(dispatcher) {
         val repository = repository()
-        settings.setPackCursor(3)
+        settings.setPackCursor(0L, 3)
 
         repository.add(PackPicture.Encoded(webp(), "image/webp", 64, 64), null)
 
         assertThat(heldIds()).hasSize(1)
-        assertThat(settings.current.packCursor).isEqualTo(3)
+        assertThat(settings.current.packCursor(0L)).isEqualTo(3)
     }
 
     @Test

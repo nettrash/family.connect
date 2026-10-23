@@ -81,6 +81,21 @@ pub mod codes {
     pub const NOT_GROUP_ADMIN: &str = "not_group_admin";
     /// A family that already has the most groups it may have.
     pub const TOO_MANY_GROUPS: &str = "too_many_groups";
+    // Several families (protocol.md, "Several families"; issue #88).
+    /// A `{family}` in the path that the caller is not in — answered exactly
+    /// as an id that never existed, so the families on a server cannot be
+    /// counted by trying ids.
+    pub const FAMILY_NOT_FOUND: &str = "family_not_found";
+    /// The account is already in `[families] max_families_per_account`.
+    pub const TOO_MANY_FAMILIES: &str = "too_many_families";
+    /// A member may CREATE a family only while they own none.
+    pub const ALREADY_OWN_A_FAMILY: &str = "already_own_a_family";
+    /// `[families] member_families = false`: no in-app creation.
+    pub const MEMBER_FAMILIES_DISABLED: &str = "member_families_disabled";
+    /// A password reset needs the owner to own EVERY family the member is in.
+    pub const MEMBER_IN_OTHER_FAMILIES: &str = "member_in_other_families";
+    /// Accepted, declined, withdrawn, somebody else's, or never existed.
+    pub const INVITATION_NOT_PENDING: &str = "invitation_not_pending";
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";

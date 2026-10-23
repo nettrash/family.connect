@@ -17,10 +17,14 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import kotlinx.coroutines.flow.first
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.GroupApi
 import me.nettrash.familyconnect.data.net.dto.ChatDto
+import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.pathFamily
 import me.nettrash.familyconnect.util.GroupRules
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,6 +33,8 @@ import javax.inject.Singleton
 class GroupRepository @Inject constructor(
     private val groupApi: GroupApi,
     private val chatRepository: ChatRepository,
+    /** Which family a new group is in — the one shown (docs/protocol.md, "Several families"). */
+    private val settings: SettingsRepository,
 ) {
 
     /**
@@ -36,7 +42,7 @@ class GroupRepository @Inject constructor(
      * and [memberIds] non-empty — the screen checks both before asking.
      */
     suspend fun create(title: String, memberIds: List<Long>): ApiResult<ChatEntity> =
-        when (val result = groupApi.create(title, memberIds)) {
+        when (val result = groupApi.create(title, memberIds, settings.state.first().let { it.pathFamily(it.familyKey) })) {
             is ApiResult.Ok -> stored(result.value.chat)
             is ApiResult.HttpError -> result
             is ApiResult.NetworkError -> result

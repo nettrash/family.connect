@@ -24,6 +24,10 @@ pub struct Asked {
     pub path: String,
     /// The `Content-Type` it declared, or nothing.
     pub content_type: String,
+    /// The `X-FC-Families` header it sent, or nothing — every request of a
+    /// client that knows several families says `1` (docs/protocol.md,
+    /// "Several families").
+    pub families: String,
     /// The body, byte for byte — empty for a request with none.
     pub body: Vec<u8>,
 }
@@ -66,7 +70,7 @@ impl Answer {
 /// The stand-in, for as long as it is held.
 pub struct FakeServer {
     asked: Rc<RefCell<Vec<Asked>>>,
-    _route: Closure<dyn FnMut(String, String, String, js_sys::Uint8Array) -> JsValue>,
+    _route: Closure<dyn FnMut(String, String, String, String, js_sys::Uint8Array) -> JsValue>,
     _fetch: Stand,
 }
 
@@ -75,47 +79,50 @@ impl FakeServer {
     pub fn answering(route: impl Fn(&Asked) -> Answer + 'static) -> FakeServer {
         let asked = Rc::new(RefCell::new(Vec::new()));
         let log = asked.clone();
-        let route =
-            Closure::<dyn FnMut(String, String, String, js_sys::Uint8Array) -> JsValue>::new(
-                move |method: String,
-                      url: String,
-                      content_type: String,
-                      body: js_sys::Uint8Array| {
-                    // gloo-net ends every URL it builds with the separator
-                    // for a query it was given none of; that is not the
-                    // client's request, and a test should not have to
-                    // spell it.
-                    let path = url
-                        .split_once("/api/v1")
-                        .map_or(url.as_str(), |(_, path)| path)
-                        .trim_end_matches(['&', '?'])
-                        .to_string();
-                    let request = Asked {
-                        method,
-                        path,
-                        content_type,
-                        body: body.to_vec(),
-                    };
-                    let answer = route(&request);
-                    log.borrow_mut().push(request);
-                    let (status, kind, payload): (u16, &str, JsValue) = match answer {
-                        Answer::Json(status, body) => (
-                            status,
-                            "application/json",
-                            JsValue::from_str(&body.to_string()),
-                        ),
-                        Answer::Bytes(status, bytes, kind) => (
-                            status,
-                            kind,
-                            js_sys::Uint8Array::from(bytes.as_slice()).into(),
-                        ),
-                        Answer::Nothing => return JsValue::NULL,
-                        Answer::Hang => return JsValue::UNDEFINED,
-                    };
-                    js_sys::Array::of3(&JsValue::from(status), &JsValue::from_str(kind), &payload)
-                        .into()
-                },
-            );
+        let route = Closure::<
+            dyn FnMut(String, String, String, String, js_sys::Uint8Array) -> JsValue,
+        >::new(
+            move |method: String,
+                  url: String,
+                  content_type: String,
+                  families: String,
+                  body: js_sys::Uint8Array| {
+                // gloo-net ends every URL it builds with the separator
+                // for a query it was given none of; that is not the
+                // client's request, and a test should not have to
+                // spell it.
+                let path = url
+                    .split_once("/api/v1")
+                    .map_or(url.as_str(), |(_, path)| path)
+                    .trim_end_matches(['&', '?'])
+                    .to_string();
+                let request = Asked {
+                    method,
+                    path,
+                    content_type,
+                    families,
+                    body: body.to_vec(),
+                };
+                let answer = route(&request);
+                log.borrow_mut().push(request);
+                let (status, kind, payload): (u16, &str, JsValue) = match answer {
+                    Answer::Json(status, body) => (
+                        status,
+                        "application/json",
+                        JsValue::from_str(&body.to_string()),
+                    ),
+                    Answer::Bytes(status, bytes, kind) => (
+                        status,
+                        kind,
+                        js_sys::Uint8Array::from(bytes.as_slice()).into(),
+                    ),
+                    Answer::Nothing => return JsValue::NULL,
+                    Answer::Hang => return JsValue::UNDEFINED,
+                };
+                js_sys::Array::of3(&JsValue::from(status), &JsValue::from_str(kind), &payload)
+                    .into()
+            },
+        );
         // `fetch(request)` as gloo-net calls it: the method, the URL and
         // the body are read off the Request, and the answer is a Response
         // like any other. A status that may carry no body is given none.
@@ -124,7 +131,8 @@ impl FakeServer {
             "return function (input) { return (async () => {
                  const body = new Uint8Array(await input.clone().arrayBuffer());
                  const type = input.headers.get('Content-Type') || '';
-                 const answer = route(input.method, input.url, type, body);
+                 const families = input.headers.get('X-FC-Families') || '';
+                 const answer = route(input.method, input.url, type, families, body);
                  if (answer === null) { throw new TypeError('Failed to fetch'); }
                  if (answer === undefined) { return await new Promise(() => {}); }
                  const bare = answer[0] === 204 || answer[0] === 304;

@@ -105,9 +105,21 @@ data class ChatEntity(
     val memberIdsJson: String? = null,
     /** A GROUP's admin (`Chat.admin_user_id`); null for every other kind. */
     val adminUserId: Long? = null,
+    /**
+     * The families this chat is listed in — `Chat.family_ids` as a JSON array
+     * ([GroupMembersCodec], the same flat list of ids), or null when nobody
+     * has said: a row cached before several families (MIGRATION_34_35), or a
+     * server that predates the field (docs/protocol.md, "Several families").
+     * Server-owned like [title]: `GET /chats` and `chat_updated` overwrite it.
+     * `"[]"` is a real answer — listed nowhere — and differs from null.
+     */
+    val familyIdsJson: String? = null,
 ) {
     /** [memberIdsJson], read; empty for every chat that is not a group. */
     val memberIds: List<Long> get() = GroupMembersCodec.decode(memberIdsJson)
+
+    /** [familyIdsJson], read — null while nobody has said which families. */
+    val familyIds: List<Long>? get() = familyIdsJson?.let(GroupMembersCodec::decode)
 }
 
 /**
@@ -576,11 +588,28 @@ data class NoteEntity(
      * before. The @ColumnInfo default byte-matches MIGRATION_18_19.
      */
     @ColumnInfo(defaultValue = "0") val contentSeq: Long = 0,
+    /**
+     * The family whose board this note is on (`Note.family_id`,
+     * docs/protocol.md, "Several families"). ZERO means a row cached before
+     * several families, which can only be the home family's — the one family
+     * an app from before saw — and is claimed for it on the first `GET /me`
+     * that names it (MemberDao.claimLegacy's twin). The default byte-matches
+     * MIGRATION_34_35.
+     */
+    @ColumnInfo(defaultValue = "0") val familyId: Long = 0,
 )
 
-@Entity(tableName = "members")
+/**
+ * One member of one family. Since several families (docs/protocol.md,
+ * "Several families") the row is keyed by BOTH ids: a person in two of this
+ * account's families has a row in each — their role and whether they left
+ * are per family — while the ACCOUNT's facts (name, picture, birthday,
+ * deletion) are written to every row of theirs at once by the updates keyed
+ * on [userId] alone.
+ */
+@Entity(tableName = "members", primaryKeys = ["familyId", "userId"])
 data class MemberEntity(
-    @PrimaryKey val userId: Long,
+    val userId: Long,
     val username: String,
     val displayName: String,
     /** "owner" | "member". */
@@ -638,6 +667,13 @@ data class MemberEntity(
      */
     val birthdayMonth: Int? = null,
     val birthdayDay: Int? = null,
+    /**
+     * Which family this row is the roster of. Zero is a row cached before
+     * several families, claimed for the home family on the first `GET /me`
+     * that names it (see [MemberDao.claimLegacy]); the default byte-matches
+     * MIGRATION_34_35.
+     */
+    @ColumnInfo(defaultValue = "0") val familyId: Long = 0,
 ) {
     /** The wire shape back out of the flat columns, or null for unset. */
     val birthday: BirthdayDto?
@@ -730,6 +766,12 @@ data class PackItemEntity(
     val label: String? = null,
     val createdAt: Long,
     val packSeq: Long,
+    /**
+     * Whose pack (`PackItem.family_id`, docs/protocol.md, "Several
+     * families"). Zero is a row cached before several families, claimed for
+     * the home family like a note's; the default byte-matches MIGRATION_34_35.
+     */
+    @ColumnInfo(defaultValue = "0") val familyId: Long = 0,
 ) {
     /** The wire shape back out of the column, or null for a row that will not parse. */
     val attachment: AttachmentDto?

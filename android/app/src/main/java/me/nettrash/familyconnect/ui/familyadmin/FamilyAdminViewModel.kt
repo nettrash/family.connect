@@ -9,6 +9,12 @@
  * server — admin actions are rare enough that correctness beats optimism
  * here.
  *
+ * All of it is the CURRENT family's (docs/protocol.md, "Several
+ * families"), and two things are new with several families: inviting the
+ * members of the owner's OTHER families ("Invite…", the pending list,
+ * "Withdraw Invitation"), and offering a password reset only for a member
+ * whose `password_reset` says the owner may.
+ *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyAdmin/FamilyAdminViewModel.swift
  */
 
@@ -31,7 +37,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.InvitationDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestDto
+import me.nettrash.familyconnect.data.repo.FamilyList
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.ui.families.FamilyErrors
+import kotlinx.coroutines.flow.combine
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -199,9 +210,22 @@ class FamilyAdminViewModel @Inject constructor(
         val ceiling: Int? = null,
         /** Live members, for the caption and the seed. */
         val memberCount: Int = 0,
+        /** The owner's pending invitations into this family, oldest first. */
+        val invitations: List<InvitationDto> = emptyList(),
+        /**
+         * The members this owner may NOT reset the password of: those whose
+         * `password_reset` is explicitly false on the owner's roster
+         * (docs/protocol.md, "Several families"). Absent means the old rule —
+         * the reset is offered — which is every member of a server from
+         * before.
+         */
+        val notResettable: Set<Long> = emptySet(),
         val busy: Boolean = false,
         val error: String? = null,
     ) {
+        /** Whether the owner is offered "Reset Password" for [userId]. */
+        fun canReset(userId: Long): Boolean = userId !in notResettable
+
         /**
          * How the third switch is drawn: offered, or DISABLED with its
          * reason. Unlike [aiVision]'s switch, which is hidden on a server
@@ -276,8 +300,52 @@ class FamilyAdminViewModel @Inject constructor(
         .map { it.familyStatus == FamilyStatus.OWNER }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    /** The family this screen is about — the one shown — for the Invite picker's title. */
+    val familyName: StateFlow<String?> = settings.state.map { it.familyName }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Whether "Invite…" is offered at all: only while the owner holds
+     * another family to invite from (docs/protocol.md, "Several families").
+     */
+    val canInvite: StateFlow<Boolean> = settings.state
+        .map { it.currentFamilyId != null && FamilyList.hasOtherFamily(it.families, it.familyKey) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * Who "Invite…" offers: the members of the owner's OTHER families who
+     * are not in this one, from the rosters this device holds.
+     */
+    val inviteCandidates: StateFlow<List<MemberEntity>> =
+        combine(familyRepository.observeAllMemberships(), settings.state) { memberships, s ->
+            FamilyList.inviteCandidates(memberships, s.familyKey, s.myUserId)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     init {
         load()
+        // An invitation sent, accepted, declined or withdrawn elsewhere —
+        // the owner's list follows the frames rather than a stale read.
+        viewModelScope.launch {
+            familyRepository.invitationsChanged.collect {
+                if (settings.state.first().familyStatus == FamilyStatus.OWNER) loadInvitations()
+            }
+        }
+    }
+
+    private suspend fun loadInvitations() {
+        familyRepository.pendingInvitations().okOrNull()?.let { invitations ->
+            _state.update { it.copy(invitations = invitations) }
+        }
+    }
+
+    /** "Invite…" picked [userId]: invited into the current family; the pending list re-reads. */
+    fun invite(userId: Long) = mutate {
+        familyRepository.invite(userId).also { if (it is ApiResult.Ok) loadInvitations() }
+    }
+
+    /** "Withdraw Invitation". */
+    fun withdrawInvitation(invitationId: Long) = mutate {
+        familyRepository.withdrawInvitation(invitationId).also { if (it is ApiResult.Ok) loadInvitations() }
     }
 
     fun load() {
@@ -309,6 +377,9 @@ class FamilyAdminViewModel @Inject constructor(
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
                         ceiling = settings.state.first().maxFamilyMembers,
+                        // Present in the owner's own read only; hidden only
+                        // where the server says false.
+                        notResettable = mine.members.filter { m -> m.passwordReset == false }.mapTo(HashSet()) { m -> m.id },
                     )
                 }
             }
@@ -320,6 +391,7 @@ class FamilyAdminViewModel @Inject constructor(
                     _state.update { it.copy(reports = response.reports) }
                 }
                 loadRequests()
+                loadInvitations()
             }
         }
     }
@@ -818,6 +890,11 @@ class FamilyAdminViewModel @Inject constructor(
                                 // cannot act on (docs/protocol.md,
                                 // `POST /families/join-requests/{id}/approve`).
                                 "family_full" -> appContext.getString(R.string.e_family_full_approve)
+                                // A member also in a family this owner does
+                                // not own changes their own password
+                                // (docs/protocol.md, "Several families").
+                                FamilyErrors.MEMBER_IN_OTHER_FAMILIES ->
+                                    appContext.getString(R.string.e_member_in_other_families)
                                 else -> result.message ?: appContext.getString(R.string.e_action_failed)
                             },
                         )

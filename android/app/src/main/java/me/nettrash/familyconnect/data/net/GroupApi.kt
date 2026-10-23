@@ -31,7 +31,8 @@ import javax.inject.Singleton
 
 interface GroupApi {
     /** A new group: the caller is added and becomes its admin. */
-    suspend fun create(title: String, memberIds: List<Long>): ApiResult<ChatResponse>
+    /** [familyId]: the family the group is in — null for the home family (docs/protocol.md, "Several families"). */
+    suspend fun create(title: String, memberIds: List<Long>, familyId: Long? = null): ApiResult<ChatResponse>
 
     /** Renames a group. Admin only (`not_group_admin`). */
     suspend fun rename(chatId: Long, title: String): ApiResult<ChatResponse>
@@ -58,8 +59,8 @@ class DefaultGroupApi @Inject constructor(
     private val client: ApiClient,
 ) : GroupApi {
 
-    override suspend fun create(title: String, memberIds: List<Long>): ApiResult<ChatResponse> =
-        client.post("/chats/groups", CreateGroupRequest(title, memberIds))
+    override suspend fun create(title: String, memberIds: List<Long>, familyId: Long?): ApiResult<ChatResponse> =
+        client.post("/chats/groups", CreateGroupRequest(title, memberIds, familyId))
 
     override suspend fun rename(chatId: Long, title: String): ApiResult<ChatResponse> =
         client.patch("/chats/$chatId", RenameGroupRequest(title))

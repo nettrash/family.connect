@@ -271,16 +271,30 @@ class GroupChatSyncTest {
             assertThat(messageCount(GROUP)).isEqualTo(2)
         }
 
-    /** The frame is defined for groups; any other row is `GET /chats`'s to write. */
+    /**
+     * Since several families `chat_updated` also REPLACES a chat of another
+     * kind — a direct chat whose `family_ids` changed (docs/protocol.md,
+     * "Several families") — while keeping everything on the row that is this
+     * device's. A row of another kind this device does not hold is still
+     * `GET /chats`'s to write.
+     */
     @Test
-    fun `chat updated naming a chat that is not a group changes nothing`() = runTest(dispatcher) {
+    fun `chat updated replaces a held chat of another kind and creates none`() = runTest(dispatcher) {
         repository()
         seed(familyRow())
 
-        socket.emit(ServerFrame.ChatUpdated(ChatDto(id = FAMILY_CHAT, kind = "family", title = "Renamed?")))
+        socket.emit(
+            ServerFrame.ChatUpdated(
+                ChatDto(id = FAMILY_CHAT, kind = "family", title = "Cousins", familyIds = listOf(3L)),
+            ),
+        )
+        socket.emit(ServerFrame.ChatUpdated(ChatDto(id = 999L, kind = "direct", title = "Somebody")))
         runCurrent()
 
-        assertThat(chatDao.getById(FAMILY_CHAT)!!.title).isEqualTo("Cousins")
+        val row = chatDao.getById(FAMILY_CHAT)!!
+        assertThat(row.title).isEqualTo("Cousins")
+        assertThat(row.familyIds).containsExactly(3L)
+        assertThat(chatDao.getById(999L)).isNull()
     }
 
     // -- chat_removed ------------------------------------------------------------------
@@ -315,7 +329,7 @@ class GroupChatSyncTest {
 
     // -- GroupRepository ---------------------------------------------------------------
 
-    private fun TestScope.groups(): GroupRepository = GroupRepository(groupApi, repository())
+    private fun TestScope.groups(): GroupRepository = GroupRepository(groupApi, repository(), me.nettrash.familyconnect.testutil.FakeSettingsRepository())
 
     @Test
     fun `a rename stores the group the server answered with`() = runTest(dispatcher) {

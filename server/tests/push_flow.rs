@@ -326,6 +326,9 @@ async fn an_offline_ios_member_receives_the_exact_apns_request() {
             },
             "chat_id": chat_id,
             "message_id": message_id,
+            // A family chat's push names its family since 2026-10-22
+            // (protocol.md, "Several families").
+            "family_id": family_of_chat(&ts, chat_id).await,
             "kind": "message",
         })
     );
@@ -383,6 +386,7 @@ async fn an_offline_android_member_receives_the_exact_fcm_request() {
                 "kind": "message",
                 "chat_id": chat_id.to_string(),
                 "message_id": message_id.to_string(),
+                "family_id": family_of_chat(&ts, chat_id).await.to_string(),
             },
             "android": {
                 "priority": "HIGH",
@@ -1097,6 +1101,9 @@ async fn a_live_mac_does_not_silence_the_same_users_iphone() {
             },
             "chat_id": chat_id,
             "message_id": message_id,
+            // A family chat's push names its family since 2026-10-22
+            // (protocol.md, "Several families").
+            "family_id": family_of_chat(&ts, chat_id).await,
             "kind": "message",
         })
     );
@@ -1760,6 +1767,9 @@ async fn a_mention_changes_the_title_for_the_member_named_and_nobody_else() {
             },
             "chat_id": chat_id,
             "message_id": message_id,
+            // A family chat's push names its family since 2026-10-22
+            // (protocol.md, "Several families").
+            "family_id": family_of_chat(&ts, chat_id).await,
             "kind": "message",
         })
     );
@@ -1912,4 +1922,14 @@ async fn a_member_is_not_woken_by_a_mention_from_somebody_they_blocked() {
         1,
         "the blocker's phone stays dark"
     );
+}
+
+/// The family a chat is in — what a family chat's message push names since
+/// 2026-10-22 (protocol.md, "Several families").
+async fn family_of_chat(ts: &common::TestServer, chat_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT family_id FROM chats WHERE id = $1")
+        .bind(chat_id)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the chat's family")
 }

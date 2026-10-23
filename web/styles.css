@@ -2653,3 +2653,68 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 .group-name { margin: 0; overflow-wrap: anywhere; }
 .group-tools { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .group-tools .link, .group-remove { padding: 4px 0; }
+
+/* --- several families (#88) ------------------------------------------------ */
+
+/* The family on screen, named over its chats, and the button that lists the
+ * others — only for an account in two or more, or with something waiting. */
+.family-switch {
+    flex: none;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 10px 6px 14px;
+    border-bottom: 1px solid var(--line);
+}
+.family-switch .family-name {
+    margin: 0;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.family-switch .switch-family { min-height: 36px; min-width: 36px; padding: 4px 8px; font-size: 16px; }
+.family-switch .menu-backdrop { z-index: 5; }
+.family-menu { left: 8px; right: auto; z-index: 6; width: min(320px, calc(100vw - 32px)); }
+.family-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.family-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    padding: 8px;
+    border-radius: 6px;
+    min-height: 40px;
+}
+.family-row:hover { background: var(--soft); }
+.family-row.is-selected { font-weight: 600; background: color-mix(in srgb, var(--tint) 12%, transparent); }
+.family-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.family-pending, .family-invitation {
+    display: grid;
+    gap: 4px;
+    padding: 8px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+}
+.family-doors { display: grid; gap: 2px; padding: 6px 2px 2px; border-top: 1px solid var(--line); }
+.family-doors .link { text-align: left; padding: 6px; min-height: 36px; }
+
+/* An invitation waits at the top of the list until it is answered. */
+.invitation-banner {
+    flex: none;
+    display: grid;
+    gap: 6px;
+    margin: 8px;
+}
+.invitation-banner .row-actions { display: flex; gap: 8px; align-items: center; }
+
+/* The owner's picker of whom to invite. */
+.members.invitable { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
+.invite-row { text-align: left; flex: 1; min-height: 36px; }
+.another-family-pane .gate-step { display: grid; gap: 8px; max-width: 440px; }

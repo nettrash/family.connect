@@ -77,10 +77,11 @@ use sync::{network_back, page_visible, report_read, start_session, Channels, Sha
 use views::board::BoardPane;
 use views::call::CallPanel;
 use views::chat_list::ChatList;
+use views::chat_list::{Families, FamilyRow};
 use views::conversation::Conversation;
 use views::dialog::Confirm;
 use views::family::FamilyPane;
-use views::gate::{FamilyGate, PendingApproval};
+use views::gate::{AnotherFamilyPane, FamilyGate, PendingApproval};
 use views::login::Login;
 use views::open_polls::OpenPollsPanel;
 use views::quiet::{LiveRegion, QuietRoot};
@@ -281,10 +282,18 @@ fn app() -> Html {
         use_effect_with((), move |_| {
             let heard = Closure::<dyn Fn(web_sys::StorageEvent)>::new(
                 move |event: web_sys::StorageEvent| {
-                    let me = live.read(|state| state.store.my_user_id);
-                    if me != 0 && event.key() == Some(session::board_marks_key(me)) {
-                        let kept = session::board_marks(me);
-                        live.now(|state| state.store.board.take_marks(me, kept));
+                    let (me, family) = live
+                        .read(|state| (state.store.my_user_id, state.store.current_family_id()));
+                    let Some(family_id) = family.filter(|_| me != 0) else {
+                        return;
+                    };
+                    if event.key() == Some(session::board_marks_key(me, family_id)) {
+                        let kept = session::board_marks(me, family_id, false);
+                        live.now(|state| {
+                            if let Some(board) = state.store.board_mut(family_id) {
+                                board.take_marks(me, kept);
+                            }
+                        });
                     }
                 },
             );
@@ -540,11 +549,15 @@ fn app() -> Html {
         .is_some()
         .then(|| panel_button(Panel::Settings, t("Settings")));
     let close_panel = on_action.reform(|_: ()| Action::ClosePanel);
+    let families = families_of(store);
     let panel = match (state.panel, store.account.clone(), store.family.clone()) {
         (Some(Panel::Settings), Some(account), family) => Some(html! {
             <SettingsPane
                 {account}
                 {family}
+                several={store.families.len() > 1}
+                new_family={families.new_family}
+                join_another={families.join_another}
                 assistant={store.assistant.clone()}
                 roster_changes={store.roster_changes}
                 on_action={on_action.clone()}
@@ -567,6 +580,17 @@ fn app() -> Html {
                 support_contact={store.support_contact.clone()}
                 pack={store.pack.limits.map(|limits| (store.pack.listed(), limits))}
                 pack_adding={store.pack.adding}
+                invitable={store.invitable()}
+                other_families={store.families.len() > 1}
+                sent_invitations={store.sent_invitations.clone()}
+                on_action={on_action.clone()}
+                on_close={close_panel.clone()}
+            />
+        }),
+        (Some(panel @ (Panel::NewFamily | Panel::JoinFamily)), Some(_), _) => Some(html! {
+            <AnotherFamilyPane
+                join={panel == Panel::JoinFamily}
+                max_families={actions::max_families(store)}
                 on_action={on_action.clone()}
                 on_close={close_panel.clone()}
             />
@@ -659,6 +683,7 @@ fn app() -> Html {
                     now_ms={now}
                     members={store.family.is_some().then(|| store.members.clone())}
                     on_action={on_action.clone()}
+                    {families}
                 />
                 if let Some(panel) = panel {
                     { panel }
@@ -759,6 +784,38 @@ fn app() -> Html {
         </QuietRoot>
         </ContextProvider<MediaLoader>>
         </ContextProvider<Calls>>
+    }
+}
+
+/// What the switcher draws (docs/protocol.md, "Several families"): every
+/// family with the unread of the chats listed in it, the join requests and
+/// invitations waiting, and which ways to another family are open.
+fn families_of(store: &store::Store) -> Families {
+    let account = store.account.as_ref();
+    let count = store.families.len();
+    let max = account.and_then(|account| account.max_families_per_account);
+    Families {
+        rows: store
+            .family_list()
+            .into_iter()
+            .map(|family| FamilyRow {
+                id: family.id,
+                unread: store.unread_in(family.id),
+                name: family.name,
+            })
+            .collect(),
+        current: store.current_family_id(),
+        invitations: store.invitations.clone(),
+        pending: account
+            .map(|account| account.pending_join_requests.clone())
+            .unwrap_or_default(),
+        new_family: fc_text::families::offers_new_family(
+            account.is_some_and(|account| account.member_families_enabled),
+            store.owns_a_family(),
+            count,
+            max,
+        ),
+        join_another: fc_text::families::offers_join_another(count, max),
     }
 }
 

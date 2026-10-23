@@ -18,10 +18,10 @@ public enum Gate
     /// <summary>A join request waiting for an owner to answer it.</summary>
     Pending,
 
-    /// <summary>In a family.</summary>
+    /// <summary>In a family — the one shown, when there are several.</summary>
     Member,
 
-    /// <summary>In a family, and it is theirs.</summary>
+    /// <summary>In a family, and it is theirs — the one shown, when there are several.</summary>
     Owner,
 }
 
@@ -83,12 +83,63 @@ public sealed record SessionState(
     /// The video message's limits from <c>GET /families/mine</c>, or null on a server that predates them — which offers
     /// no way of recording one (docs/audio-video-messages-2026-10-04.md, S1.2's <b>round available</b>).
     /// </summary>
-    RoundVideoLimits? RoundVideo = null)
+    RoundVideoLimits? RoundVideo = null,
+    /// <summary>
+    /// EVERY family the account is in, home family first, each with this account's role in it (docs/protocol.md, "Several
+    /// families"). <see cref="Family"/> is the one of them being SHOWN — everything family-level on screen is its.
+    /// </summary>
+    IReadOnlyList<FamilyDto>? Families = null,
+    /// <summary>The family being shown, by id; null while there is none.</summary>
+    long? CurrentFamilyId = null,
+    /// <summary>Every join request still waiting — while in a family too, to a further one.</summary>
+    IReadOnlyList<PendingJoinDto>? PendingJoins = null,
+    /// <summary>This account's own pending invitations into other families.</summary>
+    IReadOnlyList<InvitationDto>? Invitations = null,
+    /// <summary>The operator's switch for members starting another family in the app.</summary>
+    bool MemberFamiliesEnabled = false,
+    /// <summary>How many families one account may be in — never below one.</summary>
+    int MaxFamiliesPerAccount = 1,
+    /// <summary>
+    /// Whether this server knows several families at all — its <c>GET /me</c> carried <c>families</c>. An older one knows
+    /// only <c>/families/mine</c>, and is never asked for a family by id.
+    /// </summary>
+    bool NamesFamilies = false)
 {
     /// <summary>Whether the socket may connect at all: signed in, and in a family.</summary>
     public bool CanChat => Gate is Gate.Member or Gate.Owner;
 
+    /// <summary>Whether this account owns the family being shown.</summary>
     public bool IsOwner => Gate is Gate.Owner;
+
+    /// <summary>The families, never null.</summary>
+    public IReadOnlyList<FamilyDto> AllFamilies => Families ?? [];
+
+    /// <summary>The waiting join requests, never null.</summary>
+    public IReadOnlyList<PendingJoinDto> AllPending => PendingJoins ?? [];
+
+    /// <summary>The pending invitations to this account, never null.</summary>
+    public IReadOnlyList<InvitationDto> AllInvitations => Invitations ?? [];
+}
+
+/// <summary>
+/// Which family this device last SHOWED, per account — so a relaunch opens where the reader left off (docs/protocol.md,
+/// "Several families": "a CURRENT family, persisted per account on the device").
+/// </summary>
+public interface ICurrentFamily
+{
+    long? For(long userId);
+
+    void Remember(long userId, long familyId);
+}
+
+/// <summary>For a session that need not outlive its process — the tests.</summary>
+public sealed class MemoryCurrentFamily : ICurrentFamily
+{
+    private readonly Dictionary<long, long> shown = [];
+
+    public long? For(long userId) => shown.TryGetValue(userId, out var family) ? family : null;
+
+    public void Remember(long userId, long familyId) => shown[userId] = familyId;
 }
 
 /// <summary>
@@ -114,9 +165,20 @@ public sealed record SessionState(
 /// sign-in screen in a lift.
 /// </para>
 /// </remarks>
-public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache, IAwaitingJoin? awaitingJoin = null)
+public sealed class AppSession(
+    ApiClient api, ITokenStore tokens, Database cache, IAwaitingJoin? awaitingJoin = null, ICurrentFamily? currentFamily = null)
 {
     private readonly IAwaitingJoin awaiting = awaitingJoin ?? new MemoryAwaitingJoin();
+    private readonly ICurrentFamily remembered = currentFamily ?? new MemoryCurrentFamily();
+
+    /// <summary>Whose cache has been told its home family (<see cref="Database.AdoptLegacy"/>) — once per account per launch.</summary>
+    private long adoptedFor;
+
+    /// <summary>
+    /// A family appeared or went outside a list this session asked for — the router's word, or a <c>family_not_found</c>.
+    /// The window drops what it holds of a family gone with its rows.
+    /// </summary>
+    public event Action<long>? FamilyDropped;
 
     // Signed out until `GET /me` says otherwise: a token in the locker is not a session, and a
     // window drawn from a stored token alone would show a chat list to somebody whose account
@@ -164,7 +226,13 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
     /// Read <c>GET /me</c> and put the app on the screen it says. The one call that decides the
     /// gate; everything else here is a consequence of it.
     /// </summary>
-    public async Task<ApiError?> RefreshAsync(CancellationToken ct = default)
+    public async Task<ApiError?> RefreshAsync(CancellationToken ct = default) => await RefreshAsync(ct, prefer: null).ConfigureAwait(false);
+
+    /// <summary>
+    /// <see cref="RefreshAsync(CancellationToken)"/>, SHOWING <paramref name="prefer"/> when the answer has it — a family just
+    /// created, joined or accepted (docs/protocol.md, "Several families": "add it, switch to it").
+    /// </summary>
+    public async Task<ApiError?> RefreshAsync(CancellationToken ct, long? prefer)
     {
         if (tokens.Token is null)
         {
@@ -188,24 +256,71 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             return error;
         }
 
-        var was = state.Gate;
-        var answered = me.Value;
-        var gate = answered switch
+        Apply(me.Value, prefer);
+        return null;
+    }
+
+    /// <summary>
+    /// What a <c>GET /me</c> answered, applied: which families there are, which one is shown, and the screen that means.
+    /// The resync's step 1 lands here too, so a family that appeared or went while the socket was down is caught at the
+    /// next pass — a removal it slept through raises no frame it will ever see.
+    /// </summary>
+    /// <param name="answered">The answer.</param>
+    /// <param name="prefer">A family to SHOW if the answer has it — one just created, joined or accepted.</param>
+    public void Apply(MeResponse answered, long? prefer = null)
+    {
+        ArgumentNullException.ThrowIfNull(answered);
+        if (tokens.Token is null)
         {
-            { Family: not null } when answered.IsOwner => Gate.Owner,
-            { Family: not null } => Gate.Member,
-            { PendingJoinRequest: not null } => Gate.Pending,
+            // A sign-out landed while the read was in flight: there is nobody to apply it to.
+            return;
+        }
+        var was = state.Gate;
+        var sameAccount = state.Me?.Id == answered.User.Id;
+        var families = answered.AllFamilies;
+        var pending = answered.AllPending;
+        var shown = Shown(answered.User.Id, families, prefer);
+        var current = shown is { } id ? families.First(family => family.Id == id) : null;
+        var gate = (current, pending) switch
+        {
+            ({ } family, _) when family.IsOwner || (answered.Families is null && answered.IsOwner) => Gate.Owner,
+            (not null, _) => Gate.Member,
+            (null, { Count: > 0 }) => Gate.Pending,
             _ => Gate.NoFamily,
         };
+        if (shown is { } chosen)
+        {
+            remembered.Remember(answered.User.Id, chosen);
+            if (adoptedFor != answered.User.Id)
+            {
+                // A cache an older build filled was the HOME family's — the only family such a build ever saw.
+                cache.AdoptLegacy(families[0].Id);
+                adoptedFor = answered.User.Id;
+            }
+        }
+        // `/families/{id}` only where the server knows it; an older one is asked for `mine`, which is all it has.
+        api.FamilyScope = answered.Families is not null ? shown : null;
         // Declined is what a remembered wait becomes when `GET /me` shows no request and no family — said on the family door
         // until the next join or family replaces it (ios AppSession.joinDeclined).
         var waited = was is Gate.Pending || awaiting.UserId == answered.User.Id;
         var declined = gate is Gate.NoFamily && (waited || (was is Gate.NoFamily && state.JoinDeclined));
         awaiting.UserId = gate is Gate.Pending ? answered.User.Id : null;
-        Publish(new SessionState(
+        // A family that is no longer in the list was left or lost while nobody was looking: its rows go, and only its —
+        // unless it was the LAST one, which takes everything (below).
+        // What this cache holds counts too: a family left while the app was not running is in no list this session has seen.
+        // (A cache never holds another account's families — signing in wipes it.)
+        var gone = families.Count > 0
+            ? (sameAccount ? state.AllFamilies.Select(family => family.Id) : [])
+                .Union(cache.HeldFamilies())
+                .Except(families.Select(family => family.Id))
+                .ToList()
+            : [];
+        var sameFamily = state.CurrentFamilyId == shown;
+        var next = new SessionState(
             gate,
             Me: answered.User,
-            Family: answered.Family,
+            // The shown family's fuller document (its invite code, its switches) when this read is about the same one.
+            Family: current is null ? null : sameFamily && state.Family?.Id == current.Id ? Merge(state.Family, current) : current,
             // CARRIED, NOT RE-READ. `GET /me` says nothing about the assistant — only
             // `GET /families/mine` does — so a refresh that leaves this out publishes a state
             // with no assistant in it, and this is a positional parameter with a null default,
@@ -216,7 +331,7 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             Assistant: gate is Gate.Member or Gate.Owner ? state.Assistant : null,
             // The same for the video message's limits: only the family's own document carries them.
             RoundVideo: gate is Gate.Member or Gate.Owner ? state.RoundVideo : null,
-            PendingFamilyName: answered.PendingJoinRequest?.FamilyName,
+            PendingFamilyName: pending.FirstOrDefault()?.FamilyName,
             CallsEnabled: answered.CallsEnabled,
             VideoCallsEnabled: answered.VideoCallsEnabled,
             MaxFamilyMembers: answered.MaxFamilyMembers,
@@ -226,7 +341,28 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
             GreetingsEnabled: answered.GreetingsEnabled,
             AssistantConsentAt: answered.AssistantConsentAt,
             JoinDeclined: declined,
-            AssistantLookupConsentAt: answered.AssistantLookupConsentAt));
+            AssistantLookupConsentAt: answered.AssistantLookupConsentAt,
+            Families: families,
+            CurrentFamilyId: shown,
+            PendingJoins: pending,
+            Invitations: answered.Invitations ?? [],
+            MemberFamiliesEnabled: answered.MemberFamiliesEnabled,
+            MaxFamiliesPerAccount: answered.FamilyCap,
+            NamesFamilies: answered.Families is not null);
+        foreach (var family in gone)
+        {
+            cache.DropFamily(family);
+        }
+        // A pass's `GET /me` that changed nothing publishes nothing: every publish redraws every screen bound to this state.
+        if (gone.Count == 0 && Wire.Encode(next) == Wire.Encode(state))
+        {
+            return;
+        }
+        Publish(next);
+        foreach (var family in gone)
+        {
+            FamilyDropped?.Invoke(family);
+        }
 
         // Two departures nothing else announces. `GET /me` is where a client finds out, because
         // a removal it slept through raises no frame it will ever see.
@@ -240,6 +376,149 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
         {
             Ended?.Invoke(SessionEnd.JoinRequestRejected);
         }
+    }
+
+    /// <summary>
+    /// Which family to show: one just asked for, else the one shown now, else the one this device last showed this account,
+    /// else the first — the home family. Null with no family at all.
+    /// </summary>
+    private long? Shown(long userId, IReadOnlyList<FamilyDto> families, long? prefer)
+    {
+        bool Holds(long? id) => id is { } wanted && families.Any(family => family.Id == wanted);
+        if (Holds(prefer))
+        {
+            return prefer;
+        }
+        if (state.Me?.Id == userId && Holds(state.CurrentFamilyId))
+        {
+            return state.CurrentFamilyId;
+        }
+        var last = remembered.For(userId);
+        return Holds(last) ? last : families.FirstOrDefault()?.Id;
+    }
+
+    /// <summary>The family's fuller document kept, under what the list now says of it — its name, and the reader's role.</summary>
+    private static FamilyDto Merge(FamilyDto held, FamilyDto listed) =>
+        held with { Name = listed.Name, Role = listed.Role ?? held.Role };
+
+    /// <summary>
+    /// Show another of this account's families. Everything family-level on screen follows — the chat list, the board, the
+    /// stickers, the roster, the owner's screens — and the family's own document is read for what only it carries (the
+    /// assistant, the video message's limits, the invite code).
+    /// </summary>
+    public async Task<ApiError?> SwitchFamilyAsync(long familyId, CancellationToken ct = default)
+    {
+        if (!Switch(familyId))
+        {
+            return null;
+        }
+        return await RefreshFamilyAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The switch itself, published at once; false when that family is not this account's or is already shown.</summary>
+    public bool Switch(long familyId)
+    {
+        if (state.Me is not { } me || state.CurrentFamilyId == familyId
+            || state.AllFamilies.FirstOrDefault(family => family.Id == familyId) is not { } family)
+        {
+            return false;
+        }
+        remembered.Remember(me.Id, familyId);
+        if (state.NamesFamilies)
+        {
+            api.FamilyScope = familyId;
+        }
+        Publish(state with
+        {
+            Gate = family.IsOwner ? Gate.Owner : Gate.Member,
+            Family = family,
+            CurrentFamilyId = familyId,
+        });
+        return true;
+    }
+
+    /// <summary>
+    /// The router says this account is in a family — re-read <c>GET /me</c> when it is one this session does not hold
+    /// (docs/protocol.md, "Several families"), so the new family is listed; the resync that follows reads its rows.
+    /// </summary>
+    public async Task<bool> JoinedFamilyAsync(long familyId, CancellationToken ct = default)
+    {
+        if (state.AllFamilies.Any(family => family.Id == familyId))
+        {
+            return false;
+        }
+        await RefreshAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// This account is out of a family — the router's <c>member_left</c> naming it, or <c>family_not_found</c> from a read
+    /// of it: that family's rows go at once, and <c>GET /me</c> says what is left to show.
+    /// </summary>
+    public async Task FamilyGoneAsync(long familyId, CancellationToken ct = default)
+    {
+        if (state.AllFamilies.Count > 1)
+        {
+            cache.DropFamily(familyId);
+            FamilyDropped?.Invoke(familyId);
+        }
+        await RefreshAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>An invitation frame: to this account it is listed (or replaced); one this account's family sent is not its.</summary>
+    public void ApplyInvitation(InvitationDto invitation)
+    {
+        ArgumentNullException.ThrowIfNull(invitation);
+        if (state.Me is not { } me || invitation.User.Id != me.Id)
+        {
+            return;
+        }
+        Publish(state with
+        {
+            Invitations = [.. state.AllInvitations.Where(held => held.Id != invitation.Id), invitation],
+        });
+    }
+
+    /// <summary>An invitation lapsed — accepted, declined, withdrawn — and leaves the banner and the switcher.</summary>
+    public void InvitationGone(long invitationId)
+    {
+        if (state.AllInvitations.All(held => held.Id != invitationId))
+        {
+            return;
+        }
+        Publish(state with { Invitations = [.. state.AllInvitations.Where(held => held.Id != invitationId)] });
+    }
+
+    /// <summary>
+    /// Join: the family is added and SHOWN. <c>invitation_not_pending</c> drops the invitation — it is gone, whatever the
+    /// reason — and comes back as the refusal for the window to say; <c>family_full</c> and <c>too_many_families</c> leave
+    /// it standing.
+    /// </summary>
+    public async Task<ApiError?> AcceptInvitationAsync(long invitationId, CancellationToken ct = default)
+    {
+        var answer = await api.AcceptInvitation(invitationId, ct).ConfigureAwait(false);
+        if (!answer.Ok || answer.Value is null)
+        {
+            var error = answer.Error ?? ApiError.Transport("no answer");
+            if (error.Code == ErrorCodes.InvitationNotPending)
+            {
+                InvitationGone(invitationId);
+            }
+            return error;
+        }
+        InvitationGone(invitationId);
+        return await RefreshAsync(ct, prefer: answer.Value.Family.Id).ConfigureAwait(false);
+    }
+
+    /// <summary>Decline: gone from the list whether the server still had it or not.</summary>
+    public async Task<ApiError?> DeclineInvitationAsync(long invitationId, CancellationToken ct = default)
+    {
+        var answer = await api.DeclineInvitation(invitationId, ct).ConfigureAwait(false);
+        if (!answer.Ok && answer.Error?.Code != ErrorCodes.InvitationNotPending)
+        {
+            return answer.Error ?? ApiError.Transport("no answer");
+        }
+        InvitationGone(invitationId);
         return null;
     }
 
@@ -252,17 +531,28 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
         var family = await api.Family(ct).ConfigureAwait(false);
         if (!family.Ok || family.Value is null)
         {
-            return family.Error ?? ApiError.Transport("no answer");
+            var error = family.Error ?? ApiError.Transport("no answer");
+            if (error.Code == ErrorCodes.FamilyNotFound)
+            {
+                // The family shown is gone — left elsewhere, removed, deleted (docs/protocol.md, "Several families"): `/me`
+                // says what is left, and the gone family's rows go with it.
+                await RefreshAsync(ct).ConfigureAwait(false);
+            }
+            return error;
         }
-        if (!state.CanChat)
+        if (!state.CanChat || (state.CurrentFamilyId is { } shown && family.Value.Family.Id != shown))
         {
-            // The gate moved while this read was in flight — a sign-out, or a removal. Publishing
-            // now would hand the window a signed-out state carrying a family.
+            // The gate moved while this read was in flight — a sign-out, or a removal — or another family is shown now.
+            // Publishing would hand the window a signed-out state carrying a family, or one family's switches on another.
             return null;
         }
+        var role = state.Family?.Role;
         Publish(state with
         {
-            Family = family.Value.Family,
+            Family = family.Value.Family with { Role = family.Value.Family.Role ?? role },
+            Families = [.. state.AllFamilies.Select(held => held.Id == family.Value.Family.Id
+                ? family.Value.Family with { Role = held.Role }
+                : held)],
             Assistant = family.Value.Assistant,
             RoundVideo = RoundVideoLimits.Of(family.Value),
         });
@@ -367,6 +657,8 @@ public sealed class AppSession(ApiClient api, ITokenStore tokens, Database cache
     private void Clear()
     {
         tokens.Token = null;
+        // Nobody's family is shown: the next account names its own.
+        api.FamilyScope = null;
         cache.WipeAll();
         Publish(new SessionState(Gate.SignedOut, SupportContact: state.SupportContact));
     }

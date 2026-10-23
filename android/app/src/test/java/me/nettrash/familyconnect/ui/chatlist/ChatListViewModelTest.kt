@@ -53,6 +53,10 @@ import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import org.junit.After
 import org.junit.Before
+import me.nettrash.familyconnect.data.db.GroupMembersCodec
+import me.nettrash.familyconnect.data.net.dto.FamilyDto
+import me.nettrash.familyconnect.data.net.dto.InvitationDto
+import me.nettrash.familyconnect.data.net.dto.UserDto
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -75,6 +79,7 @@ class ChatListViewModelTest {
     private lateinit var db: AppDatabase
     private lateinit var chatApi: FakeChatApi
     private val groupApi = FakeGroupApi()
+    private val familyApi = FakeFamilyApi()
     private lateinit var chatRepository: ChatRepository
     private val socket = FakeChatSocket()
     private val settings = FakeSettingsRepository(
@@ -110,7 +115,7 @@ class ChatListViewModelTest {
             scope = repoScope,
         )
         val familyRepository = FamilyRepository(
-            familyApi = FakeFamilyApi(),
+            familyApi = familyApi,
             authApi = FakeAuthApi(),
             memberDao = db.memberDao(),
             settings = settings,
@@ -128,7 +133,7 @@ class ChatListViewModelTest {
             settings = settings,
             connectivity = FakeConnectivityObserver(),
             socket = socket,
-            groupRepository = GroupRepository(groupApi, chatRepository),
+            groupRepository = GroupRepository(groupApi, chatRepository, settings),
         )
     }
 
@@ -341,5 +346,121 @@ class ChatListViewModelTest {
 
         assertThat(viewModel.groupError.value)
             .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_unreachable))
+    }
+
+    // -- Several families (docs/protocol.md, "Several families") --------------
+
+    private fun family(id: Long, name: String, role: String = "member") =
+        FamilyDto(id = id, name = name, joinPolicy = "open", role = role)
+
+    private fun listed(id: Long, kind: String, familyIds: List<Long>, unread: Int = 0) =
+        chat(id, kind, lastMessageAt = 1_000L + id, unread = unread)
+            .copy(familyIdsJson = GroupMembersCodec.encode(familyIds))
+
+    private suspend fun twoFamilies() {
+        settings.setFamilies(
+            listOf(family(3, "The Smiths"), family(5, "The Joneses", "owner")),
+            emptyList(),
+            emptyList(),
+            memberFamiliesEnabled = true,
+            maxFamiliesPerAccount = 5,
+            multiFamilyServer = true,
+        )
+        settings.setCurrentFamilyId(3)
+    }
+
+    @Test
+    fun theListShowsTheChatsOfTheFamilyShown() = runTest(dispatcher) {
+        twoFamilies()
+        db.chatDao().upsertAll(
+            listOf(
+                listed(1, "family", listOf(3)),
+                listed(2, "family", listOf(5)),
+                listed(3, "direct", listOf(3, 5)),
+                listed(4, "ai", listOf(5)),
+            ),
+        )
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.chats.collect {} }
+        runCurrent()
+        assertThat(viewModel.chats.value!!.map { it.id }).containsExactly(1L, 3L).inOrder()
+
+        viewModel.switchFamily(5)
+        runCurrent()
+        // The family chat pinned first is THIS family's.
+        assertThat(viewModel.chats.value!!.map { it.id }).containsExactly(2L, 4L, 3L).inOrder()
+        assertThat(settings.current.familyStatus).isEqualTo(FamilyStatus.OWNER)
+    }
+
+    @Test
+    fun theSwitcherCountsEachFamilysUnreadAndOffersTheDoors() = runTest(dispatcher) {
+        twoFamilies()
+        db.chatDao().upsertAll(
+            listOf(
+                listed(1, "family", listOf(3), unread = 2),
+                listed(2, "family", listOf(5), unread = 1),
+                listed(3, "direct", listOf(3, 5), unread = 4),
+            ),
+        )
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.families.collect {} }
+        runCurrent()
+
+        val families = viewModel.families.value
+        assertThat(families.showsSwitcher).isTrue()
+        assertThat(families.currentName).isEqualTo("The Smiths")
+        assertThat(families.unread).containsExactly(3L, 6, 5L, 5)
+        // Owning one already: only the code door.
+        assertThat(families.canStartAnother).isFalse()
+        assertThat(families.canJoinAnother).isTrue()
+    }
+
+    @Test
+    fun oneFamilyWithNothingPendingHasNoSwitcher() = runTest(dispatcher) {
+        settings.setFamilies(listOf(family(3, "The Smiths")), emptyList(), emptyList(), true, 5, true)
+        settings.setCurrentFamilyId(3)
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.families.collect {} }
+        runCurrent()
+
+        assertThat(viewModel.families.value.showsSwitcher).isFalse()
+        assertThat(viewModel.families.value.canStartAnother).isTrue()
+    }
+
+    @Test
+    fun anInvitationThatIsGoneSaysSoAndLeavesTheBanner() = runTest(dispatcher) {
+        twoFamilies()
+        val invitation = InvitationDto(
+            id = 4,
+            familyId = 8,
+            familyName = "The Browns",
+            invitedBy = UserDto(11, "carl", "Carl"),
+            user = UserDto(ME, "anna", "Anna"),
+        )
+        settings.setInvitations(listOf(invitation))
+        familyApi.acceptResult = ApiResult.HttpError(409, "invitation_not_pending", null)
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.families.collect {} }
+        runCurrent()
+        assertThat(viewModel.families.value.invitations).containsExactly(invitation)
+
+        viewModel.acceptInvitation(4)
+        runCurrent()
+
+        assertThat(viewModel.error.value).isEqualTo("This invitation is no longer available.")
+        assertThat(viewModel.families.value.invitations).isEmpty()
+        assertThat(viewModel.answeringInvitation.value).isNull()
+    }
+
+    @Test
+    fun theCapIsNamedWhenAnInvitationCannotBeTaken() = runTest(dispatcher) {
+        twoFamilies()
+        familyApi.acceptResult = ApiResult.HttpError(409, "too_many_families", null)
+        val viewModel = newViewModel()
+
+        viewModel.acceptInvitation(4)
+        runCurrent()
+
+        assertThat(viewModel.error.value).isEqualTo("You've reached the most families one account can be in (5).")
     }
 }

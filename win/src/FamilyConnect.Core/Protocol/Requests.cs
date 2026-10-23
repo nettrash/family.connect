@@ -219,10 +219,58 @@ public sealed record MeResponse(
     /// lookup providers, or null until they have — and null on a server with no lookup source (docs/protocol.md,
     /// "Consenting to the assistant", amended 2026-10-03). Absent on an older server, which reads as null: no lookups.
     /// </summary>
-    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null)
+    [property: JsonPropertyName("assistant_lookup_consent_at")] string? AssistantLookupConsentAt = null,
+    /// <summary>
+    /// Every family the caller is in, the HOME family first and then in the order they were joined, each with its own
+    /// <c>role</c> (docs/protocol.md, "Several families", 2026-10-22). ALWAYS present on a server that knows several
+    /// families, so null is an older server — read through <see cref="AllFamilies"/>, which falls back to <see cref="Family"/>.
+    /// </summary>
+    FamilyDto[]? Families = null,
+    /// <summary>Every join request still waiting, oldest first; null from an older server (<see cref="AllPending"/>).</summary>
+    [property: JsonPropertyName("pending_join_requests")] PendingJoinDto[]? PendingJoinRequests = null,
+    /// <summary>The caller's own pending invitations into other families, oldest first.</summary>
+    InvitationDto[]? Invitations = null,
+    /// <summary>
+    /// The operator's <c>[families] member_families</c>: whether a member may start another family in the app. False is
+    /// what an older server's silence means — it has no such door.
+    /// </summary>
+    [property: JsonPropertyName("member_families_enabled")] bool MemberFamiliesEnabled = false,
+    /// <summary>How many families one account may be in; 0 from an older server, which allows one (<see cref="FamilyCap"/>).</summary>
+    [property: JsonPropertyName("max_families_per_account")] int MaxFamiliesPerAccount = 0)
 {
+    /// <summary>Whether the caller owns the HOME family — what <c>role</c> is about.</summary>
     public bool IsOwner => Role == "owner";
+
+    /// <summary>
+    /// The families, whatever the server's age: <see cref="Families"/> when it is there, and otherwise the one
+    /// <see cref="Family"/> an older server describes, carrying the <see cref="Role"/> that came beside it.
+    /// </summary>
+    public IReadOnlyList<FamilyDto> AllFamilies =>
+        Families ?? (Family is { } home ? [home with { Role = home.Role ?? Role }] : []);
+
+    /// <summary>The waiting join requests, whatever the server's age.</summary>
+    public IReadOnlyList<PendingJoinDto> AllPending =>
+        PendingJoinRequests ?? (PendingJoinRequest is { } pending ? [pending] : []);
+
+    /// <summary>The cap on families per account, never below one.</summary>
+    public int FamilyCap => Math.Max(1, MaxFamiliesPerAccount);
 }
+
+/// <summary>
+/// An owner's invitation into their family (docs/protocol.md, "Several families"): pending until the invited person accepts
+/// or declines it. <see cref="User"/> is the invited person.
+/// </summary>
+public sealed record InvitationDto(
+    long Id,
+    [property: JsonPropertyName("family_id")] long FamilyId,
+    [property: JsonPropertyName("family_name")] string FamilyName,
+    [property: JsonPropertyName("invited_by")] UserDto InvitedBy,
+    UserDto User,
+    [property: JsonPropertyName("created_at")] string? CreatedAt = null);
+
+public sealed record InvitationResponse(InvitationDto Invitation);
+
+public sealed record InvitationsResponse(InvitationDto[]? Invitations);
 
 public sealed record PendingJoinDto(
     [property: JsonPropertyName("family_id")] long FamilyId,
@@ -266,7 +314,16 @@ public sealed record FamilyDto(
     /// owner sets them. <c>[]</c> by default; ABSENT on a server that predates them, which reads as none — read through
     /// <c>GreetingWeather.Saved</c>, which treats null and a null inside as nothing.
     /// </summary>
-    [property: JsonPropertyName("greeting_places")] string[]? GreetingPlaces = null);
+    [property: JsonPropertyName("greeting_places")] string[]? GreetingPlaces = null,
+    /// <summary>
+    /// The caller's own role in this family, <c>"owner"</c> or <c>"member"</c> — on each of <c>GET /me</c>'s
+    /// <c>families</c> (docs/protocol.md, "Several families"); absent on every other read of a family.
+    /// </summary>
+    string? Role = null)
+{
+    /// <summary>Whether the caller owns this family, as <c>GET /me</c>'s <c>families</c> says.</summary>
+    public bool IsOwner => Role == "owner";
+}
 
 /// <summary>
 /// The family as the family screen needs it, with the assistant's capabilities.
@@ -481,7 +538,14 @@ public sealed record UserResponse(UserDto User);
 public sealed record InviteCodeResponse(
     [property: JsonPropertyName("invite_code")] string InviteCode);
 
-public sealed record JoinAnswer(string Status)
+/// <param name="Status"><c>joined</c> or <c>pending</c>.</param>
+/// <param name="FamilyId">
+/// The family the code belongs to — joined, or waited on (docs/protocol.md, <c>POST /families/join</c>, 2026-10-22). Absent
+/// from a server that predates several families.
+/// </param>
+public sealed record JoinAnswer(
+    string Status,
+    [property: JsonPropertyName("family_id")] long? FamilyId = null)
 {
     /// <summary>Membership was immediate: the family's policy is <c>open</c>.</summary>
     public bool Joined => Status == "joined";

@@ -6,6 +6,12 @@
  * member picker, and the admin member list. Owner sorts first, then
  * alphabetical.
  *
+ * One row per (family, member) since several families (docs/protocol.md,
+ * "Several families"). What is a FAMILY's — the role, whether they left —
+ * is written to that family's row; what is the ACCOUNT's — the name, the
+ * picture, the birthday, a deletion — to every row of theirs at once, so
+ * the copies never disagree about who somebody is.
+ *
  * iOS counterpart: ios/FamilyConnect/Data/Db/MemberStore.swift
  */
 
@@ -38,9 +44,16 @@ interface MemberDao {
     @Query(
         """
         SELECT * FROM members
+        WHERE rowid = (
+            SELECT m2.rowid FROM members m2 WHERE m2.userId = members.userId
+            ORDER BY m2.hasLeft ASC, m2.familyId ASC LIMIT 1
+        )
         ORDER BY (role = 'owner') DESC, displayName COLLATE NOCASE ASC
         """,
     )
+    // ONE row per person, whichever families they are in: the account's
+    // facts are the same on every copy, and a person still in some family
+    // is read from a family they are still in.
     fun observeMembers(): Flow<List<MemberEntity>>
 
     /**
@@ -57,11 +70,20 @@ interface MemberDao {
      */
     @Query(
         """
-        SELECT * FROM members WHERE hasLeft = 0 AND deleted = 0
+        SELECT * FROM members WHERE familyId = :familyId AND hasLeft = 0 AND deleted = 0
         ORDER BY (role = 'owner') DESC, displayName COLLATE NOCASE ASC
         """,
     )
-    fun observeActiveMembers(): Flow<List<MemberEntity>>
+    fun observeActiveMembers(familyId: Long): Flow<List<MemberEntity>>
+
+    /**
+     * Every live membership in every family this device holds — what the
+     * owner's "Invite…" picker is drawn from: the members of their OTHER
+     * families who are not in this one (docs/protocol.md, "Several
+     * families").
+     */
+    @Query("SELECT * FROM members WHERE hasLeft = 0 AND deleted = 0")
+    fun observeAllActiveMemberships(): Flow<List<MemberEntity>>
 
     /**
      * The same roster, read once — for resolving the members a board note's
@@ -70,11 +92,11 @@ interface MemberDao {
      */
     @Query(
         """
-        SELECT * FROM members WHERE hasLeft = 0 AND deleted = 0
+        SELECT * FROM members WHERE familyId = :familyId AND hasLeft = 0 AND deleted = 0
         ORDER BY displayName COLLATE NOCASE ASC
         """,
     )
-    suspend fun activeMembers(): List<MemberEntity>
+    suspend fun activeMembers(familyId: Long): List<MemberEntity>
 
     /**
      * One member's display name, or null when this device holds no row for
@@ -146,35 +168,36 @@ interface MemberDao {
     suspend fun upsertLeavingBirthday(member: MemberEntity) {
         if (insertIfAbsent(member) == -1L) {
             updateLeavingBirthday(
+                familyId = member.familyId,
                 userId = member.userId,
-                username = member.username,
-                displayName = member.displayName,
                 role = member.role,
-                avatarVersion = member.avatarVersion,
             )
         }
+        // The account's half on every row of theirs, the new one included.
+        updateAccount(
+            userId = member.userId,
+            username = member.username,
+            displayName = member.displayName,
+            avatarVersion = member.avatarVersion,
+        )
     }
 
     /** -1 when a row for this member is already there. See [upsertLeavingBirthday]. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIfAbsent(member: MemberEntity): Long
 
-    /** Every column a `member_joined` frame carries, and not one more. */
+    /** The FAMILY's columns a `member_joined` frame carries: the role, and that they are back. */
+    @Query("UPDATE members SET role = :role, hasLeft = 0 WHERE familyId = :familyId AND userId = :userId")
+    suspend fun updateLeavingBirthday(familyId: Long, userId: Long, role: String)
+
+    /** The ACCOUNT's columns a `member_joined` frame carries, on every row of theirs. */
     @Query(
         """
-        UPDATE members
-        SET username = :username, displayName = :displayName,
-            role = :role, avatarVersion = :avatarVersion, hasLeft = 0
+        UPDATE members SET username = :username, displayName = :displayName, avatarVersion = :avatarVersion
         WHERE userId = :userId
         """,
     )
-    suspend fun updateLeavingBirthday(
-        userId: Long,
-        username: String,
-        displayName: String,
-        role: String,
-        avatarVersion: Long,
-    )
+    suspend fun updateAccount(userId: Long, username: String, displayName: String, avatarVersion: Long)
 
     /**
      * Write (or clear, with two nulls) one member's birthday.
@@ -219,12 +242,14 @@ interface MemberDao {
      */
     @Transaction
     suspend fun writeTombstone(
+        familyId: Long,
         userId: Long,
         username: String,
         displayName: String,
     ) {
         insertIfAbsent(
             MemberEntity(
+                familyId = familyId,
                 userId = userId,
                 username = username,
                 displayName = displayName,
@@ -264,31 +289,57 @@ interface MemberDao {
      * that member yet, and the next roster refresh puts it right.
      */
     @Transaction
-    suspend fun setOwner(userId: Long) {
-        demoteOtherOwners(userId)
-        promoteToOwner(userId)
+    suspend fun setOwner(familyId: Long, userId: Long) {
+        demoteOtherOwners(familyId, userId)
+        promoteToOwner(familyId, userId)
     }
 
-    @Query("UPDATE members SET role = 'member' WHERE role = 'owner' AND userId != :userId")
-    suspend fun demoteOtherOwners(userId: Long)
+    @Query("UPDATE members SET role = 'member' WHERE familyId = :familyId AND role = 'owner' AND userId != :userId")
+    suspend fun demoteOtherOwners(familyId: Long, userId: Long)
 
-    @Query("UPDATE members SET role = 'owner' WHERE userId = :userId")
-    suspend fun promoteToOwner(userId: Long)
-
-    /**
-     * They left; the row stays so their old messages keep a name and a
-     * face. Deleting it is what orphaned them.
-     */
-    @Query("UPDATE members SET hasLeft = 1 WHERE userId = :userId")
-    suspend fun markLeft(userId: Long)
+    @Query("UPDATE members SET role = 'owner' WHERE familyId = :familyId AND userId = :userId")
+    suspend fun promoteToOwner(familyId: Long, userId: Long)
 
     /**
-     * Everyone the server no longer lists has left. Called after a roster
-     * upsert, which is what replaces the old delete-then-insert: that
-     * threw away departed members entirely.
+     * They left THAT family; the row stays so their old messages keep a
+     * name and a face. Deleting it is what orphaned them.
      */
-    @Query("UPDATE members SET hasLeft = 1 WHERE userId NOT IN (:presentUserIds)")
-    suspend fun markLeftExcept(presentUserIds: List<Long>)
+    @Query("UPDATE members SET hasLeft = 1 WHERE familyId = :familyId AND userId = :userId")
+    suspend fun markLeft(familyId: Long, userId: Long)
+
+    /**
+     * Everyone the server no longer lists in this family has left it.
+     * Called after a roster upsert, which is what replaces the old
+     * delete-then-insert: that threw away departed members entirely.
+     */
+    @Query("UPDATE members SET hasLeft = 1 WHERE familyId = :familyId AND userId NOT IN (:presentUserIds)")
+    suspend fun markLeftExcept(familyId: Long, presentUserIds: List<Long>)
+
+    /**
+     * This account is out of [familyId]: its roster goes (docs/protocol.md,
+     * "Several families" — "drops the family's chats, board, pack, roster").
+     * A person also in another family keeps that family's row, and with it
+     * their name.
+     */
+    @Query("DELETE FROM members WHERE familyId = :familyId")
+    suspend fun deleteFamily(familyId: Long)
+
+    /**
+     * Rows cached before several families (family 0) are the HOME family's —
+     * the one family an app from before ever saw. A row the home family
+     * already holds wins; the leftover copy goes.
+     */
+    @Transaction
+    suspend fun claimLegacy(homeFamilyId: Long) {
+        adoptLegacy(homeFamilyId)
+        dropLegacy()
+    }
+
+    @Query("UPDATE OR IGNORE members SET familyId = :homeFamilyId WHERE familyId = 0")
+    suspend fun adoptLegacy(homeFamilyId: Long)
+
+    @Query("DELETE FROM members WHERE familyId = 0")
+    suspend fun dropLegacy()
 
     /** Session teardown only — logout wipes local data outright. */
     @Query("DELETE FROM members")

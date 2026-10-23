@@ -155,7 +155,9 @@ internal static class Dialogs
     /// The owner's reset. The member is signed out everywhere and needs this password to come back,
     /// and the server has no way to send it to them — so the owner is told to, somewhere safe.
     /// </summary>
-    public static async Task ResetPasswordAsync(XamlRoot root, IStringCatalog say, string name, Func<string, Task<ApiError?>> reset)
+    /// <param name="cap">The account's family cap, for the several-families refusals (<see cref="FamilySentences"/>).</param>
+    public static async Task ResetPasswordAsync(
+        XamlRoot root, IStringCatalog say, string name, Func<string, Task<ApiError?>> reset, int cap = 1)
     {
         var fresh = new PasswordBox { Header = say.Get("New Password") };
         var again = new PasswordBox { Header = say.Get("Confirm New Password") };
@@ -184,8 +186,11 @@ internal static class Dialogs
                 ShowProblem(problem, wrong);
                 return;
             }
+            // `member_in_other_families` is said in its own words: only the member can change it, and why
+            // (docs/protocol.md, "Several families", D7).
             await SettleAsync(
-                args, problem, () => reset(fresh.Password), _ => say.Get("Couldn't reset that password. Try again."));
+                args, problem, () => reset(fresh.Password),
+                error => FamilySentences.For(error, cap, say) ?? say.Get("Couldn't reset that password. Try again."));
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary)
         {

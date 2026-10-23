@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 34.
+ * Room database, version 35.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -47,7 +47,7 @@ fun interface LocalDataWiper {
         GonePackItemEntity::class,
         TranscriptEntity::class,
     ],
-    version = 34,
+    version = 35,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -593,6 +593,62 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v35: several families (#88; docs/protocol.md, "Several families").
+         * Never destructive — every row survives:
+         *
+         * - `chats.familyIdsJson`, nullable with no default (MIGRATION_33_34's
+         *   shape): a cached chat has not been told its families, and null is
+         *   that truth until the next `GET /chats` says them.
+         * - `notes.familyId` and `packItems.familyId`, NOT NULL DEFAULT 0:
+         *   zero is "cached before several families", which can only mean the
+         *   home family — the one family an app from before ever saw — and
+         *   the first `GET /me` claims those rows for it.
+         * - `members` is REBUILT, because its primary key changes from the
+         *   user alone to (family, user): a person in two of this account's
+         *   families has a row in each. SQLite cannot alter a primary key, so
+         *   the rows are copied across with family 0 (claimed like the notes)
+         *   and the old table dropped. Column types and defaults byte-match
+         *   the entity, which is what Room validates on open.
+         */
+        val MIGRATION_34_35: Migration = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chats ADD COLUMN familyIdsJson TEXT")
+                db.execSQL("ALTER TABLE notes ADD COLUMN familyId INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE packItems ADD COLUMN familyId INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS members_new (
+                        userId INTEGER NOT NULL,
+                        username TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        avatarVersion INTEGER NOT NULL DEFAULT 0,
+                        hasLeft INTEGER NOT NULL DEFAULT 0,
+                        deleted INTEGER NOT NULL DEFAULT 0,
+                        birthdayMonth INTEGER,
+                        birthdayDay INTEGER,
+                        familyId INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(familyId, userId)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO members_new (
+                        userId, username, displayName, role, avatarVersion,
+                        hasLeft, deleted, birthdayMonth, birthdayDay, familyId
+                    )
+                    SELECT userId, username, displayName, role, avatarVersion,
+                        hasLeft, deleted, birthdayMonth, birthdayDay, 0
+                    FROM members
+                    """.trimIndent(),
+                )
+                db.execSQL("DROP TABLE members")
+                db.execSQL("ALTER TABLE members_new RENAME TO members")
+            }
+        }
+
         val MIGRATION_26_27: Migration = object : Migration(26, 27) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
@@ -694,6 +750,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_31_32,
                 MIGRATION_32_33,
                 MIGRATION_33_34,
+                MIGRATION_34_35,
             )
         }
     }

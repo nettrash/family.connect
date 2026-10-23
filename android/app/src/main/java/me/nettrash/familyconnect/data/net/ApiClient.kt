@@ -305,7 +305,7 @@ class ApiClient @Inject constructor(
         val base = apiBase() ?: return null
         val headers = tokenStore.load()
             ?.let { mapOf("Authorization" to "Bearer $it") }
-            .orEmpty()
+            .orEmpty() + (FAMILIES_HEADER to FAMILIES_HEADER_VALUE)
         return base + path to headers
     }
 
@@ -340,6 +340,11 @@ class ApiClient @Inject constructor(
         // server uses it to answer assistant questions in the language the
         // device is actually being used in.
         acceptLanguage()?.let { builder.header("Accept-Language", it) }
+        // On EVERY request: this client knows about several families, so the
+        // server answers about all of them rather than as it did before
+        // 2026-10-22, about the home family alone (docs/protocol.md,
+        // "Several families" — "Apps from before this section").
+        builder.header(FAMILIES_HEADER, FAMILIES_HEADER_VALUE)
         builder.method(method, body)
 
         // An upload of up to 100 MB over a home connection outlives the
@@ -478,3 +483,7 @@ class ApiClient @Inject constructor(
 
 
 }
+
+/** The header saying this client knows about several families (docs/protocol.md, "Several families"). */
+const val FAMILIES_HEADER = "X-FC-Families"
+const val FAMILIES_HEADER_VALUE = "1"

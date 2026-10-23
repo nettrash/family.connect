@@ -39,9 +39,9 @@ public class DatabaseTests : IDisposable
     {
         using var database = Database.Open(Path_("fresh.db"));
         Assert.Equal(Database.SchemaVersion, database.UserVersion);
-        Assert.Equal(10, Database.SchemaVersion);
+        Assert.Equal(11, Database.SchemaVersion);
         Assert.Equal(
-            ["blocked", "chats", "gone", "members", "messages", "meta", "notes", "outbox",
+            ["blocked", "chats", "family_members", "gone", "members", "messages", "meta", "notes", "outbox",
              "pack_gone", "pack_items", "pack_recents", "played_rounds", "played_voice", "transcripts"],
             database.Tables());
     }

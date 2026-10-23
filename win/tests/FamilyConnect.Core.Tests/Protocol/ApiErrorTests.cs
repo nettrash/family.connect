@@ -89,7 +89,22 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(73, ErrorCodes.All.Length);
+        Assert.Equal(79, ErrorCodes.All.Length);
+        // Several families' six (docs/protocol.md, "Several families", 2026-10-22), every one a refusal.
+        foreach (var (code, wire, status) in new[]
+                 {
+                     (ErrorCodes.FamilyNotFound, "family_not_found", 404),
+                     (ErrorCodes.TooManyFamilies, "too_many_families", 409),
+                     (ErrorCodes.AlreadyOwnAFamily, "already_own_a_family", 409),
+                     (ErrorCodes.MemberFamiliesDisabled, "member_families_disabled", 403),
+                     (ErrorCodes.MemberInOtherFamilies, "member_in_other_families", 403),
+                     (ErrorCodes.InvitationNotPending, "invitation_not_pending", 409),
+                 })
+        {
+            Assert.Equal(wire, code);
+            Assert.Contains(code, ErrorCodes.All);
+            Assert.False(new ApiError(code, "x", status).Transient);
+        }
         // Groups' two (docs/protocol.md, "Groups", 2026-10-22): refusals, with their status or without it.
         foreach (var (code, status) in new[] { (ErrorCodes.NotGroupAdmin, 403), (ErrorCodes.TooManyGroups, 409) })
         {

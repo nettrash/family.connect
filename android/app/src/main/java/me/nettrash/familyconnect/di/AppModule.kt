@@ -54,6 +54,10 @@ import me.nettrash.familyconnect.BuildConfig
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.LocalDataWiper
+import me.nettrash.familyconnect.data.push.FamilyPushRouter
+import me.nettrash.familyconnect.data.push.PushFamilyRouter
+import me.nettrash.familyconnect.data.repo.FamilyLocalData
+import me.nettrash.familyconnect.data.repo.RoomFamilyLocalData
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.PendingAttachmentDao
@@ -204,6 +208,16 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket
+
+    // Several families (#88): one family's rows dropped without the whole
+    // database, and a push opened in its family — both seams so the
+    // session's and the main screen's tests need neither Room nor the
+    // repositories.
+    @Binds
+    abstract fun bindFamilyLocalData(impl: RoomFamilyLocalData): FamilyLocalData
+
+    @Binds
+    abstract fun bindPushFamilyRouter(impl: FamilyPushRouter): PushFamilyRouter
 
     // Voice calls. The media seam is what keeps org.webrtc out of every
     // test; the audio seam does the same for AudioManager.

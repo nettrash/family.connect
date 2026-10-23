@@ -133,7 +133,7 @@ pub async fn delete_avatar(
 }
 
 /// `GET /users/{id}/avatar` — the bytes, for the user themselves or anyone
-/// in their family.
+/// who shares a family with them.
 pub async fn get_avatar(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -148,11 +148,17 @@ pub async fn get_avatar(
          FROM users u
          JOIN user_avatars a ON a.user_id = u.id
          WHERE u.id = $1
-           AND (u.id = $2 OR (u.family_id IS NOT NULL AND u.family_id = $3))",
+           AND (u.id = $2
+                -- Anyone who shares a family with them (docs/protocol.md,
+                -- \"Several families\"): a picture is the account's, shown in
+                -- every family it is in, and to nobody else on the server.
+                OR EXISTS (SELECT 1 FROM family_members theirs
+                             JOIN family_members mine
+                               ON mine.family_id = theirs.family_id AND mine.user_id = $2
+                            WHERE theirs.user_id = u.id))",
     )
     .bind(user_id)
     .bind(auth.user_id)
-    .bind(auth.family_id)
     .fetch_optional(&state.pool)
     .await?;
 

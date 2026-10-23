@@ -526,7 +526,7 @@ public class ApiClientTests
     public async Task TheSocketUrlFollowsTheSameServer()
     {
         var (client, _) = Client(new Fake());
-        Assert.Equal("wss://chat.example.com/api/v1/ws", client.SocketUrl.ToString());
+        Assert.Equal("wss://chat.example.com/api/v1/ws?families=1", client.SocketUrl.ToString());
         Assert.Equal("https://chat.example.com/", client.BaseUrl.ToString());
     }
 

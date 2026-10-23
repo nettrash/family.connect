@@ -77,6 +77,7 @@ object PushNotifications {
     /** Intent-extra keys == FCM data-payload keys, see file header. */
     const val EXTRA_KIND = PushRouteParser.KEY_KIND
     const val EXTRA_CHAT_ID = PushRouteParser.KEY_CHAT_ID
+    const val EXTRA_FAMILY_ID = PushRouteParser.KEY_FAMILY_ID
 
     /** One id, distinct tags: the (tag, id) pair is the dedup slot. */
     const val NOTIFICATION_ID = 1
@@ -124,9 +125,13 @@ object PushNotifications {
          * it would be wrong by one.
          */
         unreadInChat: Int? = null,
+        /** The family the push is about, so the tap opens in it (docs/protocol.md, "Several families"). */
+        familyId: Long? = null,
     ): Notification {
         val tapIntent = Intent(context, MainActivity::class.java).apply {
             kind?.let { putExtra(EXTRA_KIND, it) }
+            // A string, like the chat id below and for its reason.
+            familyId?.let { putExtra(EXTRA_FAMILY_ID, it.toString()) }
             // String, not long — FCM data values are strings and the
             // system-tray path delivers them as string extras; keeping
             // the type identical keeps MainActivity's parsing single-path.
@@ -218,6 +223,7 @@ object PushNotifications {
         kind: String?,
         chatId: Long?,
         unreadInChat: Int? = null,
+        familyId: Long? = null,
     ) {
         // 13+ runtime permission may be denied (notify() would be silently
         // dropped anyway; checking keeps lint and the intent explicit).
@@ -229,6 +235,6 @@ object PushNotifications {
         }
         val tag = chatId?.let(::chatTag) ?: kind ?: "push"
         NotificationManagerCompat.from(context)
-            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId, unreadInChat))
+            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId, unreadInChat, familyId))
     }
 }

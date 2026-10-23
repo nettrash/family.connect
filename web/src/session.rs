@@ -58,41 +58,89 @@ struct SavedMarks {
     content_seq: i64,
 }
 
-/// The marks this browser keeps for `user_id` — none at all (zero) for an
-/// account it has never shown the board, which then counts the whole wall,
-/// as an app does on its first launch.
-/// Where `user_id`'s marks are kept — also what a `storage` event from
-/// another tab names when it moves them.
-pub fn board_marks_key(user_id: i64) -> String {
+/// Where `user_id`'s marks for one family's board are kept — also what a
+/// `storage` event from another tab names when it moves them. A board is a
+/// family's, so its marks are too (docs/protocol.md, "Several families").
+pub fn board_marks_key(user_id: i64, family_id: i64) -> String {
+    format!("{BOARD_MARKS_KEY}{user_id}.{family_id}")
+}
+
+/// Where they were kept before several families: one board per account.
+fn legacy_board_marks_key(user_id: i64) -> String {
     format!("{BOARD_MARKS_KEY}{user_id}")
 }
 
-pub fn board_marks(user_id: i64) -> fc_text::board::Marks {
-    let saved = lasting()
-        .and_then(|storage| storage.get_item(&board_marks_key(user_id)).ok()?)
-        .and_then(|json| serde_json::from_str::<SavedMarks>(&json).ok());
-    saved
+fn read_marks(key: &str) -> Option<fc_text::board::Marks> {
+    lasting()
+        .and_then(|storage| storage.get_item(key).ok()?)
+        .and_then(|json| serde_json::from_str::<SavedMarks>(&json).ok())
         .map(|saved| fc_text::board::Marks {
             note_id: saved.note_id,
             content_seq: saved.content_seq,
         })
+}
+
+/// The marks this browser keeps for `user_id` on `family_id`'s board — none
+/// at all (zero) for a board it has never shown that account, which then
+/// counts the whole wall, as an app does on its first launch. The HOME
+/// family's falls back to the marks kept before several families, which
+/// were that family's: an update is not a reason to cry wolf.
+pub fn board_marks(user_id: i64, family_id: i64, home: bool) -> fc_text::board::Marks {
+    read_marks(&board_marks_key(user_id, family_id))
+        .or_else(|| {
+            home.then(|| read_marks(&legacy_board_marks_key(user_id)))
+                .flatten()
+        })
         .unwrap_or_default()
 }
 
-/// Keep `marks` for `user_id` — never below what is already kept: two tabs
-/// of one account both write, and neither may walk the other's back.
-pub fn save_board_marks(user_id: i64, marks: fc_text::board::Marks) {
-    if user_id == 0 {
+/// Keep `marks` for `user_id` on `family_id`'s board — never below what is
+/// already kept: two tabs of one account both write, and neither may walk
+/// the other's back.
+pub fn save_board_marks(user_id: i64, family_id: i64, marks: fc_text::board::Marks) {
+    if user_id == 0 || family_id == 0 {
         return;
     }
     let Some(storage) = lasting() else { return };
-    let kept = fc_text::board::later(board_marks(user_id), marks);
+    let held = read_marks(&board_marks_key(user_id, family_id)).unwrap_or_default();
+    let kept = fc_text::board::later(held, marks);
     let saved = SavedMarks {
         note_id: kept.note_id,
         content_seq: kept.content_seq,
     };
     if let Ok(json) = serde_json::to_string(&saved) {
-        let _ = storage.set_item(&board_marks_key(user_id), &json);
+        let _ = storage.set_item(&board_marks_key(user_id, family_id), &json);
+    }
+}
+
+/// The family this device showed `user_id` last — the one a reload opens
+/// in, while the account is still in it (docs/protocol.md, "Several
+/// families": a current family, kept per account on the device). Kept in
+/// `localStorage` beside the board's marks: a number, and nothing anybody
+/// wrote.
+const SHOWN_FAMILY_KEY: &str = "fc.family.shown.";
+
+pub fn shown_family(user_id: i64) -> Option<i64> {
+    lasting()?
+        .get_item(&format!("{SHOWN_FAMILY_KEY}{user_id}"))
+        .ok()??
+        .parse()
+        .ok()
+}
+
+pub fn set_shown_family(user_id: i64, family_id: Option<i64>) {
+    let Some(storage) = lasting() else { return };
+    if user_id == 0 {
+        return;
+    }
+    let key = format!("{SHOWN_FAMILY_KEY}{user_id}");
+    match family_id {
+        Some(family_id) => {
+            let _ = storage.set_item(&key, &family_id.to_string());
+        }
+        None => {
+            let _ = storage.remove_item(&key);
+        }
     }
 }
 
@@ -122,32 +170,48 @@ struct SavedRecents {
     ids: Vec<i64>,
 }
 
-/// The recents this device keeps for `user_id` — none when it has sent no
-/// sticker as that account, and none where storage is absent, blocked or
-/// holds something that cannot be read.
-pub fn pack_recents(user_id: i64) -> Vec<i64> {
+/// Where one family's recents are kept: a pack is a family's, and so are
+/// the stickers somebody reached for in it.
+fn pack_recents_key(family_id: i64) -> String {
+    format!("{PACK_RECENTS_KEY}.{family_id}")
+}
+
+fn read_recents(key: &str, user_id: i64) -> Option<Vec<i64>> {
     lasting()
-        .and_then(|storage| storage.get_item(PACK_RECENTS_KEY).ok()?)
+        .and_then(|storage| storage.get_item(key).ok()?)
         .and_then(|json| serde_json::from_str::<SavedRecents>(&json).ok())
         .filter(|saved| saved.user_id == user_id && user_id != 0)
         .map(|mut saved| {
             saved.ids.truncate(fc_text::pack::RECENTS_MAX);
             saved.ids
         })
+}
+
+/// The recents this device keeps for `user_id` in `family_id`'s pack — none
+/// when it has sent no sticker there as that account, and none where
+/// storage is absent, blocked or holds something that cannot be read. The
+/// HOME family's falls back to the list kept before several families.
+pub fn pack_recents(user_id: i64, family_id: i64, home: bool) -> Vec<i64> {
+    read_recents(&pack_recents_key(family_id), user_id)
+        .or_else(|| {
+            home.then(|| read_recents(PACK_RECENTS_KEY, user_id))
+                .flatten()
+        })
         .unwrap_or_default()
 }
 
-/// `id` was just sent: it goes first. Answers the list as it now stands,
-/// which is what the panel draws — whether or not storage took it.
-pub fn use_pack_item(user_id: i64, id: i64) -> Vec<i64> {
-    let ids = fc_text::pack::used(&pack_recents(user_id), id);
+/// `id` was just sent from `family_id`'s pack: it goes first. Answers the
+/// list as it now stands, which is what the panel draws — whether or not
+/// storage took it.
+pub fn use_pack_item(user_id: i64, family_id: i64, home: bool, id: i64) -> Vec<i64> {
+    let ids = fc_text::pack::used(&pack_recents(user_id, family_id, home), id);
     if user_id != 0 {
         let saved = SavedRecents {
             user_id,
             ids: ids.clone(),
         };
         if let (Some(storage), Ok(json)) = (lasting(), serde_json::to_string(&saved)) {
-            let _ = storage.set_item(PACK_RECENTS_KEY, &json);
+            let _ = storage.set_item(&pack_recents_key(family_id), &json);
         }
     }
     ids
@@ -363,7 +427,14 @@ pub fn clear() {
     // this person reached for. The board's marks stay — that is what they
     // are for.
     if let Some(storage) = lasting() {
-        let _ = storage.remove_item(PACK_RECENTS_KEY);
+        // Every family's, and the one list kept before several families.
+        let keys: Vec<String> = (0..storage.length().unwrap_or(0))
+            .filter_map(|index| storage.key(index).ok().flatten())
+            .filter(|key| key.starts_with(PACK_RECENTS_KEY))
+            .collect();
+        for key in keys {
+            let _ = storage.remove_item(&key);
+        }
         // And which video and voice messages this person has played (S5.2).
         let _ = storage.remove_item(ROUND_PLAYED_KEY);
         let _ = storage.remove_item(VOICE_PLAYED_KEY);
@@ -465,8 +536,11 @@ mod tests {
     fn the_sticker_recents_are_kept_for_the_device_and_go_at_sign_out() {
         let tab = storage().expect("session storage in the test browser");
         let local = lasting().expect("local storage in the test browser");
-        let was = local.get_item(PACK_RECENTS_KEY).expect("reads");
+        let key = pack_recents_key(3);
         let _ = local.remove_item(PACK_RECENTS_KEY);
+        let _ = local.remove_item(&pack_recents_key(4));
+        let was = local.get_item(&key).expect("reads");
+        let _ = local.remove_item(&key);
         // What other tests of this page had in the tab, to put back.
         let (token, outbox, awaiting) = (
             tab.get_item(TOKEN_KEY).expect("reads"),
@@ -480,12 +554,16 @@ mod tests {
                 .collect()
         };
 
-        assert!(pack_recents(9101).is_empty());
-        assert_eq!(use_pack_item(9101, 5), vec![5]);
-        assert_eq!(use_pack_item(9101, 8), vec![8, 5]);
-        assert_eq!(use_pack_item(9101, 5), vec![5, 8], "once, and first");
+        assert!(pack_recents(9101, 3, false).is_empty());
+        assert_eq!(use_pack_item(9101, 3, false, 5), vec![5]);
+        assert_eq!(use_pack_item(9101, 3, false, 8), vec![8, 5]);
+        assert_eq!(
+            use_pack_item(9101, 3, false, 5),
+            vec![5, 8],
+            "once, and first"
+        );
         assert!(
-            local.get_item(PACK_RECENTS_KEY).expect("reads").is_some(),
+            local.get_item(&key).expect("reads").is_some(),
             "kept by the device"
         );
         assert_eq!(tab_keys(), Vec::<String>::new(), "and not by the tab");
@@ -500,22 +578,29 @@ mod tests {
             tab.remove_item(&key).expect("removes");
         }
         assert!(super::token().is_none(), "the tab's session is over");
-        assert_eq!(pack_recents(9101), vec![5, 8], "a restart keeps them");
-        assert!(pack_recents(9102).is_empty(), "another account has none");
+        assert_eq!(
+            pack_recents(9101, 3, false),
+            vec![5, 8],
+            "a restart keeps them"
+        );
+        assert!(
+            pack_recents(9102, 3, false).is_empty(),
+            "another account has none"
+        );
 
         // The last sixteen, and no more — also of a list somebody else
         // wrote longer.
         for id in 100..130 {
-            use_pack_item(9101, id);
+            use_pack_item(9101, 3, false, id);
         }
-        let kept = pack_recents(9101);
+        let kept = pack_recents(9101, 3, false);
         assert_eq!(kept.len(), fc_text::pack::RECENTS_MAX);
         assert_eq!(kept[0], 129, "newest first");
         assert_eq!(kept[15], 114, "the seventeenth went");
         let long: Vec<i64> = (1..=40).collect();
         local
             .set_item(
-                PACK_RECENTS_KEY,
+                &key,
                 &serde_json::to_string(&SavedRecents {
                     user_id: 9101,
                     ids: long,
@@ -523,28 +608,58 @@ mod tests {
                 .expect("writes"),
             )
             .expect("writes");
-        assert_eq!(pack_recents(9101).len(), fc_text::pack::RECENTS_MAX);
+        assert_eq!(
+            pack_recents(9101, 3, false).len(),
+            fc_text::pack::RECENTS_MAX
+        );
 
         // Another account on the same device starts its own, and the first
         // one's are not handed to it.
-        assert_eq!(use_pack_item(9102, 3), vec![3]);
-        assert!(pack_recents(9101).is_empty());
+        assert_eq!(use_pack_item(9102, 3, false, 3), vec![3]);
+        assert!(pack_recents(9101, 3, false).is_empty());
 
-        local
-            .set_item(PACK_RECENTS_KEY, "{not a list")
-            .expect("writes");
-        assert!(pack_recents(9102).is_empty());
+        local.set_item(&key, "{not a list").expect("writes");
+        assert!(pack_recents(9102, 3, false).is_empty());
 
         // Nobody signed in keeps nothing — but the panel still gets its
         // order for this tab.
-        let _ = local.remove_item(PACK_RECENTS_KEY);
-        assert_eq!(use_pack_item(0, 3), vec![3]);
-        assert!(local.get_item(PACK_RECENTS_KEY).expect("reads").is_none());
+        let _ = local.remove_item(&key);
+        assert_eq!(use_pack_item(0, 3, false, 3), vec![3]);
+        assert!(local.get_item(&key).expect("reads").is_none());
 
-        // SIGNING OUT takes them with the token.
-        use_pack_item(9101, 5);
+        // A pack is a family's, and so are its recents: another family's
+        // list is its own — and the HOME family's falls back to the one
+        // list kept before several families, which was that family's.
+        assert_eq!(use_pack_item(9101, 3, false, 5), vec![5]);
+        assert_eq!(use_pack_item(9101, 4, false, 7), vec![7]);
+        assert_eq!(pack_recents(9101, 3, false), vec![5], "untouched");
+        local
+            .set_item(
+                PACK_RECENTS_KEY,
+                &serde_json::to_string(&SavedRecents {
+                    user_id: 9101,
+                    ids: vec![41, 42],
+                })
+                .expect("writes"),
+            )
+            .expect("writes");
+        assert_eq!(
+            pack_recents(9101, 9, true),
+            vec![41, 42],
+            "the home family's"
+        );
+        assert!(pack_recents(9101, 9, false).is_empty(), "nobody else's");
+
+        // SIGNING OUT takes them with the token — every family's, and the
+        // old list.
+        use_pack_item(9101, 3, false, 5);
         clear();
-        assert!(pack_recents(9101).is_empty(), "gone at sign-out");
+        assert!(pack_recents(9101, 3, false).is_empty(), "gone at sign-out");
+        assert!(local.get_item(&key).expect("reads").is_none());
+        assert!(local
+            .get_item(&pack_recents_key(4))
+            .expect("reads")
+            .is_none());
         assert!(local.get_item(PACK_RECENTS_KEY).expect("reads").is_none());
 
         for (key, value) in [
@@ -557,7 +672,7 @@ mod tests {
             }
         }
         if let Some(value) = was {
-            let _ = local.set_item(PACK_RECENTS_KEY, &value);
+            let _ = local.set_item(&key, &value);
         }
     }
 
@@ -722,8 +837,8 @@ mod tests {
         use js_sys::{Function, Reflect};
         use wasm_bindgen::JsValue;
         let local = lasting().expect("local storage in the test browser");
-        let _ = local.remove_item(PACK_RECENTS_KEY);
-        assert_eq!(use_pack_item(9103, 4), vec![4]);
+        let _ = local.remove_item(&pack_recents_key(3));
+        assert_eq!(use_pack_item(9103, 3, false, 4), vec![4]);
 
         let prototype = Reflect::get(
             &Reflect::get(&window().expect("a window"), &JsValue::from_str("Storage"))
@@ -741,9 +856,9 @@ mod tests {
             Reflect::set(&prototype, &JsValue::from_str(name), &throws).expect("replaced");
         }
         let (read, used, again) = (
-            pack_recents(9103),
-            use_pack_item(9103, 6),
-            use_pack_item(9103, 7),
+            pack_recents(9103, 3, false),
+            use_pack_item(9103, 3, false, 6),
+            use_pack_item(9103, 3, false, 7),
         );
         clear();
         for (name, original) in methods.iter().zip(&originals) {
@@ -754,40 +869,47 @@ mod tests {
         assert_eq!(used, vec![6], "and the send still gets its order");
         assert_eq!(again, vec![7]);
         assert_eq!(
-            pack_recents(9103),
+            pack_recents(9103, 3, false),
             vec![4],
             "nothing was written, and nothing removed, while it threw"
         );
-        let _ = local.remove_item(PACK_RECENTS_KEY);
+        let _ = local.remove_item(&pack_recents_key(3));
     }
 
     /// The marks outlive a sign-out (that is what they are for), belong to
-    /// one account, only ever rise, and read as zero where there are none
-    /// or where what is there cannot be read.
+    /// one account AND one family's board, only ever rise, and read as zero
+    /// where there are none or where what is there cannot be read. The home
+    /// family's falls back to the marks kept before several families.
     #[wasm_bindgen_test]
-    fn the_board_marks_outlive_the_tab_per_account_and_only_rise() {
+    fn the_board_marks_outlive_the_tab_per_account_and_family_and_only_rise() {
         use fc_text::board::Marks;
-        let key = |id: i64| format!("{BOARD_MARKS_KEY}{id}");
         let local = lasting().expect("local storage in the test browser");
-        for id in [9001, 9002] {
-            let _ = local.remove_item(&key(id));
-        }
-        assert_eq!(board_marks(9001), Marks::default());
+        let wipe = || {
+            for id in [9001, 9002] {
+                let _ = local.remove_item(&legacy_board_marks_key(id));
+                for family in [3, 4] {
+                    let _ = local.remove_item(&board_marks_key(id, family));
+                }
+            }
+        };
+        wipe();
+        assert_eq!(board_marks(9001, 3, false), Marks::default());
         let high = Marks {
             note_id: 12,
             content_seq: 90,
         };
-        save_board_marks(9001, high);
-        assert_eq!(board_marks(9001), high);
+        save_board_marks(9001, 3, high);
+        assert_eq!(board_marks(9001, 3, false), high);
         save_board_marks(
             9001,
+            3,
             Marks {
                 note_id: 20,
                 content_seq: 40,
             },
         );
         assert_eq!(
-            board_marks(9001),
+            board_marks(9001, 3, false),
             Marks {
                 note_id: 20,
                 content_seq: 90
@@ -795,23 +917,62 @@ mod tests {
             "each only rises"
         );
         assert_eq!(
-            board_marks(9002),
+            board_marks(9002, 3, false),
             Marks::default(),
             "another account has its own"
         );
-        clear();
-        assert_eq!(board_marks(9001).content_seq, 90, "a sign-out keeps them");
-        let _ = local.set_item(&key(9002), "not json");
-        assert_eq!(board_marks(9002), Marks::default());
-        save_board_marks(0, high);
         assert_eq!(
-            board_marks(0),
+            board_marks(9001, 4, false),
+            Marks::default(),
+            "another family's board has its own"
+        );
+        // Kept before several families, under the account alone: the home
+        // family's — and nobody else's.
+        let _ = local.set_item(
+            &legacy_board_marks_key(9002),
+            r#"{"note_id": 5, "content_seq": 50}"#,
+        );
+        assert_eq!(
+            board_marks(9002, 4, true).content_seq,
+            50,
+            "the home family's"
+        );
+        assert_eq!(board_marks(9002, 3, false), Marks::default());
+        save_board_marks(9002, 4, high);
+        assert_eq!(board_marks(9002, 4, true), high, "its own, once it has any");
+        clear();
+        assert_eq!(
+            board_marks(9001, 3, false).content_seq,
+            90,
+            "a sign-out keeps them"
+        );
+        let _ = local.set_item(&board_marks_key(9002, 3), "not json");
+        assert_eq!(board_marks(9002, 3, false), Marks::default());
+        save_board_marks(0, 3, high);
+        assert_eq!(
+            board_marks(0, 3, false),
             Marks::default(),
             "nobody's marks are not kept"
         );
-        for id in [9001, 9002] {
-            let _ = local.remove_item(&key(id));
-        }
+        wipe();
+    }
+
+    /// The family on screen is kept per account on the device — a number
+    /// and nothing else — and outlives a sign-out like the marks.
+    #[wasm_bindgen_test]
+    fn the_family_shown_is_kept_per_account() {
+        set_shown_family(9001, None);
+        set_shown_family(9002, None);
+        assert_eq!(shown_family(9001), None);
+        set_shown_family(9001, Some(4));
+        assert_eq!(shown_family(9001), Some(4));
+        assert_eq!(shown_family(9002), None, "another account's is its own");
+        clear();
+        assert_eq!(shown_family(9001), Some(4), "a sign-out keeps it");
+        set_shown_family(0, Some(3));
+        assert_eq!(shown_family(0), None, "nobody's is not kept");
+        set_shown_family(9001, None);
+        assert_eq!(shown_family(9001), None);
     }
 
     /// What a reload finds is what was there — whose, and every row whole —

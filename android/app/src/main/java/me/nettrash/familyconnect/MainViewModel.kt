@@ -32,6 +32,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.push.PendingRoute
+import me.nettrash.familyconnect.data.push.PushFamilyRouter
 import me.nettrash.familyconnect.calls.CallState
 import me.nettrash.familyconnect.calls.CallStarter
 import me.nettrash.familyconnect.calls.CallStateSource
@@ -65,6 +67,8 @@ class MainViewModel @Inject constructor(
     private val shareImporter: ShareImporter = ShareImporter.NONE,
     /** And the app-wide stash the chosen chat's composer drains. */
     private val shareStash: ShareStash = ShareStash(),
+    /** Same trick: a push opened in its family (#88); Dagger injects FamilyPushRouter. */
+    private val familyRouter: PushFamilyRouter = PushFamilyRouter.NONE,
 ) : ViewModel() {
 
     /** The one voice call this device can be on — AppNavHost shows the call screen off it. */
@@ -104,9 +108,25 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** A newer tap wins — the user tapped it last, it's what they want. */
-    fun onPendingRoute(route: PendingRoute) {
-        _pendingRoute.value = route
+    /**
+     * A newer tap wins — the user tapped it last, it's what they want.
+     *
+     * In its family (docs/protocol.md, "Several families" — "Pushes"): the
+     * app switches to [familyId] — or, for a chat that names none, to a
+     * family that lists the chat — BEFORE the route is published, so the
+     * screen it opens is already the right family's. Undispatched, so a
+     * switch that does not need to wait publishes at once.
+     */
+    fun onPendingRoute(route: PendingRoute, familyId: Long? = null) {
+        val chatId = (route as? PendingRoute.Chat)?.chatId
+        if (familyId == null && chatId == null) {
+            _pendingRoute.value = route
+            return
+        }
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            familyRouter.openIn(familyId, chatId)
+            _pendingRoute.value = route
+        }
     }
 
     fun consumePendingRoute() {

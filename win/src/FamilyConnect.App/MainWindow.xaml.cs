@@ -195,8 +195,35 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() =>
         {
             Show(state.Gate);
+            FamilyMoved();
             RefreshAttention();
         });
+
+    /// <summary>The family whose places the rail's screens were opened for.</summary>
+    private long? familyShown;
+
+    /// <summary>
+    /// Another family shown (docs/protocol.md, "Several families"): the wall and the family screen are a family's, so one open
+    /// over the chats is opened again for the family now shown — the chats follow on their own, and Settings redraws itself.
+    /// </summary>
+    private void FamilyMoved()
+    {
+        var now = connection?.Session.State.CurrentFamilyId;
+        if (now == familyShown)
+        {
+            return;
+        }
+        familyShown = now;
+        switch (Screen.Content)
+        {
+            case BoardView:
+                ShowBoard();
+                break;
+            case FamilyView:
+                ShowFamily();
+                break;
+        }
+    }
 
     /// <summary>The unread count may have moved, on whatever thread noticed: one refresh, on this one.</summary>
     private void QueueAttention()
@@ -232,7 +259,24 @@ public sealed partial class MainWindow : Window
     internal void OpenFromToast(IReadOnlyDictionary<string, string> arguments)
     {
         BringForward();
-        if (ToastArguments.Parse(arguments) is { ChatId: { } chatId })
+        var target = ToastArguments.Parse(arguments);
+        // A notification opens the app in ITS family (docs/protocol.md, "Several families"): the wall's names it; a chat's is
+        // the one shown when it lists the chat, else the first that does.
+        if (connection is { } current)
+        {
+            var family = target switch
+            {
+                { ChatId: { } chat } when current.Chats.Chat(chat)?.Chat is { } held =>
+                    FamilyRules.FamilyToOpen(held, current.Session.State.CurrentFamilyId),
+                { FamilyId: { } named } => named,
+                _ => null,
+            };
+            if (family is { } switchTo)
+            {
+                _ = current.Session.SwitchFamilyAsync(switchTo);
+            }
+        }
+        if (target is { ChatId: { } chatId })
         {
             ShowChats();
             chats?.OpenChat(chatId);

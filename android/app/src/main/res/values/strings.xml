@@ -10,7 +10,7 @@
   chat, not a bank. Japanese uses plain polite です/ます. Keep new strings
   consistent with that.
 -->
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Not a sentence: the language POST /devices sends, so the server writes this device's pushes in the
          language the app is SHOWN in (docs/protocol.md, "The words of a push"; issue #82). One per locale folder. -->
     <string name="push_language">en</string>
@@ -255,6 +255,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">Your other devices will be signed out. This one stays signed in.</string>
     <string name="e_action_failed">Action failed</string>
     <string name="e_already_in_family">You\'re already in a family — pull to refresh</string>
+    <string name="e_already_in_that_family">You\'re already in that family.</string>
     <string name="e_change_password_failed">Couldn\'t change your password.</string>
     <string name="e_change_policy_failed">Couldn\'t change the policy</string>
     <string name="e_create_family_failed">Couldn\'t create the family</string>
@@ -838,4 +839,29 @@
     <string name="e_create_group_failed">Couldn\'t create the group.</string>
     <string name="e_change_group_failed">Couldn\'t change the group.</string>
     <string name="s_everyone_already_in_group">Everyone in the family is already in this group.</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">Families</string>
+    <string name="s_new_family">New Family…</string>
+    <string name="s_join_another_family">Join Another Family…</string>
+    <string name="s_switch_family">Switch Family</string>
+    <!-- An accessibility label, not a sentence: the catalogue's own phrasing
+         ("%@, %lld unread", and "непрочитанных: %lld" etc.) is the same for
+         every count, so it is one string on every platform. -->
+    <string name="s_family_unread" tools:ignore="PluralsCandidate">%1$s, %2$d unread</string>
+    <string name="s_invited_you_to">%1$s invited you to “%2$s”</string>
+    <string name="s_invitations">Invitations</string>
+    <string name="s_invite">Invite…</string>
+    <string name="s_invite_to">Invite to “%s”</string>
+    <string name="s_invite_empty">Members of your other families who aren\'t in this one appear here.</string>
+    <string name="s_invited">Invited</string>
+    <string name="s_pending_invitations">Pending Invitations</string>
+    <string name="s_withdraw_invitation">Withdraw Invitation</string>
+    <string name="e_invitation_gone">This invitation is no longer available.</string>
+    <string name="e_too_many_families">You\'ve reached the most families one account can be in (%d).</string>
+    <string name="e_already_own_a_family">You already own a family, so you can\'t start another.</string>
+    <string name="e_member_families_disabled">This server doesn\'t let members start new families.</string>
+    <string name="e_member_in_other_families">This member is also in a family you don\'t own, so only they can change their password.</string>
+    <string name="s_leave_named_family">Leave “%s”?</string>
+    <string name="s_leave_one_of_families_explanation">You\'ll lose access to this family\'s chats. Direct chats stay with anyone you share another family with.</string>
+    <string name="s_new_family_explanation">Start your own family. You\'ll be its owner and can invite members of your other families.</string>
 </resources>

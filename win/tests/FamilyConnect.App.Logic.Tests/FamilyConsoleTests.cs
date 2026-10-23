@@ -33,11 +33,11 @@ public sealed class FamilyConsoleTests
         var owner = Member(7, "Anna", role: "owner");
         var bob = Member(11, "Bob");
 
-        Assert.Equal(new MemberTools(false, false, true, false), FamilyText.ToolsFor(owner, me: 7, owner: true, blocked: false));
-        Assert.Equal(new MemberTools(true, true, true, true), FamilyText.ToolsFor(bob, me: 7, owner: true, blocked: false));
-        Assert.Equal(new MemberTools(false, true, true, true), FamilyText.ToolsFor(bob, me: 7, owner: true, blocked: true));
-        Assert.Equal(new MemberTools(true, true, false, false), FamilyText.ToolsFor(owner, me: 11, owner: false, blocked: false));
-        Assert.Equal(new MemberTools(false, false, false, false), FamilyText.ToolsFor(bob, me: 11, owner: false, blocked: false));
+        Assert.Equal(new MemberTools(false, false, true, false, false), FamilyText.ToolsFor(owner, me: 7, owner: true, blocked: false));
+        Assert.Equal(new MemberTools(true, true, true, true, true), FamilyText.ToolsFor(bob, me: 7, owner: true, blocked: false));
+        Assert.Equal(new MemberTools(false, true, true, true, true), FamilyText.ToolsFor(bob, me: 7, owner: true, blocked: true));
+        Assert.Equal(new MemberTools(true, true, false, false, false), FamilyText.ToolsFor(owner, me: 11, owner: false, blocked: false));
+        Assert.Equal(new MemberTools(false, false, false, false, false), FamilyText.ToolsFor(bob, me: 11, owner: false, blocked: false));
         // A roster that still names somebody else as owner — ownership moved and the frame is on its
         // way — offers no removal of them.
         Assert.False(FamilyText.ToolsFor(owner, me: 12, owner: true, blocked: false).Removable);

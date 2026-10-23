@@ -94,7 +94,10 @@ public class CacheConcurrencyTests : IDisposable
         ["chats.SettleFlags"] = () => chats.SettleFlags(1),
         ["chats.RepairMedia"] = () => chats.RepairMedia(new MessageDto(1, 42, 11, "c-1", "", Sent)),
         ["chats.Replace(members)"] = () => chats.Replace([new MemberDto(7, "anna", "Anna", Role: "owner")]),
+        ["chats.Replace(family members)"] = () => chats.Replace(3, [new MemberDto(7, "anna", "Anna", Role: "owner")]),
         ["chats.Members"] = () => chats.Members(),
+        ["chats.MembersOf"] = () => chats.MembersOf(3),
+        ["chats.RosterFamilies"] = () => chats.RosterFamilies(),
         ["chats.Member"] = () => chats.Member(11),
         ["chats.Joined"] = () => chats.Joined(new UserDto(12, "carl", "Carl")),
         ["chats.Left"] = () => chats.Left(11),
@@ -149,6 +152,11 @@ public class CacheConcurrencyTests : IDisposable
         ["cache.WipeAll"] = () => cache.WipeAll(),
         ["cache.UserVersion"] = () => _ = cache.UserVersion,
         ["cache.Migrate"] = () => cache.Migrate(),
+        ["cache.DropFamily"] = () => cache.DropFamily(3),
+        ["cache.AdoptLegacy"] = () => cache.AdoptLegacy(3),
+        ["cache.HeldFamilies"] = () => cache.HeldFamilies(),
+        ["board.In(family).Notes"] = () => board.In(3).Notes(),
+        ["pack.In(family).Items"] = () => pack.In(3).Items(),
     };
 
     private static readonly string[] Names =
@@ -156,7 +164,7 @@ public class CacheConcurrencyTests : IDisposable
         "chats.Replace(rows)", "chats.Chats", "chats.Chat", "chats.Kind", "chats.IsListed", "chats.ListMark", "chats.Upsert", "chats.Remove", "chats.Unread",
         "chats.MarkRead", "chats.Advance", "chats.Apply(message)", "chats.Apply(page)",
         "chats.ApplyReactions", "chats.ApplyPoll", "chats.Message", "chats.Messages", "chats.Thread", "chats.Refresh", "chats.Polls",
-        "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.FlagRepairCandidates", "chats.SettleFlags", "chats.RepairMedia", "chats.Replace(members)", "chats.Members", "chats.Member", "chats.Joined",
+        "chats.Newest", "chats.CatchUpCursor", "chats.CatchUpCursors", "chats.FlagRepairCandidates", "chats.SettleFlags", "chats.RepairMedia", "chats.Replace(members)", "chats.Replace(family members)", "chats.Members", "chats.MembersOf", "chats.RosterFamilies", "chats.Member", "chats.Joined",
         "chats.Left", "chats.Deleted", "chats.SetOwner", "chats.ReplaceBlocked", "chats.SetBlocked",
         "chats.Blocked", "chats.IsBlocked",
         "board.Notes", "board.Note", "board.Replace", "board.Apply(note)", "board.Apply(page)",
@@ -169,6 +177,7 @@ public class CacheConcurrencyTests : IDisposable
         "outbox.Delivered", "outbox.Failed", "outbox.Uploaded", "outbox.Refuse", "outbox.Reupload",
         "outbox.Retry", "outbox.Discard",
         "cache.Tables", "cache.Columns", "cache.WipeAll", "cache.UserVersion", "cache.Migrate",
+        "cache.DropFamily", "cache.AdoptLegacy", "cache.HeldFamilies", "board.In(family).Notes", "pack.In(family).Items",
     ];
 
     public static TheoryData<string> Named => new(Names);
@@ -241,8 +250,9 @@ public class CacheConcurrencyTests : IDisposable
                 .Concat(type
                     .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                     .Select(property => property.Name))
-                // The reader is a function the store was given, not the cache.
-                .Where(member => member != nameof(ChatStore.Reader))
+                // The reader and the family shown are functions the store was given, not the cache; and `In` makes
+                // another store, whose operations are these same ones.
+                .Where(member => member is not (nameof(ChatStore.Reader) or nameof(ChatStore.Family) or nameof(BoardStore.In)))
                 .Distinct();
             foreach (var member in members)
             {

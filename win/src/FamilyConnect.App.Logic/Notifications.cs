@@ -8,7 +8,7 @@ namespace FamilyConnect.App.Logic;
 /// One notification to raise: what it says, what it is FOR, and the tag that makes a second one
 /// about the same thing replace the first rather than stack on it.
 /// </summary>
-public sealed record Toast(string Tag, string Title, string Body, long? ChatId = null)
+public sealed record Toast(string Tag, string Title, string Body, long? ChatId = null, long? FamilyId = null)
 {
     /// <summary>Whether this one opens the board rather than a chat.</summary>
     public bool IsBoard => ChatId is null;
@@ -49,7 +49,14 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
     public bool InFront { get; set; }
 
     /// <summary>The family's name, for the title of anything from the family chat or the wall.</summary>
+    /// <remarks>The SHOWN family's — what a title says when the account's list cannot name the family something is from.</remarks>
     public string? FamilyName { get; set; }
+
+    /// <summary>
+    /// Every family the account is in (docs/protocol.md, "Several families"): a family chat's message, or a note, is titled
+    /// with THAT family's name — the one its chat or note belongs to — not the shown one's.
+    /// </summary>
+    public IReadOnlyList<FamilyDto> Families { get; set; } = [];
 
     /// <summary>The assistant's user id, so its answers can be gated with the member they answer.</summary>
     public long? AssistantUserId { get; set; }
@@ -87,6 +94,8 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
             ChatTag(message.ChatId),
             NotifyText.Title(Prefix(chat.Chat), NameOf(message.SenderId), mentioned, say),
             NotifyText.NewMessage(say),
+            // No family: a click opens the chat in the family shown when it lists it, else the first that does
+            // (FamilyRules.FamilyToOpen) — a direct chat may be in several.
             message.ChatId);
     }
 
@@ -106,8 +115,9 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
         }
         return new Toast(
             "board",
-            NotifyText.Title(FamilyName, NameOf(note.AuthorId), mentioned: false, say),
-            NotifyText.NewNote(say));
+            NotifyText.Title(FamilyRules.NameOf(note.FamilyId, Families) ?? FamilyName, NameOf(note.AuthorId), mentioned: false, say),
+            NotifyText.NewNote(say),
+            FamilyId: note.FamilyId);
     }
 
     /// <summary>
@@ -130,7 +140,7 @@ public sealed class NotificationRules(ChatStore chats, IStringCatalog? words = n
     /// </summary>
     private string? Prefix(ChatDto chat) => chat.Kind switch
     {
-        ChatKinds.Family => FamilyName,
+        ChatKinds.Family => FamilyRules.NameOf(chat, Families) ?? FamilyName,
         ChatKinds.Group => chat.Title is { Length: > 0 } title ? title : null,
         _ => null,
     };

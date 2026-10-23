@@ -10,6 +10,14 @@
  *   {"kind": "join_request", "family_id": …}  → JoinRequests (owner-only push)
  *   {"kind": "report", "family_id": …}        → Reports (owner-only push)
  *   {"kind": "joined", "family_id": …}        → ChatList
+ *   {"kind": "invitation", "family_id": …,
+ *    "invitation_id": …}                      → Invitations — the chat
+ *                                                list, whose banner (and the
+ *                                                switcher) holds them
+ *
+ * Since several families a push also says WHICH family (`family_id`,
+ * [familyId]): the app switches to it before following the route
+ * (docs/protocol.md, "Several families" — "Pushes").
  *   {"kind": "call", "call_id": …, …}          → Call — the call screen
  *                                                (docs/protocol.md,
  *                                                "Incoming calls"); a tap
@@ -47,6 +55,13 @@ sealed interface PendingRoute {
     data object Reports : PendingRoute
     data object ChatList : PendingRoute
 
+    /**
+     * kind "invitation" — somebody invited this account into their family
+     * (docs/protocol.md, "Several families"). The chat list's banner and the
+     * switcher are where invitations are answered.
+     */
+    data object Invitations : PendingRoute
+
     /** The call screen; [answer] when the tap was the notification's Answer button. */
     data class Call(val answer: Boolean = false) : PendingRoute
 
@@ -62,6 +77,9 @@ object PushRouteParser {
     /** Payload keys, exactly as the server writes them into `data`. */
     const val KEY_KIND = "kind"
     const val KEY_CHAT_ID = "chat_id"
+
+    /** The family a push is about — present on every family-level push since several families. */
+    const val KEY_FAMILY_ID = "family_id"
     const val KEY_CALL_ID = "call_id"
     const val KEY_FROM_USER_ID = "from_user_id"
     const val KEY_CALLER_NAME = "caller_name"
@@ -89,7 +107,15 @@ object PushRouteParser {
         "join_request" -> PendingRoute.JoinRequests
         "report" -> PendingRoute.Reports
         "joined" -> PendingRoute.ChatList
+        "invitation" -> PendingRoute.Invitations
         KIND_CALL -> PendingRoute.Call(answer = data[KEY_CALL_ACTION] == ACTION_ANSWER)
         else -> null
     }
+
+    /**
+     * The family a push opens in, or null when it names none — a direct
+     * chat's, which opens wherever that chat is listed, and every push from
+     * a server that predates several families.
+     */
+    fun familyId(data: Map<String, String>): Long? = data[KEY_FAMILY_ID]?.toLongOrNull()
 }

@@ -484,12 +484,14 @@ public sealed partial class ChatsView : UserControl
         ToolTipService.SetToolTip(VideoDoorButton, say.Get("Record a video message"));
         VideoDoorButton.Click += (_, _) => OnVideoDoorClick();
         // The server's video-message limits arrive with the family's own document, after the chats are drawn.
+        // And the session is where another family being shown arrives (docs/protocol.md, "Several families").
         onSession = _ => DispatcherQueue.TryEnqueue(() =>
         {
             if (!gone)
             {
                 LearnCamera();
                 DrawSlot();
+                FamilyMoved();
             }
         });
         connection.Session.Changed += onSession;
@@ -664,6 +666,8 @@ public sealed partial class ChatsView : UserControl
         ToolTipService.SetToolTip(NewGroupButton, say.Get("New Group"));
         AutomationProperties.SetName(NewGroupButton, say.Get("New Group"));
         NewGroupButton.Click += (_, _) => _ = NewGroupAsync();
+        WireFamilies();
+        familyDrawn = connection.Session.State.CurrentFamilyId;
         ToolTipService.SetToolTip(GroupInfoButton, say.Get("Group Info"));
         AutomationProperties.SetName(GroupInfoButton, say.Get("Group Info"));
         GroupInfoButton.Click += (_, _) => _ = ShowGroupInfoAsync();
@@ -1017,6 +1021,8 @@ public sealed partial class ChatsView : UserControl
         // First: a group the reader is out of closes before anything is drawn from it, and a renamed one shows its new name.
         DrawHeader();
         DrawList();
+        // After the list, whose read of every family's chats the switcher counts from.
+        DrawFamilies();
         DrawConversation(keepFromBottom: null);
         DrawThread();
         ShowPollsBadge();

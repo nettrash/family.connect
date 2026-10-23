@@ -152,6 +152,17 @@ pub struct Member {
     /// carries `"deleted": false`.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub deleted: bool,
+    /// Whether the READER may reset this member's password — present only in
+    /// the OWNER's read of their own family's roster, and absent everywhere
+    /// else, the frames included (docs/protocol.md, "Several families").
+    ///
+    /// True exactly when the owner owns EVERY family this member is in: a
+    /// reset signs the member out of every device and so hands over the whole
+    /// account, every family and every direct chat with it (decision D7). A
+    /// boolean and not a list, so the owner learns WHETHER they may and never
+    /// WHICH other families anybody is in.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password_reset: Option<bool>,
 }
 
 /// `Family` object. `invite_code` is present when (and only when) the caller
@@ -438,6 +449,20 @@ pub struct Chat {
     /// A group's admin — present only for a group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_user_id: Option<i64>,
+    /// Which families the chat is listed in (docs/protocol.md, "Several
+    /// families"): exactly one for a family chat, a group and an `ai` chat;
+    /// for a direct chat every family the two people share, ascending. A
+    /// client shows in its current family exactly the chats naming it.
+    ///
+    /// ALWAYS present, `[]` included — the one list on this object where
+    /// absence may not mean "empty": an absent `family_ids` is how a client
+    /// knows the server predates several families and that the chat belongs
+    /// to the one family the account has. `[]` is a direct chat whose pair
+    /// shares no family any more, which a client therefore shows in none of
+    /// them: closed, exactly as leaving a family always closed it, until
+    /// the two share one again.
+    #[serde(default)]
+    pub family_ids: Vec<i64>,
 }
 
 /// One user's reaction on a message (protocol.md `Reaction`).
@@ -1201,6 +1226,14 @@ pub struct PackItem {
     /// item never carries `"deleted": false`.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub deleted: bool,
+    /// Whose pack this item is in (docs/protocol.md, "Several families") —
+    /// on every item a server since 2026-10-22 sends, tombstones included,
+    /// because a client holding several families' packs has to know which
+    /// one a `pack_item` frame is for. Read with `try_get`, like
+    /// `deleted_at` on a user: a SELECT that does not name the column reads
+    /// as absent rather than panicking inside a handler.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub family_id: Option<i64>,
 }
 
 impl PackItem {
@@ -1226,6 +1259,7 @@ impl PackItem {
                 created_at: None,
                 pack_seq: row.get("pack_seq"),
                 deleted: true,
+                family_id: row.try_get("family_id").ok(),
             };
         }
         Self {
@@ -1236,6 +1270,7 @@ impl PackItem {
             created_at: Some(row.get("created_at")),
             pack_seq: row.get("pack_seq"),
             deleted: false,
+            family_id: row.try_get("family_id").ok(),
         }
     }
 }
@@ -1336,6 +1371,12 @@ pub struct Note {
     /// note never carries `"deleted": false`.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub deleted: bool,
+    /// Whose board the note is on (docs/protocol.md, "Several families") —
+    /// on every note, tombstones included, so a client holding several
+    /// boards knows which one a `board_note` frame is for. `try_get`, like
+    /// [`PackItem::family_id`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub family_id: Option<i64>,
 }
 
 impl Note {
@@ -1424,6 +1465,7 @@ impl Note {
                 board_seq: row.get("board_seq"),
                 content_seq: None,
                 deleted: true,
+                family_id: row.try_get("family_id").ok(),
             };
         }
         Self {
@@ -1459,6 +1501,7 @@ impl Note {
             board_seq: row.get("board_seq"),
             content_seq: Some(row.get("content_seq")),
             deleted: false,
+            family_id: row.try_get("family_id").ok(),
         }
     }
 }
@@ -1523,6 +1566,25 @@ impl Rsvp {
 pub struct PendingJoinRequest {
     pub family_id: i64,
     pub family_name: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// `Invitation` object: an owner's invitation into their family, pending
+/// until the invited person accepts or declines it (docs/protocol.md,
+/// "Several families"; decision D4). `user` is the invited person.
+///
+/// `invited_by` is an `Option` only because its column is: the owner who
+/// sent it is a FK that a scrubbed account's own invitations never outlive
+/// (the scrub deletes them), so a live invitation always carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Invitation {
+    pub id: i64,
+    pub family_id: i64,
+    pub family_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub invited_by: Option<User>,
+    pub user: User,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -1781,6 +1843,7 @@ mod tests {
             avatar_version: 3,
             birthday: Some(Birthday { month: 3, day: 14 }),
             deleted: false,
+            password_reset: None,
         };
         assert_eq!(
             serde_json::to_value(&member).expect("serialize"),
@@ -1801,6 +1864,7 @@ mod tests {
             avatar_version: 0,
             birthday: None,
             deleted: false,
+            password_reset: None,
         };
         assert_eq!(
             serde_json::to_value(&member).expect("serialize"),
@@ -1845,6 +1909,7 @@ mod tests {
             avatar_version: 0,
             birthday: None,
             deleted: true,
+            password_reset: None,
         };
         assert_eq!(
             serde_json::to_value(&tombstone).expect("serialize"),
@@ -1907,6 +1972,7 @@ mod tests {
                 peer_user_id: None,
                 member_ids: None,
                 admin_user_id: None,
+                family_ids: Vec::new(),
             },
             last_message: None,
             unread_count: 0,
@@ -1919,8 +1985,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&entry).expect("serialize"),
             serde_json::json!({
+                // `family_ids` since 2026-10-22, ALWAYS a key (protocol.md,
+                // "Several families"); this fixture names no family.
                 "chat": {"id": 42, "kind": "family", "title": "The Smiths",
-                         "peer_user_id": null},
+                         "peer_user_id": null, "family_ids": []},
                 "last_message": null,
                 "unread_count": 0,
                 "last_read_message_id": 0
@@ -1955,6 +2023,7 @@ mod tests {
             peer_user_id: None,
             member_ids: None,
             admin_user_id: None,
+            family_ids: Vec::new(),
         };
         let json = serde_json::to_value(&chat).expect("serialize");
         assert_eq!(json["peer_user_id"], serde_json::Value::Null);

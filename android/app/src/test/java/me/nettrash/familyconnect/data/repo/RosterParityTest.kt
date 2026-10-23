@@ -59,7 +59,7 @@ class RosterParityTest {
         runTest(dispatcher) {
             members.upsertAll(listOf(member(1, "Olive", "owner"), member(2, "Junior")))
 
-            members.markLeft(2)
+            members.markLeft(0L, 2)
 
             // Still there, still named, still with an avatar version — the
             // whole point, since their bubbles are still in the thread.
@@ -70,7 +70,7 @@ class RosterParityTest {
             assertThat(junior.hasLeft).isTrue()
 
             // But gone from the lists that offer to do something with them.
-            val active = members.observeActiveMembers().first()
+            val active = members.observeActiveMembers(0L).first()
             assertThat(active.map { it.userId }).containsExactly(1L)
         }
 
@@ -83,28 +83,28 @@ class RosterParityTest {
         // What refreshMine does: upsert who is present, flag the rest.
         val present = listOf(member(1, "Olive", "owner"), member(2, "Junior"))
         members.upsertAll(present)
-        members.markLeftExcept(present.map { it.userId })
+        members.markLeftExcept(0L, present.map { it.userId })
 
         val all = members.observeMembers().first().associateBy { it.userId }
         assertThat(all[3L]!!.hasLeft).isTrue()
         assertThat(all[3L]!!.displayName).isEqualTo("Robin")
         assertThat(all[1L]!!.hasLeft).isFalse()
         assertThat(all[2L]!!.hasLeft).isFalse()
-        assertThat(members.observeActiveMembers().first()).hasSize(2)
+        assertThat(members.observeActiveMembers(0L).first()).hasSize(2)
     }
 
     /** History survives leave/rejoin on the server, so the flag must clear. */
     @Test
     fun `rejoining clears the flag`() = runTest(dispatcher) {
         members.upsertAll(listOf(member(2, "Junior")))
-        members.markLeft(2)
-        assertThat(members.observeActiveMembers().first()).isEmpty()
+        members.markLeft(0L, 2)
+        assertThat(members.observeActiveMembers(0L).first()).isEmpty()
 
         // The upsert replaces the row wholesale, which is what resets it.
         members.upsertAll(listOf(member(2, "Junior")))
-        members.markLeftExcept(listOf(2L))
+        members.markLeftExcept(0L, listOf(2L))
 
         assertThat(members.observeMembers().first().single().hasLeft).isFalse()
-        assertThat(members.observeActiveMembers().first()).hasSize(1)
+        assertThat(members.observeActiveMembers(0L).first()).hasSize(1)
     }
 }

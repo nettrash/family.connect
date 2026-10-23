@@ -122,6 +122,9 @@ public class DoorwayTests : IDisposable
             Said(new ApiError(ErrorCodes.UserNotFound, "gone", 404)));
         Assert.Equal("You're already in a family.",
             Said(new ApiError(ErrorCodes.AlreadyInFamily, "", 409)));
+        // From inside a family it means THAT family (docs/protocol.md, "Several families").
+        Assert.Equal("You're already in that family.",
+            DoorSentences.Join(new ApiError(ErrorCodes.AlreadyInFamily, "", 409), Say, another: true));
         Assert.Equal("You already have a pending request.",
             Said(new ApiError(ErrorCodes.JoinRequestPending, "", 409)));
         Assert.Equal("That family is full right now. Ask them to make room, then try the code again.",

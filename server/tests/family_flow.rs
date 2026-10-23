@@ -15,11 +15,13 @@ async fn creating_a_family_makes_the_caller_owner_with_a_visible_invite_code() {
     let (family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
     assert_eq!(invite_code.len(), 8);
 
-    // A second create conflicts.
+    // A second create conflicts — since 2026-10-22 as `already_own_a_family`
+    // rather than `already_in_family`: a member may start another family,
+    // but only while owning none (protocol.md, "Several families").
     let again = ts
         .post(&owner, "/families", json!({"name": "Another"}))
         .await;
-    assert_error(again, 409, "already_in_family").await;
+    assert_error(again, 409, "already_own_a_family").await;
 
     // /me shows the family, the owner role, and (owner-only) the code.
     let me: Value = ts

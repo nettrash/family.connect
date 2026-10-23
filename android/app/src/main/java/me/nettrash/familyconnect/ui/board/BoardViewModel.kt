@@ -52,6 +52,9 @@ import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.pathFamily
+import me.nettrash.familyconnect.data.repo.observeCurrentActiveMembers
 
 @HiltViewModel
 class BoardViewModel @Inject constructor(
@@ -110,6 +113,9 @@ class BoardViewModel @Inject constructor(
                         width = prepared.width,
                         height = prepared.height,
                         durationMs = null,
+                        // A note's picture only on that family's board
+                        // (docs/protocol.md, "Uploads name their family").
+                        familyId = settings.state.first().let { it.pathFamily(it.familyKey) },
                     )
                     val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment
                     if (attachment == null) {
@@ -169,7 +175,7 @@ class BoardViewModel @Inject constructor(
      * they have blocked — exactly what the chat's own composer offers.
      */
     val mentionRoster: StateFlow<List<MentionDto>> = combine(
-        memberDao.observeActiveMembers(),
+        memberDao.observeCurrentActiveMembers(settings),
         settings.state,
     ) { members, state ->
         members
@@ -212,12 +218,14 @@ class BoardViewModel @Inject constructor(
      */
     fun markBoardSeen() {
         viewModelScope.launch {
+            // The CURRENT family's board, against its own marks.
+            val familyId = settings.state.first().familyKey
             val marks = BoardBadge.marksAfterShowing(
                 boardRepository.observeNotes().first().marks(),
-                settings.state.first().badgeMarks(),
+                settings.state.first().badgeMarks(familyId),
             )
-            settings.setBoardSeenNoteId(marks.seenNoteId)
-            settings.setBoardSeenContentSeq(marks.seenContentSeq)
+            settings.setBoardSeenNoteId(familyId, marks.seenNoteId)
+            settings.setBoardSeenContentSeq(familyId, marks.seenContentSeq)
         }
     }
 

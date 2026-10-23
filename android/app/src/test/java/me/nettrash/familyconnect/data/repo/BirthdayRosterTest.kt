@@ -172,7 +172,7 @@ class BirthdayRosterTest {
         )
         val repository = repository()
         repository.refreshMine()
-        db.memberDao().markLeft(PEER)
+        db.memberDao().markLeft(0L, PEER)
 
         // Built with no birthday at all, exactly as the wire shape is.
         socket.emit(ServerFrame.MemberJoined(familyId = 3, user = userDto(PEER, "ben")))
@@ -307,7 +307,7 @@ class BirthdayRosterTest {
         )
         val repository = repository()
         repository.refreshMine()
-        db.memberDao().markLeft(PEER)
+        db.memberDao().markLeft(0L, PEER)
 
         // A targeted UPDATE, not an upsert assembled at the call site:
         // rebuilding the row from a MemberDto would reset `hasLeft` and

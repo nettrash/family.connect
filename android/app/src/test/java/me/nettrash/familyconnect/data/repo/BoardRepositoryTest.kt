@@ -47,6 +47,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import me.nettrash.familyconnect.data.settings.boardCursor
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -180,7 +181,7 @@ class BoardRepositoryTest {
     @Test
     fun `the answer to my own change moves no cursor`() = runTest(dispatcher) {
         val repository = repository()
-        settings.setBoardCursor(5)
+        settings.setBoardCursor(0L, 5)
         boardApi.nextSeq = 100
 
         repository.addNote("Milk", "yellow", "medium", "plain", 0.4, 0.3)
@@ -189,7 +190,7 @@ class BoardRepositoryTest {
         repository.updateNote(created.id, x = 0.6, y = 0.6)
         runCurrent()
 
-        assertThat(settings.current.boardCursor).isEqualTo(5)
+        assertThat(settings.current.boardCursor(0L)).isEqualTo(5)
     }
 
     /** The tombstone is the ONLY signal a note is gone. */
@@ -319,13 +320,13 @@ class BoardRepositoryTest {
         runCurrent()
 
         assertThat(noteDao.observeNotes().first()).hasSize(2)
-        assertThat(settings.current.boardCursor).isEqualTo(5)
+        assertThat(settings.current.boardCursor(0L)).isEqualTo(5)
     }
 
     @Test
     fun `catch up pages until short and advances the cursor`() = runTest(dispatcher) {
         val repository = repository()
-        settings.setBoardCursor(4)
+        settings.setBoardCursor(0L, 4)
         repository.applyNote(noteDto(id = 1, boardSeq = 4))
         runCurrent()
 
@@ -336,14 +337,14 @@ class BoardRepositoryTest {
         runCurrent()
 
         assertThat(noteDao.findById(1)!!.text).isEqualTo("moved")
-        assertThat(settings.current.boardCursor).isEqualTo(10)
+        assertThat(settings.current.boardCursor(0L)).isEqualTo(10)
     }
 
     /** A board the server says nothing has happened on costs no request. */
     @Test
     fun `catch up is skipped when the server cursor is not ahead`() = runTest(dispatcher) {
         val repository = repository()
-        settings.setBoardCursor(10)
+        settings.setBoardCursor(0L, 10)
         runCurrent()
 
         repository.catchUpBoard(serverMaxSeq = 10)
@@ -592,7 +593,7 @@ class BoardRepositoryTest {
                 x = 0.2, y = 0.3, createdAt = 1L, updatedAt = 1L, boardSeq = 40, contentSeq = 0,
             ),
         )
-        settings.setBoardSeenNoteId(2)
+        settings.setBoardSeenNoteId(0L, 2)
         val repository = repository()
 
         // The first thing the new server says is the backfill for a note
@@ -600,8 +601,8 @@ class BoardRepositoryTest {
         repository.applyNote(noteDto(id = 1, boardSeq = 38, contentSeq = 38))
         runCurrent()
 
-        assertThat(settings.state.first().boardSeenContentSeq).isEqualTo(40)
-        val marks = settings.state.first().badgeMarks()
+        assertThat(settings.state.first().boardSeenContentSeqs[0L] ?: 0L).isEqualTo(40)
+        val marks = settings.state.first().badgeMarks(0L)
         assertThat(BoardBadge.unreadCount(noteDao.observeNotes().first().marks(), marks))
             .isEqualTo(0)
     }
@@ -615,8 +616,8 @@ class BoardRepositoryTest {
         repository.applyNote(noteDto(id = 1, boardSeq = 38, contentSeq = 38))
         runCurrent()
 
-        assertThat(settings.state.first().boardSeenContentSeq).isEqualTo(0)
-        val marks = settings.state.first().badgeMarks()
+        assertThat(settings.state.first().boardSeenContentSeqs[0L] ?: 0L).isEqualTo(0)
+        val marks = settings.state.first().badgeMarks(0L)
         assertThat(BoardBadge.unreadCount(noteDao.observeNotes().first().marks(), marks))
             .isEqualTo(1)
     }
