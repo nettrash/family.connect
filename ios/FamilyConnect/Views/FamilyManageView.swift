@@ -70,6 +70,10 @@ struct FamilyManageView: View {
     @State private var linkingContact: MemberDTO?
     /// Bumped on every link change so the captions re-read ContactLinks.
     @State private var linksGeneration = 0
+    /// The owner's invitations into this family, and the picker behind
+    /// "Invite…" (docs/protocol.md, "Several families").
+    @State private var invitations = OwnerInvitationsModel()
+    @State private var showsInvite = false
 
     var body: some View {
         List {
@@ -79,6 +83,7 @@ struct FamilyManageView: View {
             if session.isOwner {
                 requestsSection
                 inviteSection
+                PendingInvitationsSection(model: invitations)
                 reportsSection
                 policySection
                 capSection
@@ -168,6 +173,15 @@ struct FamilyManageView: View {
         .task {
             await reload()
         }
+        // An invitation frame says the owner's pending list moved — sent,
+        // answered, withdrawn on another device, or lapsed.
+        .task(id: session.invitationsGeneration) {
+            guard session.isOwner, !session.isLegacyServer else { return }
+            await invitations.load(api: coordinator.api, family: session.apiFamilyID)
+        }
+        .sheet(isPresented: $showsInvite) {
+            InviteToFamilyView(model: invitations)
+        }
         .refreshable {
             await reload()
         }
@@ -254,6 +268,16 @@ struct FamilyManageView: View {
                 model.confirmRotate = true
             } label: {
                 Label("Rotate Code", systemImage: "arrow.triangle.2.circlepath")
+            }
+            // The other door in: an invitation to somebody from one of the
+            // owner's OTHER families — only for an owner who has one.
+            if FamilyRules.offersInvite(isOwner: session.isOwner, familyCount: session.families.count),
+               !session.isLegacyServer {
+                Button {
+                    showsInvite = true
+                } label: {
+                    Label("Invite…", systemImage: "envelope")
+                }
             }
         }
     }
@@ -384,7 +408,7 @@ struct FamilyManageView: View {
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled else { return }
             do {
-                let updated = try await coordinator.api.setMemberCap(cap)
+                let updated = try await coordinator.api.setMemberCap(cap, family: session.apiFamilyID)
                 settingsModel.family = FamilyDTO(
                     id: updated.id,
                     name: updated.name,
@@ -534,7 +558,10 @@ struct FamilyManageView: View {
                     // this menu — secondary click, or a long press — is
                     // the route a pointer finds. Same gates as the swipe.
                     if session.isOwner {
-                        if member.role != "owner" {
+                        // Only where it will work: a member also in a family
+                        // this owner does not own changes it themselves
+                        // (docs/protocol.md, "Several families").
+                        if member.role != "owner", FamilyRules.offersPasswordReset(member.passwordReset) {
                             Button {
                                 resettingPassword = member
                             } label: {
@@ -606,12 +633,14 @@ struct FamilyManageView: View {
                         } label: {
                             Label("Remove", systemImage: "person.badge.minus")
                         }
-                        Button {
-                            resettingPassword = member
-                        } label: {
-                            Label("Password", systemImage: "key")
+                        if FamilyRules.offersPasswordReset(member.passwordReset) {
+                            Button {
+                                resettingPassword = member
+                            } label: {
+                                Label("Password", systemImage: "key")
+                            }
+                            .tint(.orange)
                         }
-                        .tint(.orange)
                     }
                     // Birthday is the exception, and on purpose: the
                     // roster endpoint accepts the owner's own id, so this
@@ -637,8 +666,8 @@ struct FamilyManageView: View {
         model.errorText = nil
         // Join requests are an owner-only endpoint: asking as a plain
         // member is a guaranteed 403, and the section is hidden anyway.
-        async let requests = session.isOwner ? try? coordinator.api.joinRequests() : nil
-        await settingsModel.load(api: coordinator.api)
+        async let requests = session.isOwner ? try? coordinator.api.joinRequests(family: session.apiFamilyID) : nil
+        await settingsModel.load(api: coordinator.api, familyID: session.apiFamilyID)
         model.requests = (await requests) ?? []
     }
 
@@ -647,7 +676,7 @@ struct FamilyManageView: View {
         Task {
             defer { model.workingRequestIDs.remove(request.id) }
             do {
-                _ = try await coordinator.api.approveJoinRequest(id: request.id)
+                _ = try await coordinator.api.approveJoinRequest(id: request.id, family: session.apiFamilyID)
                 model.requests.removeAll { $0.id == request.id }
                 await coordinator.resync() // roster + chats pick up the new member
             } catch APIError.conflict(let code, _) where code == "family_full" {
@@ -669,7 +698,7 @@ struct FamilyManageView: View {
         Task {
             defer { model.workingRequestIDs.remove(request.id) }
             do {
-                try await coordinator.api.rejectJoinRequest(id: request.id)
+                try await coordinator.api.rejectJoinRequest(id: request.id, family: session.apiFamilyID)
                 model.requests.removeAll { $0.id == request.id }
             } catch {
                 model.errorText = String(localized: "Couldn't reject the request. Pull to refresh.")
@@ -680,7 +709,7 @@ struct FamilyManageView: View {
     private func rotate() {
         Task {
             do {
-                let newCode = try await coordinator.api.rotateInviteCode()
+                let newCode = try await coordinator.api.rotateInviteCode(family: session.apiFamilyID)
                 // Patch the shared model in place so Settings shows the
                 // fresh code without a refetch.
                 if let family = settingsModel.family {
@@ -713,7 +742,7 @@ struct FamilyManageView: View {
     private func setPolicy(_ policy: String) {
         Task {
             do {
-                let updated = try await coordinator.api.setJoinPolicy(policy)
+                let updated = try await coordinator.api.setJoinPolicy(policy, family: session.apiFamilyID)
                 // PATCH answers with the family sans invite_code unless
                 // owner — merge, keeping the code we already hold.
                 settingsModel.family = FamilyDTO(
@@ -773,7 +802,7 @@ struct FamilyManageView: View {
     private func remove(_ member: MemberDTO) {
         Task {
             do {
-                try await coordinator.api.removeMember(userID: member.id)
+                try await coordinator.api.removeMember(userID: member.id, family: session.apiFamilyID)
                 settingsModel.members.removeAll { $0.id == member.id }
                 ContactLinks.shared.unlink(userID: member.id)
                 await coordinator.resync()

@@ -53,6 +53,7 @@ internal sealed class Attention : IDisposable
     {
         var state = connection.Session.State;
         rules.FamilyName = state.Family?.Name;
+        rules.Families = state.AllFamilies;
         rules.AssistantUserId = state.Assistant?.UserId;
         rules.InFront = services.Foreground;
         rules.Wanted = Toasts.Available && NotifySetting.Wanted;
@@ -79,7 +80,11 @@ internal sealed class Attention : IDisposable
         lock (ruling)
         {
             Prime();
-            toast = rules.ForNote(note, ToastArguments.IsNews(note, connection.Board.Marks));
+            // News by the badge of the wall the note is ON — each family keeps its own marks.
+            var wall = note.FamilyId is { } family && connection.Board.Family is not null
+                ? connection.Board.In(family)
+                : connection.Board;
+            toast = rules.ForNote(note, ToastArguments.IsNews(note, wall.Marks));
         }
         if (toast is not null)
         {

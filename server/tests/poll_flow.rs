@@ -446,11 +446,19 @@ async fn a_poll_is_an_ordinary_message_whose_question_is_its_body() {
     let call = wait_for_push(&ts).await;
     assert_eq!(call.note.body, "Pizza or pasta?");
     assert_eq!(call.note.title, "The Smiths — Olive");
+    // Since 2026-10-22 a family chat's message push names its family, so a
+    // tap opens the app in it (protocol.md, "Several families").
+    let family_id: i64 = sqlx::query_scalar("SELECT family_id FROM chats WHERE id = $1")
+        .bind(chat_id)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the family chat's family");
     assert_eq!(
         call.note.event,
         PushEvent::Message {
             chat_id,
-            message_id
+            message_id,
+            family_id: Some(family_id),
         }
     );
     tokio::time::sleep(Duration::from_millis(300)).await;

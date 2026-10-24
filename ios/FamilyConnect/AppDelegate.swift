@@ -122,9 +122,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let route = PushRoute.parse(userInfo: response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        let route = PushRoute.parse(userInfo: userInfo)
+        // The family it opens in (docs/protocol.md, "Several families").
+        let familyID = PushRoute.familyID(userInfo: userInfo)
         Task { @MainActor in
-            AppDelegate.session?.pendingPushRoute = route
+            AppDelegate.session?.routePush(route, familyID: familyID)
             completionHandler()
         }
     }

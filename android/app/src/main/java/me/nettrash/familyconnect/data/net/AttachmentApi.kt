@@ -45,6 +45,13 @@ interface AttachmentApi {
          * sent whenever there is one, and a missing echo is not a failure.
          */
         waveform: String? = null,
+        /**
+         * The family the upload is for — the one the app is showing
+         * (docs/protocol.md, "Several families": "Uploads name their
+         * family"). Null leaves it off, which a server reads as the home
+         * family and which is all a server from before knows.
+         */
+        familyId: Long? = null,
     ): ApiResult<AttachmentResponse>
 
     /**
@@ -62,6 +69,8 @@ interface AttachmentApi {
         longitude: Double,
         accuracyM: Int?,
         name: String?,
+        /** As on [upload]. */
+        familyId: Long? = null,
     ): ApiResult<AttachmentResponse>
 
     /** PUT /attachments/{id}/preview — the bubble's thumbnail. */
@@ -88,9 +97,11 @@ class DefaultAttachmentApi @Inject constructor(
         durationMs: Int?,
         name: String?,
         waveform: String?,
+        familyId: Long?,
     ): ApiResult<AttachmentResponse> {
         val query = buildList {
             add("kind=$kind")
+            familyId?.let { add("family_id=$it") }
             width?.let { add("width=$it") }
             height?.let { add("height=$it") }
             durationMs?.let { add("duration_ms=$it") }
@@ -113,9 +124,11 @@ class DefaultAttachmentApi @Inject constructor(
         longitude: Double,
         accuracyM: Int?,
         name: String?,
+        familyId: Long?,
     ): ApiResult<AttachmentResponse> {
         val query = buildList {
             add("kind=${AttachmentDto.KIND_LOCATION}")
+            familyId?.let { add("family_id=$it") }
             add("latitude=${coordinate(latitude)}")
             add("longitude=${coordinate(longitude)}")
             accuracyM?.let { add("accuracy_m=$it") }

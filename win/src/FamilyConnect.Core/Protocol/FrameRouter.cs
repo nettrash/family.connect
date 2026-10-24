@@ -32,9 +32,35 @@ namespace FamilyConnect.Core.Protocol;
 /// is a complete statement about that chat's sequence, so the cursor follows it even when the
 /// message it names is one this device does not hold — the state is dropped, the cursor is not.
 /// </para>
+/// <para>
+/// <b>A FAMILY FRAME IS ABOUT THE FAMILY IT NAMES</b> (docs/protocol.md, "Several families"): <c>member_joined</c>,
+/// <c>member_left</c>, <c>member_deleted</c> and <c>family_owner</c> are applied to the family their <c>family_id</c> names,
+/// and <c>board_note</c> and <c>pack_item</c> to the wall and pack of the family their note and item say — never to "my
+/// family". One naming the READER is a different fact: in a family (<see cref="JoinedFamily"/>), or out of one
+/// (<see cref="LeftFamily"/>), which is the session's to act on.
+/// </para>
 /// </remarks>
 public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pack = null)
 {
+    /// <summary>
+    /// The READER is in a family — an approval, an accepted invitation, a family started on another device. Raised for
+    /// every <c>member_joined</c> naming them; whether the family is one this device already holds is the session's to judge,
+    /// and a new one means re-reading <c>GET /me</c> and that family.
+    /// </summary>
+    public event Action<long>? JoinedFamily;
+
+    /// <summary>
+    /// The READER is out of a family: left on another device, or removed. That family's chats, wall, pack, roster and cursors
+    /// are to go — and only that family's (<c>Database.DropFamily</c>).
+    /// </summary>
+    public event Action<long>? LeftFamily;
+
+    /// <summary>An invitation to the reader, or by the reader's family, appeared or changed.</summary>
+    public event Action<InvitationDto>? InvitationChanged;
+
+    /// <summary>An invitation lapsed.</summary>
+    public event Action<long>? InvitationRemoved;
+
     /// <summary>A message that is NEW — the only frame that may raise a notification.</summary>
     /// <remarks>
     /// It fires for this device's own sends too: the sender's OTHER connections receive
@@ -163,8 +189,9 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
             case ServerFrame.BoardNote note:
                 // Guarded by `board_seq` in the store, exactly as the catch-up is: an
                 // out-of-order frame cannot undo a newer move. A frame moves the board's cursor,
-                // as a catch-up page does — and as the answer to our own write does not.
-                board.Apply(note.Note, SeqRoute.LiveFrame);
+                // as a catch-up page does — and as the answer to our own write does not. On the wall of the family the note
+                // says — each family's cursor is its own.
+                WallOf(note.Note.FamilyId).Apply(note.Note, SeqRoute.LiveFrame);
                 BoardChanged?.Invoke(note.Note);
                 break;
 
@@ -172,28 +199,47 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 // Under the `pack_seq` guard, exactly as a note is applied under its own; and the
                 // store decides whether the cursor follows, because a frame may move it only once
                 // this connection has caught up.
-                pack.Apply(item.Item, SeqRoute.LiveFrame);
+                PackOf(pack, item.Item.FamilyId).Apply(item.Item, SeqRoute.LiveFrame);
                 PackChanged?.Invoke(item.Item);
                 break;
 
             case ServerFrame.MemberJoined joined:
-                chats.Joined(joined.User);
+                // The owner's copy carries whether the newcomer is theirs to reset; the store keeps what it holds when the
+                // frame says nothing (everybody else's copy), so a resync's roster read first is never undone by it.
+                chats.Joined(joined.User, Named(joined.FamilyId), joined.PasswordReset);
                 RosterChanged?.Invoke();
+                if (joined.User.Id == chats.Reader && joined.FamilyId is { } joinedFamily)
+                {
+                    JoinedFamily?.Invoke(joinedFamily);
+                }
                 break;
 
             case ServerFrame.MemberLeft left:
-                chats.Left(left.UserId);
+                chats.Left(left.UserId, Named(left.FamilyId));
                 RosterChanged?.Invoke();
+                if (left.UserId == chats.Reader && left.FamilyId is { } leftFamily)
+                {
+                    LeftFamily?.Invoke(leftFamily);
+                }
                 break;
 
             case ServerFrame.MemberDeleted deleted:
+                // An account deleted leaves every family; one frame per family, and the tombstone written twice is harmless.
                 chats.Deleted(deleted.Member);
                 RosterChanged?.Invoke();
                 break;
 
             case ServerFrame.FamilyOwner owner:
-                chats.SetOwner(owner.UserId);
+                chats.SetOwner(owner.UserId, Named(owner.FamilyId));
                 RosterChanged?.Invoke();
+                break;
+
+            case ServerFrame.Invitation invitation:
+                InvitationChanged?.Invoke(invitation.Value);
+                break;
+
+            case ServerFrame.InvitationRemoved lapsed:
+                InvitationRemoved?.Invoke(lapsed.InvitationId);
                 break;
 
             case ServerFrame.MemberBlocked blocked:
@@ -253,4 +299,12 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 break;
         }
     }
+
+    // A cache whose stores were never told of a family — one from before several families, or a test — keeps its one
+    // roster, wall and pack unscoped, and a family named on a frame is not a reason to start keeping them per family.
+    private long? Named(long? familyId) => board.Family is null ? null : familyId;
+
+    private BoardStore WallOf(long? familyId) => Named(familyId) is { } family ? board.In(family) : board;
+
+    private PackStore PackOf(PackStore held, long? familyId) => Named(familyId) is { } family ? held.In(family) : held;
 }

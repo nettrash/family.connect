@@ -40,8 +40,14 @@ import SwiftData
 final class GoneNoteEntity {
     /// The deleted note's server id — the natural key, and the whole row.
     @Attribute(.unique) var noteID: Int64
+    /// Whose board it was taken from, so leaving one family forgets that
+    /// family's gone set with its notes and nobody else's (docs/protocol.md,
+    /// "Several families", 2026-10-22). `0` is "not attributed yet": a row
+    /// from a build before several families, handed to the home family.
+    var familyID: Int64 = 0
 
-    init(noteID: Int64) {
+    init(noteID: Int64, familyID: Int64 = 0) {
         self.noteID = noteID
+        self.familyID = familyID
     }
 }

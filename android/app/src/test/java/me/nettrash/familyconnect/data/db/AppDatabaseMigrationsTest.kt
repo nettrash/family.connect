@@ -39,18 +39,23 @@ class AppDatabaseMigrationsTest {
      * nobody read.
      */
     @Test
-    fun `the groups migration is the last one and reaches the current schema`() {
+    fun `the password-reset migration is the last one and reaches the current schema`() {
         val last = AppDatabase.ALL_MIGRATIONS.last()
-        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_33_34)
-        assertThat(last.endVersion).isEqualTo(34)
-        // And the animation-flag, waveform, round-flag and transcripts ones are still registered right before it.
+        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_35_36)
+        assertThat(last.endVersion).isEqualTo(36)
+        // And the several-families, groups, animation-flag, waveform, round-flag and transcripts ones are still
+        // registered right before it.
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 2])
-            .isSameInstanceAs(AppDatabase.MIGRATION_32_33)
+            .isSameInstanceAs(AppDatabase.MIGRATION_34_35)
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 3])
-            .isSameInstanceAs(AppDatabase.MIGRATION_31_32)
+            .isSameInstanceAs(AppDatabase.MIGRATION_33_34)
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 4])
-            .isSameInstanceAs(AppDatabase.MIGRATION_30_31)
+            .isSameInstanceAs(AppDatabase.MIGRATION_32_33)
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 5])
+            .isSameInstanceAs(AppDatabase.MIGRATION_31_32)
+        assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 6])
+            .isSameInstanceAs(AppDatabase.MIGRATION_30_31)
+        assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 7])
             .isSameInstanceAs(AppDatabase.MIGRATION_29_30)
     }
 

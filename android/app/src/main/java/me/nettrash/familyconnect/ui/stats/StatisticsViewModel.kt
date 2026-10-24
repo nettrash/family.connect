@@ -18,10 +18,16 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import javax.inject.Inject
+import kotlinx.coroutines.flow.first
+import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.pathFamily
 
 @HiltViewModel
 class StatisticsViewModel @Inject constructor(
     private val familyApi: FamilyApi,
+    /** Whose statistics: the CURRENT family's (docs/protocol.md, "Several families"). */
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     sealed interface State {
@@ -40,7 +46,8 @@ class StatisticsViewModel @Inject constructor(
     fun load() {
         _state.value = State.Loading
         viewModelScope.launch {
-            _state.value = when (val result = familyApi.stats()) {
+            val familyId = settings.state.first().let { it.pathFamily(it.familyKey) }
+            _state.value = when (val result = familyApi.stats(familyId)) {
                 is ApiResult.Ok -> State.Loaded(result.value)
                 // A failure of either kind reads the same to the person
                 // looking: the numbers are not here.

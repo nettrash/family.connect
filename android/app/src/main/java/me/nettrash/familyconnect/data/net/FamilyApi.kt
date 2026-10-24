@@ -5,6 +5,11 @@
  * Suspend wrappers over the Families endpoint table of docs/protocol.md.
  * Interface + impl split for testability (scripted fakes).
  *
+ * Every family-level call names its family (docs/protocol.md, "Several
+ * families"): `familyId` is put into the path — `/families/3/…` — and NULL
+ * keeps the form without one, which means the home family and is the only
+ * form a server from before several families knows ([FamilyPaths]).
+ *
  * iOS counterpart: ios/FamilyConnect/Data/Net/FamilyApi.swift
  */
 
@@ -29,21 +34,36 @@ import me.nettrash.familyconnect.data.net.dto.MemberBirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.PatchFamilyRequest
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
+import me.nettrash.familyconnect.data.net.dto.InvitationResponse
+import me.nettrash.familyconnect.data.net.dto.InvitationsResponse
+import me.nettrash.familyconnect.data.net.dto.InviteRequest
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * How a family is named in a path (docs/protocol.md, "Several families" —
+ * "Naming a family"). Null is the home family in both spellings.
+ */
+object FamilyPaths {
+    /** `/families/3` — or `/families/mine` for null: the reads and PATCH that always had a `mine`. */
+    fun root(familyId: Long?): String = "/families/" + (familyId?.toString() ?: "mine")
+
+    /** `/families/3` — or bare `/families` for null: the forms that never had a `mine` (`/families/leave`). */
+    fun scoped(familyId: Long?): String = if (familyId == null) "/families" else "/families/$familyId"
+}
 
 interface FamilyApi {
     suspend fun create(name: String): ApiResult<FamilyResponse>
     suspend fun join(inviteCode: String): ApiResult<JoinResponse>
-    suspend fun mine(): ApiResult<FamilyMineResponse>
+    suspend fun family(familyId: Long?): ApiResult<FamilyMineResponse>
 
     /**
      * What the family has sent. Visible to EVERY member, not just the owner
      * (protocol.md, "Family statistics").
      */
-    suspend fun stats(): ApiResult<FamilyStatsDto>
-    suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse>
-    suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse>
+    suspend fun stats(familyId: Long?): ApiResult<FamilyStatsDto>
+    suspend fun rotateInviteCode(familyId: Long?): ApiResult<RotateInviteCodeResponse>
+    suspend fun setJoinPolicy(familyId: Long?, policy: String): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: the ONE language the family speaks, or null to clear it
@@ -51,14 +71,14 @@ interface FamilyApi {
      * (protocol.md, "The family's language"). Null here becomes a real
      * JSON null on the wire; see PatchFamilyRequest.
      */
-    suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse>
+    suspend fun setLanguage(familyId: Long?, tag: String?): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether a mention of the assistant in the family chat
      * carries the recent history of that chat. One family-wide switch,
      * no third state and no per-member override.
      */
-    suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiHistory(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether a photograph a member attaches in their OWN
@@ -72,7 +92,7 @@ interface FamilyApi {
      * member must attach the picture to the question themselves. That
      * third one is never a remembered setting.
      */
-    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiVision(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether an `@ai` mention in the family chat may ALSO be
@@ -84,7 +104,7 @@ interface FamilyApi {
      * `ai_vision` goes off. Inert, not refused, while `ai_history` is
      * off — there is no transcript for it to widen.
      */
-    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiHistoryPhotos(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether the assistant posts one unprompted good-morning
@@ -96,7 +116,7 @@ interface FamilyApi {
      * What it cannot promise is that a greeting arrives: that also needs the
      * operator's half, `MeResponse.greetingsEnabled`.
      */
-    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiGreeting(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: the fifth switch — whether a mention may be shown the
@@ -105,14 +125,14 @@ interface FamilyApi {
      * default, and only openable while `ai_vision` is on, exactly as
      * [setAiHistoryPhotos] is.
      */
-    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiFaces(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether members may ask for the text of OTHER members'
      * recordings in the family chat (docs/protocol.md, "Transcripts on
      * request"). Family-wide, OFF by default, bound to no other switch.
      */
-    suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiTranscripts(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: whether the assistant may look things up for this family
@@ -120,7 +140,7 @@ interface FamilyApi {
      * bound to no other switch, and inert on a server whose
      * `assistant.lookups` is absent.
      */
-    suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse>
+    suspend fun setAiLookups(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse>
 
     /**
      * Owner-only: the places whose weather the daily greeting mentions
@@ -130,10 +150,10 @@ interface FamilyApi {
      * whitespace — and a server that predates the field ignores it, so the
      * answer, never the request, is what a caller shows.
      */
-    suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse>
-    suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
-    suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
-    suspend fun reject(requestId: Long): ApiResult<Unit>
+    suspend fun setGreetingPlaces(familyId: Long?, places: List<String>): ApiResult<FamilyResponse>
+    suspend fun joinRequests(familyId: Long?): ApiResult<JoinRequestsResponse>
+    suspend fun approve(familyId: Long?, requestId: Long): ApiResult<ApproveResponse>
+    suspend fun reject(familyId: Long?, requestId: Long): ApiResult<Unit>
     /**
      * Leave the family, and learn who inherited it.
      *
@@ -143,8 +163,8 @@ interface FamilyApi {
      * remained. An owner is NEVER refused; `owner_cannot_leave` is retired
      * and no endpoint raises it (docs/protocol.md, `POST /families/leave`).
      */
-    suspend fun leave(): ApiResult<Long?>
-    suspend fun removeMember(userId: Long): ApiResult<Unit>
+    suspend fun leave(familyId: Long?): ApiResult<Long?>
+    suspend fun removeMember(familyId: Long?, userId: Long): ApiResult<Unit>
 
     /**
      * The most members this family admits; null CLEARS the cap, which is
@@ -155,7 +175,7 @@ interface FamilyApi {
      * "which of these did the user actually change" a question the server
      * has to guess at.
      */
-    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse>
+    suspend fun setMemberCap(familyId: Long?, cap: Int?): ApiResult<FamilyResponse>
 
     /**
      * Block a member. ANY member may block any other, the OWNER INCLUDED —
@@ -170,7 +190,7 @@ interface FamilyApi {
      * report that matches an OPEN row returns that row and creates
      * nothing, so a double tap is not two rows in the owner's list.
      */
-    suspend fun report(reportedUserId: Long, reason: String, messageId: Long?): ApiResult<ReportResponse>
+    suspend fun report(familyId: Long?, reportedUserId: Long, reason: String, messageId: Long?): ApiResult<ReportResponse>
 
     /**
      * What the ASSISTANT got wrong (docs/protocol.md, "Reporting the
@@ -187,17 +207,17 @@ interface FamilyApi {
     ): ApiResult<AssistantReportResponse>
 
     /** Owner-only: the open reports, oldest first. */
-    suspend fun reports(): ApiResult<ReportsResponse>
+    suspend fun reports(familyId: Long?): ApiResult<ReportsResponse>
 
     /** Owner-only: mark one report handled. */
-    suspend fun resolveReport(reportId: Long): ApiResult<Unit>
+    suspend fun resolveReport(familyId: Long?, reportId: Long): ApiResult<Unit>
 
     /**
      * Owner-only: set a member's password without knowing their old one.
      * Every session that member has is revoked, so their devices return to
      * login — which is what makes this a recovery rather than a courtesy.
      */
-    suspend fun resetMemberPassword(userId: Long, newPassword: String): ApiResult<Unit>
+    suspend fun resetMemberPassword(familyId: Long?, userId: Long, newPassword: String): ApiResult<Unit>
 
     /**
      * Owner-only: fill in a birthday for somebody in the family — a
@@ -209,10 +229,29 @@ interface FamilyApi {
      * screen carry a special case for exactly one row (protocol.md,
      * "Birthdays").
      */
-    suspend fun setMemberBirthday(userId: Long, month: Int, day: Int): ApiResult<MemberBirthdayResponse>
+    suspend fun setMemberBirthday(familyId: Long?, userId: Long, month: Int, day: Int): ApiResult<MemberBirthdayResponse>
 
     /** Idempotent, like the profile one. */
-    suspend fun clearMemberBirthday(userId: Long): ApiResult<Unit>
+    suspend fun clearMemberBirthday(familyId: Long?, userId: Long): ApiResult<Unit>
+
+    /**
+     * Owner-only: invite somebody who shares ANOTHER family with the owner
+     * (docs/protocol.md, "Several families"). `201` with the new invitation,
+     * or `200` with the pending one when they are already invited.
+     */
+    suspend fun invite(familyId: Long?, userId: Long): ApiResult<InvitationResponse>
+
+    /** Owner-only: the family's pending invitations, oldest first. */
+    suspend fun invitations(familyId: Long?): ApiResult<InvitationsResponse>
+
+    /** Owner-only: withdraw one. Idempotent. */
+    suspend fun withdrawInvitation(familyId: Long?, invitationId: Long): ApiResult<Unit>
+
+    /** The invited person says yes: membership is immediate, and the answer is the family. */
+    suspend fun acceptInvitation(invitationId: Long): ApiResult<FamilyResponse>
+
+    /** The invited person says no. Idempotent; the owner is not pushed. */
+    suspend fun declineInvitation(invitationId: Long): ApiResult<Unit>
 }
 
 @Singleton
@@ -226,56 +265,56 @@ class DefaultFamilyApi @Inject constructor(
     override suspend fun join(inviteCode: String): ApiResult<JoinResponse> =
         client.post("/families/join", JoinFamilyRequest(inviteCode))
 
-    override suspend fun mine(): ApiResult<FamilyMineResponse> =
-        client.get("/families/mine")
+    override suspend fun family(familyId: Long?): ApiResult<FamilyMineResponse> =
+        client.get(FamilyPaths.root(familyId))
 
-    override suspend fun stats(): ApiResult<FamilyStatsDto> =
-        client.get("/families/mine/stats")
+    override suspend fun stats(familyId: Long?): ApiResult<FamilyStatsDto> =
+        client.get(FamilyPaths.root(familyId) + "/stats")
 
-    override suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
-        client.postEmpty("/families/invite-code/rotate")
+    override suspend fun rotateInviteCode(familyId: Long?): ApiResult<RotateInviteCodeResponse> =
+        client.postEmpty(FamilyPaths.scoped(familyId) + "/invite-code/rotate")
 
-    override suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.joinPolicy(policy))
+    override suspend fun setJoinPolicy(familyId: Long?, policy: String): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.joinPolicy(policy))
 
-    override suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.language(tag))
+    override suspend fun setLanguage(familyId: Long?, tag: String?): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.language(tag))
 
-    override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiHistory(enabled))
+    override suspend fun setAiHistory(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiHistory(enabled))
 
-    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiVision(enabled))
+    override suspend fun setAiVision(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiVision(enabled))
 
-    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiHistoryPhotos(enabled))
+    override suspend fun setAiHistoryPhotos(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiHistoryPhotos(enabled))
 
-    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiGreeting(enabled))
+    override suspend fun setAiGreeting(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiGreeting(enabled))
 
-    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiFaces(enabled))
+    override suspend fun setAiFaces(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiFaces(enabled))
 
-    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiTranscripts(enabled))
+    override suspend fun setAiTranscripts(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiTranscripts(enabled))
 
-    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.aiLookups(enabled))
+    override suspend fun setAiLookups(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.aiLookups(enabled))
 
-    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.greetingPlaces(places))
+    override suspend fun setGreetingPlaces(familyId: Long?, places: List<String>): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.greetingPlaces(places))
 
-    override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
-        client.get("/families/join-requests")
+    override suspend fun joinRequests(familyId: Long?): ApiResult<JoinRequestsResponse> =
+        client.get(FamilyPaths.scoped(familyId) + "/join-requests")
 
-    override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> =
-        client.postEmpty("/families/join-requests/$requestId/approve")
+    override suspend fun approve(familyId: Long?, requestId: Long): ApiResult<ApproveResponse> =
+        client.postEmpty(FamilyPaths.scoped(familyId) + "/join-requests/$requestId/approve")
 
-    override suspend fun reject(requestId: Long): ApiResult<Unit> =
-        client.postEmpty("/families/join-requests/$requestId/reject")
+    override suspend fun reject(familyId: Long?, requestId: Long): ApiResult<Unit> =
+        client.postEmpty(FamilyPaths.scoped(familyId) + "/join-requests/$requestId/reject")
 
-    override suspend fun leave(): ApiResult<Long?> =
-        when (val result = client.raw("POST", "/families/leave", null)) {
+    override suspend fun leave(familyId: Long?): ApiResult<Long?> =
+        when (val result = client.raw("POST", FamilyPaths.scoped(familyId) + "/leave", null)) {
             is ApiResult.Ok ->
                 // A 204 has NO body, and that is the ordinary case here
                 // rather than a malformed answer — decoding it as JSON
@@ -297,8 +336,8 @@ class DefaultFamilyApi @Inject constructor(
             is ApiResult.NetworkError -> result
         }
 
-    override suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> =
-        client.patch("/families/mine", PatchFamilyRequest.maxMembers(cap))
+    override suspend fun setMemberCap(familyId: Long?, cap: Int?): ApiResult<FamilyResponse> =
+        client.patch(FamilyPaths.root(familyId), PatchFamilyRequest.maxMembers(cap))
 
     override suspend fun blockMember(userId: Long): ApiResult<Unit> =
         client.put("/families/members/$userId/block", Unit)
@@ -307,11 +346,12 @@ class DefaultFamilyApi @Inject constructor(
         client.delete("/families/members/$userId/block")
 
     override suspend fun report(
+        familyId: Long?,
         reportedUserId: Long,
         reason: String,
         messageId: Long?,
     ): ApiResult<ReportResponse> =
-        client.post("/families/reports", CreateReportRequest(reportedUserId, reason, messageId))
+        client.post(FamilyPaths.scoped(familyId) + "/reports", CreateReportRequest(reportedUserId, reason, messageId))
 
     override suspend fun reportAssistant(
         messageId: Long,
@@ -323,28 +363,45 @@ class DefaultFamilyApi @Inject constructor(
             CreateAssistantReportRequest(messageId, reason, note?.trim()?.ifEmpty { null }),
         )
 
-    override suspend fun reports(): ApiResult<ReportsResponse> =
-        client.get("/families/reports")
+    override suspend fun reports(familyId: Long?): ApiResult<ReportsResponse> =
+        client.get(FamilyPaths.scoped(familyId) + "/reports")
 
-    override suspend fun resolveReport(reportId: Long): ApiResult<Unit> =
-        client.postEmpty("/families/reports/$reportId/resolve")
+    override suspend fun resolveReport(familyId: Long?, reportId: Long): ApiResult<Unit> =
+        client.postEmpty(FamilyPaths.scoped(familyId) + "/reports/$reportId/resolve")
 
-    override suspend fun removeMember(userId: Long): ApiResult<Unit> =
-        client.delete("/families/members/$userId")
+    override suspend fun removeMember(familyId: Long?, userId: Long): ApiResult<Unit> =
+        client.delete(FamilyPaths.scoped(familyId) + "/members/$userId")
 
     override suspend fun resetMemberPassword(
+        familyId: Long?,
         userId: Long,
         newPassword: String,
     ): ApiResult<Unit> =
-        client.post("/families/members/$userId/password", ResetPasswordRequest(newPassword))
+        client.post(FamilyPaths.scoped(familyId) + "/members/$userId/password", ResetPasswordRequest(newPassword))
 
     override suspend fun setMemberBirthday(
+        familyId: Long?,
         userId: Long,
         month: Int,
         day: Int,
     ): ApiResult<MemberBirthdayResponse> =
-        client.put("/families/members/$userId/birthday", BirthdayRequest(month, day))
+        client.put(FamilyPaths.scoped(familyId) + "/members/$userId/birthday", BirthdayRequest(month, day))
 
-    override suspend fun clearMemberBirthday(userId: Long): ApiResult<Unit> =
-        client.delete("/families/members/$userId/birthday")
+    override suspend fun clearMemberBirthday(familyId: Long?, userId: Long): ApiResult<Unit> =
+        client.delete(FamilyPaths.scoped(familyId) + "/members/$userId/birthday")
+
+    override suspend fun invite(familyId: Long?, userId: Long): ApiResult<InvitationResponse> =
+        client.post(FamilyPaths.root(familyId) + "/invitations", InviteRequest(userId))
+
+    override suspend fun invitations(familyId: Long?): ApiResult<InvitationsResponse> =
+        client.get(FamilyPaths.root(familyId) + "/invitations")
+
+    override suspend fun withdrawInvitation(familyId: Long?, invitationId: Long): ApiResult<Unit> =
+        client.delete(FamilyPaths.root(familyId) + "/invitations/$invitationId")
+
+    override suspend fun acceptInvitation(invitationId: Long): ApiResult<FamilyResponse> =
+        client.postEmpty("/invitations/$invitationId/accept")
+
+    override suspend fun declineInvitation(invitationId: Long): ApiResult<Unit> =
+        client.postEmpty("/invitations/$invitationId/decline")
 }

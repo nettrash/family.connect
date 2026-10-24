@@ -357,8 +357,43 @@ public static class Migrations
     ];
 
     /// <summary>
+    /// Step 11: SEVERAL FAMILIES (docs/protocol.md, "Several families"; issue #88). Which family each held thing belongs to: a
+    /// chat's <c>family_ids</c> (the wire's array, verbatim — a direct chat is listed in every family the two share), a note's
+    /// and a pack item's family, and the roster PER FAMILY — a person is one row of <c>members</c> (their name, picture and
+    /// birthday are the account's) and one row here for each family this device holds them in, with that family's role.
+    /// </summary>
+    /// <remarks>
+    /// NOTHING HELD IS READ AGAIN OR DELETED. Every row an older build cached was the HOME family's — an app from before
+    /// several families saw nothing else — but the home family's id is not in this file, so the new columns start NULL and
+    /// <see cref="Database.AdoptLegacy"/> stamps them with it once the first <c>GET /me</c> names it. A chat whose
+    /// <c>family_ids</c> is NULL is shown in the home family alone until the next list read writes it.
+    /// </remarks>
+    private static readonly string[] Eleven =
+    [
+        "ALTER TABLE chats ADD COLUMN family_ids_json TEXT",
+        "ALTER TABLE notes ADD COLUMN family_id INTEGER",
+        "ALTER TABLE pack_items ADD COLUMN family_id INTEGER",
+        """
+        -- One row per person per family this device holds a roster for. The person's own fields stay on `members`; what is
+        -- the FAMILY's — the role, whether they have left it, whether its owner may reset their password — is here.
+        CREATE TABLE family_members (
+            family_id      INTEGER NOT NULL,
+            user_id        INTEGER NOT NULL,
+            -- "owner" or "member", and NULL for a former member, as on `members`.
+            role           TEXT,
+            has_left       INTEGER NOT NULL DEFAULT 0,
+            -- The owner's own read only: 1 may reset, 0 may not, NULL not said (anybody else's read, an older server).
+            password_reset INTEGER,
+            PRIMARY KEY (family_id, user_id)
+        )
+        """,
+        "CREATE INDEX notes_by_family ON notes(family_id)",
+        "CREATE INDEX pack_items_by_family ON pack_items(family_id)",
+    ];
+
+    /// <summary>
     /// Every step, in order. The index is the version it upgrades FROM, so
     /// <c>All.Count</c> is the schema this build expects.
     /// </summary>
-    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten];
+    public static readonly IReadOnlyList<string[]> All = [One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten, Eleven];
 }

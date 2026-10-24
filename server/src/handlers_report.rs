@@ -154,13 +154,11 @@ pub async fn create_report(
             "you cannot report yourself",
         ));
     }
-    let target_family: Option<i64> =
-        sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
-            .bind(req.reported_user_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .flatten();
-    if target_family != Some(family_id) {
+    // The report goes to the owner of THIS family — the request's, the
+    // `{family}` of `/families/{family}/reports` or the home family — so
+    // the reported member must be in it (docs/protocol.md, "Several
+    // families").
+    if !crate::families::is_member(&state.pool, family_id, req.reported_user_id).await? {
         return Err(ApiError::forbidden(
             codes::NOT_SAME_FAMILY,
             "no such member in your family",
@@ -181,15 +179,24 @@ pub async fn create_report(
     let excerpt: Option<String> = match req.message_id {
         None => None,
         Some(message_id) => {
-            let body: Option<String> = sqlx::query_scalar(
+            // And it must be in a chat this family LISTS (`family_ids`
+            // contains it): a message in another family's chat goes to that
+            // family's owner, and naming it here answers exactly as a
+            // message that does not exist (docs/protocol.md, "Several
+            // families").
+            let body: Option<String> = sqlx::query_scalar(&format!(
                 "SELECT m.body
                    FROM messages m
                    JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = $2
-                  WHERE m.id = $1 AND m.sender_id = $3",
-            )
+                   JOIN chats c ON c.id = m.chat_id
+                  WHERE m.id = $1 AND m.sender_id = $3
+                    AND $4 = ANY({})",
+                crate::families::CHAT_FAMILY_IDS_SQL
+            ))
             .bind(message_id)
             .bind(auth.user_id)
             .bind(req.reported_user_id)
+            .bind(family_id)
             .fetch_optional(&state.pool)
             .await?;
             let Some(body) = body else {
@@ -207,16 +214,20 @@ pub async fn create_report(
     // whatever `reason` was sent — so a double tap is not two rows in the
     // owner's list, while reporting a SECOND message of the same member IS
     // a second report, which is what a moderator needs to see a pattern.
+    // Per FAMILY since 2026-10-22 (0057): the same report filed with two
+    // families' owners is one in each list.
     // The two partial unique indexes in migration 0029 make this a database
     // fact rather than a race.
     let existing: Option<i64> = match req.message_id {
         Some(message_id) => {
             sqlx::query_scalar(
                 "SELECT id FROM member_reports
-              WHERE reporter_user_id = $1 AND message_id = $2 AND status = 'open'",
+              WHERE reporter_user_id = $1 AND message_id = $2 AND status = 'open'
+                AND family_id = $3",
             )
             .bind(auth.user_id)
             .bind(message_id)
+            .bind(family_id)
             .fetch_optional(&state.pool)
             .await?
         }
@@ -224,10 +235,12 @@ pub async fn create_report(
             sqlx::query_scalar(
                 "SELECT id FROM member_reports
               WHERE reporter_user_id = $1 AND reported_user_id = $2
-                AND message_id IS NULL AND message_excerpt IS NULL AND status = 'open'",
+                AND message_id IS NULL AND message_excerpt IS NULL AND status = 'open'
+                AND family_id = $3",
             )
             .bind(auth.user_id)
             .bind(req.reported_user_id)
+            .bind(family_id)
             .fetch_optional(&state.pool)
             .await?
         }
@@ -323,7 +336,7 @@ pub async fn list_reports(
 pub async fn resolve_report(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(report_id): Path<i64>,
+    Path(crate::handlers_family::IdPath { id: report_id }): Path<crate::handlers_family::IdPath>,
 ) -> Result<Response, ApiError> {
     let family = crate::handlers_family::require_owner_family(&state, &auth).await?;
     let mut tx = state.pool.begin().await?;

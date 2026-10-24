@@ -162,6 +162,31 @@
                                 <TextBlock x:Name="FamilyNameValue" Grid.Column="2" VerticalAlignment="Center" MaxWidth="360" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             </Grid>
                         </Border>
+                        <!-- The way in to another family (docs/protocol.md, "Several families"): each only while its door is open. -->
+                        <Button x:Name="NewFamilyButton" Style="{StaticResource ActionRow}" Visibility="Collapsed">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE710;" />
+                                <TextBlock x:Name="NewFamilyText" Grid.Column="1" VerticalAlignment="Center" />
+                                <FontIcon Grid.Column="2" Style="{StaticResource Chevron}" Glyph="&#xE76C;" />
+                            </Grid>
+                        </Button>
+                        <Button x:Name="JoinAnotherButton" Style="{StaticResource ActionRow}" Visibility="Collapsed">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Style="{StaticResource RowIcon}" Glyph="&#xE77B;" />
+                                <TextBlock x:Name="JoinAnotherText" Grid.Column="1" VerticalAlignment="Center" />
+                                <FontIcon Grid.Column="2" Style="{StaticResource Chevron}" Glyph="&#xE76C;" />
+                            </Grid>
+                        </Button>
                         <Button x:Name="LeaveButton" Style="{StaticResource ActionRow}">
                             <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>

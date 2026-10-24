@@ -25,6 +25,7 @@
 import SwiftUI
 
 struct ReportInboxView: View {
+    @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
 
     @State private var reports: [ReportDTO] = []
@@ -110,7 +111,7 @@ struct ReportInboxView: View {
         errorText = nil
         defer { isLoading = false }
         do {
-            reports = try await coordinator.api.reports()
+            reports = try await coordinator.api.reports(family: session.apiFamilyID)
         } catch {
             errorText = String(localized: "Couldn't load the reports. Pull to refresh.")
         }
@@ -121,7 +122,7 @@ struct ReportInboxView: View {
         Task {
             defer { resolving.remove(report.id) }
             do {
-                try await coordinator.api.resolveReport(id: report.id)
+                try await coordinator.api.resolveReport(id: report.id, family: session.apiFamilyID)
                 reports.removeAll { $0.id == report.id }
             } catch {
                 errorText = String(localized: "Couldn't mark that as handled. Try again.")

@@ -211,7 +211,7 @@ struct FamilyAssistantSettings: View {
                 stored: family.greetingPlaces,
                 isSaving: isSaving,
                 onSave: { places in
-                    save { try await coordinator.api.setGreetingPlaces(places) }
+                    save { try await coordinator.api.setGreetingPlaces(places, family: session.apiFamilyID) }
                 },
                 onInvalid: {
                     errorText = String(localized: "Couldn't save that. Try again.")
@@ -407,7 +407,7 @@ struct FamilyAssistantSettings: View {
                 guard tag != family.language else { return }
                 // nil here is a genuine CLEAR and travels as an explicit
                 // JSON null — see APIClient.FamilyPatchRequest.
-                save { try await coordinator.api.setFamilyLanguage(tag) }
+                save { try await coordinator.api.setFamilyLanguage(tag, family: session.apiFamilyID) }
             })
     }
 
@@ -416,7 +416,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiHistory },
             set: { enabled in
                 guard enabled != family.aiHistory else { return }
-                save { try await coordinator.api.setAIHistory(enabled) }
+                save { try await coordinator.api.setAIHistory(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -428,7 +428,7 @@ struct FamilyAssistantSettings: View {
                 // Turning this OFF turns "Recent photos" off in the same
                 // write on the server; the family it answers with carries
                 // both, and `save` writes both back.
-                save { try await coordinator.api.setAIVision(enabled) }
+                save { try await coordinator.api.setAIVision(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -437,7 +437,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiHistoryPhotos },
             set: { enabled in
                 guard enabled != family.aiHistoryPhotos else { return }
-                save { try await coordinator.api.setAIHistoryPhotos(enabled) }
+                save { try await coordinator.api.setAIHistoryPhotos(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -446,7 +446,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiGreeting },
             set: { enabled in
                 guard enabled != family.aiGreeting else { return }
-                save { try await coordinator.api.setAIGreeting(enabled) }
+                save { try await coordinator.api.setAIGreeting(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -455,7 +455,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiFaces },
             set: { enabled in
                 guard enabled != family.aiFaces else { return }
-                save { try await coordinator.api.setAIFaces(enabled) }
+                save { try await coordinator.api.setAIFaces(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -464,7 +464,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiTranscripts },
             set: { enabled in
                 guard enabled != family.aiTranscripts else { return }
-                save { try await coordinator.api.setAITranscripts(enabled) }
+                save { try await coordinator.api.setAITranscripts(enabled, family: session.apiFamilyID) }
             })
     }
 
@@ -473,7 +473,7 @@ struct FamilyAssistantSettings: View {
             get: { family.aiLookups },
             set: { enabled in
                 guard enabled != family.aiLookups else { return }
-                save { try await coordinator.api.setAILookups(enabled) }
+                save { try await coordinator.api.setAILookups(enabled, family: session.apiFamilyID) }
             })
     }
 

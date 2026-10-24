@@ -1,6 +1,16 @@
 {
   "_comment": "The server's own push sentences that the apps never say themselves (docs/protocol.md, \"The words of a push\"). Every other push word comes from the apps' Localizable.xcstrings. generate.py turns both into src/push_words.rs.",
   "strings": {
+    "%@ invited you": {
+      "de": "%@ lädt dich ein",
+      "es": "%@ te invita",
+      "fr": "%@ vous invite",
+      "ja": "%@から招待が届いています",
+      "ru": "%@ приглашает тебя",
+      "sr": "%@ те позива",
+      "sr-Latn": "%@ te poziva",
+      "zh-Hans": "%@ 邀请了你"
+    },
     "%@ asked to join": {
       "de": "%@ möchte beitreten",
       "es": "%@ pidió unirse",

@@ -19,7 +19,8 @@ use tracing_subscriber::EnvFilter;
 use family_connect::config::Config;
 use family_connect::state::AppState;
 use family_connect::{
-    app, calls, db, greetings, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
+    app, calls, db, greetings, handlers_attachment, handlers_auth, handlers_chat, handlers_family,
+    migrate, push,
 };
 
 #[derive(Parser, Debug)]
@@ -135,6 +136,15 @@ async fn main() -> Result<()> {
                     Ok(count) => info!(count, "swept accounts that have no family"),
                     Err(err) => warn!(error = ?err, "sweeping familyless accounts failed"),
                 }
+                // And invitations whose person and family owner share no
+                // other family any more — the backstop for the one a
+                // departure could not see because it was created in the
+                // same instant (docs/protocol.md, "Several families").
+                match handlers_family::sweep_unshared_invitations(&sweeper_state).await {
+                    Ok(0) => {}
+                    Ok(count) => info!(count, "lapsed invitations nobody shares a family for"),
+                    Err(err) => warn!(error = ?err, "sweeping unshared invitations failed"),
+                }
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
                     _ = sweeper_shutdown.cancelled() => break,
@@ -149,8 +159,8 @@ async fn main() -> Result<()> {
     calls::spawn_sweeper(state.clone());
 
     // The daily greeting (docs/protocol.md, "The daily greeting"). Its own
-    // ticker rather than a fourth job in the hourly loop above: that loop is
-    // three deletes on one clock, and this is a WRITE on a wall-clock time an
+    // ticker rather than another job in the hourly loop above: that loop is
+    // deletes on one clock, and this is a WRITE on a wall-clock time an
     // operator chose to the minute. Returns immediately, having spawned
     // nothing, on a server with greetings off — which is every server that
     // has not been told otherwise.

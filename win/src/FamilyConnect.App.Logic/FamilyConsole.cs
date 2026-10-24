@@ -7,8 +7,12 @@ namespace FamilyConnect.App.Logic;
 /// <param name="Message">A direct chat — never with yourself, and never with somebody you blocked, which would only be refused.</param>
 /// <param name="Safety">Report and block: anybody but yourself.</param>
 /// <param name="OwnerMenu">The owner's tools: a birthday for anyone, themselves included.</param>
-/// <param name="Removable">A password reset and a removal: never yourself, never the owner.</param>
-public readonly record struct MemberTools(bool Message, bool Safety, bool OwnerMenu, bool Removable);
+/// <param name="Removable">A removal: never yourself, never the owner.</param>
+/// <param name="ResetPassword">
+/// A password reset: where a removal is, and only for a member whose every family this owner owns — the server's
+/// <c>password_reset</c> (docs/protocol.md, "Several families", D7; <see cref="FamilyRules.MayResetPassword"/>).
+/// </param>
+public readonly record struct MemberTools(bool Message, bool Safety, bool OwnerMenu, bool Removable, bool ResetPassword);
 
 /// <summary>
 /// The family console's rules and words — the web client's family pane (<c>web/src/views/family.rs</c>,
@@ -36,7 +40,8 @@ public static class FamilyText
             Message: !mine && !blocked,
             Safety: !mine,
             OwnerMenu: owner,
-            Removable: owner && !mine && !member.Owner);
+            Removable: owner && !mine && !member.Owner,
+            ResetPassword: owner && !member.Owner && FamilyRules.MayResetPassword(member, me, owner));
     }
 
     public static string MembersLine(int count, IStringCatalog say) => say.Plural("%lld members", count, count);

@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 
 use axum::body::Bytes;
-use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message as WsMessage, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::{RawQuery, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -156,6 +156,11 @@ pub enum ServerFrame {
     MemberJoined {
         family_id: i64,
         user: UserBrief,
+        /// Whether the reader may reset the newcomer's password — on the
+        /// family OWNER's copy alone, exactly as on their roster, and absent
+        /// from everybody else's (docs/protocol.md, "Several families").
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        password_reset: Option<bool>,
     },
     MemberLeft {
         family_id: i64,
@@ -263,6 +268,17 @@ pub enum ServerFrame {
     ChatRemoved {
         chat_id: i64,
     },
+    /// An owner's invitation into their family — to the invited person and
+    /// to the family's owner, and nobody else (docs/protocol.md, "Several
+    /// families"). The family's members are not told until somebody accepts.
+    Invitation {
+        invitation: crate::models::Invitation,
+    },
+    /// An invitation gone from both lists: accepted, declined, withdrawn or
+    /// lapsed — to the same two parties the `invitation` frame reached.
+    InvitationRemoved {
+        invitation_id: i64,
+    },
     /// The reply stopped early. Whatever text arrived is already on the
     /// row; the member can ask again.
     AiError {
@@ -367,13 +383,26 @@ impl ServerFrame {
 pub async fn ws_upgrade(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
+    RawQuery(query): RawQuery,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let from_subprotocol = crate::auth::bearer_from_header(&headers).is_none();
     let token = crate::auth::bearer_from_header(&headers)
         .or_else(|| crate::auth::bearer_from_subprotocols(&headers))
         .ok_or_else(ApiError::unauthorized)?;
-    let auth = crate::auth::authenticate(&state, &token).await?;
+    // Taken BEFORE the memberships are read: the home family this socket is
+    // registered with is recorded only if nothing newer was (see
+    // `Registry::home_ticket`).
+    let home_ticket = state.registry.home_ticket();
+    let mut auth = crate::auth::authenticate(&state, &token).await?;
+    // The socket's counterpart of `X-FC-Families: 1` (docs/protocol.md,
+    // "Several families"): a query parameter, because a browser's WebSocket
+    // API cannot set headers. The header is honoured too, for an app that
+    // can send one — the statement is the same either way. Fixed for the
+    // life of the connection: the registry decides per connection which
+    // frames an app that predates several families may be sent.
+    auth.multi = says_families(query.as_deref()) || crate::auth::says_multi(&headers);
+    crate::auth::remember_multi(&state, &auth);
     // A browser that offered subprotocols must get ONE echoed back or it
     // fails the handshake on its own side — and what is echoed is the
     // product's name, never the offered token.
@@ -400,7 +429,9 @@ pub async fn ws_upgrade(
             .fetch_optional(&state.pool)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
-    Ok(ws.on_upgrade(move |socket| run_connection(state, auth, expires_at, language, socket)))
+    Ok(ws.on_upgrade(move |socket| {
+        run_connection(state, auth, home_ticket, expires_at, language, socket)
+    }))
 }
 
 /// The per-connection task. Runs until the socket dies, the client idles
@@ -409,12 +440,21 @@ pub async fn ws_upgrade(
 async fn run_connection(
     state: AppState,
     auth: AuthUser,
+    home_ticket: u64,
     expires_at: OffsetDateTime,
     language: Option<String>,
     mut socket: WebSocket,
 ) {
     let registry = state.registry.clone();
-    let mut registration = registry.register(auth.user_id, auth.session_id).await;
+    let mut registration = registry
+        .register(
+            auth.user_id,
+            auth.session_id,
+            auth.multi,
+            auth.home_family(),
+            home_ticket,
+        )
+        .await;
     let shutdown = registry.shutdown_token();
 
     // Late arrivals (protocol.md, "Voice calls"): a connection is REGISTERED
@@ -424,7 +464,7 @@ async fn run_connection(
     // `call_end` — so a phone woken for a call that has meanwhile been taken
     // on another device stops ringing at once rather than at its own
     // guard timeout.
-    for frame in call_replays(&state, auth.user_id) {
+    for frame in call_replays(&state, &auth).await {
         if send_frame(&mut socket, &frame).await.is_err() {
             registry
                 .unregister(auth.user_id, registration.conn_id)
@@ -543,9 +583,35 @@ async fn run_connection(
 /// offer it is the callee of, then the caller's buffered candidates, then a
 /// `call_end` for each call it was the callee of that ended in the last
 /// couple of minutes.
-fn call_replays(state: &AppState, user_id: i64) -> Vec<ServerFrame> {
+///
+/// An app that predates several families is not replayed an offer from a
+/// direct chat its home family does not list — the live offer skipped it for
+/// the same reason (docs/protocol.md, "Several families").
+async fn call_replays(state: &AppState, auth: &AuthUser) -> Vec<ServerFrame> {
+    let user_id = auth.user_id;
     let mut frames = Vec::new();
-    if let Some(pending) = state.calls.pending_offer_for(user_id) {
+    let pending = match state.calls.pending_offer_for(user_id) {
+        Some(pending) if !auth.multi => {
+            // The families the chat is listed in FOR THIS READER — which for
+            // a closed direct chat the reader still holds is theirs, the same
+            // rule `GET /chats` and `events::legacy_hidden` follow.
+            let in_scope = match crate::families::viewer_chat_family_ids(
+                &state.pool,
+                pending.chat_id,
+                user_id,
+            )
+            .await
+            {
+                Ok(family_ids) => crate::families::home_in_scope(auth.home_family(), &family_ids),
+                // A replay is a courtesy; a database hiccup must not keep a
+                // socket from opening. The live offer already decided.
+                Err(_) => false,
+            };
+            in_scope.then_some(pending)
+        }
+        other => other,
+    };
+    if let Some(pending) = pending {
         frames.push(ServerFrame::CallOffer {
             call_id: pending.call_id,
             chat_id: pending.chat_id,
@@ -569,6 +635,15 @@ fn call_replays(state: &AppState, user_id: i64) -> Vec<ServerFrame> {
         });
     }
     frames
+}
+
+/// Does the upgrade's query string say `families=1`? Read by hand rather
+/// than through a typed `Query`: the upgrade takes no other parameter, and a
+/// typed extractor would refuse a client that sent one this server does not
+/// know about — a socket that will not open is a far worse answer than a
+/// parameter ignored.
+fn says_families(query: Option<&str>) -> bool {
+    query.is_some_and(|query| query.split('&').any(|pair| pair == "families=1"))
 }
 
 async fn send_frame(socket: &mut WebSocket, frame: &ServerFrame) -> Result<(), axum::Error> {
@@ -916,7 +991,25 @@ mod tests {
             avatar_version: 0,
             birthday: None,
             deleted: true,
+            password_reset: None,
         }
+    }
+
+    #[test]
+    fn only_families_equals_one_marks_a_multi_family_socket() {
+        assert!(says_families(Some("families=1")));
+        assert!(says_families(Some("x=2&families=1")));
+        assert!(!says_families(Some("families=0")));
+        assert!(!says_families(Some("families=10")));
+        assert!(!says_families(None));
+    }
+
+    #[test]
+    fn invitation_removed_matches_protocol() {
+        assert_serializes_to(
+            &ServerFrame::InvitationRemoved { invitation_id: 4 },
+            r#"{"type": "invitation_removed", "invitation_id": 4}"#,
+        );
     }
 
     fn assert_serializes_to(frame: &ServerFrame, expected_json: &str) {
@@ -1360,12 +1453,34 @@ mod tests {
                 display_name: "Junior".to_string(),
                 avatar_version: 0,
             },
+            password_reset: None,
         };
         assert_serializes_to(
             &frame,
             r#"{"type": "member_joined", "family_id": 3,
                 "user": {"id": 11, "username": "junior", "display_name": "Junior",
                          "avatar_version": 0}}"#,
+        );
+    }
+
+    #[test]
+    fn the_owners_member_joined_says_whether_they_may_reset() {
+        let frame = ServerFrame::MemberJoined {
+            family_id: 3,
+            user: UserBrief {
+                id: 11,
+                username: "junior".to_string(),
+                display_name: "Junior".to_string(),
+                avatar_version: 0,
+            },
+            password_reset: Some(false),
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "member_joined", "family_id": 3,
+                "user": {"id": 11, "username": "junior", "display_name": "Junior",
+                         "avatar_version": 0},
+                "password_reset": false}"#,
         );
     }
 
@@ -1857,6 +1972,7 @@ mod tests {
                     display_name: "Junior".to_string(),
                     avatar_version: 0,
                 },
+                password_reset: Some(true),
             },
             ServerFrame::Pong,
         ];
@@ -2000,6 +2116,7 @@ mod tests {
                 created_at: Some(time::macros::datetime!(2026-09-30 10:00 UTC)),
                 pack_seq: 12,
                 deleted: false,
+                family_id: Some(3),
             },
         };
         assert_eq!(
@@ -2014,6 +2131,9 @@ mod tests {
                                    "has_preview": false},
                     "created_at": "2026-09-30T10:00:00Z",
                     "pack_seq": 12,
+                    // Whose pack, since 2026-10-22 (protocol.md, "Several
+                    // families").
+                    "family_id": 3,
                 },
             })
         );
@@ -2027,13 +2147,14 @@ mod tests {
                 created_at: None,
                 pack_seq: 14,
                 deleted: true,
+                family_id: Some(3),
             },
         };
         assert_eq!(
             serde_json::to_value(&tombstone).expect("serializes"),
             serde_json::json!({
                 "type": "pack_item",
-                "item": {"id": 5, "deleted": true, "pack_seq": 14},
+                "item": {"id": 5, "deleted": true, "pack_seq": 14, "family_id": 3},
             })
         );
     }

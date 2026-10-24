@@ -41,7 +41,13 @@ struct StickerPackView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
 
-    @Query(sort: \PackItemEntity.itemID) private var stored: [PackItemEntity]
+    @Query(sort: \PackItemEntity.itemID) private var allStored: [PackItemEntity]
+    /// The pack of the family on screen — every family has its own
+    /// (docs/protocol.md, "Several families").
+    private var stored: [PackItemEntity] {
+        let familyKey = coordinator.currentFamilyKey
+        return allStored.filter { $0.familyID == familyKey }
+    }
 
     /// A picture that has been picked and turned into a sticker, waiting
     /// for its few words and the Add button.

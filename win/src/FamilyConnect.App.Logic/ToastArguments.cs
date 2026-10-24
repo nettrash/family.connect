@@ -4,8 +4,11 @@ using FamilyConnect.Core.Protocol;
 
 namespace FamilyConnect.App.Logic;
 
-/// <summary>What a clicked notification opens: a chat, or — with no chat — the wall.</summary>
-public sealed record ToastTarget(long? ChatId)
+/// <summary>
+/// What a clicked notification opens: a chat, or — with no chat — the wall; and, for the wall, WHOSE (docs/protocol.md,
+/// "Several families": a notification opens the app in its family).
+/// </summary>
+public sealed record ToastTarget(long? ChatId, long? FamilyId = null)
 {
     public bool IsBoard => ChatId is null;
 }
@@ -29,11 +32,14 @@ public static class ToastArguments
 {
     public const string ChatKey = "chat";
     public const string BoardKey = "board";
+    public const string FamilyKey = "family";
 
     public static IReadOnlyList<KeyValuePair<string, string>> For(Toast toast) =>
         toast.ChatId is { } chatId
             ? [new(ChatKey, chatId.ToString(CultureInfo.InvariantCulture))]
-            : [new(BoardKey, "1")];
+            : toast.FamilyId is { } familyId
+                ? [new(BoardKey, "1"), new(FamilyKey, familyId.ToString(CultureInfo.InvariantCulture))]
+                : [new(BoardKey, "1")];
 
     public static ToastTarget? Parse(IReadOnlyDictionary<string, string> arguments)
     {
@@ -43,7 +49,16 @@ public static class ToastArguments
         {
             return new ToastTarget(chatId);
         }
-        return arguments.ContainsKey(BoardKey) ? new ToastTarget(null) : null;
+        if (!arguments.ContainsKey(BoardKey))
+        {
+            return null;
+        }
+        // Whose wall, when it says — a family id that is not a positive number is no family, and the wall shown opens.
+        return arguments.TryGetValue(FamilyKey, out var family)
+            && long.TryParse(family, NumberStyles.None, CultureInfo.InvariantCulture, out var familyId)
+            && familyId > 0
+            ? new ToastTarget(null, familyId)
+            : new ToastTarget(null);
     }
 
     public static bool IsNews(NoteDto note, BoardMarks marks) =>

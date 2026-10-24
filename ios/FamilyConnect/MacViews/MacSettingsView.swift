@@ -45,6 +45,10 @@ struct MacSettingsView: View {
     @State private var handedOverTo: String?
     @State private var leaveError: String?
     @State private var deletingAccount = false
+    /// The two ways in to another family (docs/protocol.md, "Several
+    /// families"), beside Leave Family as on the phone.
+    @State private var showsNewFamily = false
+    @State private var showsJoinAnother = false
     /// Mirrors AppSettings — defaults are not observable, so the view
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
@@ -256,6 +260,7 @@ struct MacSettingsView: View {
                 }
                 Section {
                     LabeledContent("Name", value: session.family?.name ?? "—")
+                    FamilyDoorButtons(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
                     // Net-new on the Mac: the phone has had this since
                     // its Settings existed, and a member who wanted out
                     // here had no door.
@@ -339,7 +344,7 @@ struct MacSettingsView: View {
     private func loadLeaveContext() async {
         leaveError = nil
         do {
-            let mine = try await coordinator.api.myFamily()
+            let mine = try await coordinator.api.myFamily(family: session.apiFamilyID)
             leaveRoster = mine.members
             leaveNextOwnerID = mine.nextOwnerUserID
         } catch {
@@ -348,9 +353,22 @@ struct MacSettingsView: View {
         }
     }
 
-    /// What leaving costs — the phone's three sentences, same keys.
+    /// Today's title with one family; the family's name with several,
+    /// since leaving takes only the one on screen — the phone's rule.
+    private var leaveTitle: String {
+        FamilyRules.leaveTitle(familyName: session.family?.name ?? "", familyCount: session.families.count)
+            ?? String(localized: "Leave the family?")
+    }
+
+    /// What leaving costs — the phone's sentences, same keys.
     private var leaveMessage: LocalizedStringKey {
         let base: LocalizedStringKey = "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin."
+        if session.families.count >= 2 {
+            if session.isOwner, leaveNextOwnerID == nil {
+                return "You're the only member left. Leaving deletes the family and everything in it."
+            }
+            return LocalizedStringKey(FamilyRules.leaveSeveralMessage)
+        }
         guard session.isOwner else { return base }
         guard let successorID = leaveNextOwnerID,
               let successor = leaveRoster.first(where: { $0.id == successorID })?.displayName
@@ -446,8 +464,9 @@ struct MacSettingsView: View {
                 },
                 onDecline: { reviewingAssistant = false })
         }
+        .familyDoorSheets(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
         .confirmationDialog(
-            "Leave the family?",
+            Text(leaveTitle),
             isPresented: $confirmLeave,
             titleVisibility: .visible
         ) {

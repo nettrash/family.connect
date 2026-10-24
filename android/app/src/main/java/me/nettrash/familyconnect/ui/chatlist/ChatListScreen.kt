@@ -8,6 +8,10 @@
  * create direct chat), which also starts a group (#107; docs/protocol.md,
  * "Groups"). OfflineBanner under the app bar.
  *
+ * Several families (#88): with a switcher to show, the title is the current
+ * family's name and opens it; an invitation waiting is a banner over the
+ * list (docs/protocol.md, "Several families").
+ *
  * iOS counterpart: ios/FamilyConnect/UI/ChatList/ChatListView.swift
  */
 
@@ -99,6 +103,9 @@ import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.ErrorCard
 import me.nettrash.familyconnect.ui.components.OfflineBanner
+import me.nettrash.familyconnect.ui.families.FamilySwitcherSheet
+import me.nettrash.familyconnect.ui.families.FamilySwitcherTitle
+import me.nettrash.familyconnect.ui.families.InvitationBanner
 import me.nettrash.familyconnect.ui.group.GroupAvatarMark
 import me.nettrash.familyconnect.ui.group.NewGroupForm
 import me.nettrash.familyconnect.util.GroupRules
@@ -112,6 +119,10 @@ fun ChatListScreen(
     onOpenBoard: () -> Unit,
     /** The chat open beside this list in the two-pane shape, drawn as selected; null on the phone. */
     selectedChatId: Long? = null,
+    /** The switcher's "New Family…". */
+    onNewFamily: () -> Unit = {},
+    /** The switcher's "Join Another Family…". */
+    onJoinFamily: () -> Unit = {},
     viewModel: ChatListViewModel = hiltViewModel(),
 ) {
     // The chats StateFlow seeds with null in the ViewModel until Room's
@@ -130,6 +141,9 @@ fun ChatListScreen(
     val groupCandidates by viewModel.groupCandidates.collectAsStateWithLifecycle()
     val groupError by viewModel.groupError.collectAsStateWithLifecycle()
     val creatingGroup by viewModel.creatingGroup.collectAsStateWithLifecycle()
+    val families by viewModel.families.collectAsStateWithLifecycle()
+    val answeringInvitation by viewModel.answeringInvitation.collectAsStateWithLifecycle()
+    var showSwitcher by rememberSaveable { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     // The sheet's second face, New Group, and what is typed and ticked in
     // it — saveable, so a rotation mid-form keeps the name and the ticks.
@@ -187,7 +201,17 @@ fun ChatListScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.s_chats)) },
+                title = {
+                    // The family's name, opening the switcher — only when
+                    // there is one to open; an account in one family with
+                    // nothing pending keeps "Chats".
+                    val currentName = families.currentName
+                    if (families.showsSwitcher && currentName != null) {
+                        FamilySwitcherTitle(name = currentName, onClick = { showSwitcher = true })
+                    } else {
+                        Text(stringResource(R.string.s_chats))
+                    }
+                },
                 actions = {
                     IconButton(onClick = {
                         viewModel.markBoardSeen()
@@ -243,6 +267,17 @@ fun ChatListScreen(
                     onRetry = viewModel::dismissError,
                 )
             }
+            // An invitation waiting to be answered (docs/protocol.md,
+            // "Several families"): Join adds the family and shows it.
+            families.invitations.forEach { invitation ->
+                InvitationBanner(
+                    invitation = invitation,
+                    busy = answeringInvitation != null,
+                    onJoin = { viewModel.acceptInvitation(invitation.id) },
+                    onDecline = { viewModel.declineInvitation(invitation.id) },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
             val chatList = chats
             when {
                 chatList == null -> ChatListSkeleton()
@@ -285,6 +320,31 @@ fun ChatListScreen(
                 }
             }
         }
+    }
+
+    if (showSwitcher) {
+        FamilySwitcherSheet(
+            state = families,
+            answeringInvitation = answeringInvitation,
+            onPick = { familyId ->
+                showSwitcher = false
+                viewModel.switchFamily(familyId)
+            },
+            onAccept = { invitationId ->
+                showSwitcher = false
+                viewModel.acceptInvitation(invitationId)
+            },
+            onDecline = viewModel::declineInvitation,
+            onNewFamily = {
+                showSwitcher = false
+                onNewFamily()
+            },
+            onJoinFamily = {
+                showSwitcher = false
+                onJoinFamily()
+            },
+            onDismiss = { showSwitcher = false },
+        )
     }
 
     if (showPicker) {

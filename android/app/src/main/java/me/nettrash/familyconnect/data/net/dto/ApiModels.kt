@@ -100,6 +100,13 @@ data class MemberDto(
      * left behind.
      */
     val deleted: Boolean? = null,
+    /**
+     * Whether the OWNER reading their own family may reset this member's
+     * password — true only when the owner owns every family the member is
+     * in (docs/protocol.md, "Several families"). Present in the owner's own
+     * read only; null everywhere else and from a server that predates it.
+     */
+    @SerialName("password_reset") val passwordReset: Boolean? = null,
 ) {
     val isDeleted: Boolean get() = deleted == true
 }
@@ -249,6 +256,13 @@ data class FamilyDto(
      * failing the whole family read; read it through [places].
      */
     @SerialName("greeting_places") val greetingPlaces: List<String>? = null,
+    /**
+     * The caller's role in THIS family, "owner" | "member" — present on the
+     * entries of `GET /me`'s `families` (docs/protocol.md, "Several
+     * families"), absent from every other read of a Family. Null here means
+     * "not said", never "no role".
+     */
+    val role: String? = null,
 ) {
     /** [greetingPlaces], with absent read as none. */
     val places: List<String> get() = greetingPlaces.orEmpty()
@@ -267,6 +281,35 @@ data class JoinRequestDto(
     val user: UserDto,
     @SerialName("created_at") val createdAt: String,
 )
+
+/**
+ * An owner's invitation into their family (docs/protocol.md, "Several
+ * families"), pending until [user] — the invited person — accepts or
+ * declines. The same object reaches both ends: the invited person in
+ * `GET /me` and the `invitation` frame, the owner in
+ * `GET /families/{id}/invitations`.
+ */
+@Serializable
+data class InvitationDto(
+    val id: Long,
+    @SerialName("family_id") val familyId: Long,
+    @SerialName("family_name") val familyName: String,
+    @SerialName("invited_by") val invitedBy: UserDto,
+    val user: UserDto,
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+/** `POST /families/{id}/invitations` → the invitation, new or the pending one. */
+@Serializable
+data class InvitationResponse(val invitation: InvitationDto)
+
+/** `GET /families/{id}/invitations` — pending only, oldest first. */
+@Serializable
+data class InvitationsResponse(val invitations: List<InvitationDto> = emptyList())
+
+/** `POST /families/{id}/invitations` — the person to invite. */
+@Serializable
+data class InviteRequest(@SerialName("user_id") val userId: Long)
 
 /**
  * A chat as the server describes it (docs/protocol.md, `Chat`).
@@ -294,6 +337,14 @@ data class ChatDto(
      * group.
      */
     @SerialName("admin_user_id") val adminUserId: Long? = null,
+    /**
+     * The families this chat is listed in (docs/protocol.md, "Several
+     * families"): exactly one for a family chat, a group and an `ai` chat;
+     * every family the two people share for a direct chat. Null from a
+     * server that predates it, where it means the one family the account
+     * has.
+     */
+    @SerialName("family_ids") val familyIds: List<Long>? = null,
 )
 
 @Serializable
@@ -1092,6 +1143,12 @@ data class CreateDirectChatRequest(@SerialName("user_id") val userId: Long)
 data class CreateGroupRequest(
     val title: String,
     @SerialName("member_ids") val memberIds: List<Long>,
+    /**
+     * The family the group is in (docs/protocol.md, "Several families") —
+     * the one the app is showing. Null is left off the wire (`encodeDefaults
+     * = false`), which a server reads as the home family.
+     */
+    @SerialName("family_id") val familyId: Long? = null,
 )
 
 /** `PATCH /chats/{id}` — renames a group. Admin only. */
@@ -1226,6 +1283,8 @@ data class NoteDto(
      */
     @SerialName("content_seq") val contentSeq: Long? = null,
     val deleted: Boolean? = null,
+    /** The family whose board it is on (docs/protocol.md, "Several families"); null from an older server. */
+    @SerialName("family_id") val familyId: Long? = null,
     /**
      * One of plain/serif/mono/casual — an INTENT each client draws with a
      * system face of its own. Null on a tombstone, and null from a server
@@ -1356,6 +1415,8 @@ data class PackItemDto(
      */
     val label: String? = null,
     val deleted: Boolean? = null,
+    /** Whose pack it is in (docs/protocol.md, "Several families"); null from an older server. */
+    @SerialName("family_id") val familyId: Long? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
 }
@@ -1568,10 +1629,34 @@ data class MeResponse(
      * `processor` and nobody else.
      */
     @SerialName("assistant_lookup_consent_at") val assistantLookupConsentAt: String? = null,
+    /**
+     * Every family the caller is in, home family first and then in the order
+     * they were joined, each with its own [FamilyDto.role] (docs/protocol.md,
+     * "Several families"). NULL — not empty — from a server that predates
+     * several families: that server's whole answer is [family] and [role],
+     * and the client makes its one-entry list out of them.
+     */
+    val families: List<FamilyDto>? = null,
+    /** Every live join request; null from an older server, which sends [pendingJoinRequest]. */
+    @SerialName("pending_join_requests") val pendingJoinRequests: List<PendingJoinRequestDto>? = null,
+    /** The caller's pending invitations, oldest first. */
+    val invitations: List<InvitationDto> = emptyList(),
+    /** Whether a member may start ANOTHER family in the app (`[families] member_families`). */
+    @SerialName("member_families_enabled") val memberFamiliesEnabled: Boolean = false,
+    /** The most families one account may be in; null from an older server. */
+    @SerialName("max_families_per_account") val maxFamiliesPerAccount: Int? = null,
 )
 
 @Serializable
-data class JoinResponse(val status: String)
+data class JoinResponse(
+    val status: String,
+    /**
+     * Which family the code was for — joined or asked to join
+     * (docs/protocol.md, "Several families"). Null from a server that
+     * predates it; the client then finds the new family by comparing `/me`.
+     */
+    @SerialName("family_id") val familyId: Long? = null,
+)
 
 /** PUT /me/avatar — the caller's user with its bumped avatar_version. */
 @Serializable

@@ -18,7 +18,13 @@ public enum LeaveKind
 }
 
 /// <summary>The leave dialog's question, built from a FRESH roster.</summary>
-public sealed record LeaveContext(LeaveKind Kind, string? SuccessorName = null)
+/// <param name="Kind">What leaving means for the person leaving.</param>
+/// <param name="SuccessorName">Who inherits, when an owner leaves and somebody does.</param>
+/// <param name="FamilyName">
+/// The family being left, when the account is in SEVERAL (docs/protocol.md, "Several families"): the dialog then names it and
+/// says what leaving one of them costs. Null with one family — today's dialog, exactly.
+/// </param>
+public sealed record LeaveContext(LeaveKind Kind, string? SuccessorName = null, string? FamilyName = null)
 {
     /// <summary>
     /// The web client's <c>leave_context</c>. A successor the fresh roster does not name is NO
@@ -79,6 +85,10 @@ public static class SettingsText
 
     public static string LeaveMessage(LeaveContext context, IStringCatalog say) => context.Kind switch
     {
+        // One of several: direct chats stay with anybody shared elsewhere, so neither sentence below is true of them. Leaving
+        // as the LAST member still deletes the family, and that is still said in so many words.
+        LeaveKind.Member or LeaveKind.Successor when context.FamilyName is not null =>
+            say.Get("You'll lose access to this family's chats. Direct chats stay with anyone you share another family with."),
         LeaveKind.Successor => say.Format(
             "%@ becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin.",
             context.SuccessorName ?? string.Empty),
@@ -88,7 +98,9 @@ public static class SettingsText
 
     /// <summary>Leaving as the last member DELETES the family: a different question, and a different button.</summary>
     public static string LeaveTitle(LeaveContext context, IStringCatalog say) =>
-        context.Kind == LeaveKind.LastMember ? say.Get("Delete the family?") : say.Get("Leave the family?");
+        context.Kind == LeaveKind.LastMember ? say.Get("Delete the family?")
+        : context.FamilyName is { } name ? say.Format("Leave “%@”?", name)
+        : say.Get("Leave the family?");
 
     public static string LeaveButton(LeaveContext context, IStringCatalog say) =>
         context.Kind == LeaveKind.LastMember ? say.Get("Leave and Delete") : say.Get("Leave Family");

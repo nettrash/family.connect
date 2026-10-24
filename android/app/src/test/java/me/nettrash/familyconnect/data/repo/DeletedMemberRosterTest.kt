@@ -159,7 +159,7 @@ class DeletedMemberRosterTest {
         assertThat(gone.hasLeft).isTrue()
 
         // But no roster, picker, admin list or statistic includes them.
-        val active = db.memberDao().observeActiveMembers().first()
+        val active = db.memberDao().observeActiveMembers(0L).first()
         assertThat(active.map { it.userId }).containsExactly(ME, PEER)
     }
 
@@ -175,7 +175,7 @@ class DeletedMemberRosterTest {
         repository().refreshMine()
 
         assertThat(rowFor(ME).deleted).isFalse()
-        assertThat(db.memberDao().observeActiveMembers().first()).hasSize(1)
+        assertThat(db.memberDao().observeActiveMembers(0L).first()).hasSize(1)
     }
 
     @Test
@@ -210,7 +210,7 @@ class DeletedMemberRosterTest {
         assertThat(gone.deleted).isTrue()
         assertThat(gone.avatarVersion).isEqualTo(0)
         assertThat(gone.displayName).isEqualTo("Deleted account")
-        assertThat(db.memberDao().observeActiveMembers().first().map { it.userId })
+        assertThat(db.memberDao().observeActiveMembers(0L).first().map { it.userId })
             .containsExactly(ME)
     }
 
@@ -277,7 +277,7 @@ class DeletedMemberRosterTest {
         // exist for them to be named at all.
         val gone = rowFor(GONE)
         assertThat(gone.deleted).isTrue()
-        assertThat(db.memberDao().observeActiveMembers().first()).isEmpty()
+        assertThat(db.memberDao().observeActiveMembers(0L).first()).isEmpty()
     }
 
     @Test

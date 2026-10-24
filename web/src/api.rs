@@ -22,14 +22,29 @@ use wasm_bindgen::JsCast;
 use web_sys::{AbortController, Blob, RequestCache};
 
 use crate::model::{
-    Attachment, Birthday, Chat, ChatListItem, Family, JoinRequest, Me, Member, Mention, Message,
-    Note, PackItem, Poll, Reaction, Report, Roster, Stats, User,
+    Attachment, Birthday, Chat, ChatListItem, Family, Invitation, JoinRequest, Me, Member, Mention,
+    Message, Note, PackItem, Poll, Reaction, Report, Roster, Stats, User,
 };
 use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
 
 /// Everything under one prefix, so a change of base is one line.
 const API: &str = "/api/v1";
+
+/// The header that says this client knows about several families, on
+/// EVERY request (docs/protocol.md, "Several families"): without it the
+/// server answers as it did before them, about the home family alone.
+pub const FAMILIES_HEADER: &str = "X-FC-Families";
+
+/// Where a family's endpoints live: `/families/{id}`, or `/families/mine` —
+/// the home family — when no family is named, which is what every form
+/// without an id means (docs/protocol.md, "Naming a family").
+pub fn family_path(family: Option<i64>) -> String {
+    match family {
+        Some(id) => format!("/families/{id}"),
+        None => "/families/mine".to_string(),
+    }
+}
 
 /// What went wrong, in the shape a view can act on.
 ///
@@ -114,6 +129,17 @@ struct FamilyResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct InvitationResponse {
+    invitation: Invitation,
+}
+
+#[derive(Debug, Deserialize)]
+struct InvitationsResponse {
+    #[serde(default)]
+    invitations: Vec<Invitation>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UserResponse {
     user: User,
 }
@@ -127,6 +153,11 @@ struct MemberResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Joined {
     pub status: String,
+    /// The family the code belongs to, on both answers (docs/protocol.md,
+    /// `POST /families/join`, amended 2026-10-22). Absent from a server
+    /// that predates several families.
+    #[serde(default)]
+    pub family_id: Option<i64>,
 }
 
 /// `POST /families/leave`'s answer when the caller was the owner and the
@@ -320,6 +351,9 @@ struct DirectRequest {
 struct NewGroup<'a> {
     title: &'a str,
     member_ids: &'a [i64],
+    /// The family the group is made in — the one the app is showing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -589,7 +623,9 @@ fn network(error: gloo_net::Error) -> ApiError {
 }
 
 fn bearer(builder: RequestBuilder, token: &str) -> RequestBuilder {
-    builder.header("Authorization", &format!("Bearer {token}"))
+    builder
+        .header("Authorization", &format!("Bearer {token}"))
+        .header(FAMILIES_HEADER, "1")
 }
 
 async fn get<T: DeserializeOwned>(token: &str, path: &str) -> Result<T, ApiError> {
@@ -627,6 +663,7 @@ fn path(path: &str) -> String {
 /// `POST /auth/login` — the one call made without a token.
 pub async fn login(username: &str, password: &str) -> Result<AuthResponse, ApiError> {
     let request = Request::post(&path("/auth/login"))
+        .header(FAMILIES_HEADER, "1")
         .json(&LoginRequest { username, password })
         .map_err(network)?;
     read(request.send().await.map_err(network)?).await
@@ -641,6 +678,7 @@ pub async fn register(
     password: &str,
 ) -> Result<AuthResponse, ApiError> {
     let request = Request::post(&path("/auth/register"))
+        .header(FAMILIES_HEADER, "1")
         .json(&RegisterRequest {
             username,
             display_name,
@@ -667,9 +705,10 @@ pub async fn me(token: &str) -> Result<Me, ApiError> {
     get(token, "/me").await
 }
 
-/// `GET /families/mine` — the roster, the assistant, the block list.
-pub async fn family(token: &str) -> Result<Roster, ApiError> {
-    get(token, "/families/mine").await
+/// `GET /families/{id}` — one family's roster, its assistant, the block
+/// list.
+pub async fn family(token: &str, family: Option<i64>) -> Result<Roster, ApiError> {
+    get(token, &family_path(family)).await
 }
 
 /// `POST /families` — a new family, with the caller as its owner.
@@ -693,10 +732,11 @@ pub async fn join_family(token: &str, invite_code: &str) -> Result<Joined, ApiEr
     .await
 }
 
-/// `POST /families/leave` — answers who the family passed to, when the
-/// caller was its owner and somebody remains.
-pub async fn leave_family(token: &str) -> Result<Option<i64>, ApiError> {
-    let response = bearer(Request::post(&path("/families/leave")), token)
+/// `POST /families/{id}/leave` — that family only. Answers who it passed
+/// to, when the caller was its owner and somebody remains.
+pub async fn leave_family(token: &str, family: Option<i64>) -> Result<Option<i64>, ApiError> {
+    let url = path(&format!("{}/leave", family_path(family)));
+    let response = bearer(Request::post(&url), token)
         .send()
         .await
         .map_err(network)?;
@@ -711,17 +751,23 @@ pub async fn leave_family(token: &str) -> Result<Option<i64>, ApiError> {
     Ok(left.new_owner_user_id)
 }
 
-/// `PATCH /families/mine` — the owner's settings; only what is sent changes.
-pub async fn patch_family(token: &str, patch: &FamilyPatch) -> Result<Family, ApiError> {
+/// `PATCH /families/{id}` — the owner's settings; only what is sent changes.
+pub async fn patch_family(
+    token: &str,
+    family: Option<i64>,
+    patch: &FamilyPatch,
+) -> Result<Family, ApiError> {
     let response: FamilyResponse =
-        with_body(Request::patch(&path("/families/mine")), token, patch).await?;
+        with_body(Request::patch(&path(&family_path(family))), token, patch).await?;
     Ok(response.family)
 }
 
-/// `POST /families/invite-code/rotate` — the old code stops working at once.
-pub async fn rotate_invite_code(token: &str) -> Result<String, ApiError> {
+/// `POST /families/{id}/invite-code/rotate` — the old code stops working at
+/// once.
+pub async fn rotate_invite_code(token: &str, family: Option<i64>) -> Result<String, ApiError> {
+    let url = path(&format!("{}/invite-code/rotate", family_path(family)));
     let response: InviteCodeResponse = read(
-        bearer(Request::post(&path("/families/invite-code/rotate")), token)
+        bearer(Request::post(&url), token)
             .send()
             .await
             .map_err(network)?,
@@ -730,45 +776,62 @@ pub async fn rotate_invite_code(token: &str) -> Result<String, ApiError> {
     Ok(response.invite_code)
 }
 
-/// `GET /families/join-requests` — the owner's, pending only.
-pub async fn join_requests(token: &str) -> Result<Vec<JoinRequest>, ApiError> {
-    let response: RequestsResponse = get(token, "/families/join-requests").await?;
+/// `GET /families/{id}/join-requests` — the owner's, pending only.
+pub async fn join_requests(token: &str, family: Option<i64>) -> Result<Vec<JoinRequest>, ApiError> {
+    let url = format!("{}/join-requests", family_path(family));
+    let response: RequestsResponse = get(token, &url).await?;
     Ok(response.requests)
 }
 
-/// `POST /families/join-requests/{id}/approve` or `…/reject`.
-pub async fn decide_join_request(token: &str, id: i64, approve: bool) -> Result<(), ApiError> {
+/// `POST /families/{id}/join-requests/{id}/approve` or `…/reject`.
+pub async fn decide_join_request(
+    token: &str,
+    family: Option<i64>,
+    id: i64,
+    approve: bool,
+) -> Result<(), ApiError> {
     let verb = if approve { "approve" } else { "reject" };
-    let url = path(&format!("/families/join-requests/{id}/{verb}"));
+    let url = path(&format!(
+        "{}/join-requests/{id}/{verb}",
+        family_path(family)
+    ));
     empty::<()>(Request::post(&url), token, None).await
 }
 
-/// `GET /families/reports` — the owner's open reports, oldest first.
-pub async fn reports(token: &str) -> Result<Vec<Report>, ApiError> {
-    let response: ReportsResponse = get(token, "/families/reports").await?;
+/// `GET /families/{id}/reports` — the owner's open reports, oldest first.
+pub async fn reports(token: &str, family: Option<i64>) -> Result<Vec<Report>, ApiError> {
+    let url = format!("{}/reports", family_path(family));
+    let response: ReportsResponse = get(token, &url).await?;
     Ok(response.reports)
 }
 
-/// `POST /families/reports/{id}/resolve` — off the owner's list.
-pub async fn resolve_report(token: &str, id: i64) -> Result<(), ApiError> {
-    let url = path(&format!("/families/reports/{id}/resolve"));
+/// `POST /families/{id}/reports/{id}/resolve` — off the owner's list.
+pub async fn resolve_report(token: &str, family: Option<i64>, id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("{}/reports/{id}/resolve", family_path(family)));
     empty::<()>(Request::post(&url), token, None).await
 }
 
-/// `DELETE /families/members/{id}` — the owner removes somebody.
-pub async fn remove_member(token: &str, user_id: i64) -> Result<(), ApiError> {
-    let url = path(&format!("/families/members/{user_id}"));
+/// `DELETE /families/{id}/members/{id}` — the owner removes somebody from
+/// THAT family.
+pub async fn remove_member(token: &str, family: Option<i64>, user_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("{}/members/{user_id}", family_path(family)));
     empty::<()>(Request::delete(&url), token, None).await
 }
 
-/// `POST /families/members/{id}/password` — the owner sets a new password
-/// for somebody who has forgotten theirs; every device of theirs signs out.
+/// `POST /families/{id}/members/{id}/password` — the owner sets a new
+/// password for somebody who has forgotten theirs; every device of theirs
+/// signs out. Only for a member ALL of whose families this owner owns
+/// (`member_in_other_families` otherwise).
 pub async fn reset_member_password(
     token: &str,
+    family: Option<i64>,
     user_id: i64,
     new_password: &str,
 ) -> Result<(), ApiError> {
-    let url = path(&format!("/families/members/{user_id}/password"));
+    let url = path(&format!(
+        "{}/members/{user_id}/password",
+        family_path(family)
+    ));
     empty(
         Request::post(&url),
         token,
@@ -781,10 +844,14 @@ pub async fn reset_member_password(
 /// in for somebody, or clearing it.
 pub async fn set_member_birthday(
     token: &str,
+    family: Option<i64>,
     user_id: i64,
     birthday: Option<Birthday>,
 ) -> Result<Option<Member>, ApiError> {
-    let url = path(&format!("/families/members/{user_id}/birthday"));
+    let url = path(&format!(
+        "{}/members/{user_id}/birthday",
+        family_path(family)
+    ));
     match birthday {
         Some(birthday) => {
             let response: MemberResponse = with_body(Request::put(&url), token, &birthday).await?;
@@ -797,9 +864,66 @@ pub async fn set_member_birthday(
     }
 }
 
-/// `GET /families/mine/stats` — the family's numbers, for every member.
-pub async fn stats(token: &str) -> Result<Stats, ApiError> {
-    get(token, "/families/mine/stats").await
+/// `GET /families/{id}/stats` — the family's numbers, for every member.
+pub async fn stats(token: &str, family: Option<i64>) -> Result<Stats, ApiError> {
+    get(token, &format!("{}/stats", family_path(family))).await
+}
+
+/// `POST /families/{id}/invitations` — the owner invites somebody who
+/// shares another family with them. `201` and `200` (already invited) both
+/// answer the invitation.
+pub async fn invite(
+    token: &str,
+    family: Option<i64>,
+    user_id: i64,
+) -> Result<Invitation, ApiError> {
+    let url = path(&format!("{}/invitations", family_path(family)));
+    let response: InvitationResponse = with_body(
+        Request::post(&url),
+        token,
+        &serde_json::json!({ "user_id": user_id }),
+    )
+    .await?;
+    Ok(response.invitation)
+}
+
+/// `GET /families/{id}/invitations` — the owner's, pending only, oldest
+/// first.
+pub async fn family_invitations(
+    token: &str,
+    family: Option<i64>,
+) -> Result<Vec<Invitation>, ApiError> {
+    let url = format!("{}/invitations", family_path(family));
+    let response: InvitationsResponse = get(token, &url).await?;
+    Ok(response.invitations)
+}
+
+/// `DELETE /families/{id}/invitations/{id}` — withdrawn; idempotent.
+pub async fn withdraw_invitation(
+    token: &str,
+    family: Option<i64>,
+    invitation_id: i64,
+) -> Result<(), ApiError> {
+    let url = path(&format!(
+        "{}/invitations/{invitation_id}",
+        family_path(family)
+    ));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
+/// `POST /invitations/{id}/accept` — in at once, whatever the join policy:
+/// the owner already said yes. Answers the family.
+pub async fn accept_invitation(token: &str, invitation_id: i64) -> Result<Family, ApiError> {
+    let url = path(&format!("/invitations/{invitation_id}/accept"));
+    let response: FamilyResponse =
+        with_body(Request::post(&url), token, &serde_json::json!({})).await?;
+    Ok(response.family)
+}
+
+/// `POST /invitations/{id}/decline` — idempotent; the owner is not told.
+pub async fn decline_invitation(token: &str, invitation_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/invitations/{invitation_id}/decline"));
+    empty::<()>(Request::post(&url), token, None).await
 }
 
 /// `PUT` / `DELETE /me/birthday` — your own.
@@ -883,11 +1007,20 @@ pub async fn direct_chat(token: &str, user_id: i64) -> Result<Chat, ApiError> {
 
 /// `POST /chats/groups` — a new group, its admin the caller, `member_ids`
 /// the others (docs/protocol.md, "Groups").
-pub async fn create_group(token: &str, title: &str, member_ids: &[i64]) -> Result<Chat, ApiError> {
+pub async fn create_group(
+    token: &str,
+    family: Option<i64>,
+    title: &str,
+    member_ids: &[i64],
+) -> Result<Chat, ApiError> {
     let response: ChatResponse = with_body(
         Request::post(&path("/chats/groups")),
         token,
-        &NewGroup { title, member_ids },
+        &NewGroup {
+            title,
+            member_ids,
+            family_id: family,
+        },
     )
     .await?;
     Ok(response.chat)
@@ -1159,13 +1292,22 @@ pub fn upload_query(item: &OutgoingItem) -> String {
 
 /// `POST /attachments` — the bytes, raw, with their type; the metadata in
 /// the query. A location sends no body at all.
+///
+/// `family` is the family the upload is for — a message may use it only in a
+/// chat that family's id is in, and a note or a sticker only in that
+/// family's board and pack (docs/protocol.md, "Uploads name their family").
 pub async fn upload_attachment(
     token: &str,
     item: &OutgoingItem,
     file: Option<&Blob>,
+    family: Option<i64>,
 ) -> Result<Attachment, ApiError> {
     let controller = controller()?;
-    let url = path(&format!("/attachments?{}", upload_query(item)));
+    let mut query = upload_query(item);
+    if let Some(family) = family {
+        query.push_str(&format!("&family_id={family}"));
+    }
+    let url = path(&format!("/attachments?{query}"));
     let mut request = bearer(Request::post(&url), token).abort_signal(Some(&controller.signal()));
     if !item.mime.is_empty() && !item.is_location() {
         request = request.header("Content-Type", &item.mime);
@@ -1365,23 +1507,35 @@ pub async fn post_read(
     .await
 }
 
-/// `GET /families/mine/board` — the whole wall as it now stands.
-pub async fn board(token: &str) -> Result<BoardRead, ApiError> {
-    get(token, "/families/mine/board").await
+/// `GET /families/{id}/board` — the whole wall as it now stands.
+pub async fn board(token: &str, family: Option<i64>) -> Result<BoardRead, ApiError> {
+    get(token, &format!("{}/board", family_path(family))).await
 }
 
 /// `GET /families/mine/board/changes?after_seq=` — the board catch-up,
 /// tombstones included, looped by the caller until a short page.
-pub async fn board_changes(token: &str, after_seq: i64, limit: u32) -> Result<Vec<Note>, ApiError> {
-    let url = format!("/families/mine/board/changes?after_seq={after_seq}&limit={limit}");
+pub async fn board_changes(
+    token: &str,
+    family: Option<i64>,
+    after_seq: i64,
+    limit: u32,
+) -> Result<Vec<Note>, ApiError> {
+    let url = format!(
+        "{}/board/changes?after_seq={after_seq}&limit={limit}",
+        family_path(family)
+    );
     let response: NotesResponse = get(token, &url).await?;
     Ok(response.notes)
 }
 
 /// `POST /families/mine/board/notes` — the caller becomes the author.
-pub async fn create_note(token: &str, note: &NewNote) -> Result<Note, ApiError> {
+pub async fn create_note(
+    token: &str,
+    family: Option<i64>,
+    note: &NewNote,
+) -> Result<Note, ApiError> {
     let response: NoteResponse = with_body(
-        Request::post(&path("/families/mine/board/notes")),
+        Request::post(&path(&format!("{}/board/notes", family_path(family)))),
         token,
         note,
     )
@@ -1391,8 +1545,13 @@ pub async fn create_note(token: &str, note: &NewNote) -> Result<Note, ApiError> 
 
 /// `PATCH /families/mine/board/notes/{id}` — a move (anyone) or a rewrite
 /// (the author), by which fields are present.
-pub async fn patch_note(token: &str, note_id: i64, patch: &NotePatch) -> Result<Note, ApiError> {
-    let url = path(&format!("/families/mine/board/notes/{note_id}"));
+pub async fn patch_note(
+    token: &str,
+    family: Option<i64>,
+    note_id: i64,
+    patch: &NotePatch,
+) -> Result<Note, ApiError> {
+    let url = path(&format!("{}/board/notes/{note_id}", family_path(family)));
     let response: NoteResponse = with_body(Request::patch(&url), token, patch).await?;
     Ok(response.note)
 }
@@ -1401,10 +1560,14 @@ pub async fn patch_note(token: &str, note_id: i64, patch: &NotePatch) -> Result<
 /// it back. Anyone in the family may; answering is not authorship.
 pub async fn answer_event(
     token: &str,
+    family: Option<i64>,
     note_id: i64,
     answer: Option<&str>,
 ) -> Result<Note, ApiError> {
-    let url = path(&format!("/families/mine/board/notes/{note_id}/rsvp"));
+    let url = path(&format!(
+        "{}/board/notes/{note_id}/rsvp",
+        family_path(family)
+    ));
     let response: NoteResponse = match answer {
         Some(answer) => with_body(Request::put(&url), token, &RsvpRequest { answer }).await?,
         None => {
@@ -1426,12 +1589,14 @@ pub async fn answer_event(
 /// "Board").
 pub async fn tick_task(
     token: &str,
+    family: Option<i64>,
     note_id: i64,
     item_id: i64,
     done: bool,
 ) -> Result<Note, ApiError> {
     let url = path(&format!(
-        "/families/mine/board/notes/{note_id}/tasks/{item_id}"
+        "{}/board/notes/{note_id}/tasks/{item_id}",
+        family_path(family)
     ));
     let response: NoteResponse = with_body(Request::put(&url), token, &TaskDone { done }).await?;
     Ok(response.note)
@@ -1445,8 +1610,15 @@ struct TaskDone {
 /// `POST …/notes/{id}/backdrop` — ask the assistant for a picture to sit
 /// behind an event. The AUTHOR's, and drawn from the note's own title: there
 /// is nothing to send (docs/protocol.md, "Board").
-pub async fn draw_backdrop(token: &str, note_id: i64) -> Result<Note, ApiError> {
-    let url = path(&format!("/families/mine/board/notes/{note_id}/backdrop"));
+pub async fn draw_backdrop(
+    token: &str,
+    family: Option<i64>,
+    note_id: i64,
+) -> Result<Note, ApiError> {
+    let url = path(&format!(
+        "{}/board/notes/{note_id}/backdrop",
+        family_path(family)
+    ));
     let response: NoteResponse =
         with_body(Request::post(&url), token, &serde_json::json!({})).await?;
     Ok(response.note)
@@ -1580,24 +1752,28 @@ struct TranscriptBody {
 }
 
 /// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.
-pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
-    let url = path(&format!("/families/mine/board/notes/{note_id}"));
+pub async fn delete_note(token: &str, family: Option<i64>, note_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("{}/board/notes/{note_id}", family_path(family)));
     empty::<()>(Request::delete(&url), token, None).await
 }
 
-/// `GET /families/mine/pack` — the whole sticker pack as it now stands.
-pub async fn pack(token: &str) -> Result<PackRead, ApiError> {
-    get(token, "/families/mine/pack").await
+/// `GET /families/{id}/pack` — the whole sticker pack as it now stands.
+pub async fn pack(token: &str, family: Option<i64>) -> Result<PackRead, ApiError> {
+    get(token, &format!("{}/pack", family_path(family))).await
 }
 
 /// `GET /families/mine/pack/changes?after_seq=` — the pack catch-up,
 /// tombstones included, looped by the caller until a short page.
 pub async fn pack_changes(
     token: &str,
+    family: Option<i64>,
     after_seq: i64,
     limit: u32,
 ) -> Result<Vec<PackItem>, ApiError> {
-    let url = format!("/families/mine/pack/changes?after_seq={after_seq}&limit={limit}");
+    let url = format!(
+        "{}/pack/changes?after_seq={after_seq}&limit={limit}",
+        family_path(family)
+    );
     let response: PackItemsResponse = get(token, &url).await?;
     Ok(response.items)
 }
@@ -1607,10 +1783,12 @@ pub async fn pack_changes(
 /// already held, which takes no seq and sends no frame.
 pub async fn add_pack_item(
     token: &str,
+    family: Option<i64>,
     attachment_id: i64,
     label: Option<&str>,
 ) -> Result<PackClaimed, ApiError> {
-    let request = bearer(Request::post(&path("/families/mine/pack")), token)
+    let url = path(&format!("{}/pack", family_path(family)));
+    let request = bearer(Request::post(&url), token)
         .json(&PackClaim {
             attachment_id,
             label,
@@ -1627,14 +1805,20 @@ pub async fn add_pack_item(
 
 /// `DELETE /families/mine/pack/{id}` — whoever added it, or the family
 /// owner; idempotent.
-pub async fn remove_pack_item(token: &str, item_id: i64) -> Result<(), ApiError> {
-    let url = path(&format!("/families/mine/pack/{item_id}"));
+pub async fn remove_pack_item(
+    token: &str,
+    family: Option<i64>,
+    item_id: i64,
+) -> Result<(), ApiError> {
+    let url = path(&format!("{}/pack/{item_id}", family_path(family)));
     empty::<()>(Request::delete(&url), token, None).await
 }
 
-/// `POST /families/reports` — one person, or one message of theirs.
+/// `POST /families/{id}/reports` — one person, or one message of theirs,
+/// to THAT family's owner.
 pub async fn report(
     token: &str,
+    family: Option<i64>,
     reported_user_id: i64,
     reason: &str,
     message_id: Option<i64>,
@@ -1645,7 +1829,7 @@ pub async fn report(
         message_id,
     };
     empty(
-        Request::post(&path("/families/reports")),
+        Request::post(&path(&format!("{}/reports", family_path(family)))),
         token,
         Some(&body),
     )
@@ -1737,7 +1921,9 @@ struct AssistantLookupConsentResponse {
     assistant_lookup_consent_at: Option<String>,
 }
 
-/// `PUT` / `DELETE /families/members/{id}/block`.
+/// `PUT` / `DELETE /families/members/{id}/block` — the form without a
+/// family, which means anybody this account shares ANY family with; the
+/// block holds in every family (docs/protocol.md, "Several families").
 pub async fn set_blocked(token: &str, user_id: i64, blocked: bool) -> Result<(), ApiError> {
     let url = path(&format!("/families/members/{user_id}/block"));
     if blocked {

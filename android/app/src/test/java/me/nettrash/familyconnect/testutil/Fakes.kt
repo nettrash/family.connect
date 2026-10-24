@@ -54,6 +54,8 @@ import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
+import me.nettrash.familyconnect.data.net.dto.InvitationsResponse
+import me.nettrash.familyconnect.data.net.dto.InvitationResponse
 import me.nettrash.familyconnect.data.net.dto.MemberBirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MeResponse
@@ -193,25 +195,75 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(linkPreviewsEnabled = enabled)
     }
 
-    override suspend fun setBoardCursor(seq: Long) {
-        _state.value = _state.value.copy(boardCursor = seq)
+    override suspend fun setBoardCursor(familyId: Long, seq: Long) {
+        _state.value = _state.value.copy(boardCursors = _state.value.boardCursors + (familyId to seq))
     }
 
-    override suspend fun setBoardSeenNoteId(noteId: Long) {
+    override suspend fun setFamilies(
+        families: List<me.nettrash.familyconnect.data.net.dto.FamilyDto>,
+        pendingJoinRequests: List<me.nettrash.familyconnect.data.net.dto.PendingJoinRequestDto>,
+        invitations: List<me.nettrash.familyconnect.data.net.dto.InvitationDto>,
+        memberFamiliesEnabled: Boolean,
+        maxFamiliesPerAccount: Int,
+        multiFamilyServer: Boolean,
+    ) {
+        _state.value = _state.value.copy(
+            families = families,
+            pendingJoinRequests = pendingJoinRequests,
+            invitations = invitations,
+            memberFamiliesEnabled = memberFamiliesEnabled,
+            maxFamiliesPerAccount = maxFamiliesPerAccount,
+            multiFamilyServer = multiFamilyServer,
+        )
+    }
+
+    override suspend fun setCurrentFamilyId(familyId: Long?) {
+        _state.value = _state.value.copy(currentFamilyId = familyId)
+    }
+
+    override suspend fun setInvitations(invitations: List<me.nettrash.familyconnect.data.net.dto.InvitationDto>) {
+        _state.value = _state.value.copy(invitations = invitations)
+    }
+
+    /** Every family forgotten, in order. */
+    val forgottenFamilies = mutableListOf<Long>()
+
+    override suspend fun forgetFamily(familyId: Long) {
+        forgottenFamilies += familyId
+        val s = _state.value
+        _state.value = s.copy(
+            families = s.families.filter { it.id != familyId },
+            boardCursors = s.boardCursors - familyId,
+            packCursors = s.packCursors - familyId,
+            boardSeenNoteIds = s.boardSeenNoteIds - familyId,
+            boardSeenContentSeqs = s.boardSeenContentSeqs - familyId,
+        )
+    }
+
+    /** Every claim, in order — the fake holds no single values from before to move. */
+    val legacyClaims = mutableListOf<Long>()
+
+    override suspend fun claimLegacyFamilyState(homeFamilyId: Long) {
+        legacyClaims += homeFamilyId
+    }
+
+    override suspend fun setBoardSeenNoteId(familyId: Long, noteId: Long) {
         // Never backwards, matching the real store.
-        if (noteId > _state.value.boardSeenNoteId) {
-            _state.value = _state.value.copy(boardSeenNoteId = noteId)
+        if (noteId > (_state.value.boardSeenNoteIds[familyId] ?: 0L)) {
+            _state.value = _state.value.copy(boardSeenNoteIds = _state.value.boardSeenNoteIds + (familyId to noteId))
         }
     }
 
-    override suspend fun setBoardSeenContentSeq(seq: Long) {
-        if (seq > _state.value.boardSeenContentSeq) {
-            _state.value = _state.value.copy(boardSeenContentSeq = seq)
+    override suspend fun setBoardSeenContentSeq(familyId: Long, seq: Long) {
+        if (seq > (_state.value.boardSeenContentSeqs[familyId] ?: 0L)) {
+            _state.value = _state.value.copy(
+                boardSeenContentSeqs = _state.value.boardSeenContentSeqs + (familyId to seq),
+            )
         }
     }
 
-    override suspend fun setPackCursor(seq: Long) {
-        _state.value = _state.value.copy(packCursor = seq)
+    override suspend fun setPackCursor(familyId: Long, seq: Long) {
+        _state.value = _state.value.copy(packCursors = _state.value.packCursors + (familyId to seq))
     }
 
     override suspend fun setPackLimits(maxItems: Int?, maxItemBytes: Long?) {
@@ -783,9 +835,19 @@ class FakeFamilyApi : FamilyApi {
     /** Runs while `GET /families/mine` is "in flight" — for what happens meanwhile. */
     var onMine: (() -> Unit)? = null
 
-    override suspend fun mine(): ApiResult<FamilyMineResponse> {
+    /** Per family: what `GET /families/{id}` answers; anything unscripted answers [mineResult]. */
+    val familyResults = mutableMapOf<Long?, ApiResult<FamilyMineResponse>>()
+
+    /** Every family read, in order — null is the home family's `mine`. */
+    val familiesRead = mutableListOf<Long?>()
+
+    /** Every family-level call: (method, the family its path named). */
+    val familyCalls = mutableListOf<Pair<String, Long?>>()
+
+    override suspend fun family(familyId: Long?): ApiResult<FamilyMineResponse> {
+        familiesRead += familyId
         onMine?.invoke()
-        return mineResult
+        return familyResults[familyId] ?: mineResult
     }
 
     var statsResult: ApiResult<FamilyStatsDto> =
@@ -794,14 +856,15 @@ class FakeFamilyApi : FamilyApi {
     /** How many times the statistics were fetched — they are never cached. */
     var statsCalls = 0
 
-    override suspend fun stats(): ApiResult<FamilyStatsDto> {
+    override suspend fun stats(familyId: Long?): ApiResult<FamilyStatsDto> {
         statsCalls += 1
+        familyCalls += "stats" to familyId
         return statsResult
     }
-    override suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
+    override suspend fun rotateInviteCode(familyId: Long?): ApiResult<RotateInviteCodeResponse> =
         ApiResult.Ok(RotateInviteCodeResponse("NEWCODE1"))
 
-    override suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse> = createResult
+    override suspend fun setJoinPolicy(familyId: Long?, policy: String): ApiResult<FamilyResponse> = createResult
 
     /** Every language PATCH, in order — null is the explicit clear. */
     val languagesSet = mutableListOf<String?>()
@@ -812,17 +875,18 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_vision PATCH, in order. */
     val aiVisionSet = mutableListOf<Boolean>()
 
-    override suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> {
+    override suspend fun setLanguage(familyId: Long?, tag: String?): ApiResult<FamilyResponse> {
         languagesSet += tag
+        familyCalls += "setLanguage" to familyId
         return createResult
     }
 
-    override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiHistory(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiHistorySet += enabled
         return createResult
     }
 
-    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiVision(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiVisionSet += enabled
         return createResult
     }
@@ -830,7 +894,7 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_history_photos PATCH, in order. */
     val aiHistoryPhotosSet = mutableListOf<Boolean>()
 
-    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiHistoryPhotos(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiHistoryPhotosSet += enabled
         return createResult
     }
@@ -838,7 +902,7 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_greeting PATCH, in order. */
     val aiGreetingSet = mutableListOf<Boolean>()
 
-    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiGreeting(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiGreetingSet += enabled
         return createResult
     }
@@ -846,7 +910,7 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_faces PATCH, in order. */
     val aiFacesSet = mutableListOf<Boolean>()
 
-    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiFaces(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiFacesSet += enabled
         return createResult
     }
@@ -854,7 +918,7 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_transcripts PATCH, in order. */
     val aiTranscriptsSet = mutableListOf<Boolean>()
 
-    override suspend fun setAiTranscripts(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiTranscripts(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiTranscriptsSet += enabled
         return createResult
     }
@@ -862,7 +926,7 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_lookups PATCH, in order. */
     val aiLookupsSet = mutableListOf<Boolean>()
 
-    override suspend fun setAiLookups(enabled: Boolean): ApiResult<FamilyResponse> {
+    override suspend fun setAiLookups(familyId: Long?, enabled: Boolean): ApiResult<FamilyResponse> {
         aiLookupsSet += enabled
         return createResult
     }
@@ -870,32 +934,37 @@ class FakeFamilyApi : FamilyApi {
     /** Every greeting_places PATCH, in order. */
     val greetingPlacesSet = mutableListOf<List<String>>()
 
-    override suspend fun setGreetingPlaces(places: List<String>): ApiResult<FamilyResponse> {
+    override suspend fun setGreetingPlaces(familyId: Long?, places: List<String>): ApiResult<FamilyResponse> {
         greetingPlacesSet += places
         return createResult
     }
-    override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
+    override suspend fun joinRequests(familyId: Long?): ApiResult<JoinRequestsResponse> = joinRequestsResult
 
     var approveResult: ApiResult<ApproveResponse> =
         ApiResult.NetworkError(IllegalStateException("unscripted"))
 
-    override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> = approveResult
+    override suspend fun approve(familyId: Long?, requestId: Long): ApiResult<ApproveResponse> = approveResult
 
-    override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun reject(familyId: Long?, requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
     /** Who `leave()` reports as the successor; null = nobody inherited. */
     var leaveSuccessorId: Long? = null
     var leaveResult: ApiResult<Long?>? = null
 
-    override suspend fun leave(): ApiResult<Long?> =
-        leaveResult ?: ApiResult.Ok(leaveSuccessorId)
+    override suspend fun leave(familyId: Long?): ApiResult<Long?> {
+        familyCalls += "leave" to familyId
+        return leaveResult ?: ApiResult.Ok(leaveSuccessorId)
+    }
 
-    override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun removeMember(familyId: Long?, userId: Long): ApiResult<Unit> {
+        familyCalls += "removeMember" to familyId
+        return ApiResult.Ok(Unit)
+    }
 
     /** Every cap this fake was told to set, in order; null = cleared. */
     val memberCaps = mutableListOf<Int?>()
     var setMemberCapResult: ApiResult<FamilyResponse>? = null
 
-    override suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> {
+    override suspend fun setMemberCap(familyId: Long?, cap: Int?): ApiResult<FamilyResponse> {
         memberCaps += cap
         return setMemberCapResult
             ?: ApiResult.NetworkError(IllegalStateException("unscripted setMemberCap"))
@@ -922,6 +991,7 @@ class FakeFamilyApi : FamilyApi {
     val resolvedReports = mutableListOf<Long>()
 
     override suspend fun report(
+        familyId: Long?,
         reportedUserId: Long,
         reason: String,
         messageId: Long?,
@@ -945,22 +1015,25 @@ class FakeFamilyApi : FamilyApi {
             ?: ApiResult.NetworkError(IllegalStateException("unscripted assistant report"))
     }
 
-    override suspend fun reports(): ApiResult<ReportsResponse> = reportsResult
+    override suspend fun reports(familyId: Long?): ApiResult<ReportsResponse> = reportsResult
 
-    override suspend fun resolveReport(reportId: Long): ApiResult<Unit> {
+    override suspend fun resolveReport(familyId: Long?, reportId: Long): ApiResult<Unit> {
         resolvedReports += reportId
         return ApiResult.Ok(Unit)
     }
 
     /** Every reset this fake saw: (userId, newPassword). */
     val passwordResets = mutableListOf<Pair<Long, String>>()
+    var resetPasswordResult: ApiResult<Unit> = ApiResult.Ok(Unit)
 
     override suspend fun resetMemberPassword(
+        familyId: Long?,
         userId: Long,
         newPassword: String,
     ): ApiResult<Unit> {
         passwordResets += userId to newPassword
-        return ApiResult.Ok(Unit)
+        familyCalls += "resetMemberPassword" to familyId
+        return resetPasswordResult
     }
 
     /** Every owner-set birthday: (userId, month, day). */
@@ -976,6 +1049,7 @@ class FakeFamilyApi : FamilyApi {
         { _, _, _ -> null }
 
     override suspend fun setMemberBirthday(
+        familyId: Long?,
         userId: Long,
         month: Int,
         day: Int,
@@ -988,9 +1062,45 @@ class FakeFamilyApi : FamilyApi {
         )
     }
 
-    override suspend fun clearMemberBirthday(userId: Long): ApiResult<Unit> {
+    override suspend fun clearMemberBirthday(familyId: Long?, userId: Long): ApiResult<Unit> {
         memberBirthdaysCleared += userId
         return ApiResult.Ok(Unit)
+    }
+
+    var inviteResult: ApiResult<InvitationResponse>? = null
+    var invitationsResult: ApiResult<InvitationsResponse> = ApiResult.Ok(InvitationsResponse(emptyList()))
+    var acceptResult: ApiResult<FamilyResponse> = ApiResult.NetworkError(IllegalStateException("unscripted accept"))
+    var declineResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Every invitation sent: (family path, user). */
+    val invitesSent = mutableListOf<Pair<Long?, Long>>()
+    val invitationsWithdrawn = mutableListOf<Pair<Long?, Long>>()
+    val invitationsAccepted = mutableListOf<Long>()
+    val invitationsDeclined = mutableListOf<Long>()
+
+    override suspend fun invite(familyId: Long?, userId: Long): ApiResult<InvitationResponse> {
+        invitesSent += familyId to userId
+        return inviteResult ?: ApiResult.NetworkError(IllegalStateException("unscripted invite"))
+    }
+
+    override suspend fun invitations(familyId: Long?): ApiResult<InvitationsResponse> {
+        familyCalls += "invitations" to familyId
+        return invitationsResult
+    }
+
+    override suspend fun withdrawInvitation(familyId: Long?, invitationId: Long): ApiResult<Unit> {
+        invitationsWithdrawn += familyId to invitationId
+        return ApiResult.Ok(Unit)
+    }
+
+    override suspend fun acceptInvitation(invitationId: Long): ApiResult<FamilyResponse> {
+        invitationsAccepted += invitationId
+        return acceptResult
+    }
+
+    override suspend fun declineInvitation(invitationId: Long): ApiResult<Unit> {
+        invitationsDeclined += invitationId
+        return declineResult
     }
 }
 
@@ -1047,9 +1157,19 @@ class FakeBoardApi : BoardApi {
     /** Every tick, as (note, item, state). */
     val ticked = mutableListOf<Triple<Long, Long, Boolean>>()
 
-    override suspend fun getBoard(): ApiResult<BoardResponse> = ApiResult.Ok(board)
+    /** The family each board call's path named, in order: (call, family). */
+    val familyCalls = mutableListOf<Pair<String, Long?>>()
+
+    override suspend fun getBoard(familyId: Long?): ApiResult<BoardResponse> {
+        familyCalls += "getBoard" to familyId
+        return ApiResult.Ok(boards[familyId] ?: board)
+    }
+
+    /** Per family: what a full read answers; anything unscripted answers [board]. */
+    val boards = mutableMapOf<Long?, BoardResponse>()
 
     override suspend fun getBoardChanges(
+        familyId: Long?,
         afterSeq: Long,
         limit: Int,
     ): ApiResult<BoardChangesResponse> =
@@ -1058,6 +1178,7 @@ class FakeBoardApi : BoardApi {
         )
 
     override suspend fun createNote(
+        familyId: Long?,
         text: String,
         color: String,
         size: String,
@@ -1071,6 +1192,7 @@ class FakeBoardApi : BoardApi {
         mentions: List<MentionDto>,
         items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
+        familyCalls += "createNote" to familyId
         val kind = when {
             startsAt != null -> "event"
             attachmentId != null -> "photo"
@@ -1110,6 +1232,7 @@ class FakeBoardApi : BoardApi {
     }
 
     override suspend fun patchNote(
+        familyId: Long?,
         id: Long,
         text: String?,
         color: String?,
@@ -1142,7 +1265,7 @@ class FakeBoardApi : BoardApi {
     /** Every answer this fake was asked to record, in order (null = retract). */
     val answers = mutableListOf<Pair<Long, String?>>()
 
-    override suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse> {
+    override suspend fun answerNote(familyId: Long?, id: Long, answer: String?): ApiResult<NoteResponse> {
         answers += id to answer
         nextSeq++
         return ApiResult.Ok(
@@ -1162,7 +1285,7 @@ class FakeBoardApi : BoardApi {
     /** What the server answers instead of a picture, when set — a refusal, a 500. */
     var backdropFailure: ApiResult<NoteResponse>? = null
 
-    override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> {
+    override suspend fun drawBackdrop(familyId: Long?, noteId: Long): ApiResult<NoteResponse> {
         backdrops += noteId
         backdropFailure?.let { return it }
         return ApiResult.Ok(
@@ -1179,6 +1302,7 @@ class FakeBoardApi : BoardApi {
     }
 
     override suspend fun tickTask(
+        familyId: Long?,
         noteId: Long,
         itemId: Long,
         done: Boolean,
@@ -1198,7 +1322,7 @@ class FakeBoardApi : BoardApi {
         )
     }
 
-    override suspend fun deleteNote(id: Long): ApiResult<Unit> {
+    override suspend fun deleteNote(familyId: Long?, id: Long): ApiResult<Unit> {
         deleted += id
         return ApiResult.Ok(Unit)
     }
@@ -1319,6 +1443,9 @@ fun messageDto(
  * idempotent.
  */
 class FakePackApi : PackApi {
+    /** The family each pack call's path named, in order: (call, family). */
+    val familyCalls = mutableListOf<Pair<String, Long?>>()
+
     var pack: PackResponse = PackResponse(emptyList(), 0)
     /** What `getPack` answers; defaults to [pack]. */
     var packResult: (() -> ApiResult<PackResponse>)? = null
@@ -1342,19 +1469,22 @@ class FakePackApi : PackApi {
     var addResult: (suspend (Long, String?) -> ApiResult<PackItemResponse>)? = null
     var removeResult: (Long) -> ApiResult<Unit> = { ApiResult.Ok(Unit) }
 
-    override suspend fun getPack(): ApiResult<PackResponse> {
+    override suspend fun getPack(familyId: Long?): ApiResult<PackResponse> {
         fullReads += 1
+        familyCalls += "getPack" to familyId
         return packResult?.invoke() ?: ApiResult.Ok(pack)
     }
 
-    override suspend fun getPackChanges(afterSeq: Long, limit: Int): ApiResult<PackChangesResponse> {
+    override suspend fun getPackChanges(familyId: Long?, afterSeq: Long, limit: Int): ApiResult<PackChangesResponse> {
+        familyCalls += "getPackChanges" to familyId
         changeRequests += afterSeq
         return ApiResult.Ok(
             PackChangesResponse(if (changePages.isEmpty()) emptyList() else changePages.removeAt(0)),
         )
     }
 
-    override suspend fun addItem(attachmentId: Long, label: String?): ApiResult<PackItemResponse> {
+    override suspend fun addItem(familyId: Long?, attachmentId: Long, label: String?): ApiResult<PackItemResponse> {
+        familyCalls += "addItem" to familyId
         added += attachmentId to label
         addResult?.let { return it(attachmentId, label) }
         return ApiResult.Ok(
@@ -1364,7 +1494,8 @@ class FakePackApi : PackApi {
         )
     }
 
-    override suspend fun removeItem(id: Long): ApiResult<Unit> {
+    override suspend fun removeItem(familyId: Long?, id: Long): ApiResult<Unit> {
+        familyCalls += "removeItem" to familyId
         removed += id
         return removeResult(id)
     }
@@ -1510,6 +1641,9 @@ class FakeAttachmentApi : AttachmentApi {
     val uploadedWaveforms = mutableListOf<String?>()
     val uploadedPreviews = mutableListOf<Pair<Long, Int>>()
 
+    /** The `family_id` each upload named, in order (null: left off). */
+    val uploadedFamilies = mutableListOf<Long?>()
+
     override suspend fun upload(
         file: File,
         mime: String,
@@ -1519,8 +1653,10 @@ class FakeAttachmentApi : AttachmentApi {
         durationMs: Int?,
         name: String?,
         waveform: String?,
+        familyId: Long?,
     ): ApiResult<AttachmentResponse> {
         calls += "upload"
+        uploadedFamilies += familyId
         uploadedFiles += file
         uploadedMetadata += Triple(kind, width, height)
         uploadedNames += name
@@ -1549,8 +1685,10 @@ class FakeAttachmentApi : AttachmentApi {
         longitude: Double,
         accuracyM: Int?,
         name: String?,
+        familyId: Long?,
     ): ApiResult<AttachmentResponse> {
         calls += "uploadLocation"
+        uploadedFamilies += familyId
         uploadedLocations += Triple(latitude, longitude, accuracyM)
         uploadedNames += name
         return locationHandler(latitude, longitude)
@@ -1831,8 +1969,12 @@ class FakeGroupApi : me.nettrash.familyconnect.data.net.GroupApi {
     val removed = mutableListOf<Pair<Long, Long>>()
     val deleted = mutableListOf<Long>()
 
-    override suspend fun create(title: String, memberIds: List<Long>): ApiResult<ChatResponse> {
+    /** The family each create named (null: the home family). */
+    val createdInFamilies = mutableListOf<Long?>()
+
+    override suspend fun create(title: String, memberIds: List<Long>, familyId: Long?): ApiResult<ChatResponse> {
         created += title to memberIds
+        createdInFamilies += familyId
         return createResult
     }
 

@@ -88,14 +88,72 @@ pub fn board_on_screen(state: &AppState) -> bool {
     state.board_open && page_visible() && page_focused()
 }
 
-/// The board has been on screen: its marks rise to it, and are kept.
+/// The board has been on screen: its marks rise to it, and are kept — for
+/// the family whose board it is.
 pub fn mark_board_shown(live: &Live, session: u64) {
     let kept = live.update(session, |state| {
-        (board_on_screen(state) && state.store.board.shown())
-            .then_some((state.store.my_user_id, state.store.board.marks))
+        let family_id = state.store.current_family_id()?;
+        (board_on_screen(state) && state.store.board.shown()).then_some((
+            state.store.my_user_id,
+            family_id,
+            state.store.board.marks,
+        ))
     });
-    if let Some(Some((user_id, marks))) = kept {
-        crate::session::save_board_marks(user_id, marks);
+    if let Some(Some((user_id, family_id, marks))) = kept {
+        crate::session::save_board_marks(user_id, family_id, marks);
+    }
+}
+
+/// What this browser keeps of every family's board and pack — the board's
+/// seen-marks, the stickers reached for last — taken on by the boards and
+/// packs this store holds. Each family's own (session.rs).
+pub fn take_kept_marks(store: &mut crate::store::Store) {
+    let me = store.my_user_id;
+    let home = store.home_family_id();
+    let ids: Vec<i64> = store.families.iter().map(|family| family.id).collect();
+    for family_id in ids {
+        let is_home = home == Some(family_id);
+        let marks = crate::session::board_marks(me, family_id, is_home);
+        if let Some(board) = store.board_mut(family_id) {
+            board.take_marks(me, marks);
+        }
+        let recents = crate::session::pack_recents(me, family_id, is_home);
+        if let Some(pack) = store.pack_mut(family_id) {
+            pack.take_recents(me, recents);
+        }
+    }
+}
+
+/// Show another family (docs/protocol.md, "Several families"): the chat
+/// list, the board, the stickers, the roster and the owner's screens become
+/// that family's, whatever pane was open goes, and this device remembers it
+/// for the next reload. Answers whether it changed.
+pub fn show_family(live: &Live, session: u64, family_id: i64) -> bool {
+    let switched = live.update(session, |state| {
+        if !state.store.switch_family(family_id) {
+            return None;
+        }
+        state.store.preferred_family = Some(family_id);
+        take_kept_marks(&mut state.store);
+        put_away_panes(state);
+        Some(state.store.my_user_id)
+    });
+    match switched.flatten() {
+        Some(user_id) => {
+            crate::session::set_shown_family(user_id, Some(family_id));
+            true
+        }
+        None => false,
+    }
+}
+
+/// A family this account is no longer in — `member_left` naming it, a
+/// leave of its own, or `family_not_found` from a family it thought it held:
+/// that family's chats, board, pack and roster go, and the family on screen
+/// falls back to the first left, or to the gate.
+pub fn drop_family(state: &mut AppState, family_id: i64) {
+    if state.store.leave_family(family_id) {
+        put_away_panes(state);
     }
 }
 
@@ -285,7 +343,21 @@ async fn upload(
             });
         }
     }
-    let attachment = api::upload_attachment(token, &job.item, job.bytes.file.as_ref()).await?;
+    // For the family the message's chat is listed in — the one on screen
+    // when it is listed there (docs/protocol.md, "Uploads name their
+    // family").
+    let family = live
+        .read(|state| {
+            state
+                .store
+                .outbox
+                .iter()
+                .find(|row| row.client_msg_id == job.client_msg_id)
+                .map(|row| state.store.family_of_chat(row.chat_id))
+        })
+        .flatten();
+    let attachment =
+        api::upload_attachment(token, &job.item, job.bytes.file.as_ref(), family).await?;
     if let Some(preview) = job.bytes.preview {
         if api::upload_preview(token, attachment.id, &preview)
             .await
@@ -334,27 +406,20 @@ pub async fn resync(
             live.update(session, |state| state.failure = Some(error.detail()));
         }
     }
-    // An account in no family has no roster — and no board; that is a real
+    // Every family this account is in: its roster, and its board and pack
+    // each on a cursor of its own (resync step 1, amended 2026-10-22). An
+    // account in no family has no roster — and no board; that is a real
     // state rather than a failure worth showing.
-    let writes = live.read(|state| state.store.family_writes);
-    if let Ok(roster) = api::family(token).await {
-        let server_max = roster.max_board_seq;
-        // The pack's mark rides on the same read — and so does whether
-        // this server has packs at all: no limits, nothing to sync.
-        let pack_max = roster.max_pack_items.map(|_| roster.max_pack_seq);
-        live.update(session, |state| {
-            take_roster(&mut state.store, roster, writes)
-        });
-        {
-            let live = live.clone();
-            let token = token.to_string();
-            spawn_local(async move { sync_board(&live, session, &token, server_max, link).await });
-        }
-        if let Some(pack_max) = pack_max {
-            let live = live.clone();
-            let token = token.to_string();
-            spawn_local(async move { sync_pack(&live, session, &token, pack_max, link).await });
-        }
+    let families: Vec<i64> = live.read(|state| {
+        state
+            .store
+            .families
+            .iter()
+            .map(|family| family.id)
+            .collect()
+    });
+    for family_id in families {
+        read_family(live, session, token, family_id, link).await;
     }
     if !refresh_chats(live, session, token, expired).await {
         return;
@@ -363,25 +428,69 @@ pub async fn resync(
     report_read(live, session, token).await;
 }
 
-/// What `/me` said, taken in: the account, the family it is in (and, when
-/// that changed, everything the old one held put away), the board's marks,
-/// and whether a join request is still waiting — kept past a reload, since
-/// a refusal is only ever told by the request vanishing.
+/// One family's roster, then its board and its pack beside each other, each
+/// on its own cursor. A family the server says this account is not in
+/// (`family_not_found`) is one it left from somewhere else: it goes.
+async fn read_family(live: &Live, session: u64, token: &str, family_id: i64, link: Option<u64>) {
+    let writes = live.read(|state| state.store.family_writes);
+    let roster = match api::family(token, Some(family_id)).await {
+        Ok(roster) => roster,
+        Err(error) => {
+            if error.code() == Some("family_not_found") {
+                live.update(session, |state| drop_family(state, family_id));
+            }
+            return;
+        }
+    };
+    let server_max = roster.max_board_seq;
+    // The pack's mark rides on the same read — and so does whether this
+    // server has packs at all: no limits, nothing to sync.
+    let pack_max = roster.max_pack_items.map(|_| roster.max_pack_seq);
+    live.update(session, |state| {
+        state
+            .store
+            .with_family(family_id, |store| take_roster(store, roster, writes));
+    });
+    {
+        let live = live.clone();
+        let token = token.to_string();
+        spawn_local(async move {
+            sync_board(&live, session, &token, family_id, server_max, link).await
+        });
+    }
+    if let Some(pack_max) = pack_max {
+        let live = live.clone();
+        let token = token.to_string();
+        spawn_local(
+            async move { sync_pack(&live, session, &token, family_id, pack_max, link).await },
+        );
+    }
+}
+
+/// What `/me` said, taken in: the account, the families it is in (and,
+/// for one it is no longer in, everything that one held put away), which
+/// of them is on screen, each board's marks, and whether a join request is
+/// still waiting — kept past a reload, since a refusal is only ever told by
+/// the request vanishing.
 pub fn apply_account(live: &Live, session: u64, me: &crate::model::Me) {
-    let kept = crate::session::board_marks(me.user.id);
-    let recents = crate::session::pack_recents(me.user.id);
     let waited = crate::session::awaiting_join() == Some(me.user.id);
-    let waiting = live.update(session, |state| {
+    let shown_last = crate::session::shown_family(me.user.id);
+    let kept = live.update(session, |state| {
         state.store.awaiting_join |= waited;
+        if state.store.preferred_family.is_none() {
+            state.store.preferred_family = shown_last;
+        }
         if state.store.apply_me(me) {
             put_away_panes(state);
         }
-        state.store.board.take_marks(me.user.id, kept);
-        state.store.pack.take_recents(me.user.id, recents);
-        state.store.awaiting_join
+        take_kept_marks(&mut state.store);
+        (state.store.awaiting_join, state.store.current_family_id())
     });
-    if let Some(waiting) = waiting {
+    if let Some((waiting, shown)) = kept {
         crate::session::set_awaiting_join(waiting.then_some(me.user.id));
+        if shown.is_some() {
+            crate::session::set_shown_family(me.user.id, shown);
+        }
     }
 }
 
@@ -398,25 +507,55 @@ pub fn take_roster(store: &mut crate::store::Store, mut roster: crate::model::Ro
 /// What the family pane shows its owner: the family as it stands now (the
 /// invite code may have been rotated elsewhere), the requests waiting and
 /// the reports open. A member reads the roster alone.
+///
+/// The family on screen's — and its answers go to THAT family, wherever it is
+/// by the time they land. Its owner also reads the invitations still
+/// pending (docs/protocol.md, "Several families").
 pub async fn read_family_admin(live: &Live, session: u64, token: &str) {
+    let Some(family_id) = live.read(|state| state.store.current_family_id()) else {
+        return;
+    };
     let writes = live.read(|state| state.store.family_writes);
-    if let Ok(roster) = api::family(token).await {
-        live.update(session, |state| {
-            take_roster(&mut state.store, roster, writes)
-        });
+    match api::family(token, Some(family_id)).await {
+        Ok(roster) => {
+            live.update(session, |state| {
+                state
+                    .store
+                    .with_family(family_id, |store| take_roster(store, roster, writes));
+            });
+        }
+        Err(error) if error.code() == Some("family_not_found") => {
+            live.update(session, |state| drop_family(state, family_id));
+            return;
+        }
+        Err(_) => {}
     }
-    if !live.read(|state| state.store.is_owner()) {
+    let owner = live.read(|state| {
+        state
+            .store
+            .family_list()
+            .iter()
+            .any(|family| family.id == family_id && family.is_owner())
+    });
+    if !owner {
         return;
     }
-    let requests = api::join_requests(token).await;
-    let reports = api::reports(token).await;
+    let family = Some(family_id);
+    let requests = api::join_requests(token, family).await;
+    let reports = api::reports(token, family).await;
+    let invitations = api::family_invitations(token, family).await;
     live.update(session, |state| {
-        if let Ok(requests) = requests {
-            state.store.join_requests = requests;
-        }
-        if let Ok(reports) = reports {
-            state.store.reports = reports;
-        }
+        state.store.with_family(family_id, |store| {
+            if let Ok(requests) = requests {
+                store.join_requests = requests;
+            }
+            if let Ok(reports) = reports {
+                store.reports = reports;
+            }
+            if let Ok(invitations) = invitations {
+                store.sent_invitations = invitations;
+            }
+        });
     });
 }
 
@@ -485,7 +624,8 @@ fn notify_message(live: &Live, session: u64, message: &crate::model::Message) {
         }
         let item = store.item(message.chat_id)?;
         // Where it was said, before who said it: the family's name for the
-        // family chat, the group's for a group (docs/protocol.md, "Push
+        // family chat — THAT chat's family, which need not be the one on
+        // screen — the group's for a group (docs/protocol.md, "Push
         // notifications" — titles, amended 2026-10-22), nothing for a
         // direct chat.
         let family = if item.chat.is_group() {
@@ -493,7 +633,12 @@ fn notify_message(live: &Live, session: u64, message: &crate::model::Message) {
         } else {
             item.chat
                 .is_family()
-                .then(|| store.family.as_ref().map(|family| family.name.clone()))
+                .then(|| {
+                    store
+                        .chat_families(&item.chat)
+                        .first()
+                        .and_then(|family_id| store.family_name(*family_id))
+                })
                 .flatten()
         };
         let sender = store
@@ -520,7 +665,17 @@ fn notify_message(live: &Live, session: u64, message: &crate::model::Message) {
         &format!("chat-{chat_id}"),
         move || {
             // Clicking it is asking to read that chat, on the tab it has
-            // just brought to the front.
+            // just brought to the front — in its family, shown first when
+            // the chat is not listed in the one on screen.
+            let family = live.read(|state| {
+                let item = state.store.item(chat_id)?;
+                (!state.store.listed_here(&item.chat))
+                    .then(|| state.store.family_of_chat(chat_id))
+                    .flatten()
+            });
+            if let Some(family_id) = family {
+                show_family(&live, session, family_id);
+            }
             live.update(session, |state| {
                 state.open_chat = Some(chat_id);
                 state.at_newest = false;
@@ -543,21 +698,35 @@ fn on_this_link(state: &AppState, link: Option<u64>) -> bool {
 /// family's mark says nothing has. A failure is quiet: the wall and its
 /// badge wait for the next connection, which is when a reader would expect
 /// news anyway.
+///
+/// One family's board, on that family's own cursor, wherever the family is
+/// held — on screen or away (docs/protocol.md, "Several families").
 pub async fn sync_board(
     live: &Live,
     session: u64,
     token: &str,
+    family_id: i64,
     server_max: i64,
     link: Option<u64>,
 ) {
-    let (loaded, cursor) = live.read(|state| (state.store.board.loaded, state.store.board.cursor));
+    let Some((loaded, cursor)) = live.read(|state| {
+        state
+            .store
+            .board_of(family_id)
+            .map(|board| (board.loaded, board.cursor))
+    }) else {
+        return;
+    };
+    let family = Some(family_id);
     if !loaded {
-        let Ok(read) = api::board(token).await else {
+        let Ok(read) = api::board(token, family).await else {
             return;
         };
         if live
             .update(session, |state| {
-                state.store.board.apply_full(read.notes, read.max_board_seq)
+                if let Some(board) = state.store.board_mut(family_id) {
+                    board.apply_full(read.notes, read.max_board_seq);
+                }
             })
             .is_none()
         {
@@ -568,13 +737,17 @@ pub async fn sync_board(
         // once, then moved by what each page returned.
         let mut after = cursor;
         loop {
-            let Ok(page) = api::board_changes(token, after, FEED_PAGE).await else {
+            let Ok(page) = api::board_changes(token, family, after, FEED_PAGE).await else {
                 return;
             };
             let short = (page.len() as u32) < FEED_PAGE;
             after = page.iter().map(|note| note.board_seq).fold(after, i64::max);
             if live
-                .update(session, |state| state.store.board.apply_page(page))
+                .update(session, |state| {
+                    if let Some(board) = state.store.board_mut(family_id) {
+                        board.apply_page(page);
+                    }
+                })
                 .is_none()
             {
                 return;
@@ -586,7 +759,9 @@ pub async fn sync_board(
     }
     live.update(session, |state| {
         if on_this_link(state, link) {
-            state.store.board.caught_up = true;
+            if let Some(board) = state.store.board_mut(family_id) {
+                board.caught_up = true;
+            }
         }
     });
 }
@@ -597,15 +772,32 @@ pub async fn sync_board(
 /// changed past the cursor, tombstones included, and nothing at all when
 /// the family's mark says nothing has. Quiet on failure, like the board:
 /// the panel shows what it holds, and the next connection tries again.
-pub async fn sync_pack(live: &Live, session: u64, token: &str, server_max: i64, link: Option<u64>) {
-    let (loaded, cursor) = live.read(|state| (state.store.pack.loaded, state.store.pack.cursor));
+pub async fn sync_pack(
+    live: &Live,
+    session: u64,
+    token: &str,
+    family_id: i64,
+    server_max: i64,
+    link: Option<u64>,
+) {
+    let Some((loaded, cursor)) = live.read(|state| {
+        state
+            .store
+            .pack_of(family_id)
+            .map(|pack| (pack.loaded, pack.cursor))
+    }) else {
+        return;
+    };
+    let family = Some(family_id);
     if !loaded {
-        let Ok(read) = api::pack(token).await else {
+        let Ok(read) = api::pack(token, family).await else {
             return;
         };
         if live
             .update(session, |state| {
-                state.store.pack.apply_full(read.items, read.max_pack_seq)
+                if let Some(pack) = state.store.pack_mut(family_id) {
+                    pack.apply_full(read.items, read.max_pack_seq);
+                }
             })
             .is_none()
         {
@@ -616,13 +808,17 @@ pub async fn sync_pack(live: &Live, session: u64, token: &str, server_max: i64, 
         // each page returned.
         let mut after = cursor;
         loop {
-            let Ok(page) = api::pack_changes(token, after, FEED_PAGE).await else {
+            let Ok(page) = api::pack_changes(token, family, after, FEED_PAGE).await else {
                 return;
             };
             let short = (page.len() as u32) < FEED_PAGE;
             after = page.iter().map(|item| item.pack_seq).fold(after, i64::max);
             if live
-                .update(session, |state| state.store.pack.apply_page(page))
+                .update(session, |state| {
+                    if let Some(pack) = state.store.pack_mut(family_id) {
+                        pack.apply_page(page);
+                    }
+                })
                 .is_none()
             {
                 return;
@@ -634,7 +830,9 @@ pub async fn sync_pack(live: &Live, session: u64, token: &str, server_max: i64, 
     }
     live.update(session, |state| {
         if on_this_link(state, link) {
-            state.store.pack.caught_up = true;
+            if let Some(pack) = state.store.pack_mut(family_id) {
+                pack.caught_up = true;
+            }
         }
     });
 }
@@ -1069,8 +1267,12 @@ async fn run_socket(
         for cursors in state.store.cursors.values_mut() {
             cursors.caught_up = false;
         }
-        state.store.board.caught_up = false;
-        state.store.pack.caught_up = false;
+        for board in state.store.boards_mut() {
+            board.caught_up = false;
+        }
+        for pack in state.store.packs_mut() {
+            pack.caught_up = false;
+        }
     });
     true
 }
@@ -1117,6 +1319,13 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
         spawn_local(async move {
             refresh_chats(&live, session, &token, &expired).await;
         });
+    };
+    let resync_now = || {
+        let live = live.clone();
+        let token = token.to_string();
+        let expired = expired.clone();
+        let link = live.read(|state| state.connected.then_some(state.link));
+        spawn_local(async move { resync(&live, session, &token, &expired, link).await });
     };
     match frame {
         ServerFrame::Message { message } => {
@@ -1221,58 +1430,94 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             });
             None
         }
-        ServerFrame::MemberJoined { user } => {
+        ServerFrame::MemberJoined {
+            family_id,
+            user,
+            password_reset,
+        } => {
             let joined_me = live.update(session, |state| {
                 let me = state.store.my_user_id;
-                let familyless = state.store.family.is_none();
-                state.store.member_joined(&user);
-                user.id == me && familyless
+                let family_id = family_id.or_else(|| state.store.home_family_id());
+                let applied = family_id.and_then(|family_id| {
+                    state.store.with_family(family_id, |store| {
+                        store.member_joined(&user, password_reset)
+                    })
+                });
+                user.id == me && applied.is_none()
             })?;
-            // It is ME who joined — the owner approved the request this
-            // account was waiting on, which the server says to the family,
-            // me included: `/me` and everything after it, now, rather than
+            // It is ME, in a family this client does not hold — the owner
+            // approved a request, an invitation was accepted, a family was
+            // made on another device (docs/protocol.md, "Several families"):
+            // `/me`, that family and everything after it, now, rather than
             // at the next tick of the waiting screen's poll.
             if joined_me {
-                let live = live.clone();
-                let token = token.to_string();
-                let expired = expired.clone();
-                let link = live.read(|state| state.connected.then_some(state.link));
-                spawn_local(async move { resync(&live, session, &token, &expired, link).await });
+                resync_now();
             }
             None
         }
-        ServerFrame::MemberLeft { user_id } => {
-            let me = live.update(session, |state| {
-                state.store.member_left(user_id);
-                state.store.my_user_id
+        ServerFrame::MemberLeft { family_id, user_id } => {
+            let me_out = live.update(session, |state| {
+                let me = state.store.my_user_id;
+                let family_id = family_id.or_else(|| state.store.home_family_id());
+                if user_id != me {
+                    if let Some(family_id) = family_id {
+                        state
+                            .store
+                            .with_family(family_id, |store| store.member_left(user_id));
+                    }
+                    return false;
+                }
+                // It is ME who is out of THAT family — the owner removed me,
+                // or I left from another device: its chats, board, pack and
+                // roster go, and only its.
+                if let Some(family_id) = family_id {
+                    drop_family(state, family_id);
+                }
+                true
             })?;
-            // It is ME who left — the owner removed me, or I left from
-            // another device: `/me` says what I am now, and the family gate
-            // takes it from there.
-            if user_id == me {
-                let live = live.clone();
-                let token = token.to_string();
-                let expired = expired.clone();
-                let link = live.read(|state| state.connected.then_some(state.link));
-                spawn_local(async move { resync(&live, session, &token, &expired, link).await });
+            // `/me` says what I am now, and the family gate takes it from
+            // there when no family is left.
+            if me_out {
+                resync_now();
             }
             None
         }
-        ServerFrame::MemberDeleted { member } => {
-            live.update(session, |state| state.store.member_deleted(&member));
+        ServerFrame::MemberDeleted { family_id, member } => {
+            live.update(session, |state| match family_id {
+                Some(family_id) => {
+                    let applied = state
+                        .store
+                        .with_family(family_id, |store| store.member_deleted(&member));
+                    if applied.is_none() {
+                        state
+                            .store
+                            .names
+                            .insert(member.id, member.display_name.clone());
+                    }
+                }
+                // An account that was in no family: keyed on the member.
+                None => state.store.member_deleted(&member),
+            });
             // Their direct chat goes with them, both halves.
             refresh();
             None
         }
-        ServerFrame::FamilyOwner { user_id } => {
-            let me = live.update(session, |state| {
-                state.store.family_owner(user_id);
-                state.store.my_user_id
+        ServerFrame::FamilyOwner { family_id, user_id } => {
+            let mine_on_screen = live.update(session, |state| {
+                let family_id = family_id.or_else(|| state.store.home_family_id())?;
+                state
+                    .store
+                    .with_family(family_id, |store| store.family_owner(user_id))?;
+                Some(
+                    user_id == state.store.my_user_id
+                        && state.store.current_family_id() == Some(family_id),
+                )
             })?;
             // The family is mine now: what only its owner is shown — the
             // invite code, the requests waiting, the reports — is read now,
-            // not the next time the family pane happens to open.
-            if user_id == me {
+            // not the next time the family pane happens to open. A family
+            // away is read when it is shown.
+            if mine_on_screen == Some(true) {
                 let live = live.clone();
                 let token = token.to_string();
                 spawn_local(async move { read_family_admin(&live, session, &token).await });
@@ -1291,7 +1536,13 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             live.update(session, |state| {
                 let chat_id = chat.id;
                 state.store.upsert_chat(chat);
-                if state.store.item(chat_id).is_none() {
+                // Gone from this member, or no longer listed in the family on
+                // screen — a direct chat whose two people stopped sharing it.
+                let shown = state
+                    .store
+                    .item(chat_id)
+                    .is_some_and(|item| state.store.listed_here(&item.chat));
+                if !shown {
                     close_if_open(state, chat_id);
                 }
             });
@@ -1301,32 +1552,49 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             live.update(session, |state| drop_chat(state, chat_id));
             None
         }
+        // An invitation to me, or — to the owner of the family it is into —
+        // one of that family's (docs/protocol.md, "Several families").
+        ServerFrame::Invitation { invitation } => {
+            live.update(session, |state| state.store.apply_invitation(invitation));
+            None
+        }
+        ServerFrame::InvitationRemoved { invitation_id } => {
+            live.update(session, |state| {
+                state.store.remove_invitation(invitation_id)
+            });
+            None
+        }
         ServerFrame::BoardNote { note } => {
             let author = note.author_id;
             let news = live.update(session, |state| {
-                let before = state.store.board.unread();
-                state.store.board.apply_frame(note);
-                let mine = Some(state.store.my_user_id) == author;
+                // On the board of the family it names — on screen or away.
+                let family_id = note.family_id.or_else(|| state.store.home_family_id())?;
+                let me = state.store.my_user_id;
                 let blocked = author.is_some_and(|author| state.store.blocked.contains(&author));
-                let said = (!mine && !blocked && state.store.board.unread() > before).then(|| {
+                let board = state.store.board_mut(family_id)?;
+                let before = board.unread();
+                board.apply_frame(note);
+                let mine = Some(me) == author;
+                let said = (!mine && !blocked && board.unread() > before).then(|| {
                     let who = author
                         .and_then(|author| state.store.names.get(&author).cloned())
                         .unwrap_or_else(|| t("Someone").to_string());
-                    let family = state
-                        .store
-                        .family
-                        .as_ref()
-                        .map(|family| family.name.clone());
-                    fc_text::notify::title(family.as_deref(), &who, false)
+                    let family = state.store.family_name(family_id);
+                    (
+                        fc_text::notify::title(family.as_deref(), &who, false),
+                        family_id,
+                    )
                 });
                 said
             });
             // A note is news only when it SAYS something new — a note that
             // was moved raises no badge, and notifies nobody either.
-            if let Some(Some(title)) = news {
+            if let Some(Some((title, family_id))) = news {
                 if !in_front() && crate::notify::wanted() {
                     let live = live.clone();
                     crate::notify::tell(&title, fc_text::notify::new_note(), "board", move || {
+                        // That family's board.
+                        show_family(&live, session, family_id);
                         live.update(session, |state| {
                             state.board_open = true;
                             state.open_chat = None;
@@ -1342,7 +1610,13 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
         // (docs/protocol.md, "A block") — and said to nobody: a pack change
         // never notifies and never counts as unread.
         ServerFrame::PackItem { item } => {
-            live.update(session, |state| state.store.pack.apply_frame(item));
+            live.update(session, |state| {
+                // Into the pack of the family it names.
+                let family_id = item.family_id.or_else(|| state.store.home_family_id());
+                if let Some(pack) = family_id.and_then(|id| state.store.pack_mut(id)) {
+                    pack.apply_frame(item);
+                }
+            });
             None
         }
         // A call's signalling. Every one of these is for the call this tab
@@ -1583,16 +1857,23 @@ mod tests {
     use serde_json::json;
 
     /// The requests these tests are about (`FakeServer::asked`).
-    const OURS: &[&str] = &["/families/mine/pack", "/attachments"];
+    const OURS: &[&str] = &["/families/3/pack", "/attachments"];
 
+    /// Signed in, in family 3 — the family every request below names.
     fn signed_in() -> Live {
-        Live::new(
-            AppState {
-                token: Some("t".into()),
-                ..AppState::default()
-            },
-            std::rc::Rc::new(|| {}),
-        )
+        let mut state = AppState {
+            token: Some("t".into()),
+            ..AppState::default()
+        };
+        let family = crate::model::Family {
+            id: 3,
+            name: "The Smiths".into(),
+            ..Default::default()
+        };
+        state.store.my_user_id = 7;
+        state.store.families = vec![family.clone()];
+        state.store.family = Some(family);
+        Live::new(state, std::rc::Rc::new(|| {}))
     }
 
     /// A live item as the server writes one.
@@ -1623,7 +1904,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn the_first_pack_sync_reads_the_whole_pack_once() {
         let server = FakeServer::answering(|asked| match asked.line().as_str() {
-            "GET /families/mine/pack" => Answer::Json(
+            "GET /families/3/pack" => Answer::Json(
                 200,
                 json!({"items": [wire_item(1, 10), wire_item(2, 12)], "max_pack_seq": 12}),
             ),
@@ -1633,8 +1914,8 @@ mod tests {
         let session = live.session();
 
         // Before any socket has opened.
-        sync_pack(&live, session, "t", 12, None).await;
-        assert_eq!(server.lines(OURS), vec!["GET /families/mine/pack"]);
+        sync_pack(&live, session, "t", 3, 12, None).await;
+        assert_eq!(server.lines(OURS), vec!["GET /families/3/pack"]);
         assert_eq!(
             server.asked(OURS)[0].content_type,
             "",
@@ -1658,12 +1939,12 @@ mod tests {
             state.connected = true;
             state.link = 3;
         });
-        sync_pack(&live, session, "t", 12, Some(2)).await;
+        sync_pack(&live, session, "t", 3, 12, Some(2)).await;
         assert!(
             !live.read(|state| state.store.pack.caught_up),
             "an earlier connection's catch-up is not this one's"
         );
-        sync_pack(&live, session, "t", 12, Some(3)).await;
+        sync_pack(&live, session, "t", 3, 12, Some(3)).await;
         assert!(live.read(|state| state.store.pack.caught_up));
         assert_eq!(server.lines(OURS).len(), 1, "{:?}", server.lines(OURS));
     }
@@ -1679,8 +1960,8 @@ mod tests {
             .collect();
         let last_of_full = 20 + FEED_PAGE as i64;
         let second =
-            format!("GET /families/mine/pack/changes?after_seq={last_of_full}&limit={FEED_PAGE}");
-        let first = format!("GET /families/mine/pack/changes?after_seq=20&limit={FEED_PAGE}");
+            format!("GET /families/3/pack/changes?after_seq={last_of_full}&limit={FEED_PAGE}");
+        let first = format!("GET /families/3/pack/changes?after_seq=20&limit={FEED_PAGE}");
         let server = {
             let (first, second) = (first.clone(), second.clone());
             FakeServer::answering(move |asked| {
@@ -1720,7 +2001,7 @@ mod tests {
             );
         });
 
-        sync_pack(&live, session, "t", 301, Some(1)).await;
+        sync_pack(&live, session, "t", 3, 301, Some(1)).await;
 
         assert_eq!(server.lines(OURS), vec![first, second]);
         let ids = held(&live);
@@ -1742,7 +2023,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn a_pack_sync_that_fails_is_not_caught_up() {
         let server = FakeServer::answering(|asked| {
-            if asked.path.starts_with("/families/mine/pack/changes") {
+            if asked.path.starts_with("/families/3/pack/changes") {
                 Answer::Nothing
             } else {
                 Answer::Json(502, json!({}))
@@ -1755,14 +2036,14 @@ mod tests {
             state.link = 1;
         });
 
-        sync_pack(&live, session, "t", 12, Some(1)).await;
+        sync_pack(&live, session, "t", 3, 12, Some(1)).await;
         live.read(|state| {
             assert!(!state.store.pack.loaded, "a 502 is not an empty pack");
             assert!(!state.store.pack.caught_up);
         });
 
         live.now(|state| state.store.pack.apply_full(Vec::new(), 5));
-        sync_pack(&live, session, "t", 12, Some(1)).await;
+        sync_pack(&live, session, "t", 3, 12, Some(1)).await;
         live.read(|state| {
             assert_eq!(state.store.pack.cursor, 5);
             assert!(!state.store.pack.caught_up);
@@ -1779,8 +2060,9 @@ mod tests {
         let live = signed_in();
         let stale = live.session();
         live.end_session();
-        sync_pack(&live, stale, "t", 10, None).await;
-        assert_eq!(server.lines(OURS).len(), 1);
+        sync_pack(&live, stale, "t", 3, 10, None).await;
+        // A family the session no longer holds is not even asked about.
+        assert!(server.lines(OURS).is_empty());
         assert!(
             held(&live).is_empty(),
             "the last person's pack is not this one's"
@@ -1874,7 +2156,7 @@ mod tests {
             server.lines(OURS),
             vec![
                 "GET /attachments/71",
-                "POST /attachments?kind=photo&width=512&height=512"
+                "POST /attachments?kind=photo&width=512&height=512&family_id=3"
             ],
             "the original, then the upload — and no preview"
         );
@@ -1927,5 +2209,220 @@ mod tests {
             .await
             .expect_err("no answer");
         assert!(!outbox::is_terminal(&dropped), "{dropped:?}");
+    }
+
+    // --- Several families, over the wire (docs/protocol.md, "Several
+    // families") ------------------------------------------------------------
+
+    fn wire_family(id: i64, name: &str, role: &str) -> serde_json::Value {
+        json!({"id": id, "name": name, "join_policy": "open", "created_at": "2026-10-22T10:00:00Z",
+               "ai_history": true, "ai_vision": false, "ai_history_photos": false,
+               "ai_greeting": false, "ai_faces": false, "ai_transcripts": false,
+               "ai_lookups": false, "greeting_places": [], "role": role})
+    }
+
+    fn wire_roster(id: i64, name: &str, members: &[(i64, &str)]) -> serde_json::Value {
+        let members: Vec<serde_json::Value> = members
+            .iter()
+            .map(|(user, display)| {
+                json!({"id": user, "username": display.to_lowercase(), "display_name": display,
+                       "role": "member", "avatar_version": 0})
+            })
+            .collect();
+        json!({"family": wire_family(id, name, "member"), "members": members,
+               "max_board_seq": 0, "max_pack_seq": 0, "blocked_user_ids": []})
+    }
+
+    /// THE RESYNC: `/me`, then EVERY family's roster with its own board —
+    /// each by its id — then the chats of every family; and every request
+    /// says this client knows about several families.
+    #[wasm_bindgen_test]
+    async fn the_resync_reads_every_family_and_says_it_knows_several() {
+        crate::session::set_shown_family(7, None);
+        let server = FakeServer::answering(|asked| match asked.line().as_str() {
+            "GET /me" => Answer::Json(
+                200,
+                json!({"user": {"id": 7, "username": "me", "display_name": "Me"},
+                       "family": wire_family(3, "Parents", "member"), "role": "member",
+                       "families": [wire_family(3, "Parents", "member"), wire_family(4, "Ours", "owner")],
+                       "pending_join_requests": [], "invitations": [],
+                       "member_families_enabled": true, "max_families_per_account": 5,
+                       "blocked_user_ids": [], "calls_enabled": false, "video_calls_enabled": false}),
+            ),
+            "GET /families/3" => {
+                Answer::Json(200, wire_roster(3, "Parents", &[(7, "Me"), (9, "Anna")]))
+            }
+            "GET /families/4" => {
+                Answer::Json(200, wire_roster(4, "Ours", &[(7, "Me"), (12, "Cleo")]))
+            }
+            "GET /families/3/board" | "GET /families/4/board" => {
+                Answer::Json(200, json!({"notes": [], "max_board_seq": 0}))
+            }
+            "GET /chats" => Answer::Json(
+                200,
+                json!({"chats": [
+                    {"chat": {"id": 42, "kind": "family", "title": "Parents", "peer_user_id": null,
+                              "family_ids": [3]}, "last_message": null, "unread_count": 2,
+                     "last_read_message_id": 0},
+                    {"chat": {"id": 43, "kind": "family", "title": "Ours", "peer_user_id": null,
+                              "family_ids": [4]}, "last_message": null, "unread_count": 0,
+                     "last_read_message_id": 0}]}),
+            ),
+            _ => Answer::refusal(404, "not_found"),
+        });
+        let live = Live::new(
+            AppState {
+                token: Some("t".into()),
+                ..AppState::default()
+            },
+            std::rc::Rc::new(|| {}),
+        );
+        let session = live.session();
+        let expired: Rc<dyn Fn()> = Rc::new(|| {});
+        resync(&live, session, "t", &expired, None).await;
+        gloo_timers::future::TimeoutFuture::new(50).await;
+        let under = &["/me", "/families", "/chats"];
+        let lines = server.lines(under);
+        for wanted in [
+            "GET /me",
+            "GET /families/3",
+            "GET /families/4",
+            "GET /families/3/board",
+            "GET /families/4/board",
+            "GET /chats",
+        ] {
+            assert!(lines.contains(&wanted.to_string()), "{wanted} in {lines:?}");
+        }
+        assert!(
+            lines.iter().position(|line| line == "GET /families/4")
+                < lines.iter().position(|line| line == "GET /chats"),
+            "every family before the chats: {lines:?}"
+        );
+        assert!(
+            server
+                .asked(under)
+                .iter()
+                .all(|asked| asked.families == "1"),
+            "X-FC-Families: 1 on every request"
+        );
+        live.read(|state| {
+            let store = &state.store;
+            assert_eq!(store.current_family_id(), Some(3), "the home family");
+            assert_eq!(store.members.len(), 2);
+            assert_eq!(
+                store.roster_of(4),
+                vec![(7, "Me".to_string()), (12, "Cleo".to_string())]
+            );
+            assert!(store.board.loaded && store.board_of(4).is_some_and(|board| board.loaded));
+            assert_eq!(
+                store.sorted_chats().len(),
+                1,
+                "the family on screen's chats"
+            );
+            assert_eq!(store.unread_in(3), 2);
+        });
+        assert_eq!(
+            crate::session::shown_family(7),
+            Some(3),
+            "kept for a reload"
+        );
+        crate::session::set_shown_family(7, None);
+    }
+
+    /// Showing another family puts away whatever pane was open on the one
+    /// before, and is remembered for the next reload.
+    #[wasm_bindgen_test]
+    fn showing_another_family_puts_the_panes_away_and_is_remembered() {
+        let live = signed_in();
+        let session = live.session();
+        live.now(|state| {
+            state.store.families.push(crate::model::Family {
+                id: 4,
+                name: "Ours".into(),
+                ..Default::default()
+            });
+            state.open_chat = Some(42);
+            state.board_open = true;
+        });
+        assert!(show_family(&live, session, 4));
+        live.read(|state| {
+            assert_eq!(state.store.current_family_id(), Some(4));
+            assert!(state.open_chat.is_none() && !state.board_open);
+            assert_eq!(state.store.preferred_family, Some(4));
+        });
+        assert_eq!(crate::session::shown_family(7), Some(4));
+        assert!(!show_family(&live, session, 4), "already on screen");
+        assert!(!show_family(&live, session, 9), "not a family held");
+        crate::session::set_shown_family(7, None);
+    }
+
+    /// Uploads name their family, groups are made in the family on screen,
+    /// and an owner's endpoints name it in the path.
+    #[wasm_bindgen_test]
+    async fn a_familys_endpoints_name_it() {
+        let server = FakeServer::answering(|asked| match asked.line().as_str() {
+            "POST /chats/groups" => Answer::Json(
+                201,
+                json!({"chat": {"id": 77, "kind": "group", "title": "Cousins",
+                                "peer_user_id": null, "member_ids": [7, 9], "admin_user_id": 7,
+                                "family_ids": [4]}}),
+            ),
+            "POST /families/4/invitations" => Answer::Json(
+                201,
+                json!({"invitation": {"id": 5, "family_id": 4, "family_name": "Ours",
+                        "invited_by": {"id": 7, "username": "me", "display_name": "Me"},
+                        "user": {"id": 9, "username": "anna", "display_name": "Anna"}}}),
+            ),
+            "POST /invitations/5/decline"
+            | "DELETE /families/4/invitations/5"
+            | "PUT /families/members/9/block" => Answer::Json(204, serde_json::Value::Null),
+            "POST /families/join" => {
+                Answer::Json(200, json!({"status": "pending", "family_id": 6}))
+            }
+            _ => Answer::refusal(404, "not_found"),
+        });
+        let chat = api::create_group("t", Some(4), "Cousins", &[9])
+            .await
+            .expect("made");
+        assert_eq!(chat.family_ids, Some(vec![4]));
+        let made = server.asked(&["/chats/groups"]);
+        assert_eq!(made[0].json()["family_id"], json!(4));
+        assert_eq!(made[0].families, "1");
+        let invitation = api::invite("t", Some(4), 9).await.expect("invited");
+        assert_eq!(invitation.user.id, 9);
+        assert_eq!(
+            server.asked(&["/families/4/invitations"])[0].json(),
+            json!({"user_id": 9})
+        );
+        api::withdraw_invitation("t", Some(4), 5)
+            .await
+            .expect("withdrawn");
+        api::decline_invitation("t", 5).await.expect("declined");
+        assert_eq!(
+            server.lines(&["/families/4/invitations", "/invitations"]),
+            vec![
+                "POST /families/4/invitations",
+                "DELETE /families/4/invitations/5",
+                "POST /invitations/5/decline"
+            ]
+        );
+        assert_eq!(
+            api::family_path(None),
+            "/families/mine",
+            "no family named: the home one"
+        );
+        // A block names no family: it is anybody this account shares one
+        // with, and holds in every family.
+        api::set_blocked("t", 9, true).await.expect("blocked");
+        assert_eq!(
+            server.lines(&["/families/members"]),
+            vec!["PUT /families/members/9/block"]
+        );
+        // A join names the family the code belongs to, joined or waiting.
+        let joined = api::join_family("t", "ABCD2345").await.expect("answered");
+        assert_eq!(
+            (joined.status.as_str(), joined.family_id),
+            ("pending", Some(6))
+        );
     }
 }

@@ -303,6 +303,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "groups",
         sql: include_str!("../migrations/0056_groups.sql"),
     },
+    Migration {
+        version: 57,
+        name: "several_families",
+        sql: include_str!("../migrations/0057_several_families.sql"),
+    },
+    Migration {
+        version: 58,
+        name: "session_families",
+        sql: include_str!("../migrations/0058_session_families.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

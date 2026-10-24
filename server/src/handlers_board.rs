@@ -182,8 +182,8 @@ async fn validate_note_mentions(
         return Ok(());
     }
     let members: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users
-         WHERE id = ANY($1) AND family_id IS NOT NULL AND family_id = $2",
+        "SELECT count(*) FROM family_members
+         WHERE user_id = ANY($1) AND family_id = $2",
     )
     .bind(&ids)
     .bind(family_id)
@@ -226,14 +226,31 @@ async fn write_note_mentions(
     Ok(())
 }
 
-/// The family the caller belongs to, or `not_in_family`.
-async fn caller_family(state: &AppState, user_id: i64) -> Result<i64, ApiError> {
-    let row = sqlx::query("SELECT family_id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await?;
-    row.and_then(|row| row.get::<Option<i64>, _>("family_id"))
+/// The family whose board this request is about — the `{family}` of
+/// `/families/{family}/board…`, `mine` being the home family — or
+/// `not_in_family` (docs/protocol.md, "Several families").
+///
+/// Resolved by the `AuthUser` extractor on this same request, from
+/// `family_members`, so it is exactly as fresh as the per-request read of
+/// `users.family_id` it replaces — and a family the caller is not in has
+/// already been refused there with `family_not_found`.
+fn caller_family(auth: &AuthUser) -> Result<i64, ApiError> {
+    auth.family_id
         .ok_or_else(|| ApiError::conflict(codes::NOT_IN_FAMILY, "you are not in a family"))
+}
+
+/// `…/board/notes/{note_id}`, by NAME: the route also carries `{family}`,
+/// and a positional `Path<i64>` would refuse two parameters.
+#[derive(Debug, Deserialize)]
+pub struct NotePath {
+    pub note_id: i64,
+}
+
+/// `…/board/notes/{note_id}/tasks/{item_id}`, by name for the same reason.
+#[derive(Debug, Deserialize)]
+pub struct TaskPath {
+    pub note_id: i64,
+    pub item_id: i64,
 }
 
 fn validate_text(text: &str) -> Result<String, ApiError> {
@@ -365,7 +382,7 @@ fn validate_font(font: &str) -> Result<String, ApiError> {
 }
 
 const NOTE_COLS: &str = "id, author_id, text, color, size, font, kind, starts_at, ends_at, \
-     place, x, y, board_seq, content_seq, created_at, updated_at, deleted_at";
+     place, x, y, board_seq, content_seq, created_at, updated_at, deleted_at, family_id";
 
 /// Pin one uploaded picture to a note — the board's twin of
 /// `handlers_chat::claim_attachment`, and the same three answers.
@@ -377,17 +394,25 @@ const NOTE_COLS: &str = "id, author_id, text, color, size, font, kind, starts_at
 /// A WALL PINS PICTURES. A video or a voice message on a corkboard is a
 /// thing to play rather than a thing to look at, and a location has no
 /// bytes at all — so the kind is checked here, before the claim.
+///
+/// Only an upload made FOR THIS family may be pinned to its board: since
+/// 2026-10-22 an upload names its family (`POST /attachments?family_id=`),
+/// and one made for another family answers exactly as an id that does not
+/// exist (docs/protocol.md, "Several families") — it is also what keeps
+/// `delete_family_in_tx`'s list of a family's files complete.
 async fn claim_picture(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     attachment_id: i64,
     uploader_id: i64,
     note_id: i64,
+    family_id: i64,
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
         "UPDATE attachments SET note_id = $3
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
            AND pack_item_id IS NULL
            AND kind = $4
+           AND family_id = $5
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m",
     )
@@ -395,6 +420,7 @@ async fn claim_picture(
     .bind(uploader_id)
     .bind(note_id)
     .bind(Attachment::KIND_PHOTO)
+    .bind(family_id)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
@@ -404,10 +430,12 @@ async fn claim_picture(
     // Which of the four it was. `kind` first, because "that is a video"
     // is a different instruction from "that one is taken".
     let existing = sqlx::query(
-        "SELECT kind, message_id, note_id FROM attachments WHERE id = $1 AND uploader_id = $2",
+        "SELECT kind, message_id, note_id FROM attachments
+          WHERE id = $1 AND uploader_id = $2 AND family_id = $3",
     )
     .bind(attachment_id)
     .bind(uploader_id)
+    .bind(family_id)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(existing) = existing {
@@ -744,7 +772,7 @@ pub async fn get_board(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     // The high-water mark FIRST, then the notes (protocol.md, "Board"). The
     // two are separate statements, and a change can commit between them:
     // read in this order the mark can only be BELOW a change the notes
@@ -782,7 +810,7 @@ pub async fn get_board_changes(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     let after_seq = parse_pagination_param(&params, "after_seq")?.unwrap_or(0);
     let requested_limit = parse_pagination_param(&params, "limit")?;
     let limit = clamp_limit(
@@ -813,7 +841,7 @@ pub async fn create_note(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateNoteRequest>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     let kind = match req.kind.as_deref() {
         Some(kind) => validate_kind(kind)?,
         None => Note::DEFAULT_KIND.to_string(),
@@ -932,7 +960,8 @@ pub async fn create_note(
     // a photo note committed beside an unclaimed picture would be a note
     // pointing at nothing, and the sweeper would take the picture later.
     if let Some(attachment_id) = req.attachment_id {
-        note.attachment = Some(claim_picture(&mut tx, attachment_id, auth.user_id, note.id).await?);
+        note.attachment =
+            Some(claim_picture(&mut tx, attachment_id, auth.user_id, note.id, family_id).await?);
     }
     // An event is born with nobody having answered, which is `[]` and not
     // absent (protocol.md, "Board").
@@ -967,10 +996,10 @@ pub async fn create_note(
 pub async fn patch_note(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(note_id): Path<i64>,
+    Path(NotePath { note_id }): Path<NotePath>,
     AppJson(req): AppJson<PatchNoteRequest>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     // Validated AFTER the row is locked, because whether an empty caption
     // is allowed depends on the note's kind (protocol.md, "Board").
     let raw_text = req.text.clone();
@@ -1237,9 +1266,9 @@ pub async fn patch_note(
 pub async fn delete_note(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(note_id): Path<i64>,
+    Path(NotePath { note_id }): Path<NotePath>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;
@@ -1324,7 +1353,7 @@ async fn lock_board(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     family_id: i64,
 ) -> Result<(), ApiError> {
-    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
         .bind(family_id)
         .execute(&mut **tx)
         .await?;
@@ -1365,7 +1394,7 @@ pub struct RsvpRequest {
 pub async fn put_rsvp(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(note_id): Path<i64>,
+    Path(NotePath { note_id }): Path<NotePath>,
     AppJson(req): AppJson<RsvpRequest>,
 ) -> Result<Response, ApiError> {
     let answer = req.answer.trim();
@@ -1383,7 +1412,7 @@ pub async fn put_rsvp(
 pub async fn delete_rsvp(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(note_id): Path<i64>,
+    Path(NotePath { note_id }): Path<NotePath>,
 ) -> Result<Response, ApiError> {
     set_rsvp(auth, state, note_id, None).await
 }
@@ -1423,9 +1452,9 @@ pub async fn delete_rsvp(
 pub async fn draw_backdrop(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(note_id): Path<i64>,
+    Path(NotePath { note_id }): Path<NotePath>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     // Before anything is drawn: this server can draw at all, and this
     // caller may ask for this note.
     let Some(route) = state.cfg.ai.images_route() else {
@@ -1637,10 +1666,10 @@ pub async fn draw_backdrop(
 pub async fn put_task_done(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path((note_id, item_id)): Path<(i64, i64)>,
+    Path(TaskPath { note_id, item_id }): Path<TaskPath>,
     AppJson(req): AppJson<TaskDoneRequest>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;
@@ -1754,7 +1783,7 @@ async fn set_rsvp(
     note_id: i64,
     answer: Option<String>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;

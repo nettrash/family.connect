@@ -375,7 +375,7 @@ class MessageRepository @Inject constructor(
     ): Boolean {
         val named = mentions?.takeIf { it.isNotEmpty() }
         val me = settings.state.first().myUserId ?: return false
-        val uploaded = attachmentApi.uploadLocation(latitude, longitude, accuracyM, label)
+        val uploaded = attachmentApi.uploadLocation(latitude, longitude, accuracyM, label, uploadFamilyFor(chatId))
         val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
 
         val body = caption.trim()
@@ -625,9 +625,10 @@ class MessageRepository @Inject constructor(
             val sticker = row.isPendingSticker
             val round = row.isPendingRound
             val animation = row.isPendingAnimation
+            val family = uploadFamilyFor(row.chatId)
 
             for (item in items.filter { it.attachmentId == null }) {
-                if (!uploadItem(clientMsgId, item, sticker, keepsOriginal = animation)) return
+                if (!uploadItem(clientMsgId, item, sticker, keepsOriginal = animation, familyId = family)) return
             }
 
             // Everything landed: write the real set onto the row and hand
@@ -660,6 +661,21 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * The family an attachment for [chatId] is uploaded for (docs/protocol.md,
+     * "Several families": "A message may use it in a chat that family's id is
+     * in"): the family shown when the chat is listed there — a direct chat is
+     * listed in several — else the first that lists it. Null on a server from
+     * before, which knows no `family_id`, and for a chat that has not said.
+     */
+    private suspend fun uploadFamilyFor(chatId: Long): Long? {
+        val state = settings.state.first()
+        if (!state.multiFamilyServer) return null
+        val ids = chatDao.getById(chatId)?.familyIds ?: return state.currentFamilyId
+        val current = state.currentFamilyId
+        return if (current != null && current in ids) current else ids.firstOrNull() ?: current
+    }
+
     /** One item's bytes, its preview and its bookkeeping. */
     private suspend fun uploadItem(
         clientMsgId: String,
@@ -672,6 +688,8 @@ class MessageRepository @Inject constructor(
          * should not download back what it sent a moment ago.
          */
         keepsOriginal: Boolean = false,
+        /** The family the upload is for ([uploadFamilyFor]). */
+        familyId: Long? = null,
     ): Boolean {
         val uploaded = if (item.kind == AttachmentDto.KIND_LOCATION) {
             attachmentApi.uploadLocation(
@@ -679,6 +697,7 @@ class MessageRepository @Inject constructor(
                 longitude = item.longitude ?: 0.0,
                 accuracyM = item.accuracyM,
                 name = item.name,
+                familyId = familyId,
             )
         } else {
             val file = item.localPath?.let(::File)
@@ -699,6 +718,7 @@ class MessageRepository @Inject constructor(
                 durationMs = item.durationMs,
                 name = item.name,
                 waveform = item.waveform,
+                familyId = familyId,
             )
         }
         val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: run {

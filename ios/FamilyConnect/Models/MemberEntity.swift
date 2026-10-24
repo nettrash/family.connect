@@ -71,10 +71,62 @@ final class MemberEntity {
     var birthdayMonth: Int?
     var birthdayDay: Int?
 
+    /// Which of this device's families list this person, and in what role
+    /// — `"3=owner;7=member"` (docs/protocol.md, "Several families",
+    /// 2026-10-22). ONE row per person, because a person is one account:
+    /// the name, the picture and the birthday are the account's and are
+    /// shown in every family. What is per family is only this.
+    ///
+    /// `role` and `hasLeft` above are kept as the PROJECTION of this onto
+    /// the family on screen (`project(onto:)`), so every roster, picker and
+    /// predicate that reads them reads the current family without knowing
+    /// there is more than one. "" is "nobody said" — a row from before.
+    var familyRolesText: String = ""
+    /// The families whose owner's roster said `password_reset: false` for
+    /// this person, as comma-joined ids: the families where this reader may
+    /// NOT reset their password (docs/protocol.md, "Several families").
+    /// Stored as the refusal so that a server that predates the flag —
+    /// which never refuses — leaves the reset offered as it always was.
+    var passwordResetDeniedText: String = ""
+
     /// The pair, when it is a pair.
     var birthday: BirthdayDTO? {
         guard let birthdayMonth, let birthdayDay else { return nil }
         return BirthdayDTO(month: birthdayMonth, day: birthdayDay)
+    }
+
+    /// family id → role, for every family of this device that lists them.
+    var familyRoles: [Int64: String] {
+        get { FamilyIDList.decodeRoles(familyRolesText) }
+        set { familyRolesText = FamilyIDList.encodeRoles(newValue) }
+    }
+
+    /// Whether this person is on `familyID`'s roster as this device holds it.
+    func isMember(of familyID: Int64) -> Bool {
+        familyRoles[familyID] != nil
+    }
+
+    /// Re-point `role` and `hasLeft` at one family: what a switch does to
+    /// every row, and what every roster write does to the rows it touched.
+    /// A deleted account is in nothing and stays so.
+    func project(onto familyID: Int64) {
+        // A row nobody has described yet (from before several families) is
+        // left exactly as it was; the first roster read describes it.
+        guard !accountDeleted, !familyRolesText.isEmpty else { return }
+        // Somebody not on this family's roster keeps the role they last
+        // had: the row is drawn as having left, and nothing reads the role
+        // of a row that has.
+        if let newRole = familyRoles[familyID] {
+            if role != newRole { role = newRole }
+            if hasLeft { hasLeft = false }
+        } else if !hasLeft {
+            hasLeft = true
+        }
+    }
+
+    /// Whether the owner reading `familyID` may reset this person's password.
+    func passwordResetAllowed(in familyID: Int64) -> Bool {
+        !FamilyIDList.decode(passwordResetDeniedText).contains(familyID)
     }
 
     /// What a screen actually draws for this person.

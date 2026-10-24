@@ -100,6 +100,18 @@ pub struct Family {
     /// chose").
     #[serde(default, deserialize_with = "names_or_none")]
     pub greeting_places: Vec<String>,
+    /// `owner` | `member` — the caller's own role IN THIS family, on each
+    /// entry of `GET /me`'s `families` (docs/protocol.md, "Several
+    /// families"). Absent from every other read of a family, where a client
+    /// keeps the role it holds.
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+impl Family {
+    pub fn is_owner(&self) -> bool {
+        self.role.as_deref() == Some("owner")
+    }
 }
 
 fn yes() -> bool {
@@ -184,6 +196,27 @@ pub struct Me {
     /// "Consenting to the assistant", amended 2026-10-03).
     #[serde(default)]
     pub assistant_lookup_consent_at: Option<String>,
+    /// Every family the caller is in, the home family first and then in
+    /// the order they were joined, each with the caller's own `role` —
+    /// ALWAYS present on a server that knows several families, and absent
+    /// (so empty) from one that predates them, where `family` is the one
+    /// (docs/protocol.md, "Several families").
+    #[serde(default)]
+    pub families: Vec<Family>,
+    /// Every join request of the caller's still waiting on an owner.
+    #[serde(default)]
+    pub pending_join_requests: Vec<PendingJoin>,
+    /// The caller's pending invitations, oldest first.
+    #[serde(default)]
+    pub invitations: Vec<Invitation>,
+    /// Whether a member may start another family in the app
+    /// (`[families] member_families`). Absent is a server that lets nobody.
+    #[serde(default)]
+    pub member_families_enabled: bool,
+    /// How many families one account may be in. Absent is a server that
+    /// predates several, and a client offers no other family there.
+    #[serde(default)]
+    pub max_families_per_account: Option<i64>,
 }
 
 impl Me {
@@ -208,6 +241,13 @@ pub struct Member {
     pub avatar_version: i64,
     #[serde(default)]
     pub birthday: Option<Birthday>,
+    /// In the OWNER's read of their own family only: whether this owner may
+    /// reset this member's password, which needs them to own every family
+    /// the member is in (docs/protocol.md, "Owners, per family"). Absent is
+    /// a server from before several families, under the old rule — the
+    /// reset is offered; only an explicit `false` hides it.
+    #[serde(default)]
+    pub password_reset: Option<bool>,
 }
 
 impl Member {
@@ -343,6 +383,23 @@ pub struct Roster {
     /// A prediction, read fresh before the leave dialog names anybody.
     #[serde(default)]
     pub next_owner_user_id: Option<i64>,
+}
+
+/// An owner's invitation into their family, pending until the invited
+/// person accepts or declines (docs/protocol.md, "Several families"). The
+/// invited person sees theirs on `GET /me`; the owner reads the family's
+/// with `GET /families/{id}/invitations`; both hear the `invitation` and
+/// `invitation_removed` frames.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct Invitation {
+    pub id: i64,
+    pub family_id: i64,
+    pub family_name: String,
+    pub invited_by: User,
+    /// The invited person.
+    pub user: User,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 /// Somebody asking to join, for the owner (`GET /families/join-requests`).
@@ -572,6 +629,10 @@ pub struct Note {
     /// badge counts. Absent on a tombstone and from an older server.
     #[serde(default)]
     pub content_seq: Option<i64>,
+    /// Whose board it is on (docs/protocol.md, "Several families"). Absent
+    /// from a server that predates it, where it is the one family's.
+    #[serde(default)]
+    pub family_id: Option<i64>,
 }
 
 impl Note {
@@ -660,6 +721,12 @@ pub struct Chat {
     /// delete it — present only for `group`.
     #[serde(default)]
     pub admin_user_id: Option<i64>,
+    /// The families this chat is listed in: exactly one for a family chat,
+    /// a group and an `ai` chat; every family the two people share for a
+    /// direct chat. Absent from a server that predates it, where it means
+    /// the one family the account has (docs/protocol.md, `Chat`).
+    #[serde(default)]
+    pub family_ids: Option<Vec<i64>>,
 }
 
 impl Chat {
@@ -881,6 +948,10 @@ pub struct PackItem {
     pub label: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
+    /// Whose pack it is in (docs/protocol.md, "Several families"). Absent
+    /// from a server that predates it, where it is the one family's.
+    #[serde(default)]
+    pub family_id: Option<i64>,
 }
 
 impl PackItem {
@@ -1755,5 +1826,25 @@ mod tests {
         ] {
             assert!(!roster(off).assistant.unwrap().greeting_weather, "{off:?}");
         }
+    }
+
+    /// `password_reset`: true and absent offer the reset — absent is a
+    /// server from before several families, under the old rule — and only
+    /// an explicit false hides it (docs/protocol.md, "Owners, per family").
+    #[wasm_bindgen_test]
+    fn a_members_password_reset_is_hidden_only_when_false() {
+        let read = |json: &str| serde_json::from_str::<Member>(json).expect("a member");
+        assert_eq!(
+            read(r#"{"id": 9, "display_name": "Anna", "password_reset": true}"#).password_reset,
+            Some(true)
+        );
+        assert_eq!(
+            read(r#"{"id": 9, "display_name": "Anna", "password_reset": false}"#).password_reset,
+            Some(false)
+        );
+        assert_eq!(
+            read(r#"{"id": 9, "display_name": "Anna"}"#).password_reset,
+            None
+        );
     }
 }

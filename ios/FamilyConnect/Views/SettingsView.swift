@@ -40,11 +40,12 @@ final class SettingsModel {
     var handedOverTo: String?
     var errorText: String?
 
-    func load(api: APIClient) async {
+    /// `familyID` is the family on screen, as its requests name it.
+    func load(api: APIClient, familyID: Int64?) async {
         isLoading = true
         defer { isLoading = false }
         do {
-            let mine = try await api.myFamily()
+            let mine = try await api.myFamily(family: familyID)
             family = mine.family
             members = mine.members
             nextOwnerUserID = mine.nextOwnerUserID
@@ -73,6 +74,10 @@ struct SettingsView: View {
     /// (protocol.md, "Consenting to the assistant").
     @State private var reviewingAssistant = false
     @State private var assistantConsentError: String?
+    /// The two ways in to another family (docs/protocol.md, "Several
+    /// families") — for an account in one family, the only ones there are.
+    @State private var showsNewFamily = false
+    @State private var showsJoinAnother = false
 
     var body: some View {
         NavigationStack {
@@ -123,10 +128,11 @@ struct SettingsView: View {
                 NavigationStack { StatisticsView() }
             }
             .task {
-                await model.load(api: coordinator.api)
+                await model.load(api: coordinator.api, familyID: session.apiFamilyID)
             }
+            .familyDoorSheets(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
             .confirmationDialog(
-                "Leave the family?",
+                Text(leaveTitle),
                 isPresented: Bindable(model).confirmLeave,
                 titleVisibility: .visible
             ) {
@@ -143,7 +149,7 @@ struct SettingsView: View {
                 guard model.confirmLeave else { return }
                 model.confirmLeave = false
                 Task {
-                    await model.load(api: coordinator.api)
+                    await model.load(api: coordinator.api, familyID: session.apiFamilyID)
                     model.confirmLeave = true
                 }
             }
@@ -374,6 +380,7 @@ struct SettingsView: View {
                         systemImage: "person.2.badge.gearshape")
                 }
             }
+            FamilyDoorButtons(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
             Button("Leave Family", role: .destructive) {
                 // A fresh read FIRST. The successor is a prediction that
                 // any join or leave changes, and no frame announces it —
@@ -381,7 +388,7 @@ struct SettingsView: View {
                 // to promise the family to somebody who already left
                 // (docs/protocol.md, `GET /families/mine`).
                 Task {
-                    await model.load(api: coordinator.api)
+                    await model.load(api: coordinator.api, familyID: session.apiFamilyID)
                     model.confirmLeave = true
                 }
             }
@@ -553,10 +560,28 @@ struct SettingsView: View {
         }
     }
 
+    /// The leave dialog's title: today's with one family, and the family's
+    /// name with several, since leaving takes only the one on screen
+    /// (docs/protocol.md, "Several families").
+    private var leaveTitle: String {
+        FamilyRules.leaveTitle(
+            familyName: (model.family ?? session.family)?.name ?? "", familyCount: session.families.count)
+            ?? String(localized: "Leave the family?")
+    }
+
     /// What leaving costs, which is a different sentence for each of the
     /// three people who can read it.
     private var leaveMessage: LocalizedStringKey {
         let base: LocalizedStringKey = "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin."
+        if session.families.count >= 2 {
+            // With several families a direct chat stays with anybody shared
+            // elsewhere — but an owner who is the last member still takes
+            // this family with them, which is the one thing worth saying.
+            if session.isOwner, model.nextOwnerUserID == nil {
+                return "You're the only member left. Leaving deletes the family and everything in it."
+            }
+            return LocalizedStringKey(FamilyRules.leaveSeveralMessage)
+        }
         guard session.isOwner else { return base }
         guard let successorID = model.nextOwnerUserID,
               let successor = model.members.first(where: { $0.id == successorID })?.displayName

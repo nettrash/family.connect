@@ -50,7 +50,8 @@ public enum SeqRoute
 /// <c>ChatRepository</c> + the DAOs.
 /// </para>
 /// </remarks>
-public sealed class ChatStore(Database database, Func<long>? me = null)
+public sealed class ChatStore(
+    Database database, Func<long>? me = null, Func<long?>? current = null, Func<long?>? homeFamily = null)
 {
     /// <summary>
     /// Who is reading. A message of THEIR OWN never counts as unread, and there is no other
@@ -58,6 +59,15 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// wipes it (see <see cref="Database.WipeAll"/>).
     /// </summary>
     private readonly Func<long> reader = me ?? (() => 0);
+
+    /// <summary>The family being shown (docs/protocol.md, "Several families"); null while there is none to say.</summary>
+    private readonly Func<long?> family = current ?? (() => null);
+
+    /// <summary>
+    /// The account's HOME family, as the session says now — the one a chat with no <c>family_ids</c> is listed in (cached
+    /// before them, or from a server that predates them); null while there is none to say.
+    /// </summary>
+    private readonly Func<long?> home = homeFamily ?? (() => null);
 
     /// <summary>
     /// Who is reading, for the callers that also have to know — the frame router asks the store
@@ -185,6 +195,13 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// nothing unread, as the server starts a member just added; the counts, the marker and the cursors of one it holds are
     /// not touched — none of them is on a <c>Chat</c>, and the next list read brings the server's.
     /// </summary>
+    /// <remarks>
+    /// A DIRECT CHAT WITH SOMEBODY THIS READER HAS BLOCKED STAYS OFF THE LIST. The server sends a direct chat's
+    /// <c>chat_updated</c> without asking about blocks — a held chat moving family when the reader leaves one, say — and
+    /// the list read and <see cref="SetBlocked"/> both keep such a chat hidden, for the blocker alone (docs/protocol.md,
+    /// "Blocking a member"); a frame relisting it would show it until the next <c>GET /chats</c>. The row is still written:
+    /// it comes back whole, with whatever the frame said, on unblock.
+    /// </remarks>
     public void Upsert(ChatDto chat)
     {
         ArgumentNullException.ThrowIfNull(chat);
@@ -193,12 +210,14 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         using var command = database.Connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id)
-            VALUES ($id, $kind, $title, $peer, $members, $admin)
+            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, family_ids_json, listed)
+            VALUES ($id, $kind, $title, $peer, $members, $admin, $families,
+                    CASE WHEN $kind = 'direct' AND $peer IN (SELECT user_id FROM blocked) THEN 0 ELSE 1 END)
             ON CONFLICT(chat_id) DO UPDATE SET
                 kind = excluded.kind, title = excluded.title, peer_user_id = excluded.peer_user_id,
                 member_ids_json = excluded.member_ids_json, admin_user_id = excluded.admin_user_id,
-                listed = 1
+                family_ids_json = excluded.family_ids_json,
+                listed = excluded.listed
             """;
         command.Parameters.AddWithValue("$id", chat.Id);
         command.Parameters.AddWithValue("$kind", chat.Kind);
@@ -690,15 +709,32 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     // ---- who -------------------------------------------------------------
 
     /// <summary>
-    /// The roster, replaced whole. A member who LEFT and an account that was DELETED both keep
-    /// their row: their messages and notes keep their authors, and a name has to resolve for an
-    /// old message.
+    /// The roster, replaced whole — of the family being shown, when there is one (see <see cref="Family"/>). A member who
+    /// LEFT and an account that was DELETED both keep their row: their messages and notes keep their authors, and a name
+    /// has to resolve for an old message.
     /// </summary>
-    public void Replace(IReadOnlyList<MemberDto> members, IReadOnlyList<MemberDto>? former = null)
+    public void Replace(IReadOnlyList<MemberDto> members, IReadOnlyList<MemberDto>? former = null) =>
+        Replace(family(), members, former);
+
+    /// <summary>
+    /// ONE family's roster, replaced whole (docs/protocol.md, "Several families"): the person's own fields — name, picture,
+    /// birthday, whether the account is gone — on <c>members</c>, which every family shares, and the family's — the role,
+    /// whether they left it, whether its owner may reset their password — on that family's rows alone. Null is the one
+    /// family a cache from before several families held, and writes the person's row only.
+    /// </summary>
+    public void Replace(long? familyId, IReadOnlyList<MemberDto> members, IReadOnlyList<MemberDto>? former = null)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
         using var transaction = database.Connection.BeginTransaction();
+        if (familyId is { } held)
+        {
+            using var clear = database.Connection.CreateCommand();
+            clear.Transaction = transaction;
+            clear.CommandText = "DELETE FROM family_members WHERE family_id = $family";
+            clear.Parameters.AddWithValue("$family", held);
+            clear.ExecuteNonQuery();
+        }
         foreach (var member in members.Concat(former ?? []))
         {
             using var command = database.Connection.CreateCommand();
@@ -726,22 +762,98 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             command.Parameters.AddWithValue(
                 "$day", member.Birthday?.Day ?? (object)DBNull.Value);
             command.ExecuteNonQuery();
+            if (familyId is { } family)
+            {
+                using var row = database.Connection.CreateCommand();
+                row.Transaction = transaction;
+                row.CommandText =
+                    """
+                    INSERT OR REPLACE INTO family_members (family_id, user_id, role, has_left, password_reset)
+                    VALUES ($family, $id, $role, $left, $reset)
+                    """;
+                row.Parameters.AddWithValue("$family", family);
+                row.Parameters.AddWithValue("$id", member.Id);
+                row.Parameters.AddWithValue("$role", member.Role ?? (object)DBNull.Value);
+                row.Parameters.AddWithValue("$left", member.HasLeft || member.Deleted ? 1 : 0);
+                row.Parameters.AddWithValue(
+                    "$reset", member.PasswordReset is { } reset ? (reset ? 1 : 0) : DBNull.Value);
+                row.ExecuteNonQuery();
+            }
         }
         transaction.Commit();
     }
 
+    /// <summary>
+    /// The family being shown, as the session says now — or null, which reads and writes the roster the way a cache from
+    /// before several families held it: one family, on <c>members</c> alone.
+    /// </summary>
+    public long? Family => family();
+
+    /// <summary>The account's home family, as the session says now — or null (see <see cref="Family"/>).</summary>
+    public long? Home => home();
+
+    /// <summary>The roster of the family being shown — present and former members alike.</summary>
     public IReadOnlyList<MemberDto> Members()
     {
         using var serialised = database.Hold();
         Fresh();
-        return roster ??= ReadMembers();
+        return roster ??= ReadMembers(family());
     }
 
-    private IReadOnlyList<MemberDto> ReadMembers()
+    /// <summary>
+    /// ONE family's roster, named — what an owner's "Invite…" reads for the members of their OTHER families. Empty for a
+    /// family this device has no roster of.
+    /// </summary>
+    public IReadOnlyList<MemberDto> MembersOf(long familyId)
+    {
+        using var serialised = database.Hold();
+        return ReadMembers(familyId, scoped: true);
+    }
+
+    /// <summary>
+    /// The families this device holds a roster for — every one a resync read, until one is dropped
+    /// (<see cref="Database.DropFamily"/>).
+    /// </summary>
+    public IReadOnlyList<long> RosterFamilies()
+    {
+        using var serialised = database.Hold();
+        var ids = new List<long>();
+        using var command = database.Connection.CreateCommand();
+        command.CommandText = "SELECT DISTINCT family_id FROM family_members ORDER BY family_id";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetInt64(0));
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// The roster of <paramref name="familyId"/>, or — null, or a cache whose rosters were never kept per family (one built
+    /// before several families, not yet read again) — every person on <c>members</c>, as it always was. Under Hold().
+    /// </summary>
+    private IReadOnlyList<MemberDto> ReadMembers(long? familyId, bool scoped = false)
     {
         var members = new List<MemberDto>();
         using var command = database.Connection.CreateCommand();
-        command.CommandText = "SELECT * FROM members ORDER BY display_name, user_id";
+        var perFamily = familyId is not null && (scoped || HasFamilyRosters());
+        command.CommandText = perFamily
+            ? """
+              SELECT m.user_id, m.username, m.display_name, m.avatar_version, f.role, f.has_left, m.deleted,
+                     m.birthday_month, m.birthday_day, f.password_reset
+                FROM members m JOIN family_members f ON f.user_id = m.user_id
+               WHERE f.family_id = $family
+               ORDER BY m.display_name, m.user_id
+              """
+            : """
+              SELECT user_id, username, display_name, avatar_version, role, has_left, deleted,
+                     birthday_month, birthday_day, NULL AS password_reset
+                FROM members ORDER BY display_name, user_id
+              """;
+        if (perFamily)
+        {
+            command.Parameters.AddWithValue("$family", familyId!.Value);
+        }
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -757,72 +869,137 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                     ? null
                     : new BirthdayDto(
                         Convert.ToInt32(reader["birthday_month"]),
-                        Convert.ToInt32(reader["birthday_day"]))));
+                        Convert.ToInt32(reader["birthday_day"])),
+                PasswordReset: reader["password_reset"] is DBNull ? null : Convert.ToInt64(reader["password_reset"]) == 1));
         }
         // Read-only for real: one copy is handed to every caller until the table changes.
         return members.AsReadOnly();
+    }
+
+    /// <summary>Whether any roster is kept per family yet. Under Hold().</summary>
+    private bool HasFamilyRosters()
+    {
+        using var command = database.Connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS (SELECT 1 FROM family_members)";
+        return Convert.ToInt64(command.ExecuteScalar()) == 1;
     }
 
     /// <summary>
     /// The member behind an id, or null when this device has never heard of them — which happens,
     /// and is the caller's to name ("Deleted account" is a CLIENT's word, not the server's).
     /// </summary>
+    /// <remarks>
+    /// The family being shown first, and then ANYBODY this device has a row for: a name has to resolve for a message from
+    /// another family's chat (a notification, a direct chat listed elsewhere), and the person is the same person.
+    /// </remarks>
     public MemberDto? Member(long userId)
     {
         using var serialised = database.Hold();
         Fresh();
-        rosterById ??= (roster ??= ReadMembers()).ToDictionary(member => member.Id);
-        return rosterById.GetValueOrDefault(userId);
+        rosterById ??= (roster ??= ReadMembers(family())).ToDictionary(member => member.Id);
+        if (rosterById.TryGetValue(userId, out var known))
+        {
+            return known;
+        }
+        directoryById ??= ReadMembers(null).ToDictionary(member => member.Id);
+        return directoryById.GetValueOrDefault(userId);
     }
 
     /// <summary>
-    /// A member who JOINED, as the frame carries them — a <c>User</c>, so their role is
+    /// A member who JOINED, as the frame carries them — a <c>User</c>, so a newcomer's role is
     /// "member". A REJOIN lands here too: the row survived their leaving, and this is what
     /// takes the flag back off.
     /// </summary>
     /// <remarks>
     /// The narrow writer, not the roster one: an absent field must never clear a stored one, so
-    /// a frame that says nothing about a birthday leaves the one this device knows alone. The
-    /// exception is <see cref="Deleted"/>, whose whole job is to wipe.
+    /// a frame that says nothing about a birthday leaves the one this device knows alone — and
+    /// a frame that says nothing about a ROLE leaves the role of somebody already here alone: a
+    /// family started in the app is announced by a <c>member_joined</c> naming its creator, who is
+    /// its OWNER, and that frame may land after the roster read that said so (docs/protocol.md,
+    /// "Several families"). Only a new row, or one that had left, becomes "member". The
+    /// exception is <see cref="Deleted"/>, whose whole job is to wipe. <paramref name="familyId"/> is the family the frame
+    /// names — never "my family" (docs/protocol.md, "Several families") — and the one shown when it names none.
+    /// <paramref name="passwordReset"/> is the family OWNER's flag for the newcomer — false when they are also in a family
+    /// the owner does not own, where the server refuses the reset with <c>member_in_other_families</c>. It comes on the
+    /// owner's copy of <c>member_joined</c> and on the member an approval answers with; null (everybody else's copy, an
+    /// older server) keeps the flag already stored, the same narrow rule as the birthday, and only a row with no flag at
+    /// all falls back to the old rule, where the reset is offered.
     /// </remarks>
-    public void Joined(UserDto user)
+    public void Joined(UserDto user, long? familyId = null, bool? passwordReset = null)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
-        using var command = database.Connection.CreateCommand();
-        command.CommandText =
-            """
-            INSERT INTO members (user_id, username, display_name, avatar_version, role,
-                                 has_left, deleted, birthday_month, birthday_day)
-            VALUES ($id, $username, $name, $avatar, 'member', 0, 0, $month, $day)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username, display_name = excluded.display_name,
-                avatar_version = excluded.avatar_version,
-                -- A rejoin is a member again, and never the owner by arriving.
-                role = 'member', has_left = 0, deleted = 0,
-                birthday_month = COALESCE(excluded.birthday_month, members.birthday_month),
-                birthday_day = COALESCE(excluded.birthday_day, members.birthday_day)
-            """;
-        command.Parameters.AddWithValue("$id", user.Id);
-        command.Parameters.AddWithValue("$username", user.Username);
-        command.Parameters.AddWithValue("$name", user.DisplayName);
-        command.Parameters.AddWithValue("$avatar", user.AvatarVersion);
-        command.Parameters.AddWithValue("$month", user.Birthday?.Month ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("$day", user.Birthday?.Day ?? (object)DBNull.Value);
-        command.ExecuteNonQuery();
+        using var transaction = database.Connection.BeginTransaction();
+        using (var command = database.Connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                INSERT INTO members (user_id, username, display_name, avatar_version, role,
+                                     has_left, deleted, birthday_month, birthday_day)
+                VALUES ($id, $username, $name, $avatar, 'member', 0, 0, $month, $day)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username, display_name = excluded.display_name,
+                    avatar_version = excluded.avatar_version,
+                    -- A rejoin is a member again, and never the owner by arriving; somebody still here keeps their role.
+                    role = CASE WHEN members.has_left = 0 AND members.role IS NOT NULL THEN members.role ELSE 'member' END,
+                    has_left = 0, deleted = 0,
+                    birthday_month = COALESCE(excluded.birthday_month, members.birthday_month),
+                    birthday_day = COALESCE(excluded.birthday_day, members.birthday_day)
+                """;
+            command.Parameters.AddWithValue("$id", user.Id);
+            command.Parameters.AddWithValue("$username", user.Username);
+            command.Parameters.AddWithValue("$name", user.DisplayName);
+            command.Parameters.AddWithValue("$avatar", user.AvatarVersion);
+            command.Parameters.AddWithValue("$month", user.Birthday?.Month ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("$day", user.Birthday?.Day ?? (object)DBNull.Value);
+            command.ExecuteNonQuery();
+        }
+        if ((familyId ?? family()) is { } joined)
+        {
+            using var row = database.Connection.CreateCommand();
+            row.Transaction = transaction;
+            row.CommandText =
+                """
+                INSERT INTO family_members (family_id, user_id, role, has_left, password_reset)
+                VALUES ($family, $id, 'member', 0, $reset)
+                ON CONFLICT(family_id, user_id) DO UPDATE SET
+                    -- Never a downgrade: the creator of a family started in the app is its owner (see above).
+                    role = CASE WHEN family_members.has_left = 0 AND family_members.role IS NOT NULL
+                                THEN family_members.role ELSE 'member' END,
+                    has_left = 0,
+                    password_reset = COALESCE(excluded.password_reset, family_members.password_reset)
+                """;
+            row.Parameters.AddWithValue("$family", joined);
+            row.Parameters.AddWithValue("$id", user.Id);
+            row.Parameters.AddWithValue(
+                "$reset", passwordReset is { } reset ? (reset ? 1 : 0) : DBNull.Value);
+            row.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     /// <summary>
-    /// A member who LEFT. Their row stays, and their name keeps resolving for the messages and
-    /// notes they left behind; only the flag and the role change.
+    /// A member who LEFT a family — the one <paramref name="familyId"/> names, else the one shown. Their row stays, and
+    /// their name keeps resolving for the messages and notes they left behind; only the flag and the role change.
     /// </summary>
-    public void Left(long userId)
+    public void Left(long userId, long? familyId = null)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
         using var command = database.Connection.CreateCommand();
-        command.CommandText =
-            "UPDATE members SET has_left = 1, role = NULL WHERE user_id = $id";
+        // Per family once rosters are kept per family; on the person's row while the cache is still one from before.
+        if ((familyId ?? family()) is { } left && HasFamilyRosters())
+        {
+            command.CommandText =
+                "UPDATE family_members SET has_left = 1, role = NULL WHERE family_id = $family AND user_id = $id";
+            command.Parameters.AddWithValue("$family", left);
+        }
+        else
+        {
+            command.CommandText =
+                "UPDATE members SET has_left = 1, role = NULL WHERE user_id = $id";
+        }
         command.Parameters.AddWithValue("$id", userId);
         command.ExecuteNonQuery();
     }
@@ -835,45 +1012,71 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     /// tombstone — the placeholder name, <c>avatar_version: 0</c>, no birthday — "because that is
     /// exactly what a client has to overwrite", and it is applied deliberately rather than
     /// through the ordinary upsert, which everywhere else must never let an absent field clear a
-    /// stored one (docs/protocol.md, server frames).
+    /// stored one (docs/protocol.md, server frames). An account deleted leaves EVERY family, so every family's row says
+    /// so — and a second frame for a second family writes the same tombstone again, harmlessly.
     /// </remarks>
     public void Deleted(MemberDto tombstone)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
-        using var command = database.Connection.CreateCommand();
-        command.CommandText =
-            """
-            INSERT INTO members (user_id, username, display_name, avatar_version, role,
-                                 has_left, deleted, birthday_month, birthday_day)
-            VALUES ($id, $username, $name, $avatar, NULL, 1, 1, NULL, NULL)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username, display_name = excluded.display_name,
-                avatar_version = 0, role = NULL, has_left = 1, deleted = 1,
-                birthday_month = NULL, birthday_day = NULL
-            """;
-        command.Parameters.AddWithValue("$id", tombstone.Id);
-        command.Parameters.AddWithValue("$username", tombstone.Username);
-        command.Parameters.AddWithValue("$name", tombstone.DisplayName);
-        command.Parameters.AddWithValue("$avatar", 0);
-        command.ExecuteNonQuery();
+        using var transaction = database.Connection.BeginTransaction();
+        using (var command = database.Connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                INSERT INTO members (user_id, username, display_name, avatar_version, role,
+                                     has_left, deleted, birthday_month, birthday_day)
+                VALUES ($id, $username, $name, $avatar, NULL, 1, 1, NULL, NULL)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username, display_name = excluded.display_name,
+                    avatar_version = 0, role = NULL, has_left = 1, deleted = 1,
+                    birthday_month = NULL, birthday_day = NULL
+                """;
+            command.Parameters.AddWithValue("$id", tombstone.Id);
+            command.Parameters.AddWithValue("$username", tombstone.Username);
+            command.Parameters.AddWithValue("$name", tombstone.DisplayName);
+            command.Parameters.AddWithValue("$avatar", 0);
+            command.ExecuteNonQuery();
+        }
+        using (var rows = database.Connection.CreateCommand())
+        {
+            rows.Transaction = transaction;
+            rows.CommandText = "UPDATE family_members SET has_left = 1, role = NULL WHERE user_id = $id";
+            rows.Parameters.AddWithValue("$id", tombstone.Id);
+            rows.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     /// <summary>
-    /// The family's new owner, as the <c>family_owner</c> frame names them: one owner, so
-    /// whoever held it stops holding it in the same write.
+    /// A family's new owner, as the <c>family_owner</c> frame names them — in the family it names, else the one shown: one
+    /// owner, so whoever held it stops holding it in the same write.
     /// </summary>
-    public void SetOwner(long userId)
+    public void SetOwner(long userId, long? familyId = null)
     {
         using var serialised = database.Hold();
         database.RosterChanged();
         using var command = database.Connection.CreateCommand();
-        command.CommandText =
-            """
-            UPDATE members
-               SET role = CASE WHEN user_id = $id THEN 'owner' ELSE 'member' END
-             WHERE has_left = 0 AND deleted = 0
-            """;
+        if ((familyId ?? family()) is { } owned && HasFamilyRosters())
+        {
+            command.CommandText =
+                """
+                UPDATE family_members
+                   SET role = CASE WHEN user_id = $id THEN 'owner' ELSE 'member' END
+                 WHERE family_id = $family AND has_left = 0
+                """;
+            command.Parameters.AddWithValue("$family", owned);
+        }
+        else
+        {
+            command.CommandText =
+                """
+                UPDATE members
+                   SET role = CASE WHEN user_id = $id THEN 'owner' ELSE 'member' END
+                 WHERE has_left = 0 AND deleted = 0
+                """;
+        }
         command.Parameters.AddWithValue("$id", userId);
         command.ExecuteNonQuery();
     }
@@ -995,8 +1198,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
     // reader can never keep a copy older than a write it raced: the write waits for the lock, and its bump lands before
     // the next read can look.
     private long rosterAt = -1;
+    private long? rosterFamily;
     private IReadOnlyList<MemberDto>? roster;
     private Dictionary<long, MemberDto>? rosterById;
+    private Dictionary<long, MemberDto>? directoryById;
     private IReadOnlyList<long>? blocked;
     private HashSet<long>? blockedSet;
     private long kindsAt = -1;
@@ -1010,8 +1215,16 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
             rosterAt = database.RosterGeneration;
             roster = null;
             rosterById = null;
+            directoryById = null;
             blocked = null;
             blockedSet = null;
+        }
+        if (rosterFamily != family())
+        {
+            // Another family is shown: its roster, not the last one's.
+            rosterFamily = family();
+            roster = null;
+            rosterById = null;
         }
         if (kindsAt != database.ChatsGeneration)
         {
@@ -1074,16 +1287,19 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         command.Transaction = transaction;
         command.CommandText =
             """
-            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, unread_count,
-                               last_read_message_id, mentioned,
+            INSERT INTO chats (chat_id, kind, title, peer_user_id, member_ids_json, admin_user_id, family_ids_json,
+                               unread_count, last_read_message_id, mentioned,
                                max_reaction_seq, max_edit_seq, max_poll_seq, last_message_at)
             -- The three cursors start at zero on a chat this device has never held, and a list
             -- read NEVER writes them: see the note below.
-            VALUES ($id, $kind, $title, $peer, $members, $admin, $unread, $read, $mentioned, 0, 0, 0, $at)
+            VALUES ($id, $kind, $title, $peer, $members, $admin, $families, $unread, $read, $mentioned, 0, 0, 0, $at)
             ON CONFLICT(chat_id) DO UPDATE SET
                 kind = excluded.kind, title = excluded.title, peer_user_id = excluded.peer_user_id,
                 -- A group's members and admin are the server's, whole, on every read that carries the chat.
                 member_ids_json = excluded.member_ids_json, admin_user_id = excluded.admin_user_id,
+                -- And which families list it, the same way: a direct chat's list shrinks and grows with the families
+                -- the two share (docs/protocol.md, "Several families").
+                family_ids_json = excluded.family_ids_json,
                 -- Back on the list: an unblock relists the chat it hid.
                 listed = 1,
                 -- THE SERVER'S NUMBER IS THE AUTHORITY, PLUS WHAT RACED IT. The server counted
@@ -1295,12 +1511,17 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
         return reader.Read() ? ReadChat(reader).Chat : null;
     }
 
-    /// <summary>A group's members and admin as parameters — NULL for every other kind, which carries neither.</summary>
+    /// <summary>
+    /// A group's members and admin as parameters — NULL for every other kind, which carries neither — and the families the
+    /// chat is listed in, NULL from a server that predates several families.
+    /// </summary>
     private static void GroupParameters(SqliteCommand command, ChatDto chat)
     {
         command.Parameters.AddWithValue(
             "$members", chat.MemberIds is { } members ? Wire.Encode(members) : (object)DBNull.Value);
         command.Parameters.AddWithValue("$admin", chat.AdminUserId ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue(
+            "$families", chat.FamilyIds is { } families ? Wire.Encode(families) : (object)DBNull.Value);
     }
 
     private static ChatRowDto ReadChat(SqliteDataReader reader)
@@ -1320,7 +1541,10 @@ public sealed class ChatStore(Database database, Func<long>? me = null)
                     : null,
                 AdminUserId: reader["admin_user_id"] is DBNull
                     ? null
-                    : Convert.ToInt64(reader["admin_user_id"])),
+                    : Convert.ToInt64(reader["admin_user_id"]),
+                FamilyIds: reader["family_ids_json"] is string families
+                    ? Wire.Decode<long[]>(families)
+                    : null),
             LastMessage: null,
             UnreadCount: Convert.ToInt32(reader["unread_count"]),
             LastReadMessageId: Convert.ToInt64(reader["last_read_message_id"]),

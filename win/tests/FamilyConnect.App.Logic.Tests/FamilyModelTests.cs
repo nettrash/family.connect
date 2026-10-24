@@ -336,6 +336,39 @@ public class FamilyModelTests : IDisposable
         Assert.False(chats.Member(14)!.Owner);
     }
 
+    /// <summary>
+    /// The member an approval answers with carries the owner's <c>password_reset</c> for them, and the roster keeps it: a
+    /// newcomer who is also in a family this owner does not own is not offered a reset the server would refuse with
+    /// <c>member_in_other_families</c> — and the <c>member_joined</c> frame that follows, should it say nothing, does not
+    /// put the offer back (docs/protocol.md, "Several families").
+    /// </summary>
+    [Fact]
+    public async Task AnApprovedNewcomerKeepsTheResetFlagTheAnswerCarries()
+    {
+        using var held = Database.OpenInMemory();
+        var roster = new ChatStore(held, () => Me, () => 3);
+        roster.Replace(3, [new MemberDto(7, "anna", "Anna", Role: "owner")]);
+        var family = new FamilyModel(
+            new ApiClient(
+                new HttpClient(new Server().On(
+                    "/families/join-requests/12/approve",
+                    """{"member": {"id": 14, "username": "gran", "display_name": "Gran", "role": "member", "password_reset": false}}""")),
+                ServerUrl.Normalise("chat.example.com")!,
+                new MemoryTokenStore("t0ken")),
+            roster);
+
+        var (joined, _, error) = await family.ApproveAsync(12);
+
+        Assert.Null(error);
+        Assert.False(joined!.PasswordReset);
+        var gran = roster.Members().Single(member => member.Id == 14);
+        Assert.False(gran.PasswordReset);
+        Assert.False(FamilyRules.MayResetPassword(gran, Me, owner: true));
+
+        roster.Joined(new UserDto(14, "gran", "Gran"), 3);
+        Assert.False(roster.Members().Single(member => member.Id == 14).PasswordReset);
+    }
+
     [Fact]
     public async Task RequestsThatNobodyHasMadeAreAnEmptyListAndNotAFailure()
     {

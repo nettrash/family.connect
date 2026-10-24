@@ -221,6 +221,27 @@ class WsFrameSerdeTest {
         )
     }
 
+    /**
+     * The OWNER's copy carries `password_reset` top-level, beside `user`
+     * (docs/protocol.md, "Several families"); everyone else's copy omits it,
+     * which the round trip above already pins as null.
+     */
+    @Test
+    fun memberJoinedFrameCarriesPasswordResetOnTheOwnersCopy() {
+        assertRoundTrips(
+            """{"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior"}, "password_reset": false}""",
+            ServerFrame.MemberJoined(
+                familyId = 3,
+                user = me.nettrash.familyconnect.data.net.dto.UserDto(
+                    id = 11,
+                    username = "junior",
+                    displayName = "Junior",
+                ),
+                passwordReset = false,
+            ),
+        )
+    }
+
     @Test
     fun memberLeftFrameRoundTrips() {
         assertRoundTrips(

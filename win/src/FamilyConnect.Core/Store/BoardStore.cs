@@ -28,8 +28,14 @@ namespace FamilyConnect.Core.Store;
 /// change — the same rule, and the same reasoning, as the chat cursors in
 /// <see cref="ChatStore.Advance"/>.
 /// </para>
+/// <para>
+/// <b>ONE WALL PER FAMILY</b> (docs/protocol.md, "Several families"): every family has its own board, its own seqs, its own
+/// cursor and its own badge marks. A store reads and writes the wall of the family <paramref name="current"/> says is being
+/// shown, and <see cref="In"/> is the same store held to one family — what a resync uses for each family in turn. Null is
+/// the one wall of a cache from before several families, unscoped.
+/// </para>
 /// </remarks>
-public sealed class BoardStore(Database database)
+public sealed class BoardStore(Database database, Func<long?>? current = null)
 {
     private const string MarkNoteId = "board.mark.note_id";
     private const string MarkContentSeq = "board.mark.content_seq";
@@ -41,13 +47,33 @@ public sealed class BoardStore(Database database)
     /// </summary>
     private const string FullMark = "board.full.board_seq";
 
+    /// <summary>Every key this store keeps in <c>meta</c>, before a family's suffix — what <see cref="Database.AdoptLegacy"/> moves.</summary>
+    internal static readonly string[] MetaKeys = [MarkNoteId, MarkContentSeq, CursorSeq, FullMark];
+
+    private readonly Func<long?> family = current ?? (() => null);
+
+    /// <summary>The family whose wall this is — the one shown, or the one <see cref="In"/> held it to.</summary>
+    public long? Family => family();
+
+    /// <summary>This store, held to ONE family's wall whatever is shown.</summary>
+    public BoardStore In(long? familyId) => new(database, () => familyId);
+
+    /// <summary>A family's own spelling of a <c>meta</c> key: <c>board.cursor.board_seq@3</c>.</summary>
+    private string Key(string key) => FamilyKeys.Of(key, family());
+
     /// <summary>The whole wall as it stands, newest change first — what the window draws.</summary>
     public IReadOnlyList<NoteDto> Notes()
     {
         using var serialised = database.Hold();
         var notes = new List<NoteDto>();
         using var command = database.Connection.CreateCommand();
-        command.CommandText = "SELECT * FROM notes ORDER BY board_seq DESC";
+        command.CommandText = family() is not null
+            ? "SELECT * FROM notes WHERE family_id = $family ORDER BY board_seq DESC"
+            : "SELECT * FROM notes ORDER BY board_seq DESC";
+        if (family() is { } scoped)
+        {
+            command.Parameters.AddWithValue("$family", scoped);
+        }
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -76,7 +102,7 @@ public sealed class BoardStore(Database database)
         // TWO FULL READS CAN LAND IN EITHER ORDER, and an older one landing second must change
         // nothing at all: it would drop every note written between the two and set the cursor
         // back to its own mark.
-        if (maxBoardSeq < Number(Meta(FullMark)))
+        if (maxBoardSeq < Number(Meta(Key(FullMark))))
         {
             return;
         }
@@ -87,8 +113,15 @@ public sealed class BoardStore(Database database)
             // EXCEPT what is NEWER THAN THE READ'S OWN MARK: a frame that landed while the read
             // was in flight is not on that answer, and wiping it would take a note off the wall
             // seconds after somebody pinned it — then put it back at the next catch-up.
-            clear.CommandText = "DELETE FROM notes WHERE board_seq <= $mark";
+            // And only this family's: another family's wall has seqs of its own.
+            clear.CommandText = family() is { } scoped
+                ? "DELETE FROM notes WHERE board_seq <= $mark AND family_id = $family"
+                : "DELETE FROM notes WHERE board_seq <= $mark";
             clear.Parameters.AddWithValue("$mark", maxBoardSeq);
+            if (family() is { } held)
+            {
+                clear.Parameters.AddWithValue("$family", held);
+            }
             clear.ExecuteNonQuery();
         }
         foreach (var note in notes.Where(note => !note.Deleted))
@@ -98,8 +131,8 @@ public sealed class BoardStore(Database database)
                 Write(note, transaction);
             }
         }
-        SetMeta(CursorSeq, Text(maxBoardSeq), transaction);
-        SetMeta(FullMark, Text(maxBoardSeq), transaction);
+        SetMeta(Key(CursorSeq), Text(maxBoardSeq), transaction);
+        SetMeta(Key(FullMark), Text(maxBoardSeq), transaction);
         transaction.Commit();
     }
 
@@ -135,7 +168,7 @@ public sealed class BoardStore(Database database)
         };
         if (mayMove && note.BoardSeq > Cursor)
         {
-            SetMeta(CursorSeq, Text(note.BoardSeq), transaction);
+            SetMeta(Key(CursorSeq), Text(note.BoardSeq), transaction);
         }
         transaction.Commit();
         return changed;
@@ -158,7 +191,7 @@ public sealed class BoardStore(Database database)
         }
         if (route != SeqRoute.Evidence)
         {
-            SetMeta(CursorSeq, Text(highest), transaction);
+            SetMeta(Key(CursorSeq), Text(highest), transaction);
         }
         transaction.Commit();
         return changed;
@@ -207,7 +240,7 @@ public sealed class BoardStore(Database database)
     }
 
     /// <summary>Where the change feed should carry on from.</summary>
-    public long Cursor => Number(Meta(CursorSeq));
+    public long Cursor => Number(Meta(Key(CursorSeq)));
 
     /// <summary>
     /// A number this cache wrote for ITSELF, read back the same way it was written. A machine's
@@ -226,7 +259,7 @@ public sealed class BoardStore(Database database)
     /// has actually been on screen (docs/protocol.md, "Board").
     /// </summary>
     public BoardMarks Marks =>
-        new(Number(Meta(MarkNoteId)), Number(Meta(MarkContentSeq)));
+        new(Number(Meta(Key(MarkNoteId))), Number(Meta(Key(MarkContentSeq))));
 
     /// <summary>Monotonic in both fields: a cleared badge must not come back.</summary>
     public void Mark(BoardMarks marks)
@@ -234,8 +267,8 @@ public sealed class BoardStore(Database database)
         using var serialised = database.Hold();
         var later = BoardMarks.Later(Marks, marks);
         using var transaction = database.Connection.BeginTransaction();
-        SetMeta(MarkNoteId, Text(later.NoteId), transaction);
-        SetMeta(MarkContentSeq, Text(later.ContentSeq), transaction);
+        SetMeta(Key(MarkNoteId), Text(later.NoteId), transaction);
+        SetMeta(Key(MarkContentSeq), Text(later.ContentSeq), transaction);
         transaction.Commit();
     }
 
@@ -266,11 +299,11 @@ public sealed class BoardStore(Database database)
             INSERT INTO notes (note_id, author_id, kind, text, color, size, font, x, y,
                                created_at, updated_at, board_seq, content_seq,
                                starts_at, ends_at, place,
-                               attachment_json, rsvps_json, mentions_json, items_json)
+                               attachment_json, rsvps_json, mentions_json, items_json, family_id)
             VALUES ($id, $author, $kind, $text, $color, $size, $font, $x, $y,
                     $created, $updated, $seq, $content,
                     $starts, $ends, $place,
-                    $attachment, $rsvps, $mentions, $items)
+                    $attachment, $rsvps, $mentions, $items, $family)
             ON CONFLICT(note_id) DO UPDATE SET
                 author_id = excluded.author_id, kind = excluded.kind, text = excluded.text,
                 color = excluded.color, size = excluded.size, font = excluded.font,
@@ -278,7 +311,8 @@ public sealed class BoardStore(Database database)
                 board_seq = excluded.board_seq, content_seq = excluded.content_seq,
                 starts_at = excluded.starts_at, ends_at = excluded.ends_at, place = excluded.place,
                 attachment_json = excluded.attachment_json, rsvps_json = excluded.rsvps_json,
-                mentions_json = excluded.mentions_json, items_json = excluded.items_json
+                mentions_json = excluded.mentions_json, items_json = excluded.items_json,
+                family_id = COALESCE(excluded.family_id, notes.family_id)
             """;
         command.Parameters.AddWithValue("$id", note.Id);
         command.Parameters.AddWithValue("$author", note.AuthorId);
@@ -309,6 +343,8 @@ public sealed class BoardStore(Database database)
             note.Mentions is null ? DBNull.Value : Wire.Encode(note.Mentions));
         command.Parameters.AddWithValue("$items",
             note.Items is null ? DBNull.Value : Wire.Encode(note.Items));
+        // Whose wall: the family this store is held to, else what the note says (docs/protocol.md, "Several families").
+        command.Parameters.AddWithValue("$family", family() ?? note.FamilyId ?? (object)DBNull.Value);
         command.ExecuteNonQuery();
     }
 
@@ -341,7 +377,8 @@ public sealed class BoardStore(Database database)
             Place: Text("place"),
             Rsvps: Text("rsvps_json") is { } rsvps ? Wire.Decode<RsvpDto[]>(rsvps) : null,
             Mentions: Text("mentions_json") is { } mentions ? Wire.Decode<MentionDto[]>(mentions) : null,
-            Items: Text("items_json") is { } items ? Wire.Decode<TaskItemDto[]>(items) : null);
+            Items: Text("items_json") is { } items ? Wire.Decode<TaskItemDto[]>(items) : null,
+            FamilyId: Number("family_id"));
     }
 
     // ---- meta ------------------------------------------------------------

@@ -57,7 +57,7 @@ pub struct AddPackItemRequest {
     pub label: Option<String>,
 }
 
-const PACK_COLS: &str = "id, added_by, label, pack_seq, created_at, deleted_at";
+const PACK_COLS: &str = "id, added_by, label, pack_seq, created_at, deleted_at, family_id";
 
 /// What a pack item's picture carries on the wire. No coordinates — it is
 /// never a location — and no `sticker` column: that flag is a message's,
@@ -65,14 +65,19 @@ const PACK_COLS: &str = "id, added_by, label, pack_seq, created_at, deleted_at";
 const PICTURE_COLS: &str =
     "id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name";
 
-/// The family the caller belongs to, or `not_in_family`.
-async fn caller_family(state: &AppState, user_id: i64) -> Result<i64, ApiError> {
-    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
-    family_id.ok_or_else(|| ApiError::conflict(codes::NOT_IN_FAMILY, "you are not in a family"))
+/// The family whose pack this request is about — the `{family}` of
+/// `/families/{family}/pack…`, `mine` being the home family — or
+/// `not_in_family` (docs/protocol.md, "Several families"). Resolved, and a
+/// family the caller is not in refused, by the `AuthUser` extractor.
+fn caller_family(auth: &AuthUser) -> Result<i64, ApiError> {
+    auth.family_id
+        .ok_or_else(|| ApiError::conflict(codes::NOT_IN_FAMILY, "you are not in a family"))
+}
+
+/// `…/pack/{item_id}`, by NAME: the route also carries `{family}`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ItemPath {
+    pub item_id: i64,
 }
 
 /// Trimmed; empty is no label at all; over the cap is `validation`.
@@ -106,7 +111,7 @@ async fn lock_pack(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     family_id: i64,
 ) -> Result<(), ApiError> {
-    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR NO KEY UPDATE")
         .bind(family_id)
         .execute(&mut **tx)
         .await?;
@@ -222,7 +227,7 @@ async fn read_item(
 /// `GET /families/mine/pack` — the whole pack, tombstones excluded, in the
 /// order the items were added.
 pub async fn get_pack(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     let mut tx = begin_pack_read(&state).await?;
     // The high-water mark FIRST, then the items — the order
     // `handlers_board::get_board` reads in, and the order protocol.md
@@ -265,7 +270,7 @@ pub async fn get_pack_changes(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     let after_seq = parse_pagination_param(&params, "after_seq")?.unwrap_or(0);
     let requested_limit = parse_pagination_param(&params, "limit")?;
     let limit = clamp_limit(
@@ -307,7 +312,7 @@ pub async fn add_pack_item(
     State(state): State<AppState>,
     AppJson(req): AppJson<AddPackItemRequest>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
     let label = validate_label(req.label.as_deref())?;
 
     let mut tx = state.pool.begin().await?;
@@ -495,9 +500,9 @@ pub async fn add_pack_item(
 pub async fn remove_pack_item(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(item_id): Path<i64>,
+    Path(ItemPath { item_id }): Path<ItemPath>,
 ) -> Result<Response, ApiError> {
-    let family_id = caller_family(&state, auth.user_id).await?;
+    let family_id = caller_family(&auth)?;
 
     let mut tx = state.pool.begin().await?;
     lock_pack(&mut tx, family_id).await?;

@@ -124,6 +124,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">Tes autres appareils seront déconnectés. Celui-ci reste connecté.</string>
     <string name="e_action_failed">Échec de l’action</string>
     <string name="e_already_in_family">Tu es déjà dans une famille — tire pour actualiser</string>
+    <string name="e_already_in_that_family">Vous faites déjà partie de cette famille.</string>
     <string name="e_change_password_failed">Impossible de changer ton mot de passe.</string>
     <string name="e_change_policy_failed">Impossible de changer la règle</string>
     <string name="e_create_family_failed">Impossible de créer la famille</string>
@@ -809,4 +810,26 @@
     <string name="e_create_group_failed">Impossible de créer le groupe.</string>
     <string name="e_change_group_failed">Impossible de modifier le groupe.</string>
     <string name="s_everyone_already_in_group">Toute la famille est déjà dans ce groupe.</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">Familles</string>
+    <string name="s_new_family">Nouvelle famille…</string>
+    <string name="s_join_another_family">Rejoindre une autre famille…</string>
+    <string name="s_switch_family">Changer de famille</string>
+    <string name="s_family_unread">%1$s, %2$d non lus</string>
+    <string name="s_invited_you_to">%1$s vous invite à rejoindre « %2$s »</string>
+    <string name="s_invitations">Invitations</string>
+    <string name="s_invite">Inviter…</string>
+    <string name="s_invite_to">Inviter dans « %s »</string>
+    <string name="s_invite_empty">Les membres de vos autres familles qui ne font pas partie de celle-ci apparaissent ici.</string>
+    <string name="s_invited">Invitation envoyée</string>
+    <string name="s_pending_invitations">Invitations en attente</string>
+    <string name="s_withdraw_invitation">Retirer l’invitation</string>
+    <string name="e_invitation_gone">Cette invitation n’est plus disponible.</string>
+    <string name="e_too_many_families">Vous avez atteint le nombre maximal de familles par compte (%d).</string>
+    <string name="e_already_own_a_family">Vous possédez déjà une famille et ne pouvez pas en créer une autre.</string>
+    <string name="e_member_families_disabled">Ce serveur ne permet pas aux membres de créer de nouvelles familles.</string>
+    <string name="e_member_in_other_families">Ce membre fait aussi partie d’une famille dont vous n’êtes pas propriétaire : seule cette personne peut changer son mot de passe.</string>
+    <string name="s_leave_named_family">Quitter « %s » ?</string>
+    <string name="s_leave_one_of_families_explanation">Vous perdrez l’accès aux conversations de cette famille. Les conversations directes avec les membres d’une autre de vos familles sont conservées.</string>
+    <string name="s_new_family_explanation">Créez votre propre famille. Elle vous appartiendra et vous pourrez inviter des membres de vos autres familles.</string>
 </resources>

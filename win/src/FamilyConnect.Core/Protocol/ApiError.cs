@@ -190,6 +190,34 @@ public static class ErrorCodes
     /// <summary>The family already has its 50 groups (docs/protocol.md, "Groups"): a 409, added 2026-10-22.</summary>
     public const string TooManyGroups = "too_many_groups";
 
+    /// <summary>
+    /// A family the caller is not in — or one that never existed, the same answer, so the families on a server cannot be
+    /// counted by trying ids (docs/protocol.md, "Several families"): a 404, added 2026-10-22. A client treats the family
+    /// as gone and resyncs.
+    /// </summary>
+    public const string FamilyNotFound = "family_not_found";
+
+    /// <summary>The account is already in <c>max_families_per_account</c> families: a 409, added 2026-10-22.</summary>
+    public const string TooManyFamilies = "too_many_families";
+
+    /// <summary>Starting another family while owning one, by hand-off included: a 409, added 2026-10-22.</summary>
+    public const string AlreadyOwnAFamily = "already_own_a_family";
+
+    /// <summary>The operator's <c>[families] member_families</c> is off: a 403, added 2026-10-22.</summary>
+    public const string MemberFamiliesDisabled = "member_families_disabled";
+
+    /// <summary>
+    /// A password reset of a member who is also in a family the owner does not own — only they may change it: a 403,
+    /// added 2026-10-22.
+    /// </summary>
+    public const string MemberInOtherFamilies = "member_in_other_families";
+
+    /// <summary>
+    /// An invitation that is no longer pending: accepted, declined, withdrawn, somebody else's, or never there. A 409,
+    /// added 2026-10-22.
+    /// </summary>
+    public const string InvitationNotPending = "invitation_not_pending";
+
     public const string TooManyRequests = "too_many_requests";
     public const string Internal = "internal";
 
@@ -209,6 +237,7 @@ public static class ErrorCodes
         InvalidCall, CallNotFound, CallBusy, PeerBusy, PeerUnreachable, AvatarTooLarge,
         InvalidImage, AttachmentTooLarge, InvalidAttachment, AttachmentNotFound,
         AttachmentExpired, AttachmentAlreadyUsed, StorageFull, PackFull, PackItemTooLarge,
-        PackItemNotFound, NotPackItemAuthor, NotGroupAdmin, TooManyGroups, TooManyRequests, Internal,
+        PackItemNotFound, NotPackItemAuthor, NotGroupAdmin, TooManyGroups, FamilyNotFound, TooManyFamilies,
+        AlreadyOwnAFamily, MemberFamiliesDisabled, MemberInOtherFamilies, InvitationNotPending, TooManyRequests, Internal,
     ];
 }

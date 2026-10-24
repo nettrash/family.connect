@@ -182,9 +182,13 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
     }
 
     /// <summary>Leave. The answer names the successor the server actually chose.</summary>
-    public async Task<(long? Successor, ApiError? Error)> LeaveAsync(CancellationToken ct = default)
+    /// <param name="familyId">The family to leave — the one shown — or null for the home family of a server that knows one.</param>
+    /// <param name="ct">Cancels the request.</param>
+    public async Task<(long? Successor, ApiError? Error)> LeaveAsync(long? familyId = null, CancellationToken ct = default)
     {
-        var answer = await api.LeaveFamily(ct).ConfigureAwait(false);
+        var answer = familyId is { } named
+            ? await api.LeaveFamily(named, ct).ConfigureAwait(false)
+            : await api.LeaveFamily(ct).ConfigureAwait(false);
         return answer is { Ok: true, Value: { } left }
             ? (left.NewOwnerUserId, null)
             : (null, answer.Error ?? ApiError.Transport("no answer"));
@@ -212,12 +216,16 @@ public sealed class FamilyModel(ApiClient api, ChatStore chats)
         var answer = await api.ApproveJoinRequest(requestId, ct).ConfigureAwait(false);
         if (answer.Ok && answer.Value is not null)
         {
-            chats.Joined(new UserDto(
-                answer.Value.Member.Id,
-                answer.Value.Member.Username,
-                answer.Value.Member.DisplayName,
-                answer.Value.Member.AvatarVersion,
-                Birthday: answer.Value.Member.Birthday));
+            // With the answer's `password_reset`: the owner is not offered a reset for a newcomer who is also in a family
+            // they do not own, which the server would refuse (docs/protocol.md, "Several families").
+            chats.Joined(
+                new UserDto(
+                    answer.Value.Member.Id,
+                    answer.Value.Member.Username,
+                    answer.Value.Member.DisplayName,
+                    answer.Value.Member.AvatarVersion,
+                    Birthday: answer.Value.Member.Birthday),
+                passwordReset: answer.Value.Member.PasswordReset);
             return (answer.Value.Member, false, null);
         }
         var error = answer.Error ?? ApiError.Transport("no answer");

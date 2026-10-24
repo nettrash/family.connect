@@ -241,9 +241,18 @@ nonisolated struct MemberJoinedPayload: Decodable, Equatable, Sendable {
     }
     let familyID: Int64
     let user: JoinedUser
+    /// Whether the reader may reset this member's password — TOP-LEVEL, not
+    /// on `user`, and only on the family OWNER's copy of the frame
+    /// (docs/protocol.md, "Several families"). Nil on everybody else's copy
+    /// and from an older server, and nil means "not told", never "allowed":
+    /// the flag already held for the member stands. An Optional, so the
+    /// synthesized decoder reads it with `decodeIfPresent` and an absent key
+    /// decodes rather than throws.
+    let passwordReset: Bool?
     enum CodingKeys: String, CodingKey {
         case familyID = "family_id"
         case user
+        case passwordReset = "password_reset"
     }
 }
 
@@ -444,7 +453,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case read(chatID: Int64, userID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
-    case memberLeft(userID: Int64)
+    /// Somebody left, or was removed from, the family `familyID` names —
+    /// THAT family, never "my family" (docs/protocol.md, "Several
+    /// families", 2026-10-22). Nil only from a server that predates the
+    /// field, where there is one family.
+    case memberLeft(familyID: Int64?, userID: Int64)
     /// A member deleted their account. Carries the tombstone to write; a
     /// `member_left` for the same person is sent alongside it.
     case memberDeleted(MemberDeletedPayload)
@@ -472,6 +485,12 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// its admin deleted it. The client drops the chat, its messages and
     /// anything it was drafting there.
     case chatRemoved(chatID: Int64)
+    /// An invitation into a family, to the invited person and the family's
+    /// owner (docs/protocol.md, "Several families", 2026-10-22).
+    case invitation(InvitationDTO)
+    /// That invitation is gone from both lists: accepted, declined,
+    /// withdrawn, or lapsed.
+    case invitationRemoved(invitationID: Int64)
     /// A poll's full current state after a vote, a retraction or a close.
     /// Dispatched exactly like `reaction`, under its own seq guard.
     case poll(PollPayload)
@@ -518,6 +537,8 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case candidate
         case reason
         case chat
+        case invitation
+        case invitationID = "invitation_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -566,7 +587,9 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             // Re-decode from the top so MemberJoinedPayload owns its keys.
             self = .memberJoined(try MemberJoinedPayload(from: decoder))
         case "member_left":
-            self = .memberLeft(userID: try container.decode(Int64.self, forKey: .userID))
+            self = .memberLeft(
+                familyID: try container.decodeIfPresent(Int64.self, forKey: .familyID),
+                userID: try container.decode(Int64.self, forKey: .userID))
         case "member_deleted":
             // Re-decode from the top so MemberDeletedPayload owns its keys.
             self = .memberDeleted(try MemberDeletedPayload(from: decoder))
@@ -588,6 +611,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .chatUpdated(try container.decode(ChatDTO.self, forKey: .chat))
         case "chat_removed":
             self = .chatRemoved(chatID: try container.decode(Int64.self, forKey: .chatID))
+        case "invitation":
+            self = .invitation(try container.decode(InvitationDTO.self, forKey: .invitation))
+        case "invitation_removed":
+            self = .invitationRemoved(
+                invitationID: try container.decode(Int64.self, forKey: .invitationID))
         case "call_offer":
             // Re-decode from the top so CallOfferPayload owns its keys.
             self = .callOffer(try CallOfferPayload(from: decoder))

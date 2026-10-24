@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.GroupRules
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
+import me.nettrash.familyconnect.data.repo.observeCurrentActiveMembers
 
 @HiltViewModel
 class OpenPollsViewModel @Inject constructor(
@@ -98,7 +99,7 @@ class OpenPollsViewModel @Inject constructor(
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     val memberCount: StateFlow<Int> = combine(
-        memberDao.observeActiveMembers(),
+        memberDao.observeCurrentActiveMembers(settings),
         chatIdFlow.flatMapLatest { id -> if (id == null) flowOf(null) else chatDao.observeById(id) },
     ) { active, chat ->
         GroupRules.pollAudience(chat?.kind, chat?.memberIds.orEmpty(), active.size)

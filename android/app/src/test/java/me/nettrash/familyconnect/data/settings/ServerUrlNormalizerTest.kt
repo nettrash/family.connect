@@ -72,13 +72,13 @@ class ServerUrlNormalizerTest {
     @Test
     fun wsUrlMapsHttpsToWss() {
         assertThat(ServerUrlNormalizer.wsUrl("https://chat.example.com"))
-            .isEqualTo("wss://chat.example.com/api/v1/ws")
+            .isEqualTo("wss://chat.example.com/api/v1/ws?families=1")
     }
 
     @Test
     fun wsUrlMapsHttpToWs() {
         assertThat(ServerUrlNormalizer.wsUrl("http://192.168.1.10:8080"))
-            .isEqualTo("ws://192.168.1.10:8080/api/v1/ws")
+            .isEqualTo("ws://192.168.1.10:8080/api/v1/ws?families=1")
     }
 
     @Test

@@ -195,6 +195,7 @@ struct MemberBirthdayView: View {
     /// else will tell it.
     var onSaved: (BirthdayDTO?) -> Void
 
+    @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
 
@@ -266,7 +267,7 @@ struct MemberBirthdayView: View {
             defer { isSaving = false }
             do {
                 let updated = try await coordinator.api.setMemberBirthday(
-                    userID: member.id, month: month, day: day)
+                    userID: member.id, month: month, day: day, family: session.apiFamilyID)
                 apply(updated.birthday)
                 dismiss()
             } catch {
@@ -281,7 +282,7 @@ struct MemberBirthdayView: View {
         Task {
             defer { isSaving = false }
             do {
-                try await coordinator.api.clearMemberBirthday(userID: member.id)
+                try await coordinator.api.clearMemberBirthday(userID: member.id, family: session.apiFamilyID)
                 apply(nil)
                 dismiss()
             } catch {

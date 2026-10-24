@@ -57,6 +57,21 @@ nonisolated enum AppSettings {
         /// and a device that upgrades has a meaningful value for the old
         /// one and none for the new (BoardBadge.contentMarkSeed).
         static let boardSeenContentSeq = "v1.board.seenContentSeq"
+        /// The three board marks and the pack cursor above, PER FAMILY
+        /// (docs/protocol.md, "Several families", 2026-10-22): one
+        /// dictionary each, keyed by the family id as a string. The single
+        /// keys above are what a build from before several families wrote;
+        /// they are read once, into the home family's entry
+        /// (`adoptLegacyFamilyState`), and removed.
+        static let boardCursors = "v1.board.cursors"
+        static let boardSeenNoteIDs = "v1.board.seenNoteIds"
+        static let boardSeenContentSeqs = "v1.board.seenContentSeqs"
+        static let packCursors = "v1.pack.cursors"
+        /// The family this device shows, per ACCOUNT: user id → family id.
+        /// Kept across a sign-out — the next sign-in of the same person
+        /// comes back to the family they were looking at — and dropped
+        /// with the server, whose ids it names.
+        static let currentFamilies = "v1.families.current"
         /// The sticker pack's catch-up cursor: the highest pack_seq this
         /// device has applied. Account-scoped and wiped with the session,
         /// for the board cursor's reason (docs/protocol.md, "Sticker pack").
@@ -366,47 +381,121 @@ nonisolated enum AppSettings {
         }
     }
 
-    /// Remove everything this type owns; `keepServerURL` preserves the
-    /// server row (logout keeps it; server change does not).
-    /// Highest board_seq applied on this device; 0 = nothing yet, which is
-    /// what makes the first open do a full board read rather than replay
-    /// every note that ever existed.
-    static var boardCursor: Int64 {
-        get { Int64(defaults.integer(forKey: Key.boardCursor)) }
-        set { defaults.set(Int(newValue), forKey: Key.boardCursor) }
+    // MARK: - Per family (docs/protocol.md, "Several families")
+
+    /// Highest board_seq applied on this device FOR ONE FAMILY; 0 = nothing
+    /// yet, which is what makes the first open of that board a full read
+    /// rather than a replay of every note that ever existed. Family `0` is
+    /// "not attributed to any family yet" — a test, or a store from before.
+    static func boardCursor(family: Int64) -> Int64 {
+        perFamily(Key.boardCursors, family)
     }
 
-    /// Highest note id the user has actually BEEN SHOWN, for the badge.
-    ///
-    /// Deliberately not `boardCursor`. That is a SYNC cursor and advances
-    /// whenever a change is applied — including a background resync — so
-    /// using it here would clear the badge for someone who never opened the
-    /// board. This one moves only when the board is on screen. Note ids are
-    /// server-assigned and monotonic, so "created since you last looked" is
-    /// just "id greater than this".
-    static var boardSeenNoteID: Int64 {
-        get { Int64(defaults.integer(forKey: Key.boardSeenNoteID)) }
-        set { defaults.set(Int(newValue), forKey: Key.boardSeenNoteID) }
+    static func setBoardCursor(_ value: Int64, family: Int64) {
+        setPerFamily(Key.boardCursors, family, value)
     }
 
-    /// Highest `content_seq` the user has actually BEEN SHOWN — what the
-    /// board badge counts (docs/protocol.md, "Board").
-    ///
-    /// `boardSeenNoteID` above is kept beside it, and still used, for notes
-    /// that carry no content seq: rows cached before the field existed, and
-    /// notes from a server that predates it. BoardBadge holds the rule; this
-    /// is only where the two numbers live.
-    static var boardSeenContentSeq: Int64 {
-        get { Int64(defaults.integer(forKey: Key.boardSeenContentSeq)) }
-        set { defaults.set(Int(newValue), forKey: Key.boardSeenContentSeq) }
+    /// What this person has actually BEEN SHOWN of one family's board, for
+    /// its badge. Deliberately not `boardCursor(family:)`: that is a SYNC
+    /// cursor and advances on a background resync, so it would clear the
+    /// badge for somebody who never opened the board. The pair is read and
+    /// written together — a badge that used one mark from before an update
+    /// and one from after would be neither rule (BoardBadge).
+    static func boardMarks(family: Int64) -> BoardBadge.Marks {
+        BoardBadge.Marks(
+            seenNoteID: perFamily(Key.boardSeenNoteIDs, family),
+            seenContentSeq: perFamily(Key.boardSeenContentSeqs, family))
     }
 
-    /// Highest pack_seq applied on this device; 0 = nothing yet, which is
-    /// what makes the first catch-up a full read of the pack rather than a
-    /// replay of every sticker the family ever added and removed.
-    static var packCursor: Int64 {
-        get { Int64(defaults.integer(forKey: Key.packCursor)) }
-        set { defaults.set(Int(newValue), forKey: Key.packCursor) }
+    static func setBoardMarks(_ marks: BoardBadge.Marks, family: Int64) {
+        setPerFamily(Key.boardSeenNoteIDs, family, marks.seenNoteID)
+        setPerFamily(Key.boardSeenContentSeqs, family, marks.seenContentSeq)
+    }
+
+    /// Highest pack_seq applied on this device for one family's pack; 0 =
+    /// nothing yet, which makes the first catch-up a full read.
+    static func packCursor(family: Int64) -> Int64 {
+        perFamily(Key.packCursors, family)
+    }
+
+    static func setPackCursor(_ value: Int64, family: Int64) {
+        setPerFamily(Key.packCursors, family, value)
+    }
+
+    /// Let go of one family's board and pack marks — the account left it,
+    /// or was removed. Its cursors must not outlive its rows: a cursor that
+    /// says "caught up" over an emptied board fetches nothing on a rejoin.
+    static func forgetFamily(_ family: Int64) {
+        for key in [Key.boardCursors, Key.boardSeenNoteIDs, Key.boardSeenContentSeqs, Key.packCursors] {
+            var map = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+            map[String(family)] = nil
+            defaults.set(map, forKey: key)
+        }
+    }
+
+    /// Every family's marks but the ones still held — the general repair
+    /// for a family left while this device was not listening.
+    static func forgetFamilies(except kept: Set<Int64>) {
+        for key in [Key.boardCursors, Key.boardSeenNoteIDs, Key.boardSeenContentSeqs, Key.packCursors] {
+            let map = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+            let filtered = map.filter { key, _ in Int64(key).map(kept.contains) ?? false }
+            if filtered.count != map.count { defaults.set(filtered, forKey: key) }
+        }
+    }
+
+    /// Whether ANY family's board or pack marks are kept — part of "does this
+    /// device still hold a family's data?", which a `/me` listing no family
+    /// asks (`ChatSyncCoordinator.holdsFamilyData`). A purge empties every
+    /// one of these maps (`forgetFamilies(except: [])`), so it answers "no"
+    /// after one.
+    static var holdsFamilyMarks: Bool {
+        [Key.boardCursors, Key.boardSeenNoteIDs, Key.boardSeenContentSeqs, Key.packCursors].contains { key in
+            !((defaults.dictionary(forKey: key) as? [String: Int]) ?? [:]).isEmpty
+        }
+    }
+
+    /// What a build from before several families stored — one board cursor,
+    /// one pair of marks, one pack cursor — belongs to the HOME family:
+    /// it was all read from `/families/mine`. Moved there once, never over
+    /// a value the family already has, and the old keys removed.
+    static func adoptLegacyFamilyState(into family: Int64) {
+        let moves: [(old: String, new: String)] = [
+            (Key.boardCursor, Key.boardCursors),
+            (Key.boardSeenNoteID, Key.boardSeenNoteIDs),
+            (Key.boardSeenContentSeq, Key.boardSeenContentSeqs),
+            (Key.packCursor, Key.packCursors),
+        ]
+        for move in moves where defaults.object(forKey: move.old) != nil {
+            let value = Int64(defaults.integer(forKey: move.old))
+            if value > 0, perFamily(move.new, family) == 0 {
+                setPerFamily(move.new, family, value)
+            }
+            defaults.removeObject(forKey: move.old)
+        }
+    }
+
+    /// The family this device last showed `userID`, or nil when it never
+    /// showed them one.
+    static func currentFamilyID(forUser userID: Int64) -> Int64? {
+        let map = defaults.dictionary(forKey: Key.currentFamilies) as? [String: Int] ?? [:]
+        return map[String(userID)].map(Int64.init)
+    }
+
+    static func setCurrentFamilyID(_ familyID: Int64?, forUser userID: Int64) {
+        var map = defaults.dictionary(forKey: Key.currentFamilies) as? [String: Int] ?? [:]
+        map[String(userID)] = familyID.map { Int($0) }
+        defaults.set(map, forKey: Key.currentFamilies)
+    }
+
+    private static func perFamily(_ key: String, _ family: Int64) -> Int64 {
+        let map = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+        return Int64(map[String(family)] ?? 0)
+    }
+
+    private static func setPerFamily(_ key: String, _ family: Int64, _ value: Int64) {
+        var map = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+        map[String(family)] = value == 0 ? nil : Int(value)
+        defaults.set(map, forKey: key)
     }
 
     /// How many stickers the family's pack may hold, or nil when this
@@ -448,19 +537,6 @@ nonisolated enum AppSettings {
     static var packRecents: [Int64] {
         get { (defaults.array(forKey: Key.packRecents) as? [Int] ?? []).map(Int64.init) }
         set { defaults.set(newValue.map { Int($0) }, forKey: Key.packRecents) }
-    }
-
-    /// The pair, read and written together — a badge that used one mark
-    /// from before an update and one from after would be neither rule.
-    static var boardMarks: BoardBadge.Marks {
-        get {
-            BoardBadge.Marks(
-                seenNoteID: boardSeenNoteID, seenContentSeq: boardSeenContentSeq)
-        }
-        set {
-            boardSeenNoteID = newValue.seenNoteID
-            boardSeenContentSeq = newValue.seenContentSeq
-        }
     }
 
     /// The assistant's reserved account id, or nil when the server has no
@@ -630,6 +706,8 @@ nonisolated enum AppSettings {
             serverCanDraw: assistantImages, serverToken: assistantDraw)
     }
 
+    /// Remove everything this type owns; `keepServerURL` preserves the
+    /// server row (logout keeps it; server change does not).
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
@@ -654,6 +732,14 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
         defaults.removeObject(forKey: Key.boardSeenContentSeq)
+        // …and every family's, now that there may be several.
+        defaults.removeObject(forKey: Key.boardCursors)
+        defaults.removeObject(forKey: Key.boardSeenNoteIDs)
+        defaults.removeObject(forKey: Key.boardSeenContentSeqs)
+        defaults.removeObject(forKey: Key.packCursors)
+        // The family each account last looked at names THIS server's ids;
+        // a sign-out keeps it for the same person's next sign-in.
+        if !keepServerURL { defaults.removeObject(forKey: Key.currentFamilies) }
         // The pack is this family's on this server: its cursor, its limits
         // and which of its stickers this person reaches for all go with
         // the session, like the board's marks above.

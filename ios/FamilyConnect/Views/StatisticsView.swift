@@ -14,6 +14,7 @@
 import SwiftUI
 
 struct StatisticsView: View {
+    @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
 
@@ -202,7 +203,7 @@ struct StatisticsView: View {
     private func load() async {
         failed = false
         do {
-            stats = try await coordinator.api.familyStats()
+            stats = try await coordinator.api.familyStats(family: session.apiFamilyID)
         } catch {
             failed = true
         }

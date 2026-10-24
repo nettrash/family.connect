@@ -86,6 +86,40 @@ pub struct FamiliesConfig {
     /// large number, the way `limits.retention_days` spells it.
     #[serde(default = "default_familyless_account_ttl_days")]
     pub familyless_account_ttl_days: i64,
+
+    /// Whether a member who is ALREADY in a family may start another one
+    /// from inside the app (docs/protocol.md, "Several families"; decision
+    /// D3). Read through [`FamiliesConfig::member_families_enabled`].
+    ///
+    /// Its own switch, deliberately NOT `registration`: that one is about an
+    /// account's FIRST family — a stranger arriving at the server — and the
+    /// case issue #88 describes is the opposite one, somebody already here
+    /// who marries and starts their own. A server closed to strangers'
+    /// families can still let its members start theirs by setting this to
+    /// `true`.
+    ///
+    /// UNSET, it follows `registration`. A server that predates several
+    /// families and was closed with `registration = false` must not reopen
+    /// on upgrade without its operator saying so: in-app creation hands out
+    /// new invite codes, and so new ways in for strangers. An open server —
+    /// the default — gets it with nothing to change.
+    #[serde(default)]
+    pub member_families: Option<bool>,
+
+    /// The most families one account may belong to, counting every door —
+    /// creating, an invitation, an invite code (docs/protocol.md, "Limits").
+    /// 5 by default; at least 1, because an account that may be in no family
+    /// is an account nothing on this server is for.
+    #[serde(default = "default_max_families_per_account")]
+    pub max_families_per_account: i64,
+}
+
+impl FamiliesConfig {
+    /// Whether a member may start another family in the app: the operator's
+    /// `member_families` when set, and `registration` when not.
+    pub fn member_families_enabled(&self) -> bool {
+        self.member_families.unwrap_or(self.registration)
+    }
 }
 
 impl Default for FamiliesConfig {
@@ -93,6 +127,8 @@ impl Default for FamiliesConfig {
         Self {
             registration: default_family_registration(),
             familyless_account_ttl_days: default_familyless_account_ttl_days(),
+            member_families: None,
+            max_families_per_account: default_max_families_per_account(),
         }
     }
 }
@@ -2258,6 +2294,16 @@ impl Config {
                  to {MAX_FAMILYLESS_ACCOUNT_TTL_DAYS} — for \"never\", write 0"
             );
         }
+        // At least one: an account that may belong to no family is an
+        // account nothing on this server is for — and a 0 would make every
+        // registration a dead end the server itself refused to open.
+        if !(1..=MAX_FAMILIES_PER_ACCOUNT_CEILING).contains(&self.families.max_families_per_account)
+        {
+            anyhow::bail!(
+                "families.max_families_per_account must be between 1 and \
+                 {MAX_FAMILIES_PER_ACCOUNT_CEILING}"
+            );
+        }
         if self.auth.session_touch_interval_mins < 1 {
             anyhow::bail!("auth.session_touch_interval_mins must be at least 1");
         }
@@ -2608,6 +2654,15 @@ fn default_familyless_account_ttl_days() -> i64 {
     7
 }
 
+fn default_max_families_per_account() -> i64 {
+    5
+}
+
+/// The ceiling on `[families] max_families_per_account`. A family server is
+/// a handful of families; a number above this is a typo, and the cap is read
+/// into a count compared on every join.
+pub const MAX_FAMILIES_PER_ACCOUNT_CEILING: i64 = 100;
+
 /// A century. Above this the sweep's `int` bind could wrap, and an
 /// operator who means "never" has `0` for it.
 pub const MAX_FAMILYLESS_ACCOUNT_TTL_DAYS: i64 = 36_500;
@@ -2650,6 +2705,47 @@ mod tests {
         );
         let closed = Config::from_toml_str("[families]\nregistration = false\n").expect("parses");
         assert!(!closed.families.registration);
+    }
+
+    /// In-app creation is its own switch: unset it follows `registration`,
+    /// so a server closed to strangers stays closed on upgrade, and set it
+    /// wins either way. The per-account cap defaults to five and refuses a
+    /// number no account could live under (docs/protocol.md, "Several
+    /// families").
+    #[test]
+    fn member_families_follows_registration_unless_set_and_the_cap_defaults_to_five() {
+        let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
+        assert!(
+            defaults.families.member_families_enabled(),
+            "an open server"
+        );
+        assert_eq!(defaults.families.max_families_per_account, 5);
+        let closed_on_upgrade =
+            Config::from_toml_str("[families]\nregistration = false\n").expect("parses");
+        assert!(
+            !closed_on_upgrade.families.member_families_enabled(),
+            "a server closed to strangers is not reopened by an upgrade"
+        );
+        let closed =
+            Config::from_toml_str("[families]\nregistration = false\nmember_families = true\n")
+                .expect("parses");
+        assert!(!closed.families.registration);
+        assert!(
+            closed.families.member_families_enabled(),
+            "closing the server to strangers need not close it to members"
+        );
+        let open_but_not_to_members =
+            Config::from_toml_str("[families]\nmember_families = false\n").expect("parses");
+        assert!(!open_but_not_to_members.families.member_families_enabled());
+        let err = Config::from_toml_str("[families]\nmax_families_per_account = 0\n")
+            .expect_err("an account must be allowed one family");
+        assert!(
+            err.to_string().contains("max_families_per_account"),
+            "{err}"
+        );
+        let two =
+            Config::from_toml_str("[families]\nmax_families_per_account = 2\n").expect("parses");
+        assert_eq!(two.families.max_families_per_account, 2);
     }
 
     #[test]

@@ -182,8 +182,19 @@ pub fn reset_password_dialog(props: &ResetPasswordProps) -> Html {
                     busy.set(false);
                     match failure {
                         None => finished.set(true),
-                        Some(_) => error.set(Some(
-                            t("Couldn't reset that password. Try again.").to_string(),
+                        // A member also in a family this owner does not
+                        // own resets their own (docs/protocol.md, "Owners,
+                        // per family").
+                        Some(failure) => error.set(Some(
+                            fc_text::families::refusal(
+                                failure
+                                    .code()
+                                    .filter(|code| *code == "member_in_other_families"),
+                                fc_text::families::DEFAULT_MAX,
+                            )
+                            .unwrap_or_else(|| {
+                                t("Couldn't reset that password. Try again.").to_string()
+                            }),
                         )),
                     }
                 }),

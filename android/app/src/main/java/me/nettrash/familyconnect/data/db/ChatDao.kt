@@ -60,6 +60,20 @@ interface ChatDao {
     @Query("SELECT id FROM chats")
     suspend fun allChatIds(): List<Long>
 
+    /** Every chat held, every family's — what leaving one family sorts through. */
+    @Query("SELECT * FROM chats")
+    suspend fun allChats(): List<ChatEntity>
+
+    /**
+     * Narrow a DIRECT chat's families after this account left one of them
+     * (docs/protocol.md, "Several families": "a direct chat stays while its
+     * `family_ids` still name another family the client holds") — or to
+     * none at all, until the `chat_updated` the departure sends says where it
+     * lives or that it is gone (ChatRepository.dropFamily).
+     */
+    @Query("UPDATE chats SET familyIdsJson = :familyIdsJson WHERE id = :chatId")
+    suspend fun setFamilyIds(chatId: Long, familyIdsJson: String?)
+
     /**
      * The direct chat(s) with one peer. A list, not a single id: the
      * server is get-or-create so there should be exactly one, and if a

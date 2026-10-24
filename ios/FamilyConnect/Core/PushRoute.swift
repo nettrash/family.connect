@@ -31,6 +31,10 @@ nonisolated enum PushRoute: Equatable, Sendable {
     /// the owner's only live signal that one arrived — a tap that landed
     /// on the chat list instead would leave them hunting for it.
     case reports
+    /// kind "invitation" — somebody invited this account into their family
+    /// (docs/protocol.md, "Several families", 2026-10-22): the invitations,
+    /// which are the banner over the chat list and rows in the switcher.
+    case invitations
     /// kind "joined" and anything unrecognised — the chat list.
     case chatList
 
@@ -47,6 +51,8 @@ nonisolated enum PushRoute: Equatable, Sendable {
             return .joinRequests
         case "report":
             return .reports
+        case "invitation":
+            return .invitations
         default:
             // "joined" plus forward compatibility with future kinds.
             return .chatList
@@ -66,6 +72,14 @@ nonisolated enum PushRoute: Equatable, Sendable {
     /// nil for every other kind, on purpose: `board_note`, `join_request`
     /// and `joined` carry no message id, and a read marker has nothing to
     /// say about them.
+    /// The family a push is about, when it names one: a family chat's,
+    /// group's or `ai` chat's message, a board note, a report, a join
+    /// request, an invitation (docs/protocol.md, "Several families" —
+    /// Pushes). A direct chat's message names none.
+    static func familyID(userInfo: [AnyHashable: Any]) -> Int64? {
+        int64(userInfo["family_id"])
+    }
+
     static func messageID(userInfo: [AnyHashable: Any]) -> Int64? {
         guard userInfo["kind"] as? String == "message" else { return nil }
         return int64(userInfo["message_id"])

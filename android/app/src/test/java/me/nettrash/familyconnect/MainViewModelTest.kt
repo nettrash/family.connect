@@ -32,6 +32,8 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import org.junit.After
 import org.junit.Before
+import kotlinx.coroutines.CompletableDeferred
+import me.nettrash.familyconnect.data.push.PushFamilyRouter
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -101,5 +103,56 @@ class MainViewModelTest {
         viewModel.onPendingRoute(PendingRoute.JoinRequests)
 
         assertThat(viewModel.pendingRoute.value).isEqualTo(PendingRoute.JoinRequests)
+    }
+
+    // -- Several families: a push opens in its family -------------------------
+
+    private class RecordingRouter : PushFamilyRouter {
+        val calls = mutableListOf<Pair<Long?, Long?>>()
+        val gate = CompletableDeferred<Unit>()
+        override suspend fun openIn(familyId: Long?, chatId: Long?) {
+            calls += familyId to chatId
+            gate.await()
+        }
+    }
+
+    private fun newViewModel(router: PushFamilyRouter): MainViewModel {
+        val sessionRepository = SessionRepository(
+            authApi = FakeAuthApi(),
+            tokenStore = FakeTokenStore("tok"),
+            settings = FakeSettingsRepository(SettingsState(serverUrl = "https://chat.example.com")),
+            wiper = RecordingWiper(),
+            unauthorizedEvents = MutableSharedFlow(),
+            scope = repoScope,
+        )
+        return MainViewModel(sessionRepository, familyRouter = router)
+    }
+
+    @Test
+    fun aPushSwitchesToItsFamilyBeforeItsRouteIsFollowed() = runTest(dispatcher) {
+        val router = RecordingRouter()
+        val viewModel = newViewModel(router)
+
+        viewModel.onPendingRoute(PendingRoute.Board, familyId = 5L)
+        runCurrent()
+        // Still switching: the board must not open on the old family.
+        assertThat(viewModel.pendingRoute.value).isNull()
+        assertThat(router.calls).containsExactly(5L to null)
+
+        router.gate.complete(Unit)
+        runCurrent()
+        assertThat(viewModel.pendingRoute.value).isEqualTo(PendingRoute.Board)
+    }
+
+    @Test
+    fun aDirectChatsPushAsksForAFamilyThatListsTheChat() = runTest(dispatcher) {
+        val router = RecordingRouter().apply { gate.complete(Unit) }
+        val viewModel = newViewModel(router)
+
+        viewModel.onPendingRoute(PendingRoute.Chat(42L))
+        runCurrent()
+
+        assertThat(router.calls).containsExactly(null to 42L)
+        assertThat(viewModel.pendingRoute.value).isEqualTo(PendingRoute.Chat(42L))
     }
 }

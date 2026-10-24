@@ -69,8 +69,12 @@ public static class DoorSentences
     };
 
     /// <summary>Joining with an invite code.</summary>
-    public static string Join(ApiError error, IStringCatalog say) => error switch
+    /// <param name="cap">The account's <c>max_families_per_account</c>, for <c>too_many_families</c> (docs/protocol.md, "Several families").</param>
+    /// <param name="another">Joining from inside a family ("Join Another Family…"), where <c>already_in_family</c> means THAT family.</param>
+    public static string Join(ApiError error, IStringCatalog say, int cap = 1, bool another = false) => error switch
     {
+        { Code: ErrorCodes.TooManyFamilies } => FamilySentences.For(error, cap, say)!,
+        { Code: ErrorCodes.AlreadyInFamily } when another => say.Get("You're already in that family."),
         // A CLOSED family answers this too, byte-identical to a code that never existed — so the
         // sentence is the same, and it is right about both.
         { Code: ErrorCodes.InvalidInviteCode } =>
@@ -87,9 +91,13 @@ public static class DoorSentences
     };
 
     /// <summary>Starting a family.</summary>
-    public static string Create(ApiError error, IStringCatalog say) => error switch
+    /// <param name="cap">The account's <c>max_families_per_account</c>, for <c>too_many_families</c>.</param>
+    public static string Create(ApiError error, IStringCatalog say, int cap = 1) => error switch
     {
         { Code: ErrorCodes.FamilyRegistrationDisabled } => say.Get("This server doesn't take new families."),
+        // Starting ANOTHER family from inside one (docs/protocol.md, "Several families"): the three doors it can meet shut.
+        { Code: ErrorCodes.TooManyFamilies or ErrorCodes.AlreadyOwnAFamily or ErrorCodes.MemberFamiliesDisabled } =>
+            FamilySentences.For(error, cap, say)!,
         { Code: ErrorCodes.AlreadyInFamily } => say.Get("You're already in a family."),
         { Status: 400 or 409 } => Said(error) ?? say.Get("The server rejected that name."),
         _ => say.Get("Can't reach the server. Try again."),
@@ -121,26 +129,45 @@ public sealed class FamilyDoor(ApiClient api, AppSession session, IStringCatalog
         name?.Trim().Length is >= 1 and <= NameLimit;
 
     /// <summary>Join. The answer is the sentence to show, or null when it worked.</summary>
+    /// <remarks>
+    /// From inside a family too — "Join Another Family…" (docs/protocol.md, "Several families"): <c>joined</c> adds the family
+    /// and SHOWS it; <c>pending</c> leaves the family shown where it is, with a waiting row in the switcher.
+    /// </remarks>
     public async Task<string?> JoinAsync(string code, CancellationToken ct = default)
     {
+        var before = session.State.AllFamilies.Select(family => family.Id).ToHashSet();
         var answer = await api.JoinFamily(code.Trim(), ct).ConfigureAwait(false);
         if (!answer.Ok || answer.Value is null)
         {
-            return DoorSentences.Join(answer.Error ?? ApiError.Transport("no answer"), say);
+            return DoorSentences.Join(
+                answer.Error ?? ApiError.Transport("no answer"), say, session.State.MaxFamiliesPerAccount, another: before.Count > 0);
+        }
+        // The answer names the family (2026-10-22): joined, it is the one to show. A server that names none leaves the
+        // comparison — the family that was not in `/me` before is it.
+        if (answer.Value is { Joined: true, FamilyId: { } named })
+        {
+            await session.RefreshAsync(ct, prefer: named).ConfigureAwait(false);
+            return null;
         }
         await session.RefreshAsync(ct).ConfigureAwait(false);
+        if (answer.Value.Joined && before.Count > 0
+            && session.State.AllFamilies.FirstOrDefault(family => !before.Contains(family.Id)) is { } joined)
+        {
+            await session.SwitchFamilyAsync(joined.Id, ct).ConfigureAwait(false);
+        }
         return null;
     }
 
     /// <summary>Start a family. The answer is the sentence to show, or null when it worked.</summary>
+    /// <remarks>From inside a family too — "New Family…": the creator becomes its owner, and the family is added and SHOWN.</remarks>
     public async Task<string?> CreateAsync(string name, CancellationToken ct = default)
     {
         var answer = await api.CreateFamily(name.Trim(), ct).ConfigureAwait(false);
         if (!answer.Ok || answer.Value is null)
         {
-            return DoorSentences.Create(answer.Error ?? ApiError.Transport("no answer"), say);
+            return DoorSentences.Create(answer.Error ?? ApiError.Transport("no answer"), say, session.State.MaxFamiliesPerAccount);
         }
-        await session.RefreshAsync(ct).ConfigureAwait(false);
+        await session.RefreshAsync(ct, prefer: answer.Value.Family.Id).ConfigureAwait(false);
         return null;
     }
 }

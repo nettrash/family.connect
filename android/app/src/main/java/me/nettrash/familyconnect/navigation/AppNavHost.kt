@@ -59,6 +59,7 @@ import me.nettrash.familyconnect.ui.chatlist.ChatListDetailPane
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
 import me.nettrash.familyconnect.ui.components.isTwoPaneWindow
 import me.nettrash.familyconnect.ui.familyadmin.FamilyAdminScreen
+import me.nettrash.familyconnect.ui.familygate.FamilyGateMode
 import me.nettrash.familyconnect.ui.familygate.FamilyGateScreen
 import me.nettrash.familyconnect.MainViewModel
 import me.nettrash.familyconnect.calls.CallState
@@ -73,6 +74,12 @@ object Routes {
     const val SERVER_SETUP = "server_setup"
     const val AUTH = "auth"
     const val FAMILY_GATE = "family_gate"
+
+    /** "New Family…" — the create card, from inside the app (docs/protocol.md, "Several families"). */
+    const val NEW_FAMILY = "new_family"
+
+    /** "Join Another Family…" — the join card, from inside the app. */
+    const val JOIN_FAMILY = "join_family"
     const val WAITING = "waiting"
     const val CHAT_LIST = "chat_list"
     const val CHAT = "chat/{chatId}"
@@ -235,6 +242,13 @@ fun AppNavHost(
                 SessionEvent.RemovedFromFamily -> navController.navigate(Routes.FAMILY_GATE) {
                     popUpTo(0) { inclusive = true }
                 }
+                // The family shown is gone and others remain: the app
+                // already shows the next one, so whatever screen of the old
+                // family is open makes way for the chat list.
+                SessionEvent.CurrentFamilyGone ->
+                    if (!navController.popBackStack(Routes.CHAT_LIST, inclusive = false)) {
+                        navController.navigate(Routes.CHAT_LIST) { popUpTo(0) { inclusive = true } }
+                    }
                 // Only meaningful while the waiting screen is showing —
                 // WaitingViewModel handles it; no global reroute.
                 SessionEvent.JoinRequestRejected -> Unit
@@ -272,6 +286,10 @@ fun AppNavHost(
                     }
                 PendingRoute.ChatList ->
                     // Already the start destination — just unwind to it.
+                    navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+                PendingRoute.Invitations ->
+                    // The banner over the chat list (and the switcher) is
+                    // where an invitation is answered.
                     navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
                 is PendingRoute.Call ->
                     // The call state collector above shows the screen; a
@@ -399,14 +417,39 @@ fun AppNavHost(
                 ChatListDetailPane(
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                     onOpenBoard = { navController.navigate(Routes.BOARD) },
+                    onNewFamily = { navController.navigate(Routes.NEW_FAMILY) },
+                    onJoinFamily = { navController.navigate(Routes.JOIN_FAMILY) },
                 )
             } else {
                 ChatListScreen(
                     onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                     onOpenBoard = { navController.navigate(Routes.BOARD) },
+                    onNewFamily = { navController.navigate(Routes.NEW_FAMILY) },
+                    onJoinFamily = { navController.navigate(Routes.JOIN_FAMILY) },
                 )
             }
+        }
+
+        // Another family, from inside the app. Either outcome lands on the
+        // chat list: a family created or joined is already the one shown,
+        // and a request waiting for approval is a row in the switcher.
+        composable(Routes.NEW_FAMILY) {
+            FamilyGateScreen(
+                mode = FamilyGateMode.NEW_FAMILY,
+                onJoined = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
+                onPending = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.JOIN_FAMILY) {
+            FamilyGateScreen(
+                mode = FamilyGateMode.JOIN_FAMILY,
+                onJoined = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
+                onPending = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
+                onBack = { navController.popBackStack() },
+            )
         }
 
         composable(
@@ -483,6 +526,8 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
                 onManageFamily = { navController.navigate(Routes.FAMILY_ADMIN) },
                 onOpenStatistics = { navController.navigate(Routes.STATISTICS) },
+                onNewFamily = { navController.navigate(Routes.NEW_FAMILY) },
+                onJoinFamily = { navController.navigate(Routes.JOIN_FAMILY) },
                 onLoggedOut = {
                     navController.navigate(Routes.AUTH) {
                         popUpTo(0) { inclusive = true }

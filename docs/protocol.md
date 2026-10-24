@@ -220,7 +220,9 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
 `invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
-`storage_full`, `not_group_admin`, `too_many_groups`, `too_many_requests`, `internal`.
+`storage_full`, `not_group_admin`, `too_many_groups`, `family_not_found`, `too_many_families`,
+`already_own_a_family`, `member_families_disabled`, `member_in_other_families`,
+`invitation_not_pending`, `too_many_requests`, `internal`.
 
 **Transient or terminal — every failure is one or the other, and a client must tell them apart.**
 A TRANSIENT failure says nothing about the request except that it did not arrive or was not
@@ -249,6 +251,11 @@ only from prose is a code one client branches on and the next does not. Nothing 
 
 `not_group_admin` (403) and `too_many_groups` (409) were added 2026-10-22 with groups (see "Groups").
 
+`family_not_found` (404), `too_many_families` (409), `already_own_a_family` (409),
+`member_families_disabled` (403), `member_in_other_families` (403) and `invitation_not_pending`
+(409) were added 2026-10-22 with several families (see "Several families"). `already_in_family`
+keeps its name and now means "already a member of THAT family".
+
 ## Objects
 
 ```json
@@ -267,6 +274,11 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
             appears in "former_members" (see GET /families/mine) and exists there for one
             reason — so a client can still put a name to the messages, notes and reactions
             it left behind
+          — plus "password_reset": true|false, in the OWNER'S read of their own family only:
+            whether this owner may reset this member's password, which needs the owner to own
+            every family the member is in (added 2026-10-22, see "Several families"). ABSENT
+            from a server that predates it, where the old rule holds and the owner may reset
+            any member — so a client offers the reset unless it reads false
           — a Member carries NOTHING about blocking, deliberately. Whether one member has
             blocked another depends on WHO IS READING, and this object also travels inside
             the "member_deleted" frame, which is serialised once and sent to many — the same
@@ -353,6 +365,11 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             `[]`, which is the truth for every family that predates it — see "Today's weather,
             for places the owner chose"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
+Invitation {"id": 4, "family_id": 3, "family_name": "The Smiths",
+           "invited_by": {User}, "user": {User}, "created_at": "…"}
+          — an owner's invitation into their family, pending until the invited person
+            accepts or declines; "user" is the invited person (added 2026-10-22, see
+            "Several families")
 Report    {"id": 4, "reporter": {User}, "reported": {User},
            "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
           — plus "message_id": 1338 when (and only when) one message was named AND that
@@ -381,6 +398,11 @@ Chat      {"id": 42, "kind": "family|direct|ai|group", "title": "The Smiths", "p
             a group also carries "member_ids": [7, 9, 11] (everyone in it, the caller included,
             in the order they joined) and "admin_user_id": 7 — both present only for "group"
             (added 2026-10-22, see "Groups")
+          — "family_ids": [3] says which families the chat is listed in: exactly one for a
+            family chat, a group and an "ai" chat; for a direct chat, every family the two
+            people share, in ascending order. A client shows in the current family the chats
+            whose "family_ids" contain it. Absent from a server that predates it, where it
+            means the one family the account has (added 2026-10-22, see "Several families")
 Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
            "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
            "body": "Dinner at 7?", "created_at": "…"}
@@ -476,7 +498,9 @@ IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
             configured credentials; a STUN server is "urls" alone — see "Voice calls"
 Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "yellow",
            "size": "medium", "font": "plain", "x": 0.42, "y": 0.13, "created_at": "…",
-           "updated_at": "…", "board_seq": 88, "content_seq": 84}
+           "updated_at": "…", "board_seq": 88, "content_seq": 84, "family_id": 3}
+          — "family_id" is the family whose board it is on, present on a tombstone too (added
+            2026-10-22, see "Several families")
           — plus "attachment": {Attachment} on a "photo" note, whose "text" is its caption
             and may be empty
           — plus "starts_at", optional "ends_at", optional "place", optional "attachment"
@@ -499,8 +523,9 @@ Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "y
             was. A client that does not know a kind draws the note as a text one — see
             "Board"
 PackItem  {"id": 5, "added_by": 7, "attachment": {Attachment}, "created_at": "…",
-           "pack_seq": 12}
-          — one sticker of the family's pack. Plus "label" when one was given, and
+           "pack_seq": 12, "family_id": 3}
+          — one sticker of the family's pack; "family_id" is whose, present on a tombstone too
+            (added 2026-10-22). Plus "label" when one was given, and
             "deleted": true INSTEAD of the content fields on a tombstone — see "Sticker pack"
 ```
 
@@ -2103,9 +2128,17 @@ helpful, and the compatibility cost of any new code.
 It is a SERVER setting and not a family one, and no endpoint lets an owner change it: whose
 machine may host new families is the operator's decision alone.
 
+`registration` is about an account's FIRST family. A member starting ANOTHER family in the app is
+the separate switch `[families] member_families`, so a server closed to strangers can still let its
+members start theirs — see "Several families" (2026-10-22). Left unset, `member_families` follows
+`registration`, so a server closed to strangers is not reopened by an upgrade.
+
 ### Accounts without a family
 
-An account with no family is an account nothing on this server is for. Somebody registers and
+An account with no family is an account nothing on this server is for. ("No family" means none at
+all: since 2026-10-22 an account may be in several, and it is without a family only after leaving its
+LAST one — see "Several families". A pending join request keeps the sweep away; an invitation never
+needs to, because an account in no family shares a family with nobody and so cannot hold one.) Somebody registers and
 never joins — a stranger who found the address, a relative who mistyped the code and gave up, a
 member the owner removed who never came back — and the row would otherwise sit there for good,
 holding a username, and on a server closed to new families (above) with no way of ever becoming
@@ -2144,6 +2177,187 @@ Two consequences are stated here so they are not discovered. "History returns if
 tombstone, and a person who comes back registers afresh and joins as a new member. And a server
 upgraded onto this rule starts every existing familyless account's clock at the upgrade, not at
 its registration — the grace is a promise the server was not making before.
+
+### Several families
+
+*Added 2026-10-22 (issue #88, docs/families-2026-10-22.md).* An account may belong to **several
+families** on one server: somebody in their parents' family marries and starts their own, and stays
+in both with one login, one name, one picture and one birthday. Until now an account had at most
+one family; everything below says what changes, and the rest of this document is amended in place
+wherever it said "the caller's family".
+
+**What belongs to whom.** The ACCOUNT carries the username, password, display name, picture,
+birthday, blocks (a block is a pair and holds in every family), the assistant consents, devices and
+sessions. A FAMILY carries its family chat, its groups, its board, its sticker pack, its assistant
+chats (below), its owner and the owner's settings, its invite code, join requests, invitations,
+reports and statistics. Nothing of one family reaches another: a member of two families sees each
+family's roster, but a family's members are never told which other families anybody is in.
+
+**The home family** is the family the account joined FIRST (the earliest membership; equal times go
+to the lower family id). It is what every endpoint that names no family means — `GET
+/families/mine`, `POST /families/leave`, `GET /families/mine/board`, and the rest — and it is the
+whole world of an app that predates this section (below). It moves only when the account leaves its
+home family: the next-earliest membership becomes home.
+
+**Naming a family.** Every family endpoint has a form with the family in the path:
+`/families/{family}/…`, where `{family}` is a family id or the word `mine` (the home family). So
+`GET /families/3`, `GET /families/3/board`, `POST /families/3/leave`,
+`DELETE /families/3/members/11`, and the forms without an id (`/families/leave`,
+`/families/members/{id}`, `/families/join-requests`, `/families/reports`,
+`/families/invite-code/rotate`) mean the home family exactly as before. A family the caller is not
+in answers **`family_not_found` (404)** — the same answer as an id that never existed, so the
+families on a server cannot be counted by trying ids.
+
+**Getting another family.** Three doors, each from inside the app:
+
+- **Creating one** — `POST /families` `{name}` from an account already in a family ("New Family…").
+  The creator becomes its owner and gets its family chat, exactly as at registration. This door is
+  the operator's `[families] member_families`, NOT `registration`: a server closed to strangers'
+  families (`registration = false`) may still let its members start theirs, with
+  `member_families = true`. Left unset, `member_families` follows `registration` — open on an open
+  server, closed on a closed one, so an upgrade reopens nothing an operator closed
+  (`member_families_disabled`, 403). An account may
+  create a family only while it OWNS none (`already_own_a_family`, 409) — ownership that came by
+  hand-off counts — and may belong to at most `[families] max_families_per_account` families
+  (default **5**; `too_many_families`, 409). An account with NO family creates its first one under
+  `registration` exactly as before.
+- **An invitation** — the owner of a family invites somebody who shares ANOTHER family with them
+  ("Invite…" lists the members of the owner's other families who are not in this one, and nobody
+  else on the server). The invited person sees it — in every app, and by push — and Accepts or
+  Declines; until they accept they are not in the family and its members are not told about them.
+  Nobody is ever put into a family, under an owner who has powers over its members, without agreeing.
+- **An invite code** — `POST /families/join` `{invite_code}` from an account already in a family
+  ("Join Another Family…"), under the family's own rules (open, approval, closed) exactly as for a
+  new account. `already_in_family` now means "already a member of THAT family"; the cap of
+  families per account is `too_many_families`. An account may have pending join requests to
+  several families at once.
+
+Invitations, in full:
+
+| Method & path | Body → Response |
+|---|---|
+| `POST /families/{family}/invitations` | (owner) `{user_id}` → `201 {invitation: Invitation}`, or `200` with the pending one when this person is already invited. The person must share at least one OTHER family with the owner; anybody else — including an id that does not exist — is `not_same_family` (403). Already a member: `user_already_in_family` (409). At most 50 pending invitations per family (`validation`). A block between the two, either way, does not refuse it: a refusal would tell the owner about a block they may not be party to. Errors: `not_family_owner`, `not_same_family`, `user_already_in_family`, `validation`. |
+| `GET /families/{family}/invitations` | (owner) → `200 {invitations: [Invitation]}`, pending only, oldest first. |
+| `DELETE /families/{family}/invitations/{id}` | (owner) → `204`. Withdraws it; idempotent. |
+| `POST /invitations/{id}/accept` | (the invited person) → `200 {family: Family}`. Membership is immediate, whatever the join policy — the owner already said yes. The cap is read here, as at a join: `family_full` (409) and `too_many_families` (409) leave the invitation PENDING. Errors: `invitation_not_pending` (409 — accepted, declined, withdrawn, somebody else's, or never existed), `family_full`, `too_many_families`. |
+| `POST /invitations/{id}/decline` | (the invited person) → `204`. Idempotent for the invited person; the owner is not pushed. |
+
+An invitation lapses — and is simply gone from both lists — when it is accepted, declined or
+withdrawn, when the family is deleted, when either account is deleted, when the invited person
+joins the family by another door, or when the invited person and the family's CURRENT owner no
+longer share another family (either of them left the one they shared, or the family changed hands
+to an owner who shares none with them). An invitation is the family's, not the owner's, so a hand-off
+keeps it while the new owner also shares a family with the invited person; but an owner never goes
+on seeing the profile of somebody they share no family with, and nobody comes in through a door
+that `POST /families/{family}/invitations` would refuse today. Accepting re-checks this, and an
+invitation that no longer holds answers `invitation_not_pending`. A departure lapses what it can see,
+and an hourly sweep lapses the rest — an invitation created in the very instant the two stopped
+sharing a family — with the same `invitation_removed` frames.
+
+**Switching.** The apps show ONE family at a time, with a switcher listing every family and its
+unread count (and a pending join request or invitation as a row of its own). The chat list, the
+board, stickers, the roster, the owner's settings and statistics are the current family's; pushes
+and notifications come from every family. Each `Chat` says which families it is listed in
+(`family_ids`, below), and a client shows in the current family exactly the chats that name it. An
+account in ONE family sees nothing of this: no switcher, and no family name added anywhere.
+
+**Direct chats belong to the pair, not to a family.** Two people have at most one direct chat
+(which was already the server's rule), listed in EVERY family both of them are in: its
+`family_ids` are the families they share. When they stop sharing a family the list shrinks by a
+`chat_updated` to both; when they share none at all, the chat closes exactly as leaving a family has
+always closed it — gone for the one who left (`family_ids: []`), still held, with its history, by the
+one who stayed, listed in the family it was opened in when they are still in it and otherwise in
+their home family — and comes back to both with its history if they share a family again. Opening
+one (`POST /chats/direct`) needs one shared family, not "the same family".
+
+**The assistant's chat is per family.** Each member has one `ai` chat in EACH family they are in,
+listed in that family, under that family's owner's switches (pictures, recent photos, faces, lookups,
+the greeting places' weather) — "this family's assistant". It answers in the language it always has
+there (see "The assistant"). The
+consents stay the account's: one agreement covers every family. A mention of the assistant in a
+family chat or group reads that chat's own family and nothing else, as before.
+
+**Owners, per family.** An owner's powers are over their own family: its settings, its invite code,
+join requests, invitations, reports, removing a member FROM IT, and a member's birthday. Two powers
+reach beyond one family and are narrowed:
+
+- **Resetting a member's password** (`POST /families/{family}/members/{id}/password`) signs that
+  person out of every device and so hands the resetter the whole account — every family, every
+  direct chat. An owner may therefore reset the password only of a member ALL of whose families
+  that owner owns; otherwise **`member_in_other_families` (403)**, and the member changes it
+  themselves (`POST /me/password`). A child only in the parents' family: the parents may, as before.
+  The owner's roster says which members they may reset (`password_reset: true` on the `Member`,
+  present in the owner's own read only), so the app offers it only where it will work — without
+  saying which other families anybody is in. The same flag rides on the `member` an approval
+  answers with, and on the OWNER's copy of `member_joined` (absent from everybody else's), so a
+  newcomer is never offered a reset the server would refuse; a client that receives the frame
+  WITHOUT it keeps whatever flag it already holds for that member.
+- **Removing a member** removes them from THAT family: its family chat, its groups (with the admin
+  hand-off), its `ai` chat; their direct chats with people they no longer share any family with
+  close, and the others stay.
+
+**Leaving** (`POST /families/{family}/leave`) leaves that family only, with the owner hand-off as
+before. An account is "without a family" — and the 7-day clock of "Accounts without a family" starts
+— only when it leaves its LAST one; a pending join request keeps the sweep away (an invitation
+cannot outlive the last family: it lapses with the last family its person shared with the owner). **Deleting an account** leaves every family, each with its own hand-off, and the account
+appears in each family's `former_members`.
+
+**Uploads name their family.** An attachment belongs to the family it was uploaded for:
+`POST /attachments` takes `family_id` in the query (absent: the home family; a family the caller is
+not in: `family_not_found`). A message may use it in a chat that family's id is in (`family_ids`),
+and a note or a sticker only in that family's board and pack — otherwise `attachment_not_found`, as
+for an id that does not exist. A client uploads for the family it is showing.
+
+**Apps from before this section** see the home family and nothing else. A client that knows about
+several families says so on every request with the header **`X-FC-Families: 1`**, and on the
+WebSocket upgrade with the query parameter `families=1` (a browser cannot set headers there). A
+request without it is answered as this server answered before 2026-10-22, about the home family:
+`GET /me`'s `family`, `role` and `pending_join_request`; `GET /chats` lists only the chats whose
+`family_ids` contain the home family (its family chat, its groups, its `ai` chat, and direct chats
+with people in it); every frame about another family — its members, its board, its pack, its chats
+and their messages, typing and reads — is not sent on that connection; and pushes are unchanged,
+since a push opens the app, which then shows what it can (a message push carries the `family_id`
+described under Pushes below to every device; an old app ignores the key). Nothing is refused: an old app keeps
+working inside one family, and updating it shows the rest. A multi-family client gets everything.
+
+**When the home family moves.** An old app keeps one family's board, pack, chats and cursors, and
+learns they are no longer its own only from a live `member_left` or from `GET /me` finding no family
+at all. So when an account leaves, or is removed from, its HOME family while it is still in another
+— the home moving to that one — the server ENDS every session of that account that has never said
+`X-FC-Families: 1` (or `families=1` on the socket): their sockets close with `4401` and their
+device rows go with them, so the app wipes and signs in again rather than using the old family's
+data and cursors as the new one's. A session is remembered as multi-family from its first request
+that says so, and from the start when the sign-in (`POST /auth/login` or `/auth/register`) says so.
+Leaving a family that is not home, or the last family, ends nothing.
+
+**Frames.** `member_joined`, `member_left`, `member_deleted` and `family_owner` already name their
+`family_id`, and a client now applies each to THAT family — never to "my family". A `member_joined`
+naming the caller themselves, for a family the client does not hold (an approval, an accepted
+invitation, a family just created on another device), means "you are in a new family": the client
+re-reads `GET /me` and that family. A `member_left` naming the caller means "you are out of that
+family": the client drops the family's chats, board, pack, roster and cursors — and only that
+family's; a direct chat stays while its `family_ids` still name another family the client holds.
+The server sends a `chat_updated` for every direct chat the departure changed — narrowed, moved to
+another family of the reader's, or closed with `family_ids: []` — BEFORE the `member_left`; a client
+that applies frames out of order should therefore keep, listed nowhere, a direct chat that named only
+the family left, until that `chat_updated` says where it now is (or a `GET /chats` does), rather than
+delete it and its messages. `[]` on a direct chat means it is closed on the reader's side.
+The last member leaving deletes the family, and their own other devices are told the same way, by a
+`member_left` naming them.
+`board_note` and `pack_item` say whose they are by the `family_id` now on `Note` and `PackItem`.
+An account deleted while in several families raises one `member_deleted` (and its `member_left`)
+per family, each with that family's id and to that family's members; a client that holds the
+member in two families gets two, and writing the tombstone twice is harmless.
+Two frames are new, both only to the invited person's and the inviting family's owner's
+connections: `{"type": "invitation", "invitation": {Invitation}}` and
+`{"type": "invitation_removed", "invitation_id": 4}`.
+
+**Pushes.** An invitation pushes to the invited person with `"kind": "invitation"`, `family_id` and
+`invitation_id`, titled with the family's name and saying `"<Owner> invited you"`. A push about a
+message in a family chat, group or `ai` chat now also carries `family_id`, so a tap opens the app
+in that family; a direct chat's carries none and opens in the family the app is showing when the
+chat is listed there, else in the first that lists it. Titles are unchanged — the family chat's,
+the board's and a report's already carry the family's name.
 
 ### Groups
 
@@ -2300,6 +2514,10 @@ show an age has nothing to compute one from and should not try.
 ```json
 "birthday": {"month": 3, "day": 14}
 ```
+
+*Amended 2026-10-22:* a birthday is the ACCOUNT's, so a member in several families has one, shown in
+each; the owner of any of their families may fill it in or clear it (`/families/{id}/members/{uid}/
+birthday`), and the member always may (see "Several families").
 
 One object rather than two sibling fields, because the two halves are a single fact: a birthday is
 either there or it is not, and "month but no day" is not a state anything should have to handle.
@@ -5527,6 +5745,10 @@ Apple's App Store guideline 5.1.1(v) requires of an app that lets people sign up
 self-hosted family server should offer regardless. It is `POST /me/delete`, it takes the account
 password, and it cannot be undone.
 
+*Amended 2026-10-22 (several families):* an account in several families leaves EVERY one of them,
+each with its own owner hand-off (and a family it was the last member of is deleted with it), and it
+appears in each family's `former_members` (see "Several families").
+
 *Amended 2026-10-22:* the member's messages in a GROUP stay under "Deleted account", as the family
 chat's do; they leave every group, and a group they were admin of passes to the member who joined it
 earliest, or is deleted when nobody is left (see "Groups"). The group never goes with them.
@@ -6123,8 +6345,8 @@ carries the flag so the incoming UI is a camera one — see "Incoming calls".
 | `POST /me/delete` | (auth) `{password}` → `204`. **Permanently deletes the calling account** (see "Deleting an account"). The password is required for the same reason `POST /me/password` requires it — a live session is not proof, and an unattended unlocked phone is exactly what this protects against. A `POST` rather than a `DELETE /me`, because the request carries a body and RFC 9110 gives content on a DELETE no defined semantics; this is a self-hosted product behind whatever proxy an operator runs, and `POST /families/leave` already sets the house precedent for a destructive self-service action with a body. Always succeeds for an authenticated caller who knows their password: an owner with other members hands ownership on rather than being refused. The successor is NOT named in the response, unlike `POST /families/leave`: the caller's sessions are about to be destroyed and every socket closed, so there is nobody left to show a name to. The successor learns of it by `family_owner`, and the rest of the family on their next read. Errors: `invalid_credentials` (401, wrong password), `validation` (no password given). |
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
-| `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
-| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool, max_family_members: 50}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". `max_family_members` is ALWAYS present too and is the operator's ceiling on a family's size, so an owner's cap picker draws its range from it instead of discovering `validation` at the moment somebody tries to set one — the same reason `calls_enabled` is there instead of `calls_disabled` arriving when somebody wants to talk. Plus `blocked_user_ids: [11, 14]`, the caller's own block list, ALWAYS present and `[]` when they have blocked nobody — the one read in this protocol where absence is not allowed to mean "leave what you hold alone", for the same reason reactions stay present as `[]`: a list that vanished when it emptied would never tell a second device about the last unblock, and the standing rule everywhere else is that an absent field clears nothing. It is a complete state-set and never a delta, so a client replaces what it stores with what arrives. It rides here as well as on `GET /families/mine` because a block is a pair and not a membership: a caller with no family at all is answered `not_in_family` by that endpoint and still holds blocks, and `/me` is step 1 of the documented resync — which is what makes the list a step-1 fact and the `member_blocked` frame a latency optimisation rather than the only delivery path. Plus `assistant_consent_at: "2026-09-19T08:12:04Z"|null`, ALWAYS present: when the caller agreed that their words may go to the model, and null both when they have not and when this server has no assistant to agree to — which a client never has to tell apart, since a server without one offers no `ai` chat (see "Consenting to the assistant"). A client reads it at step 1 of the resync, so it knows before drawing an `ai` chat whether the next thing it must show is the consent screen. Plus `assistant_lookup_consent_at: "2026-10-03T09:30:00Z"|null`, ALWAYS present (added 2026-10-03): when the caller agreed that the assistant may send queries it writes from their words to the lookup providers, null both when they have not and when this server has no lookup source (see "Consenting to the assistant" and "Looking things up"). Plus `support_contact: "…"`, the operator's published contact (`[server] support_contact`), absent when unset; clients show it on the report screen — see "Reporting a member". It is free text, at most 256 characters, in whatever form the operator configured; clients draw it VERBATIM, selectable and copyable, and never linkify it — an operator may write an address, a URL or a sentence, and three apps guessing differently about which it is would be worse than three apps showing the same text. Plus `family_registration_enabled: bool`, ALWAYS present: whether this server takes NEW families at all (`[families] registration`; `true` by default, and `true` is what a client assumes when the key is absent, which is every server that predates it). A client that reads `false` shows how to run a server of one's own instead of a Create button — see "Starting a family"; the flag is here for the reason `calls_enabled` is, so a shut door is shown shut rather than met as a 403 after somebody has typed a name. Plus `familyless_account_ttl_days: 7`, ALWAYS present: how many days an account may go without a family before the server removes it, `0` when it never does (and what a client assumes when the key is absent) — see "Accounts without a family"; a client that reads a positive number says so on the family gate. Plus `greetings_enabled: bool`, ALWAYS present: whether this server posts the assistant's daily greeting at all — true only when `[greetings]` is on AND the assistant is usable, since the greeting is written by that deployment. It is the operator's half of the two-key arrangement in "The daily greeting"; the family's half is `ai_greeting` on the `Family` object. |
+| `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Since 2026-10-22 also `POST /families/{family}/members/{id}/password`, and only for a member ALL of whose families the caller owns — otherwise `member_in_other_families` (403), because a reset hands over the whole account (see "Several families"). Errors: `not_family_owner` (403), `not_same_family` (403), `member_in_other_families` (403), `validation`. |
+| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool, max_family_members: 50}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". `max_family_members` is ALWAYS present too and is the operator's ceiling on a family's size, so an owner's cap picker draws its range from it instead of discovering `validation` at the moment somebody tries to set one — the same reason `calls_enabled` is there instead of `calls_disabled` arriving when somebody wants to talk. Plus `blocked_user_ids: [11, 14]`, the caller's own block list, ALWAYS present and `[]` when they have blocked nobody — the one read in this protocol where absence is not allowed to mean "leave what you hold alone", for the same reason reactions stay present as `[]`: a list that vanished when it emptied would never tell a second device about the last unblock, and the standing rule everywhere else is that an absent field clears nothing. It is a complete state-set and never a delta, so a client replaces what it stores with what arrives. It rides here as well as on `GET /families/mine` because a block is a pair and not a membership: a caller with no family at all is answered `not_in_family` by that endpoint and still holds blocks, and `/me` is step 1 of the documented resync — which is what makes the list a step-1 fact and the `member_blocked` frame a latency optimisation rather than the only delivery path. Plus `assistant_consent_at: "2026-09-19T08:12:04Z"|null`, ALWAYS present: when the caller agreed that their words may go to the model, and null both when they have not and when this server has no assistant to agree to — which a client never has to tell apart, since a server without one offers no `ai` chat (see "Consenting to the assistant"). A client reads it at step 1 of the resync, so it knows before drawing an `ai` chat whether the next thing it must show is the consent screen. Plus `assistant_lookup_consent_at: "2026-10-03T09:30:00Z"|null`, ALWAYS present (added 2026-10-03): when the caller agreed that the assistant may send queries it writes from their words to the lookup providers, null both when they have not and when this server has no lookup source (see "Consenting to the assistant" and "Looking things up"). Plus `support_contact: "…"`, the operator's published contact (`[server] support_contact`), absent when unset; clients show it on the report screen — see "Reporting a member". It is free text, at most 256 characters, in whatever form the operator configured; clients draw it VERBATIM, selectable and copyable, and never linkify it — an operator may write an address, a URL or a sentence, and three apps guessing differently about which it is would be worse than three apps showing the same text. Plus `family_registration_enabled: bool`, ALWAYS present: whether this server takes NEW families at all (`[families] registration`; `true` by default, and `true` is what a client assumes when the key is absent, which is every server that predates it). A client that reads `false` shows how to run a server of one's own instead of a Create button — see "Starting a family"; the flag is here for the reason `calls_enabled` is, so a shut door is shown shut rather than met as a 403 after somebody has typed a name. Plus `familyless_account_ttl_days: 7`, ALWAYS present: how many days an account may go without a family before the server removes it, `0` when it never does (and what a client assumes when the key is absent) — see "Accounts without a family"; a client that reads a positive number says so on the family gate. Plus `greetings_enabled: bool`, ALWAYS present: whether this server posts the assistant's daily greeting at all — true only when `[greetings]` is on AND the assistant is usable, since the greeting is written by that deployment. It is the operator's half of the two-key arrangement in "The daily greeting"; the family's half is `ai_greeting` on the `Family` object. **Several families (2026-10-22, see "Several families"):** `family`, `role` and `pending_join_request` are about the HOME family (and the newest pending request), exactly what an app from before sees. Plus, ALWAYS present: `families: [Family]`, every family the caller is in, home family first and then in the order they were joined, each with its own `role: "owner"\|"member"`; `pending_join_requests: [{family_id, family_name, created_at}]`; `invitations: [Invitation]`, the caller's pending invitations, oldest first; `member_families_enabled: bool` (`[families] member_families`, whether a member may create another family in the app) and `max_families_per_account: 5`. A client offers "New Family…" when `member_families_enabled` is true, the caller owns none of `families` and has fewer than `max_families_per_account`, and offers "Join Another Family…" while under the cap. |
 
 ### Profile pictures
 
@@ -6145,21 +6367,21 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Errors: `already_in_family`; `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
-| `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, max_round_video_ms: 60000, max_round_video_bytes: 12582912, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?, greeting_weather}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `max_round_video_ms` (fixed at 60 000) and `max_round_video_bytes` (12 MiB, or `max_attachment_bytes` when that is lower, unless the operator set it — always the ceiling in force) are the two limits of a video message, ALWAYS present on a server that has them — so their absence is how a client knows to offer no way of recording one (see "Video messages", 2026-10-05). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). Its `greeting_weather` boolean (2026-10-03), ALWAYS present whenever the object is, says whether the daily greeting can carry today's forecast for the family's `greeting_places`: true exactly when this server posts greetings (`greetings_enabled` on `GET /me`) and has `[ai.lookups] weather` on; a client offers the places field beside the greeting switch only when it is true (see "Today's weather, for places the owner chose"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
+| `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Since 2026-10-22 an account already in a family may call it too, to start ANOTHER family, under `[families] member_families` (not `registration`), only while it owns none and under the per-account cap: `member_families_disabled` (403), `already_own_a_family` (409), `too_many_families` (409) — see "Several families"; `already_in_family` is no longer raised here. Errors: `already_in_family` (before 2026-10-22); `family_registration_disabled` (403) when the operator has closed this server to new families — see "Starting a family". |
+| `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Since 2026-10-22 both answers also carry `family_id`, the family the code belongs to, so a client in several families knows which one it joined or is waiting on; and an account already in a family may join another this way (see "Several families"): `already_in_family` then means already a member of THIS family, and an account at `max_families_per_account` is `too_many_families` (409). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full`, `too_many_families` (409). |
+| `GET /families/mine` | Since 2026-10-22 also `GET /families/{id}` for any family the caller is in, and `mine` means the home family; every endpoint below has the same `/families/{id}/…` form, and its form without an id means the home family (see "Several families"; `family_not_found` (404) for a family the caller is not in). → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, max_pack_seq: 14, max_pack_items: 200, max_pack_item_bytes: 524288, max_round_video_ms: 60000, max_round_video_bytes: 12582912, assistant: {user_id, display_name, mention, draw, vision, images, transcribe, transcribe_max_bytes?, lookups?, greeting_weather}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `max_pack_seq` is the same mark for the family's sticker pack, omitted while the pack is empty and untouched; `max_pack_items` and `max_pack_item_bytes` are the pack's two ceilings, ALWAYS present on a server that has packs — so their absence is how a client knows this server predates them and offers no stickers (see "Sticker pack"). `max_round_video_ms` (fixed at 60 000) and `max_round_video_bytes` (12 MiB, or `max_attachment_bytes` when that is lower, unless the operator set it — always the ceiling in force) are the two limits of a video message, ALWAYS present on a server that has them — so their absence is how a client knows to offer no way of recording one (see "Video messages", 2026-10-05). `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). Its `transcribe` boolean says whether this SERVER can turn a recording into text, and `transcribe_max_bytes` — present only when `transcribe` is true — is the most bytes of sound one transcript request may send; a client offers "Show text" on a voice note, audio file or video only when `transcribe` is true (see "Transcripts on request"). Its `lookups` array (2026-10-03) names the providers the assistant may look things up in — `"Brave Search"` or `"SearXNG"`, `"Open-Meteo"`, `"Wikipedia"`, each only when configured — and is ABSENT, never `[]`, when the server has none; a client names them on the consent screen and beside the owner's `ai_lookups` switch, and offers that switch only when the array is present (see "Looking things up"). Its `greeting_weather` boolean (2026-10-03), ALWAYS present whenever the object is, says whether the daily greeting can carry today's forecast for the family's `greeting_places`: true exactly when this server posts greetings (`greetings_enabled` on `GET /me`) and has `[ai.lookups] weather` on; a client offers the places field beside the greeting switch only when it is true (see "Today's weather, for places the owner chose"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false, ai_greeting?: true\|false, ai_faces?: true\|false, ai_transcripts?: true\|false, ai_lookups?: true\|false, greeting_places?: ["Moscow", "Belgrade"]}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. `ai_greeting` is a FOURTH boolean of the same shape, defaulting to FALSE, and it is the one with no rule between it and any neighbour: it is about whether the assistant speaks unprompted, not about what it may be shown, so it may be set true or false regardless of the other three and it is never cleared by any of them (see "The daily greeting"). `ai_faces` is a FIFTH, defaulting to FALSE, under exactly `ai_history_photos`'s rule: it may only be `true` while `ai_vision` is — `true` while `ai_vision` is off, or would be off after this same request, is `validation` — and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Profile pictures of members"). `ai_transcripts` is a SIXTH, defaulting to FALSE, and like `ai_greeting` bound to none of the others: it decides whether a member may ask for the text of ANOTHER member's recording in the family chat, so it may be set true or false regardless of the other five and is never cleared by any of them (see "Transcripts on request"). `ai_lookups` is a SEVENTH, defaulting to FALSE, and bound to none of the others either: it decides whether the assistant may look things up for this family, sending a query it wrote to the providers `assistant.lookups` names, so it may be set regardless of the other six — and on a server with no lookup source, where it does nothing — and is never cleared by any of them (see "Looking things up"). `greeting_places` (2026-10-03) is not a switch but a list, and it REPLACES the stored one: at most 3 names, each trimmed with inner whitespace folded, non-empty, without control characters and at most 80 characters; a name equal to an earlier one once both are lower-cased is dropped silently, and the three are counted after that; `[]` clears it, absent leaves it alone, and `null` is `validation`. The answer carries the list as kept (see "Today's weather, for places the owner chose"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, `ai_history_photos: true` or `ai_faces: true` without `ai_vision`, or a `greeting_places` that is `null`, not an array of strings, longer than 3 after duplicates are dropped, or holds a name that is empty, too long or has a control character), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
-| `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
+| `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. Since 2026-10-22 the requester's cap of families is read here too: `too_many_families` (409) leaves the request PENDING, as `family_full` does (see "Several families"). The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
-| `POST /families/leave` | → `204`, or `200 {new_owner_user_id: 11}` when the caller was the owner and the family passed to somebody. **An owner who leaves hands the family on**; they are never refused. The successor is the longest-standing remaining member — the same rule defined once under "Deleting an account", and reached now from two doors rather than one. If nobody remains, the family is deleted with them exactly as before, and the answer is `204`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin — within the familyless grace (see "Accounts without a family"), after which the account itself is gone. It also takes them out of every GROUP, with the admin hand-off, and a rejoin does not put them back (since 2026-10-22, see "Groups"); the same holds for a member the owner removes. The successor is told by a `family_owner` frame. That frame is sent BEFORE the departing owner's `member_left`, so no client ever momentarily holds a family whose `owner_user_id` names nobody in `members`. The leaving owner resolves `new_owner_user_id` against the roster it still holds, tells the user who inherited, and only then tears its family state down; a member sitting in their own leave dialog when `family_owner` arrives dismisses it and re-presents it from a fresh `GET /families/mine`, because both the successor and the consequences of leaving have just changed under them. `owner_cannot_leave` is no longer raised by this or any other endpoint. |
+| `POST /families/leave` | → `204`, or `200 {new_owner_user_id: 11}` when the caller was the owner and the family passed to somebody. **An owner who leaves hands the family on**; they are never refused. The successor is the longest-standing remaining member — the same rule defined once under "Deleting an account", and reached now from two doors rather than one. If nobody remains, the family is deleted with them exactly as before, and the answer is `204`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin — within the familyless grace (see "Accounts without a family"), after which the account itself is gone. It also takes them out of every GROUP, with the admin hand-off, and a rejoin does not put them back (since 2026-10-22, see "Groups"); the same holds for a member the owner removes. The successor is told by a `family_owner` frame. That frame is sent BEFORE the departing owner's `member_left`, so no client ever momentarily holds a family whose `owner_user_id` names nobody in `members`. The leaving owner resolves `new_owner_user_id` against the roster it still holds, tells the user who inherited, and only then tears its family state down; a member sitting in their own leave dialog when `family_owner` arrives dismisses it and re-presents it from a fresh `GET /families/mine`, because both the successor and the consequences of leaving have just changed under them. `owner_cannot_leave` is no longer raised by this or any other endpoint. Since 2026-10-22 `POST /families/{id}/leave` leaves that family only; an account is without a family only after leaving its last (see "Several families"). |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
 | `PUT /families/members/{user_id}/birthday` | (owner) `{month, day}` → `200 {member: Member}`. The owner filling in a birthday for a member of their own family — a parent for a child, typically. The owner MAY name themselves here, unlike the password reset: there is no proof being skipped (see "Birthdays"). A user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
 | `DELETE /families/members/{user_id}/birthday` | (owner) → `204`. Clears it. Idempotent. Same errors. |
-| `PUT /families/members/{user_id}/block` | → `204`. The caller stops seeing this member. Any member may block any other member of their own family, the OWNER INCLUDED — the owner has no special standing here and is not consulted. Idempotent: blocking somebody already blocked is still `204`. **The blocked member is never told** and nothing in their app changes (see "Blocking a member"). A user outside the family is `not_same_family` whether or not they exist — the same refusal, and for the same reason, as the password reset. Errors: `not_in_family` (409), `cannot_block_self` (400), `not_same_family` (403). |
+| `PUT /families/members/{user_id}/block` | → `204`. The caller stops seeing this member. Any member may block any other member of their own family (since 2026-10-22: of any family the two share, and the same with or without a family in the path — `/families/{id}/members/{user_id}/block` means exactly what the form without an id does, because a block is a pair and holds in every family, see "Several families"), the OWNER INCLUDED — the owner has no special standing here and is not consulted. Idempotent: blocking somebody already blocked is still `204`. **The blocked member is never told** and nothing in their app changes (see "Blocking a member"). A user outside the family is `not_same_family` whether or not they exist — the same refusal, and for the same reason, as the password reset. Errors: `not_in_family` (409), `cannot_block_self` (400), `not_same_family` (403). |
 | `DELETE /families/members/{user_id}/block` | → `204`. Unblocks. Idempotent — clearing a block nobody set is still `204`. Unblocking is scoped to the CALLER'S OWN list and not to the roster: any id in `blocked_user_ids` may be cleared, including one that has since left the family or deleted its account, so `not_same_family` is NOT raised here and neither is `not_in_family` — a block is a pair and not a membership, and a caller with no family at all may still clear one. A block the blocker cannot lift would be a permanent entry on their own screen and a block that silently came back to life on a rejoin (see "Blocking a member"). Error: `cannot_block_self` (400), kept for symmetry with the `PUT`. |
-| `POST /families/reports` | `{reported_user_id, reason, message_id?}` → `201 {report: Report}`, or `200 {report: Report}` when an open report by this caller against this member already exists. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`. `message_id` must name a message in a chat the caller is in AND have been sent by `reported_user_id`; anything else — including a real message in a chat the caller cannot see — is `message_not_found`, so the endpoint never confirms an id exists elsewhere, exactly as `reply_to_message_id` does not. A report is identified by `(reporter, reported, message_id)`, with a null `message_id` for one that names a person rather than a message; raising one that matches an OPEN row returns that row and creates nothing, whatever `reason` was sent — the stored reason is not overwritten. So a double tap is not two rows in the owner's list, while reporting a second message of the same member IS a second report, which is what a moderator needs in order to see a pattern. The excerpt is frozen here (see "Reporting a member"). Errors: `not_in_family` (409), `cannot_report_self` (400), `not_same_family` (403), `message_not_found` (404), `validation`. |
+| `POST /families/reports` | Since 2026-10-22 also `POST /families/{id}/reports`: the report goes to THAT family's owner, `reported_user_id` must be in it, and a named message must be in a chat whose `family_ids` contain it; the "same open report" check below is per family, so the same message reported in two families the two people share is a report in each owner's list (see "Several families"). `{reported_user_id, reason, message_id?}` → `201 {report: Report}`, or `200 {report: Report}` when an open report by this caller against this member already exists. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`. `message_id` must name a message in a chat the caller is in AND have been sent by `reported_user_id`; anything else — including a real message in a chat the caller cannot see — is `message_not_found`, so the endpoint never confirms an id exists elsewhere, exactly as `reply_to_message_id` does not. A report is identified by `(reporter, reported, message_id)`, with a null `message_id` for one that names a person rather than a message; raising one that matches an OPEN row returns that row and creates nothing, whatever `reason` was sent — the stored reason is not overwritten. So a double tap is not two rows in the owner's list, while reporting a second message of the same member IS a second report, which is what a moderator needs in order to see a pattern. The excerpt is frozen here (see "Reporting a member"). Errors: `not_in_family` (409), `cannot_report_self` (400), `not_same_family` (403), `message_not_found` (404), `validation`. |
 | `GET /families/reports` | (owner) → `200 {reports: [Report]}`, open only, oldest first — shaped exactly as `GET /families/join-requests`. Reports naming the owner themselves are NOT listed (see "Reporting a member"). Open reports are capped per family at the page maximum (200); the oldest are what the owner sees, and a family that has hit the ceiling has a moderation problem rather than a pagination problem. Error: `not_family_owner` (403). |
 | `POST /families/reports/{id}/resolve` | (owner) → `204`. Takes it off the list; what "dealt with" MEANS is the owner's business. Idempotent for the owner's own inbox: resolving a report they have already resolved is still `204`, because a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error. `report_not_pending` (409) is kept for what the owner may not see at all — a report of another family, or one that names the owner — one answer for both, so the endpoint never confirms an id exists elsewhere. Errors: `not_family_owner` (403), `report_not_pending` (409). |
 | `POST /reports/assistant` | `{message_id, reason, note?}` → `201 {report: AssistantReport}`, or `200 {report: AssistantReport}` when this caller has already reported that message. Deliberately NOT under `/families`: it needs no family, because it is about the assistant rather than about anybody's member. `message_id` must name a message in a chat the caller is in AND have been sent by the assistant; anything else — a member's message, or a real message in a chat the caller cannot see — is `message_not_found`, the same non-enumeration rule `POST /families/reports` follows. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`; `note` is optional free text, at most 1,000 characters. The reply is frozen into the row. The row is the OPERATOR's: it is logged at WARN and appears in no client read, `GET /families/reports` included (see "Reporting the assistant"). Errors: `message_not_found` (404), `validation`. |
@@ -6170,12 +6392,14 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`, `waveform`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. `waveform` (2026-10-06) is optional on audio and refused on anything else: exactly 48 lowercase hex digits, echoed on the Attachment (see "A voice note's waveform"); malformed, or on a kind that is not audio, it is `validation` (400). A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). A video message is uploaded here as `kind=video` with its square `width`, `height` and its `duration_ms`, which are what the send checks it by (see "Video messages"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `validation` (400, a `waveform` that is malformed or not on audio), `not_in_family`. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Since 2026-10-22 the query may carry `family_id`, the family the upload is for (absent: the home family; one the caller is not in: `family_not_found`) — a message may use it only in a chat whose `family_ids` contain that family, and a note or sticker only in that family's board and pack (see "Several families"). Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`, `waveform`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. `waveform` (2026-10-06) is optional on audio and refused on anything else: exactly 48 lowercase hex digits, echoed on the Attachment (see "A voice note's waveform"); malformed, or on a kind that is not audio, it is `validation` (400). A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. A sticker or a pack item is uploaded here as `kind=photo`, its bytes unprepared (see "Sticker pack"). A video message is uploaded here as `kind=video` with its square `width`, `height` and its `duration_ms`, which are what the send checks it by (see "Video messages"). Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `validation` (400, a `waveform` that is malformed or not on audio), `not_in_family`. |
 | `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). IDEMPOTENT and not closed by the message that claims the attachment: a repeat overwrites the stored preview and sets `has_preview` to true, which is what lets a client finish a poster upload that failed (see "Photos, videos, audio, files and locations"). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
 | `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, by every member of the chat once a message claims it, and by every member of the family once a board note or the family's pack does; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
 
 ### Board
+
+Since 2026-10-22 every path below also has the form `/families/{id}/board…` for any family the caller is in; `mine` is the home family (see "Several families").
 
 | Method & path | Body → Response |
 |---|---|
@@ -6191,6 +6415,8 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 ### Sticker pack
 
+Since 2026-10-22 every path below also has the form `/families/{id}/pack…` for any family the caller is in; `mine` is the home family (see "Several families").
+
 | Method & path | Body → Response |
 |---|---|
 | `GET /families/mine/pack` | → `200 {items: [PackItem], max_pack_seq: 14}`. The whole pack as it now stands, tombstones excluded, in the order the items were added (`id` ascending). `max_pack_seq` is `0` for a pack nothing has ever been added to, and is read BEFORE the items, so it is never above a change they missed; a client REPLACES what it holds with this read (see "Sticker pack"). Not paged: a pack is at most `max_pack_items`. Error: `not_in_family`. |
@@ -6202,9 +6428,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | (Groups since 2026-10-22: every group the caller is in is listed, with or without messages, and no other — see "Groups".) → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123, mentioned: true}]}`. `mentioned` rides only when an unread message in the chat names the caller (absent otherwise, never `false` — see "Mentioning a member"). Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
-| `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
-| `POST /chats/groups` | `{title, member_ids: [9, 11]}` → `201 {chat: Chat}` — a new GROUP (see "Groups"): the caller is added and becomes its admin, `member_ids` names the others (duplicates and the caller's own id ignored). Errors: `validation` (400 — the title trimmed is empty or over 64 characters, or nobody else is named), `not_in_family` (409), `not_same_family` (409 — an id that is not a current member of the caller's family: somebody who left, a deleted account, the assistant, a stranger), `too_many_groups` (409, the family has 50). |
+| `GET /chats` | (Groups since 2026-10-22: every group the caller is in is listed, with or without messages, and no other — see "Groups".) → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123, mentioned: true}]}`. `mentioned` rides only when an unread message in the chat names the caller (absent otherwise, never `false` — see "Mentioning a member"). Family chat included always; direct chats once they exist. Since 2026-10-22 a multi-family client (`X-FC-Families: 1`) gets the chats of EVERY family it is in — each family's family chat, groups and `ai` chat, and each direct chat once — and tells them apart by `family_ids`; any other client gets the home family's (see "Several families"). `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
+| `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Since 2026-10-22 the two need to share ONE family, not "the same family"; the chat is listed in every family they share (see "Several families"). Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409, no family shared), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
+| `POST /chats/groups` | `{title, member_ids: [9, 11], family_id?: 3}` → `201 {chat: Chat}` — a new GROUP (see "Groups") in the family `family_id` names (absent: the home family; one the caller is not in: `family_not_found`, since 2026-10-22, see "Several families"); "the caller's family" below means that family: the caller is added and becomes its admin, `member_ids` names the others (duplicates and the caller's own id ignored). Errors: `validation` (400 — the title trimmed is empty or over 64 characters, or nobody else is named), `not_in_family` (409), `not_same_family` (409 — an id that is not a current member of the caller's family: somebody who left, a deleted account, the assistant, a stranger), `too_many_groups` (409, the family has 50). |
 | `PATCH /chats/{id}` | `{title}` → `200 {chat: Chat}` — renames a group. Admin only. Errors: `validation` (400 — a bad title, or the chat is not a group), `not_group_admin` (403), `chat_not_found` (404 — also for a group the caller is not in). |
 | `POST /chats/{id}/members` | `{user_ids: [12]}` → `200 {chat: Chat}` — adds members to a group; an id already in it is ignored. Admin only. Each one added starts with the group's newest message read. Errors: `validation` (400 — empty, or not a group), `not_same_family` (409), `not_group_admin` (403), `chat_not_found` (404). |
 | `DELETE /chats/{id}/members/{user_id}` | → `200 {chat: Chat}` when the admin removes somebody else; → `204` when `user_id` is the caller (leaving — any member; an admin who leaves hands the group to the member who joined it earliest, and the last one out deletes it). Errors: `validation` (400 — not a group, or `user_id` is not in it), `not_group_admin` (403 — removing somebody else without being admin), `chat_not_found` (404). |
@@ -6250,6 +6476,9 @@ Connect with `Authorization: Bearer <token>` on the upgrade request — or, from
 subprotocols `family-connect` and `bearer.<token>` and expect `family-connect` echoed back (see "A
 browser is a client too"). A bad token fails the upgrade with `401`; a token in the query string
 is not a token at all. The server closes with code `4401` when the session expires mid-connection.
+A client that knows about several families adds the query parameter `families=1` to the upgrade
+URL — the socket's counterpart of the `X-FC-Families: 1` header — and without it receives only what
+concerns the home family (see "Several families", 2026-10-22).
 
 Frames are JSON text messages tagged by `"type"`.
 
@@ -6292,6 +6521,7 @@ the other, or both, and the receiving stack accepts whichever it was given.)
 {"type": "read",    "chat_id": 42, "user_id": 9, "last_read_message_id": 1338}
 {"type": "typing",  "chat_id": 42, "user_id": 9}
 {"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0}}
+                          — plus "password_reset": true|false on the family OWNER's copy alone (see "Several families")
 {"type": "member_left",   "family_id": 3, "user_id": 11}
 {"type": "member_deleted", "family_id": 3, "member": {Member with "deleted": true}}
                           — "family_id" absent when the account belonged to no family
@@ -6311,6 +6541,9 @@ the other, or both, and the receiving stack accepts whichever it was given.)
                                              changed; to every member, one just added included
 {"type": "chat_removed", "chat_id": 77}    — a group left, removed from, or deleted; drop it
                                              (both added 2026-10-22, see "Groups")
+{"type": "invitation", "invitation": {Invitation}}      — to the invited person and the family's owner
+{"type": "invitation_removed", "invitation_id": 4}      — accepted, declined, withdrawn or lapsed
+                                             (both added 2026-10-22, see "Several families")
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
 {"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}
                                                                        — the provider's own filter refused it;
@@ -6352,6 +6585,11 @@ stored fields, so a client applies it by writing the tombstone deliberately rath
 it through the ordinary member upsert, which everywhere else must never let an absent field clear a
 stored one. A `member_left` frame is sent alongside it, so a client that predates this frame at
 least fixes its roster and merely goes on showing the old name against old messages.
+
+Since 2026-10-22 a client applies `member_joined`, `member_left`, `member_deleted` and
+`family_owner` to the family their `family_id` names, never to "my family"; one naming the caller
+themselves means they are in, or out of, THAT family (see "Several families" for exactly what a
+client does).
 
 `family_owner` names the family's new owner and reaches every member of the family. It is sent when
 an owner LEAVES or deletes their account and ownership passes on (see "Deleting an account" and
@@ -6479,7 +6717,9 @@ notifies and never counts as unread, and clients apply it under the `pack_seq` g
 - **Best-effort delivery**: the socket is a live wire, not a queue. A slow client's socket is
   dropped; REST is the source of truth. On every (re)connect a client must resync:
   1. `GET /me` — reconcile membership, and REPLACE the stored block list with `blocked_user_ids`.
-     Then `GET /families/mine`, unless step 1 says the caller has no family: the roster,
+     Then `GET /families/mine` — since 2026-10-22, for a multi-family client, `GET /families/{id}` for
+     EACH of `families`, and the board and pack catch-ups per family against per-family cursors —
+     unless step 1 says the caller has no family: the roster,
      `former_members`, `next_owner_user_id`, `max_board_seq` and `max_pack_seq` live only there, and nothing else
      replays a roster change missed while offline — a join, a leave, a birthday, the join policy,
      the member cap and the family's language either raise no frame at all or raise one a sleeping
@@ -6725,6 +6965,9 @@ browser notifies ITSELF") and the Mac's own banners from its live socket. So a M
 thing whether the app was running or quit. A phone (`ios`, `android`) is unchanged: its lock screen
 is the operator's call, through `include_message_body`.
 
+Since 2026-10-22 a message push from a family chat, group or `ai` chat also carries `family_id`, and an
+invitation pushes with `"kind": "invitation"`, `family_id` and `invitation_id` (see "Several families").
+
 A new board note pushes with `"kind": "board_note"` and `family_id` + `note_id` instead of chat and
 message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New note"` when
 `include_message_body = false`, the same switch that governs message bodies). Tapping it opens the
@@ -6804,7 +7047,8 @@ several languages: a mother's phone in Russian and her son's in German, for the 
 Only the server's OWN words are translated: `"Photo"`, `"Sticker"`, `"Video"`, `"Video message"`,
 `"Audio"`, `"Location"`, `"File"`, the counts (`"3 Photos"`, `"2 Videos"`, `"2 Audio"`, `"4 Files"`,
 `"N attachments"`), `"New message"`, `"New note"`, `"New report"`, `"<Family> — <Sender> mentioned
-you"`, `"<Requester> asked to join"` and `"You're in — welcome to <Family>"`. What somebody WROTE —
+you"`, `"<Requester> asked to join"`, `"You're in — welcome to <Family>"` and (since 2026-10-22)
+`"<Owner> invited you"`. What somebody WROTE —
 a message, a caption, a note, a file's name, a location's label, a display name, a family's name —
 goes out exactly as written, in every language; nothing is machine-translated. A device with no
 language (an app from before this rule, or one that cleared it), or with one the server has no
@@ -6889,6 +7133,8 @@ unregistered deletes the row, as an ordinary push would.
 | Poll option text | 100 chars |
 | A group's name | 64 chars, trimmed, at least 1 (fixed) |
 | Groups in one family | 50 (fixed) |
+| Families one account may be in | 5 (`[families] max_families_per_account`); an account may CREATE one only while it owns none (fixed) |
+| Pending invitations in one family | 50 (fixed) |
 | Family-chat (or a group's) history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
 | Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
 | Profile pictures shown to the assistant with one mention | 4 — only with `ai_faces` on, only the members whose lines are in the transcript, most recently active first, under a budget SEPARATE from the four photographs above and never displacing one (fixed) |

@@ -516,11 +516,12 @@ fn today_line(today: Date) -> String {
 /// an empty set, and the note about the day stands alone.
 async fn signs_in_family(state: &AppState, family_id: i64) -> Result<Vec<&'static str>, ApiError> {
     let rows = sqlx::query(
-        "SELECT DISTINCT birthday_month, birthday_day
-           FROM users
-          WHERE family_id = $1
-            AND birthday_month IS NOT NULL
-            AND birthday_day IS NOT NULL",
+        "SELECT DISTINCT u.birthday_month, u.birthday_day
+           FROM family_members fm
+           JOIN users u ON u.id = fm.user_id
+          WHERE fm.family_id = $1
+            AND u.birthday_month IS NOT NULL
+            AND u.birthday_day IS NOT NULL",
     )
     .bind(family_id)
     .fetch_all(&state.pool)

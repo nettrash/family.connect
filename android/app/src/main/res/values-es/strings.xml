@@ -124,6 +124,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">Se cerrará la sesión en tus otros dispositivos. En este seguirás conectado.</string>
     <string name="e_action_failed">La acción falló</string>
     <string name="e_already_in_family">Ya estás en una familia: desliza para actualizar</string>
+    <string name="e_already_in_that_family">Ya estás en esa familia.</string>
     <string name="e_change_password_failed">No se pudo cambiar tu contraseña.</string>
     <string name="e_change_policy_failed">No se pudo cambiar la política</string>
     <string name="e_create_family_failed">No se pudo crear la familia</string>
@@ -809,4 +810,26 @@
     <string name="e_create_group_failed">No se pudo crear el grupo.</string>
     <string name="e_change_group_failed">No se pudo cambiar el grupo.</string>
     <string name="s_everyone_already_in_group">Todos los de la familia ya están en este grupo.</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">Familias</string>
+    <string name="s_new_family">Nueva familia…</string>
+    <string name="s_join_another_family">Unirse a otra familia…</string>
+    <string name="s_switch_family">Cambiar de familia</string>
+    <string name="s_family_unread">%1$s, %2$d sin leer</string>
+    <string name="s_invited_you_to">%1$s te invita a «%2$s»</string>
+    <string name="s_invitations">Invitaciones</string>
+    <string name="s_invite">Invitar…</string>
+    <string name="s_invite_to">Invitar a «%s»</string>
+    <string name="s_invite_empty">Aquí aparecen los miembros de tus otras familias que no están en esta.</string>
+    <string name="s_invited">Invitación enviada</string>
+    <string name="s_pending_invitations">Invitaciones pendientes</string>
+    <string name="s_withdraw_invitation">Retirar invitación</string>
+    <string name="e_invitation_gone">Esta invitación ya no está disponible.</string>
+    <string name="e_too_many_families">Ya estás en el máximo de familias por cuenta (%d).</string>
+    <string name="e_already_own_a_family">Ya tienes una familia propia, así que no puedes crear otra.</string>
+    <string name="e_member_families_disabled">Este servidor no permite que los miembros creen familias nuevas.</string>
+    <string name="e_member_in_other_families">Este miembro también está en una familia que no es tuya, así que solo esa persona puede cambiar su contraseña.</string>
+    <string name="s_leave_named_family">¿Salir de «%s»?</string>
+    <string name="s_leave_one_of_families_explanation">Perderás el acceso a los chats de esta familia. Los chats directos con quienes compartes otra familia se mantienen.</string>
+    <string name="s_new_family_explanation">Crea tu propia familia. Será tuya y podrás invitar a miembros de tus otras familias.</string>
 </resources>

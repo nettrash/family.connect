@@ -449,11 +449,15 @@ async fn validate_mentions(
         }
     }
     let ids: Vec<i64> = mentions.iter().map(|mention| mention.user_id).collect();
+    // A member of the CHAT's family — the one family a family chat or a
+    // group is in — and never of the sender's other families
+    // (docs/protocol.md, "Several families").
     let members: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM users u
          WHERE u.id = ANY($1)
-           AND u.family_id IS NOT NULL
-           AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)
+           AND EXISTS (SELECT 1 FROM family_members fm
+                        WHERE fm.user_id = u.id
+                          AND fm.family_id = (SELECT family_id FROM chats WHERE id = $2))
            AND ($3 <> 'group' OR EXISTS (
                    SELECT 1 FROM chat_members cm
                     WHERE cm.chat_id = $2 AND cm.user_id = u.id
@@ -929,6 +933,15 @@ pub async fn create_message(
             // gets the 409. The `position` stamped is still the index in
             // the SENDER'S array, and the claimed list is put back into
             // that order below — the wire order never changes.
+            // The families this chat is listed in FOR THE SENDER: an upload
+            // may be used only in a chat its family lists (docs/protocol.md,
+            // "Several families"). The sender's view and not the pair's
+            // shared list, because a direct chat the other side has left
+            // shares nothing and is still the stayer's to write in, under
+            // the family their app lists it in. Read inside the
+            // transaction, beside the claims.
+            let chat_families =
+                crate::families::viewer_chat_family_ids(&mut *tx, chat_id, sender_id).await?;
             let mut lock_order: Vec<(usize, i64)> =
                 attachment_ids.iter().copied().enumerate().collect();
             lock_order.sort_unstable_by_key(|(_, id)| *id);
@@ -945,6 +958,7 @@ pub async fn create_message(
                         sticker,
                         round,
                         animation,
+                        &chat_families,
                     )
                     .await?,
                 ));
@@ -1366,10 +1380,10 @@ pub fn merge_attachment_ids(
 /// protocol's error rather than silence.
 /// Runs inside the caller's transaction so that a refusal takes the
 /// message and every sibling claim with it — see the note at the insert.
-// Eight arguments, one over clippy's threshold since the animation's flag
-// (issue #96). The three flags are the send's three presentations, each
-// stamped in the one UPDATE; folding them into a struct would be a type
-// with one caller.
+// Nine arguments, over clippy's threshold since the animation's flag
+// (issue #96) and one more since uploads name their family (#88). The three
+// flags are the send's three presentations, each stamped in the one UPDATE;
+// folding them into a struct would be a type with one caller.
 #[allow(clippy::too_many_arguments)]
 async fn claim_attachment(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -1393,6 +1407,10 @@ async fn claim_attachment(
     // never fire here, and a photo sent as an animation is claimed
     // unflagged and refused by the caller's check.
     animation: bool,
+    // The families the chat is listed in (`Chat.family_ids`): an upload
+    // made for any other family answers exactly as an id that does not
+    // exist (docs/protocol.md, "Several families").
+    chat_families: &[i64],
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
         "UPDATE attachments
@@ -1400,6 +1418,7 @@ async fn claim_attachment(
              animation = ($7 AND kind = 'video')
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
            AND pack_item_id IS NULL
+           AND family_id = ANY($8)
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m, sticker, round, animation, waveform",
     )
@@ -1410,6 +1429,7 @@ async fn claim_attachment(
     .bind(sticker)
     .bind(round)
     .bind(animation)
+    .bind(chat_families)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
@@ -1423,10 +1443,11 @@ async fn claim_attachment(
     // deleting any of them take the bytes with it.
     let taken: Option<bool> = sqlx::query_scalar(
         "SELECT message_id IS NOT NULL OR note_id IS NOT NULL OR pack_item_id IS NOT NULL
-         FROM attachments WHERE id = $1 AND uploader_id = $2",
+         FROM attachments WHERE id = $1 AND uploader_id = $2 AND family_id = ANY($3)",
     )
     .bind(attachment_id)
     .bind(uploader_id)
+    .bind(chat_families)
     .fetch_optional(&mut **tx)
     .await?;
     if taken == Some(true) {
@@ -1632,8 +1653,40 @@ pub async fn list_chats(
     // assistant on later needs nobody to re-register and leaving it off
     // costs an empty chat in nobody's list. A no-op when it already exists,
     // or when the server is not configured for it.
-    if let Err(error) = crate::handlers_ai::ensure_ai_chat(&state, auth.user_id).await {
-        tracing::warn!(%error, "could not ensure the assistant chat");
+    //
+    // One per FAMILY since 2026-10-22 (docs/protocol.md, "Several
+    // families"; D6): every family this response will list gets its own —
+    // all of them for a client that knows about several families, the home
+    // family's alone for one that does not.
+    let listed_families: Vec<i64> = if auth.multi {
+        auth.family_ids.clone()
+    } else {
+        auth.home_family().into_iter().collect()
+    };
+    // The families whose thread is missing or unreachable, in ONE query:
+    // every refresh asks, and once each thread exists the answer is empty —
+    // `ensure_ai_chat`'s own reads and transaction are for the rare family
+    // that needs it.
+    let missing: Vec<i64> = if state.cfg.ai.is_usable() && !listed_families.is_empty() {
+        sqlx::query_scalar(
+            "SELECT f.id FROM unnest($2::bigint[]) AS f(id)
+              WHERE NOT EXISTS (SELECT 1 FROM chats c
+                                  JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
+                                 WHERE c.kind = 'ai' AND c.user_a_id = $1 AND c.family_id = f.id)",
+        )
+        .bind(auth.user_id)
+        .bind(&listed_families)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        Vec::new()
+    };
+    for &family_id in &missing {
+        if let Err(error) =
+            crate::handlers_ai::ensure_ai_chat(&state, auth.user_id, family_id).await
+        {
+            tracing::warn!(%error, "could not ensure the assistant chat");
+        }
     }
     // The other end of a direct chat, from $1's point of view. Written
     // once because it is now needed THREE times in this one statement —
@@ -1644,6 +1697,10 @@ pub async fn list_chats(
     let rows = sqlx::query(&format!(
         "SELECT c.id AS chat_id, c.kind,
                 f.name AS family_name,
+                -- Which families list the chat (protocol.md, \"Several
+                -- families\"): its own one, or for a direct chat every
+                -- family the two share.
+                {family_ids} AS family_ids,
                 -- A group's own name, members (in the order they joined)
                 -- and admin (protocol.md, \"Groups\"); NULL for every
                 -- other kind.
@@ -1730,11 +1787,32 @@ pub async fn list_chats(
                   AND c.kind = 'direct'
                   AND mb.blocked_user_id = {PEER}
            )
-         ORDER BY COALESCE(lm.id, 0) DESC, c.id"
+         ORDER BY COALESCE(lm.id, 0) DESC, c.id",
+        family_ids = crate::families::viewer_chat_family_ids_sql("$1"),
     ))
     .bind(auth.user_id)
     .fetch_all(&state.pool)
     .await?;
+
+    // An app from before several families is answered about its HOME
+    // family alone (docs/protocol.md, "Several families"; D8): the chats
+    // whose `family_ids` contain it. A direct chat whose pair shares no
+    // family any more is listed to the side that stayed under a family of
+    // theirs (`viewer_chat_family_ids_sql`), so it is never `[]` here; the
+    // empty case is kept as "listed" anyway, the answer this server has
+    // always given. A multi-family client gets every chat and sorts them by
+    // `family_ids`.
+    let home = auth.home_family();
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            if auth.multi {
+                return true;
+            }
+            let family_ids: Vec<i64> = row.get("family_ids");
+            family_ids.is_empty() || home.is_some_and(|home| family_ids.contains(&home))
+        })
+        .collect();
 
     // The preview attachments, hydrated with ONE page-sized query rather
     // than joined inside the lateral (see the note there). Trimmed exactly
@@ -1879,6 +1957,7 @@ pub async fn list_chats(
                     peer_user_id,
                     member_ids,
                     admin_user_id,
+                    family_ids: row.get("family_ids"),
                 },
                 last_message,
                 unread_count: row.get("unread_count"),
@@ -1908,21 +1987,25 @@ pub async fn direct_chat(
             "cannot open a direct chat with yourself",
         ));
     }
-    let Some(family_id) = auth.family_id else {
+    if auth.family_ids.is_empty() {
         // Without a family there is no shared family to be in.
         return Err(ApiError::conflict(
             codes::NOT_IN_FAMILY,
             "you do not belong to a family",
         ));
-    };
-    let peer = sqlx::query("SELECT id, family_id, display_name FROM users WHERE id = $1")
+    }
+    let peer = sqlx::query("SELECT id, display_name FROM users WHERE id = $1")
         .bind(req.user_id)
         .fetch_optional(&state.pool)
         .await?;
     let Some(peer) = peer else {
         return Err(ApiError::not_found(codes::USER_NOT_FOUND, "no such user"));
     };
-    if peer.get::<Option<i64>, _>("family_id") != Some(family_id) {
+    // ONE shared family is enough since 2026-10-22, and the chat is listed
+    // in every family the two share (docs/protocol.md, "Several families"):
+    // a direct chat belongs to the pair, not to a family.
+    let shared = crate::families::shared_families(&state.pool, auth.user_id, req.user_id).await?;
+    if shared.is_empty() {
         return Err(ApiError::conflict(
             codes::NOT_SAME_FAMILY,
             "this user is not in your family",
@@ -1948,18 +2031,24 @@ pub async fn direct_chat(
 
     let (user_a, user_b) = ordered_pair(auth.user_id, req.user_id);
     let mut tx = state.pool.begin().await?;
-    // On conflict the family_id is refreshed: a pair that left family X and
-    // reunited in family Y keeps one chat (and its history) across moves.
+    // The row's own `family_id` is one of the families the two share — the
+    // lowest — and on conflict it is moved there only when it names a family
+    // they no longer share: a pair that left family X and reunited in family
+    // Y keeps one chat (and its history) across moves, and a family being
+    // deleted can never take by cascade a chat whose row names it while the
+    // pair still shares another.
     let chat_id: i64 = sqlx::query_scalar(
         "INSERT INTO chats (family_id, kind, user_a_id, user_b_id)
          VALUES ($1, 'direct', $2, $3)
          ON CONFLICT (user_a_id, user_b_id) WHERE kind = 'direct'
-         DO UPDATE SET family_id = EXCLUDED.family_id
+         DO UPDATE SET family_id = CASE WHEN chats.family_id = ANY($4) THEN chats.family_id
+                                        ELSE EXCLUDED.family_id END
          RETURNING id",
     )
-    .bind(family_id)
+    .bind(shared[0])
     .bind(user_a)
     .bind(user_b)
+    .bind(&shared)
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query(
@@ -1981,6 +2070,7 @@ pub async fn direct_chat(
         peer_user_id: Some(req.user_id),
         member_ids: None,
         admin_user_id: None,
+        family_ids: shared,
     };
     Ok((StatusCode::OK, Json(json!({"chat": chat}))).into_response())
 }

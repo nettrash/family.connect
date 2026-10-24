@@ -50,6 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.calls.CallManager
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.push.PushTokenRepository
+import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.repo.SyncEngine
@@ -67,6 +68,7 @@ class ChatSocketManager @Inject constructor(
     private val messageRepository: MessageRepository,
     private val pushTokenRepository: PushTokenRepository,
     private val callManager: CallManager,
+    private val familyRepository: FamilyRepository,
     @param:AppScope private val scope: CoroutineScope,
 ) : DefaultLifecycleObserver {
 
@@ -98,6 +100,13 @@ class ChatSocketManager @Inject constructor(
             foregrounded.collect { inForeground ->
                 if (inForeground) runCatching { syncEngine.resync() }
             }
+        }
+        // A family this account just came into — created, joined, an
+        // invitation accepted — has chats, a board and a pack this device
+        // has never read; the resync is what reads them (docs/protocol.md,
+        // "Several families": resync = `/me`, each family, then `/chats`).
+        scope.launch {
+            familyRepository.familiesAdded.collect { runCatching { syncEngine.resync() } }
         }
         scope.launch {
             // A returning network is a trigger (docs/protocol.md, "Sending

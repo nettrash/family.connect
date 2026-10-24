@@ -766,8 +766,11 @@ async fn a_successor_leaving_is_passed_over_for_the_next_longest_standing_member
     ts.join(&ivan, &invite_code, "joined").await;
     ts.join(&hazel, &invite_code, "joined").await;
 
+    // Membership is a `family_members` row since 0057 (an account may be in
+    // several families), so the half-finished departure is that row's
+    // delete — the write `remove_membership` now opens with.
     let mut leaving = ts.state.pool.begin().await.expect("begin the leave");
-    sqlx::query("UPDATE users SET family_id = NULL WHERE id = $1 AND family_id = $2")
+    sqlx::query("DELETE FROM family_members WHERE user_id = $1 AND family_id = $2")
         .bind(ivan_id)
         .bind(family_id)
         .execute(&mut *leaving)
@@ -875,13 +878,13 @@ async fn a_leave_holds_the_family_rows_lock_across_the_membership_write() {
     holder.rollback().await.expect("release Ivan's row");
     let response = leaving.await;
     assert_eq!(response.status(), 204);
-    let family_of_ivan: Option<i64> =
-        sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
+    let families_of_ivan: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM family_members WHERE user_id = $1")
             .bind(ivan_id)
             .fetch_one(&ts.state.pool)
             .await
-            .expect("Ivan's row");
-    assert_eq!(family_of_ivan, None, "he really did leave");
+            .expect("Ivan's memberships");
+    assert_eq!(families_of_ivan, 0, "he really did leave");
 }
 
 /// The mirror rule: with nobody left, the family goes too — its chat, its
@@ -948,13 +951,12 @@ async fn a_sole_owner_takes_the_family_and_its_invite_code_with_them() {
     .await;
 
     // Nobody is left to name them to, so the tombstone remembers no family
-    // — the FK blanked it when the family went.
-    let deleted_family_id: Option<i64> =
-        sqlx::query_scalar("SELECT deleted_family_id FROM users WHERE deleted_at IS NOT NULL")
-            .fetch_one(&ts.state.pool)
-            .await
-            .expect("the tombstone row");
-    assert_eq!(deleted_family_id, None);
+    // — the former membership went by cascade with the family (0057).
+    let former: i64 = sqlx::query_scalar("SELECT count(*) FROM former_family_members")
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("counting former memberships");
+    assert_eq!(former, 0);
 }
 
 /// Attachments the member uploaded come off the disk — subject to the one
@@ -1532,8 +1534,11 @@ async fn the_assistant_account_and_the_usage_it_recorded_are_untouched() {
 
     // The reserved account is exactly as migration 0015 left it: same name,
     // no family, and alive.
-    let assistant: (String, String, Option<i64>, Option<time::OffsetDateTime>) = sqlx::query_as(
-        "SELECT username, display_name, family_id, deleted_at FROM users WHERE id = $1",
+    let assistant: (String, String, i64, Option<time::OffsetDateTime>) = sqlx::query_as(
+        "SELECT username, display_name,
+                (SELECT count(*) FROM family_members WHERE user_id = users.id),
+                deleted_at
+           FROM users WHERE id = $1",
     )
     .bind(assistant_id)
     .fetch_one(&ts.state.pool)
@@ -1541,7 +1546,7 @@ async fn the_assistant_account_and_the_usage_it_recorded_are_untouched() {
     .expect("the assistant row");
     assert_eq!(assistant.0, "assistant");
     assert_eq!(assistant.1, "Assistant");
-    assert_eq!(assistant.2, None, "the assistant belongs to no family");
+    assert_eq!(assistant.2, 0, "the assistant belongs to no family");
     assert!(
         assistant.3.is_none(),
         "a member deleting their account must not scrub the assistant"
@@ -1734,13 +1739,13 @@ async fn an_account_outside_a_family_deletes_and_takes_its_join_request() {
     );
     // No family means no former membership to remember, and no
     // `former_members` key on a roster nobody has been deleted from.
-    let deleted_family_id: Option<i64> =
-        sqlx::query_scalar("SELECT deleted_family_id FROM users WHERE id = $1")
+    let former: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM former_family_members WHERE user_id = $1")
             .bind(waiting_id)
             .fetch_one(&ts.state.pool)
             .await
-            .expect("the tombstone row");
-    assert_eq!(deleted_family_id, None);
+            .expect("counting former memberships");
+    assert_eq!(former, 0);
     let family = my_family(&ts, &owner).await;
     assert!(family["former_members"].is_null());
 }

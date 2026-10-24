@@ -66,6 +66,16 @@ public sealed partial class FamilyView : UserControl
     private bool changingPack;
     private IReadOnlyList<JoinRequestDto> requests = [];
     private IReadOnlyList<ReportDto> reports = [];
+
+    /// <summary>This family's pending invitations, read with the owner's other lists (docs/protocol.md, "Several families").</summary>
+    private IReadOnlyList<InvitationDto> invitations = [];
+    private readonly InviteModel invites;
+    private long? withdrawing;
+    private readonly Action<InvitationDto> onInvitation;
+    private readonly Action<long> onInvitationGone;
+
+    /// <summary>The family these lists are of — another family shown takes them away until they are read for it.</summary>
+    private long? listsFamily;
     private bool busy;
     private long? deciding;
     private long? resolving;
@@ -91,6 +101,8 @@ public sealed partial class FamilyView : UserControl
         this.connection = connection;
         this.openChat = openChat;
         family = new FamilyModel(connection.Api, connection.Chats);
+        invites = new InviteModel(connection.Api, connection.Chats);
+        listsFamily = connection.Session.State.CurrentFamilyId;
         pack = connection.Stickers;
         InitializeComponent();
         stickers = new StickerAnimator(DispatcherQueue);
@@ -111,6 +123,9 @@ public sealed partial class FamilyView : UserControl
         RotateButton.Content = say.Get("Rotate");
         InviteFootnote.Text = say.Get("Rotating invalidates the current code immediately.");
         RequestsHeading.Text = say.Get("Join requests");
+        InvitationsHeading.Text = say.Get("Pending Invitations");
+        InviteButton.Content = say.Get("Invite…");
+        InviteButton.Click += (_, _) => _ = InviteAsync();
         ReportsHeading.Text = say.Get("Reports");
         ReportsEmpty.Text = say.Get("Members can report a message or a person to you.");
         MembersHeading.Text = say.Get("Members");
@@ -268,7 +283,36 @@ public sealed partial class FamilyView : UserControl
 
         onRoster = QueueRedraw;
         onBlock = (_, _) => QueueRedraw();
-        onSession = _ => QueueRedraw();
+        // Another family shown: the owner's lists were the last family's, and are read again for this one.
+        onSession = moved => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (listsFamily != connection.Session.State.CurrentFamilyId)
+            {
+                listsFamily = connection.Session.State.CurrentFamilyId;
+                requests = [];
+                reports = [];
+                invitations = [];
+                _ = LoadOwnerListsAsync();
+            }
+            Draw();
+        });
+        // The owner's own connections hear their family's invitations come and go.
+        onInvitation = invitation => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (invitation.FamilyId == connection.Session.State.CurrentFamilyId && invitation.User.Id != connection.Session.State.Me?.Id)
+            {
+                invitations = [.. invitations.Where(held => held.Id != invitation.Id), invitation];
+                Draw();
+            }
+        });
+        onInvitationGone = invitationId => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (invitations.Any(held => held.Id == invitationId))
+            {
+                invitations = [.. invitations.Where(held => held.Id != invitationId)];
+                Draw();
+            }
+        });
         onResync = report => DispatcherQueue.TryEnqueue(() =>
         {
             _ = LoadOwnerListsAsync();
@@ -293,6 +337,8 @@ public sealed partial class FamilyView : UserControl
         connection.Router.BlockChanged += onBlock;
         connection.Session.Changed += onSession;
         connection.Live.Resynced += onResync;
+        connection.Router.InvitationChanged += onInvitation;
+        connection.Router.InvitationRemoved += onInvitationGone;
         Unloaded += (_, _) =>
         {
             // Nothing moves on a screen that has gone, and every frame is given back rather than left to a finalizer.
@@ -303,6 +349,8 @@ public sealed partial class FamilyView : UserControl
             connection.Router.BlockChanged -= onBlock;
             connection.Session.Changed -= onSession;
             connection.Live.Resynced -= onResync;
+            connection.Router.InvitationChanged -= onInvitation;
+            connection.Router.InvitationRemoved -= onInvitationGone;
         };
         SizeChanged += (_, e) => Arrange(e.NewSize.Width);
         Draw();
@@ -344,6 +392,7 @@ public sealed partial class FamilyView : UserControl
             CopyButton.IsEnabled = house.InviteCode is not null;
             RotateButton.IsEnabled = !busy;
             DrawRequests();
+            DrawInvitations(state);
             DrawReports();
             DrawHouseRules(state, house);
         }
@@ -786,13 +835,18 @@ public sealed partial class FamilyView : UserControl
             var birthdayItem = new MenuFlyoutItem { Text = say.Get("Birthday…") };
             birthdayItem.Click += (_, _) => _ = MemberBirthdayAsync(member, me);
             menu.Items.Add(birthdayItem);
-            if (tools.Removable)
+            if (tools.ResetPassword)
             {
+                // Only where this owner owns every family the member is in (docs/protocol.md, "Several families", D7).
                 var reset = new MenuFlyoutItem { Text = say.Get("Reset Password…") };
                 reset.Click += (_, _) => _ = ResetPasswordAsync(
                     XamlRoot, say, member.DisplayName,
-                    async password => (await connection.Api.ResetMemberPassword(member.Id, password)).Error);
+                    async password => (await connection.Api.ResetMemberPassword(member.Id, password)).Error,
+                    connection.Session.State.MaxFamiliesPerAccount);
                 menu.Items.Add(reset);
+            }
+            if (tools.Removable)
+            {
                 var remove = new MenuFlyoutItem { Text = say.Get("Remove from Family") };
                 remove.Click += (_, _) => _ = RemoveAsync(member);
                 menu.Items.Add(remove);
@@ -1324,12 +1378,109 @@ public sealed partial class FamilyView : UserControl
             {
                 reports = open.Reports ?? [];
             }
+            if (FamilyRules.OffersInvite(connection.Session.State) && connection.Session.State.CurrentFamilyId is { } shown)
+            {
+                var (pending, failed) = await invites.PendingAsync(shown);
+                if (failed is null && shown == connection.Session.State.CurrentFamilyId)
+                {
+                    invitations = pending;
+                }
+            }
         }
         catch (Exception e)
         {
             Diagnostics.Write($"reading the owner's lists: {e.GetType().Name}");
         }
         Draw();
+    }
+
+    /// <summary>
+    /// The pending invitations into this family, each with "Withdraw Invitation" — and "Invite…" over them, while the owner has
+    /// another family to invite from.
+    /// </summary>
+    private void DrawInvitations(SessionState state)
+    {
+        var say = services.Say;
+        InvitationsSection.Visibility = FamilyRules.OffersInvite(state) ? Visibility.Visible : Visibility.Collapsed;
+        InvitationsList.Children.Clear();
+        foreach (var invitation in invitations)
+        {
+            if (InvitationsList.Children.Count > 0)
+            {
+                InvitationsList.Children.Add(Hairline());
+            }
+            var row = new Grid { ColumnSpacing = 14, Padding = new Thickness(20, 10, 16, 10) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var face = new PersonPicture { Width = 40, Height = 40, DisplayName = invitation.User.DisplayName };
+            _ = ShowFaceAsync(face, invitation.User.Id, invitation.User.AvatarVersion);
+            row.Children.Add(face);
+            var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            words.Children.Add(new TextBlock { Text = invitation.User.DisplayName, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+            words.Children.Add(Secondary($"@{invitation.User.Username}"));
+            Grid.SetColumn(words, 1);
+            row.Children.Add(words);
+            var withdraw = new HyperlinkButton
+            {
+                Content = say.Get("Withdraw Invitation"),
+                IsEnabled = withdrawing is null,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var id = invitation.Id;
+            withdraw.Click += (_, _) => _ = WithdrawAsync(id);
+            Grid.SetColumn(withdraw, 2);
+            row.Children.Add(withdraw);
+            InvitationsList.Children.Add(row);
+        }
+    }
+
+    /// <summary>"Invite…": the picker, then this family's pending list read again when anybody was invited.</summary>
+    private async Task InviteAsync()
+    {
+        try
+        {
+            if (await FamilyDialogs.InviteAsync(XamlRoot, services.Say, invites, connection.Session.State, invitations))
+            {
+                await LoadOwnerListsAsync();
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"inviting: {e.GetType().Name}");
+        }
+    }
+
+    private async Task WithdrawAsync(long invitationId)
+    {
+        if (withdrawing is not null || connection.Session.State.CurrentFamilyId is not { } shown)
+        {
+            return;
+        }
+        withdrawing = invitationId;
+        InvitationsError.Visibility = Visibility.Collapsed;
+        Draw();
+        try
+        {
+            if (await invites.WithdrawAsync(shown, invitationId) is { } error)
+            {
+                InvitationsError.Text = FamilyDialogs.InviteFailure(error, services.Say);
+                InvitationsError.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                invitations = [.. invitations.Where(held => held.Id != invitationId)];
+            }
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"withdrawing an invitation: {e.GetType().Name}");
+        }
+        finally
+        {
+            withdrawing = null;
+            Draw();
+        }
     }
 
     private void DrawRequests()

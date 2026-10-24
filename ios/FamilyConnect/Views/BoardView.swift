@@ -93,7 +93,13 @@ struct BoardView: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: \NoteEntity.boardSeq) private var notes: [NoteEntity]
+    @Query(sort: \NoteEntity.boardSeq) private var allNotes: [NoteEntity]
+    /// The wall of the family on screen — every family has its own board
+    /// (docs/protocol.md, "Several families").
+    private var notes: [NoteEntity] {
+        let familyKey = coordinator.currentFamilyKey
+        return allNotes.filter { $0.familyID == familyKey }
+    }
     @Query private var members: [MemberEntity]
     /// Pinning a picture: the picker, and the upload it turns into.
     @State private var pickedPhoto: PhotosPickerItem?
@@ -224,7 +230,7 @@ struct BoardView: View {
             .sheet(item: $editing) { draft in
                 editor(for: draft)
             }
-            .task { await coordinator.loadBoard() }
+            .task(id: coordinator.currentFamilyKey) { await coordinator.loadBoard() }
             .refreshable { await coordinator.loadBoard() }
         }
     }

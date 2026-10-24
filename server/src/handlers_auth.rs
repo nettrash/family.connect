@@ -114,6 +114,7 @@ fn days_in_month(month: i16) -> i16 {
 /// `POST /auth/register`
 pub async fn register(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     AppJson(req): AppJson<RegisterRequest>,
 ) -> Result<Response, ApiError> {
     validate_username(&req.username)?;
@@ -148,7 +149,8 @@ pub async fn register(
     };
 
     let user = User::from_row(&row);
-    let token = auth::create_session(&state.pool, &state.cfg, user.id).await?;
+    let token =
+        auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({"token": token, "user": user})),
@@ -159,6 +161,7 @@ pub async fn register(
 /// `POST /auth/login`
 pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     AppJson(req): AppJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     // `deleted_at IS NULL` is belt and braces, and deliberately kept: a
@@ -185,7 +188,8 @@ pub async fn login(
     let row = row.expect("password verified, so the user row exists");
 
     let user = User::from_row(&row);
-    let token = auth::create_session(&state.pool, &state.cfg, user.id).await?;
+    let token =
+        auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((StatusCode::OK, Json(json!({"token": token, "user": user}))).into_response())
 }
 
@@ -252,10 +256,10 @@ pub async fn change_password(
 /// Asked twice, and the second time under a lock on the row it is about.
 /// The ordering read is a plain SELECT and proves nothing about a `users`
 /// row a transaction that has not committed yet is in the middle of
-/// changing — a member half way through leaving is still `family_id = F` to
+/// changing — a member half way through leaving is still a member of F to
 /// this snapshot. So the pick is re-checked with `FOR UPDATE` held on that
-/// one row: either it was never being changed, or this waits for the change
-/// and then sees it. A pick that fails the re-check is set aside and the
+/// member's account row AND their membership row: either neither was being
+/// changed, or this waits for the change and then sees it. A pick that fails the re-check is set aside and the
 /// next-longest-standing member tried, which is the same answer the
 /// ordering would have given had the leave landed a moment earlier.
 ///
@@ -280,7 +284,9 @@ pub(crate) async fn pass_ownership_on(
                JOIN chats c ON c.id = cm.chat_id
                JOIN users u ON u.id = cm.user_id
               WHERE c.family_id = $1 AND c.kind = 'family' AND cm.user_id <> $2
-                AND u.family_id = $1 AND u.deleted_at IS NULL
+                AND u.deleted_at IS NULL
+                AND EXISTS (SELECT 1 FROM family_members fm
+                             WHERE fm.family_id = $1 AND fm.user_id = cm.user_id)
                 AND cm.user_id <> ALL($3)
               ORDER BY cm.joined_at ASC, cm.user_id ASC
               LIMIT 1",
@@ -293,16 +299,20 @@ pub(crate) async fn pass_ownership_on(
         let Some(candidate) = candidate else {
             return Ok(None);
         };
-        let locked = sqlx::query(
-            "SELECT family_id, deleted_at IS NULL AS alive
-               FROM users WHERE id = $1 FOR UPDATE",
+        // Both rows, locked together: a membership being deleted by a
+        // leave in flight makes this wait and then find no row at all.
+        let locked: Option<bool> = sqlx::query_scalar(
+            "SELECT u.deleted_at IS NULL
+               FROM family_members fm
+               JOIN users u ON u.id = fm.user_id
+              WHERE fm.family_id = $1 AND fm.user_id = $2
+                FOR UPDATE",
         )
+        .bind(family_id)
         .bind(candidate)
         .fetch_optional(&mut *tx)
         .await?;
-        let still_here = locked.as_ref().is_some_and(|row| {
-            row.get::<Option<i64>, _>("family_id") == Some(family_id) && row.get::<bool, _>("alive")
-        });
+        let still_here = locked == Some(true);
         if still_here {
             sqlx::query("UPDATE families SET owner_user_id = $2 WHERE id = $1")
                 .bind(family_id)
@@ -392,6 +402,29 @@ pub enum Scrubbed {
     Spared,
 }
 
+/// Everyone who shares a direct chat with `user_id` and NO family — the
+/// `member_deleted` audience no family roster reaches (see `scrub_account`).
+async fn direct_peers_outside_families(
+    pool: &sqlx::PgPool,
+    user_id: i64,
+) -> Result<Vec<i64>, ApiError> {
+    let peers = sqlx::query_scalar(
+        "SELECT DISTINCT cm.user_id
+           FROM chat_members cm
+           JOIN chats c ON c.id = cm.chat_id
+          WHERE (c.user_a_id = $1 OR c.user_b_id = $1)
+            AND cm.user_id <> $1
+            AND NOT EXISTS (SELECT 1 FROM family_members mine
+                              JOIN family_members theirs
+                                ON theirs.family_id = mine.family_id
+                             WHERE mine.user_id = $1 AND theirs.user_id = cm.user_id)",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(peers)
+}
+
 /// Scrub one account: the shared body of `POST /me/delete` and of the
 /// familyless sweep (docs/protocol.md, "Deleting an account" and "Accounts
 /// without a family"). Everything the former promises, the latter gets,
@@ -410,16 +443,21 @@ pub async fn scrub_account(
     // never be scrubbed, and reading the name here costs nothing where
     // asking for it separately would be a second round-trip on every
     // deletion.
-    let Some(row) =
-        sqlx::query("SELECT username, family_id FROM users WHERE id = $1 AND deleted_at IS NULL")
-            .bind(user_id)
-            .fetch_optional(&state.pool)
-            .await?
+    let Some(row) = sqlx::query("SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL")
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await?
     else {
         return Ok(Scrubbed::Spared);
     };
     let username: String = row.get("username");
-    let family_id: Option<i64> = row.get("family_id");
+    // Every family the account is in — it leaves EACH of them, each with its
+    // own owner hand-off (docs/protocol.md, "Deleting an account", amended
+    // 2026-10-22). Locked below in ascending id order, the one order two
+    // scrubs of two members of the same two families can both take without
+    // a cycle.
+    let mut family_ids = crate::families::family_ids_of(&state.pool, user_id).await?;
+    family_ids.sort_unstable();
 
     // The assistant is not an account anybody may delete (migration 0015).
     // The familyless sweep already excludes it by name in its own scan, and
@@ -448,23 +486,23 @@ pub async fn scrub_account(
         .fetch_all(&state.pool)
         .await?;
 
-    // Who has to be told. The family's members, plus everyone who shared a
-    // direct chat — a peer can be OUTSIDE the family, because the direct
-    // pair is unique globally and a chat follows a pair across families —
-    // and after the write neither group can be found: the roster no longer
-    // names the caller and the chats that named the peers are gone.
-    let recipients: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE family_id = $1
-         UNION
-         SELECT cm.user_id
-           FROM chat_members cm
-           JOIN chats c ON c.id = cm.chat_id
-          WHERE c.user_a_id = $2 OR c.user_b_id = $2",
-    )
-    .bind(family_id)
-    .bind(user_id)
-    .fetch_all(&state.pool)
-    .await?;
+    // Who has to be told. Each family's members, one roster per family —
+    // the account raises one `member_deleted` per family, to that family —
+    // plus everyone who shared a direct chat and is in NONE of those
+    // families: a peer can be outside every one of them, because the direct
+    // pair is unique globally and a chat follows a pair across families.
+    // After the write neither group can be found: the rosters no longer name
+    // the caller and the chats that named the peers are gone.
+    let mut rosters: Vec<(i64, Vec<i64>)> = Vec::with_capacity(family_ids.len());
+    for &family_id in &family_ids {
+        let members: Vec<i64> = crate::families::member_ids(&state.pool, family_id)
+            .await?
+            .into_iter()
+            .filter(|member| *member != user_id)
+            .collect();
+        rosters.push((family_id, members));
+    }
+    let mut peers = direct_peers_outside_families(&state.pool, user_id).await?;
 
     // The files whose rows are about to go. Collected before the delete and
     // swept after the commit, each key checked rather than removed: since
@@ -489,85 +527,156 @@ pub async fn scrub_account(
     // 3. One transaction. Everything below either happens or none of it
     //    does — a half-deleted account is an account nobody can finish
     //    deleting.
-    let mut tx = state.pool.begin().await?;
-
-    // The sweep's guard, and ONLY the sweep's: the row is re-read under its
-    // own lock and the scrub goes ahead only if the account is still a
-    // candidate — no family, past the grace, no join request waiting. The
-    // scan that named it ran a moment ago on a different connection, and a
-    // join in between is the whole point of a grace period; `grant_membership`
-    // writes this row and would otherwise land on a tombstone (its
-    // `deleted_at IS NULL` is the other half of that answer). A candidate
-    // has no family, so nothing below takes a family row's lock, and the
-    // lock order everything else in this server observes — family row,
-    // then user row — has no cycle to close with this one.
     //
-    // A REQUESTED deletion takes no such lock, exactly as before: its caller
-    // proved the password a moment ago, and the family lock in (a) is what
-    // serializes it against the roster.
-    if let Some(guard) = guard {
-        let still_a_candidate: Option<bool> = sqlx::query_scalar(
-            "SELECT family_id IS NULL
-                    AND familyless_since IS NOT NULL
-                    AND familyless_since <= now() - make_interval(days => $2)
-                    AND NOT EXISTS (SELECT 1 FROM join_requests jr
-                                     WHERE jr.user_id = users.id AND jr.status = 'pending')
-               FROM users
-              WHERE id = $1 AND deleted_at IS NULL
-                FOR UPDATE",
-        )
-        .bind(user_id)
-        .bind(guard.ttl_days as i32)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if still_a_candidate != Some(true) {
-            // Dropped, not committed: nothing has been written yet.
-            return Ok(Scrubbed::Spared);
+    //    Begun up to three times. The families were read above, before the
+    //    transaction, and since members may start families of their own a
+    //    family created (or joined) by another device in that gap would
+    //    never be locked or handed on — its membership would go below and
+    //    leave it owned by a tombstone with nobody in it. So once the
+    //    families are locked the account row is too, the list is read
+    //    again under it, and a list that grew starts the transaction over
+    //    with the longer one: every family row is locked BEFORE the account
+    //    row and in ascending id order, which is the order everything else
+    //    here observes, rather than a newly found family being locked after
+    //    the account row.
+    let mut attempt = 0;
+    let (mut tx, owned) = loop {
+        attempt += 1;
+        let mut tx = state.pool.begin().await?;
+
+        // The sweep's guard, and ONLY the sweep's: the row is re-read under its
+        // own lock and the scrub goes ahead only if the account is still a
+        // candidate — no family, past the grace, no join request and no
+        // invitation waiting. The
+        // scan that named it ran a moment ago on a different connection, and a
+        // join in between is the whole point of a grace period; `grant_membership`
+        // writes this row and would otherwise land on a tombstone (its
+        // `deleted_at IS NULL` is the other half of that answer). A candidate
+        // has no family, so nothing below takes a family row's lock, and the
+        // lock order everything else in this server observes — family row,
+        // then user row — has no cycle to close with this one.
+        //
+        // A REQUESTED deletion takes no lock HERE: its caller proved the
+        // password a moment ago, the family locks in (a) serialize it against
+        // the roster, and it takes the account row after them, below.
+        if let Some(guard) = guard {
+            let still_a_candidate: Option<bool> = sqlx::query_scalar(
+                "SELECT NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = users.id)
+                        AND familyless_since IS NOT NULL
+                        AND familyless_since <= now() - make_interval(days => $2)
+                        AND NOT EXISTS (SELECT 1 FROM join_requests jr
+                                         WHERE jr.user_id = users.id AND jr.status = 'pending')
+                        AND NOT EXISTS (SELECT 1 FROM invitations i WHERE i.user_id = users.id)
+                   FROM users
+                  WHERE id = $1 AND deleted_at IS NULL
+                    FOR UPDATE",
+            )
+            .bind(user_id)
+            .bind(guard.ttl_days as i32)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if still_a_candidate != Some(true) {
+                // Dropped, not committed: nothing has been written yet.
+                return Ok(Scrubbed::Spared);
+            }
         }
-    }
 
-    // (a) Ownership passes on, or the family goes.
-    //
-    // The lock is taken on the family this account BELONGS to, by id, and
-    // whether it also OWNS it is then read out of the locked row. Locking
-    // "the family I own" instead (`WHERE owner_user_id = $1`) locks nothing
-    // at all when the answer is no rows — so two members of one family
-    // deleting at the same moment took no common lock, and the one that
-    // was not yet the owner never learned that the other had just made it
-    // one. It handed the family to a member that was, by the time both
-    // commits landed, a tombstone; `require_owner` then refused every
-    // remaining member and nothing in this server ever repairs
-    // `families.owner_user_id`. Every membership change in a family takes
-    // this same row's lock — `leave_family`, `remove_member` and this
-    // handler — so the roster read below can only see committed answers.
-    //
-    // It is also what it always was: `grant_membership`'s `UPDATE users SET
-    // family_id` takes a FOR KEY SHARE lock on this row for its
-    // foreign-key check, and FOR UPDATE conflicts with it, so somebody
-    // joining under `join_policy = 'open'` either lands before the
-    // successor is chosen or waits for a family that may no longer be
-    // there.
-    let locked_owner_id: Option<i64> = match family_id {
-        Some(family_id) => {
-            sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
-                .bind(family_id)
-                .fetch_optional(&mut *tx)
+        // (a) Ownership passes on, or the family goes.
+        //
+        // The lock is taken on the family this account BELONGS to, by id, and
+        // whether it also OWNS it is then read out of the locked row. Locking
+        // "the family I own" instead (`WHERE owner_user_id = $1`) locks nothing
+        // at all when the answer is no rows — so two members of one family
+        // deleting at the same moment took no common lock, and the one that
+        // was not yet the owner never learned that the other had just made it
+        // one. It handed the family to a member that was, by the time both
+        // commits landed, a tombstone; `require_owner` then refused every
+        // remaining member and nothing in this server ever repairs
+        // `families.owner_user_id`. Every membership change in a family takes
+        // this same row's lock — `leave_family`, `remove_member` and this
+        // handler — so the roster read below can only see committed answers.
+        //
+        // It is also what serializes a join: `grant_membership` takes this same
+        // row's lock before it inserts a membership, so somebody joining
+        // under `join_policy = 'open'` either lands before the successor is
+        // chosen or waits for a family that may no longer be there.
+        //
+        // Once per family since 2026-10-22, in TWO passes. Every family the
+        // account is in is locked first, in ascending id order, and only then is
+        // each one it OWNS handed on or marked for deletion. A hand-off locks the
+        // successor's `users` row, and the lock order everything in this server
+        // observes is family row, then user row: locking the next family AFTER a
+        // successor's row would close a cycle with `grant_membership` — that
+        // successor accepting an invitation into the next family holds the
+        // family row and waits for their own user row, which this holds.
+        let mut owned: Vec<i64> = Vec::new();
+        for &family_id in &family_ids {
+            let locked_owner_id: Option<i64> = sqlx::query_scalar(
+                "SELECT owner_user_id FROM families WHERE id = $1 FOR NO KEY UPDATE",
+            )
+            .bind(family_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if locked_owner_id == Some(user_id) {
+                owned.push(family_id);
+            }
+        }
+        // Then the ACCOUNT's row. Every membership is granted under this
+        // row's lock (`grant_membership`), and a join request is filed under
+        // a share lock on it (`join_family`), so neither the list read under
+        // it nor the join requests deleted after it can grow before the
+        // commit. FOR NO KEY UPDATE: it excludes a grant and a join request
+        // exactly as FOR UPDATE would, without blocking the FOR KEY SHARE
+        // that another device's message, read marker or upload takes on it —
+        // each of which may already hold a chat this scrub is about to
+        // delete.
+        //
+        // Join requests go AFTER this row, the order every path observes —
+        // the account row, then its requests: a grant updates the joiner's
+        // requests under the row, and approving one now locks the family and
+        // the applicant's row before the request (`approve_join_request`).
+        sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM join_requests WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        let mut now_in = crate::families::family_ids_of(&mut *tx, user_id).await?;
+        now_in.sort_unstable();
+        if now_in == family_ids {
+            break (tx, owned);
+        }
+        tx.rollback().await?;
+        if attempt >= 3 {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "account {user_id} kept joining families while being deleted"
+            )));
+        }
+        family_ids = now_in;
+        // A family left in the gap takes its roster with it, and the direct
+        // chats its members held with this account become chats with peers
+        // in no shared family — told by `peers`, so that is read again too.
+        peers = direct_peers_outside_families(&state.pool, user_id).await?;
+        rosters.clear();
+        for &family_id in &family_ids {
+            let members: Vec<i64> = crate::families::member_ids(&state.pool, family_id)
                 .await?
+                .into_iter()
+                .filter(|member| *member != user_id)
+                .collect();
+            rosters.push((family_id, members));
         }
-        None => None,
     };
-    let owned_family_id: Option<i64> = match (family_id, locked_owner_id) {
-        (Some(family_id), Some(owner_user_id)) if owner_user_id == user_id => Some(family_id),
-        _ => None,
-    };
-    let mut successor: Option<i64> = None;
-    let mut family_to_delete: Option<i64> = None;
-    if let Some(owned_family_id) = owned_family_id {
-        successor = pass_ownership_on(&mut tx, owned_family_id, user_id).await?;
-        if successor.is_none() {
+    let mut successors: Vec<(i64, i64)> = Vec::new();
+    let mut families_to_delete: Vec<i64> = Vec::new();
+    for family_id in owned {
+        match pass_ownership_on(&mut tx, family_id, user_id).await? {
+            Some(successor) => successors.push((family_id, successor)),
             // Nobody else is here: the family is deleted in (f), once the
             // rows that point into it have gone.
-            family_to_delete = Some(owned_family_id);
+            None => families_to_delete.push(family_id),
         }
     }
     // (b) Their direct chats, both halves, and their private assistant
@@ -679,7 +788,7 @@ pub async fn scrub_account(
     // outlives its admin, and the last one out takes it with them
     // (protocol.md, "Groups"). Their messages in it stay, like the family
     // chat's.
-    let group_exits = crate::handlers_group::leave_every_group(&mut tx, user_id).await?;
+    let group_exits = crate::handlers_group::leave_every_group(&mut tx, user_id, None).await?;
     sqlx::query("DELETE FROM chat_members WHERE user_id = $1")
         .bind(user_id)
         .execute(&mut *tx)
@@ -688,10 +797,68 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM join_requests WHERE user_id = $1")
+    // Every invitation this scrub may remove — to or from the account, into
+    // a family it handed on or is deleting, or into one it still owns — is
+    // LOCKED first, once, in ascending id order: the deletes below, the
+    // hand-off lapses and the cascade of a deleted family then touch rows
+    // already held. A departure locks its lapse candidates the same way
+    // (`handlers_family::lapse_unshared_invitations`), and two transactions
+    // that each lock in one ascending pass cannot each hold a row the other
+    // waits for; this one taking them in three passes could.
+    let touched_families: Vec<i64> = successors
+        .iter()
+        .map(|(family_id, _)| *family_id)
+        .chain(families_to_delete.iter().copied())
+        .collect();
+    sqlx::query(
+        "SELECT i.id
+           FROM invitations i
+           JOIN families f ON f.id = i.family_id
+          WHERE i.user_id = $1 OR i.invited_by = $1 OR f.owner_user_id = $1
+             OR i.family_id = ANY($2)
+          ORDER BY i.id
+            FOR UPDATE OF i",
+    )
+    .bind(user_id)
+    .bind(&touched_families)
+    .execute(&mut *tx)
+    .await?;
+    // Invitations lapse "when either account is deleted" (docs/protocol.md,
+    // "Several families"): the ones TO this account and the ones it SENT.
+    // Collected so both parties of each can be told after the commit.
+    let mut lapsed: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "DELETE FROM invitations WHERE user_id = $1 OR invited_by = $1
+         RETURNING id, family_id, user_id",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    // Out of every family, remembering each as a former membership: the
+    // account appears in each family's `former_members` (0057), so every
+    // family it was in can still put a name to what it left behind.
+    sqlx::query(
+        "INSERT INTO former_family_members (family_id, user_id)
+         SELECT family_id, user_id FROM family_members WHERE user_id = $1
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM family_members WHERE user_id = $1")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+    // And the invitations of a family that changed hands above, to people
+    // its NEW owner shares no other family with — the rule every departure
+    // follows (`handlers_family::lapse_unshared_invitations`).
+    for &(family_id, _) in &successors {
+        lapsed.extend(
+            crate::handlers_family::lapse_unshared_invitations(&mut tx, user_id, family_id)
+                .await?
+                .into_iter()
+                .map(|invitation| (invitation.id, invitation.family_id, invitation.user_id)),
+        );
+    }
     // An upload NOTHING ever claimed is a half-finished action of an
     // account that no longer exists, and nothing else would remove it for
     // hours. A CLAIMED one is not touched: its message — or the board note
@@ -725,10 +892,8 @@ pub async fn scrub_account(
             SET username = 'deleted-' || id,
                 display_name = 'Deleted account',
                 password_hash = '!',
-                family_id = NULL,
                 familyless_since = NULL,
                 deleted_at = now(),
-                deleted_family_id = $2,
                 avatar_version = 0,
                 birthday_month = NULL,
                 birthday_day = NULL
@@ -737,7 +902,6 @@ pub async fn scrub_account(
                     birthday_month, birthday_day, deleted_at",
     )
     .bind(user_id)
-    .bind(family_id)
     .fetch_one(&mut *tx)
     .await?;
     // The frame carries exactly the row that was written. The owner id
@@ -746,14 +910,18 @@ pub async fn scrub_account(
     let member = crate::handlers_family::member_from_row(&scrubbed, user_id);
 
     // (f) Sole owner: the family goes with them — its chat, its board, its
-    //     attachments and its invite code. Last, because everything above
-    //     still had rows pointing into it, and the scrub's
-    //     `deleted_family_id` is blanked again by the FK, which is right:
-    //     a family that no longer exists has no former members to name.
-    if let Some(family_to_delete) = family_to_delete {
-        let family_keys =
-            crate::handlers_family::delete_family_in_tx(&mut tx, family_to_delete).await?;
-        storage_keys.extend(family_keys);
+    //     attachments, its invite code and its invitations. Last, because
+    //     everything above still had rows pointing into it, and the former
+    //     membership written above goes again by the cascade, which is
+    //     right: a family that no longer exists has no former members to
+    //     name. Every such family, since the account may have been the last
+    //     member of more than one.
+    let mut deleted_invitations = Vec::new();
+    for family_to_delete in &families_to_delete {
+        let deleted =
+            crate::handlers_family::delete_family_in_tx(&mut tx, *family_to_delete).await?;
+        storage_keys.extend(deleted.storage_keys);
+        deleted_invitations.extend(deleted.invitations);
     }
 
     tx.commit().await?;
@@ -779,36 +947,63 @@ pub async fn scrub_account(
         state.registry.close_session(session_id).await;
     }
     // The groups they were in, as they now stand, to the members who stay.
-    crate::handlers_group::announce_exits(state, user_id, group_exits).await;
+    crate::handlers_group::announce_exits(state, user_id, group_exits, None).await;
     // Fan-out cannot fail a write that has already committed.
     //
-    // `member_left` and `family_owner` are about a ROSTER, so they are
-    // family-scoped and are sent only when there was a family. Between
-    // them they say nothing to a peer in another family: `member_left`
-    // reaches the family's members, `family_owner` the same.
-    if let Some(family_id) = family_id {
+    // Per family, in the order one family always got them: `member_left`
+    // and `family_owner` are about a ROSTER and reach that family's members;
+    // `member_deleted` carries the tombstone to the same people, with that
+    // family's id. A member who shared two families with the account hears
+    // it twice, once per family, and writing the tombstone twice is harmless
+    // (docs/protocol.md, "Several families"). The departed account has no
+    // sockets left, so `was_home` decides nothing here.
+    for (family_id, roster) in &rosters {
+        if families_to_delete.contains(family_id) {
+            continue;
+        }
         events::log_fanout_error(
             "member_left",
-            events::deliver_member_left(state, family_id, user_id).await,
+            events::deliver_member_left(state, *family_id, user_id, false).await,
         );
-    }
-    // `member_deleted` is NOT family-scoped, and this is the whole reason
-    // `recipients` was collected before the write: it goes to the family's
-    // members AND to every direct-chat peer, including one in another
-    // family entirely or none at all. An account that left its family and
-    // kept its direct chats used to delete in SILENCE — the peer's chat was
-    // destroyed and their live client went on drawing it until its next
-    // `GET /chats` (protocol.md, "Deleting an account").
-    events::log_fanout_error(
-        "member_deleted",
-        events::deliver_member_deleted(state, family_id, member, &recipients).await,
-    );
-    if let (Some(family_id), Some(new_owner_id)) = (family_id, successor) {
         events::log_fanout_error(
-            "family_owner",
-            events::deliver_family_owner(state, family_id, new_owner_id).await,
+            "member_deleted",
+            events::deliver_member_deleted(state, Some(*family_id), member.clone(), roster).await,
+        );
+        if let Some((_, new_owner_id)) = successors.iter().find(|(id, _)| id == family_id) {
+            events::log_fanout_error(
+                "family_owner",
+                events::deliver_family_owner(state, *family_id, *new_owner_id).await,
+            );
+        }
+    }
+    // `member_deleted` is NOT only family-scoped, and this is the whole
+    // reason `peers` was collected before the write: it also goes to every
+    // direct-chat peer who shared none of those families — in another
+    // family entirely, or in none at all — with no `family_id`, because
+    // there is none the two of them share. An account that left its family
+    // and kept its direct chats used to delete in SILENCE — the peer's chat
+    // was destroyed and their live client went on drawing it until its next
+    // `GET /chats` (protocol.md, "Deleting an account").
+    if !peers.is_empty() {
+        events::log_fanout_error(
+            "member_deleted",
+            events::deliver_member_deleted(state, None, member, &peers).await,
         );
     }
+    // The invitations that lapsed with the account, to whichever party is
+    // still here, and those of a family that went with it to the invited.
+    let lapsed: Vec<crate::handlers_family::LapsedInvitation> = lapsed
+        .into_iter()
+        .map(
+            |(id, family_id, invited)| crate::handlers_family::LapsedInvitation {
+                id,
+                family_id,
+                user_id: invited,
+            },
+        )
+        .collect();
+    crate::handlers_family::announce_lapsed(state, &lapsed).await;
+    crate::handlers_family::announce_deleted_family_invitations(state, &deleted_invitations).await;
     for poll_state in &retracted {
         events::log_fanout_error("poll", events::deliver_poll(state, poll_state).await);
     }
@@ -816,9 +1011,11 @@ pub async fn scrub_account(
 }
 
 /// The familyless sweep (docs/protocol.md, "Accounts without a family"):
-/// scrub every account that has been without a family for longer than
+/// scrub every account that has been without ANY family for longer than
 /// `[families] familyless_account_ttl_days`, sparing one with a join request
-/// still pending and the assistant's. Answers how many went. Runs on the
+/// or an invitation still pending, and the assistant's. An account in one
+/// family of several is never a candidate (docs/protocol.md, "Several
+/// families"). Answers how many went. Runs on the
 /// hourly sweep clock in `main`; `0` in the config makes it a no-op.
 ///
 /// The candidates are named by one scan and scrubbed one by one, each under
@@ -838,12 +1035,13 @@ pub async fn sweep_familyless_accounts(state: &AppState) -> Result<u64, ApiError
         "SELECT u.id
            FROM users u
           WHERE u.deleted_at IS NULL
-            AND u.family_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = u.id)
             AND u.familyless_since IS NOT NULL
             AND u.familyless_since <= now() - make_interval(days => $1)
             AND lower(u.username) <> 'assistant'
             AND NOT EXISTS (SELECT 1 FROM join_requests jr
                              WHERE jr.user_id = u.id AND jr.status = 'pending')
+            AND NOT EXISTS (SELECT 1 FROM invitations i WHERE i.user_id = u.id)
           ORDER BY u.id",
     )
     .bind(ttl_days as i32)
@@ -911,31 +1109,49 @@ pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Res
 }
 
 /// `GET /me`
+///
+/// `family`, `role` and `pending_join_request` are about the HOME family
+/// (and the newest pending request) — exactly what an app from before
+/// several families sees — and the lists beside them are the rest
+/// (docs/protocol.md, "Several families"). The lists are ALWAYS present,
+/// whatever the client: a field an older app does not read costs it
+/// nothing, and the same body for every client is one fewer branch to get
+/// wrong.
 pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     let row = sqlx::query(
         "SELECT u.id, u.username, u.display_name, u.created_at, u.avatar_version,
-                u.birthday_month, u.birthday_day,
-                f.id AS family_id, f.name AS family_name, f.join_policy,
-                f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
-                f.language, f.max_members, f.ai_history, f.ai_vision,
-                f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts,
-                f.ai_lookups, f.greeting_places
+                u.birthday_month, u.birthday_day
          FROM users u
-         LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
     )
     .bind(auth.user_id)
     .fetch_one(&state.pool)
     .await?;
-
     let user = User::from_row(&row);
-    let family_id: Option<i64> = row.get("family_id");
-    let (family, role) = match family_id {
-        Some(id) => {
+
+    // Every family, home first and then in the order they were joined —
+    // the order `AuthUser.family_ids` was read in, on this same request.
+    let family_rows = sqlx::query(
+        "SELECT f.id AS family_id, f.name AS family_name, f.join_policy,
+                f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
+                f.language, f.max_members, f.ai_history, f.ai_vision,
+                f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts,
+                f.ai_lookups, f.greeting_places
+         FROM family_members fm
+         JOIN families f ON f.id = fm.family_id
+         WHERE fm.user_id = $1
+         ORDER BY fm.joined_at, fm.family_id",
+    )
+    .bind(auth.user_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let families: Vec<(Family, &'static str)> = family_rows
+        .iter()
+        .map(|row| {
             let owner_user_id: i64 = row.get("owner_user_id");
             let is_owner = owner_user_id == auth.user_id;
             let family = Family {
-                id,
+                id: row.get("family_id"),
                 name: row.get("family_name"),
                 join_policy: row.get("join_policy"),
                 created_at: row.get("family_created_at"),
@@ -975,30 +1191,52 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // provider — the owner's words, which every member may read.
                 greeting_places: row.get("greeting_places"),
             };
-            let role = if is_owner { "owner" } else { "member" };
-            (Some(family), Some(role))
-        }
+            (family, if is_owner { "owner" } else { "member" })
+        })
+        .collect();
+    // The HOME family is the first: what `family` and `role` have always
+    // meant, and the whole world of an app that predates several families.
+    let (family, role) = match families.first() {
+        Some((family, role)) => (Some(family.clone()), Some(*role)),
         None => (None, None),
     };
+    // Each family with its own role beside its fields — `[Family]`, each
+    // "with its own `role`" (docs/protocol.md, `GET /me`).
+    let families_json: Vec<Value> = families
+        .iter()
+        .map(|(family, role)| {
+            let mut value = json!(family);
+            value["role"] = json!(role);
+            value
+        })
+        .collect();
 
-    // The caller's live join request, if any — a waiting client that sees
-    // neither `family` nor `pending_join_request` knows it was rejected.
-    let pending = sqlx::query(
+    // The caller's live join requests, oldest first — a waiting client that
+    // sees neither the family nor its request knows it was rejected.
+    // `pending_join_request` is the NEWEST of them, which is what it always
+    // was (`ORDER BY id DESC LIMIT 1`): an app that predates several
+    // families shows the request just made, not an older one.
+    let pending_rows = sqlx::query(
         "SELECT jr.family_id, f.name AS family_name, jr.created_at
          FROM join_requests jr
          JOIN families f ON f.id = jr.family_id
          WHERE jr.user_id = $1 AND jr.status = 'pending'
-         ORDER BY jr.id DESC
-         LIMIT 1",
+         ORDER BY jr.id",
     )
     .bind(auth.user_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .map(|row| PendingJoinRequest {
-        family_id: row.get("family_id"),
-        family_name: row.get("family_name"),
-        created_at: row.get::<OffsetDateTime, _>("created_at"),
-    });
+    .fetch_all(&state.pool)
+    .await?;
+    let pending_requests: Vec<PendingJoinRequest> = pending_rows
+        .iter()
+        .map(|row| PendingJoinRequest {
+            family_id: row.get("family_id"),
+            family_name: row.get("family_name"),
+            created_at: row.get::<OffsetDateTime, _>("created_at"),
+        })
+        .collect();
+    let pending = pending_requests.last().cloned();
+    let invitations =
+        crate::handlers_invitation::invitations_for_user(&state.pool, auth.user_id).await?;
 
     Ok((
         StatusCode::OK,
@@ -1007,6 +1245,17 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             "family": family,
             "role": role,
             "pending_join_request": pending,
+            // Several families (docs/protocol.md, "Several families"), ALL
+            // ALWAYS present: every family with its role, every live join
+            // request, every pending invitation, and the two operator
+            // settings that decide whether "New Family…" and "Join Another
+            // Family…" are offered at all — shown shut rather than met as a
+            // 403, for `family_registration_enabled`'s reason.
+            "families": families_json,
+            "pending_join_requests": pending_requests,
+            "invitations": invitations,
+            "member_families_enabled": state.cfg.families.member_families_enabled(),
+            "max_families_per_account": state.cfg.families.max_families_per_account,
             // Whether this server signals voice calls at all. Always
             // present, like the assistant/history switches: a client hides
             // its call button on false rather than discovering

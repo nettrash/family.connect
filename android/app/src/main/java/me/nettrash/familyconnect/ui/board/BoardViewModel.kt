@@ -52,6 +52,9 @@ import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.pathFamily
+import me.nettrash.familyconnect.data.repo.observeCurrentActiveMembers
 
 @HiltViewModel
 class BoardViewModel @Inject constructor(
@@ -91,12 +94,21 @@ class BoardViewModel @Inject constructor(
      *
      * APP scope, not viewModelScope: leaving the board must not cancel an
      * upload in flight, exactly as leaving a chat must not.
+     *
+     * The family is read ONCE, before anything else, and that one family is
+     * both the upload's and the note's. The upload names its family and the
+     * server claims it only for a note on that family's board (docs/protocol.md,
+     * "Uploads name their family"); reading "the family shown" again for the
+     * note meant a switch while the picture went up sent the note to the
+     * other family's board, which answered `attachment_not_found` and lost
+     * the pin. iOS captures the family key once for the same reason.
      */
     fun pinPhoto(uri: Uri, slot: Int) {
         if (_pinning.value) return
         _pinning.value = true
         appScope.launch {
             try {
+                val family = settings.state.first().familyKey
                 val prepared = runCatching { mediaPrep.preparePhoto(uri) }.getOrNull()
                 if (prepared == null) {
                     _pinFailed.value = true
@@ -110,6 +122,9 @@ class BoardViewModel @Inject constructor(
                         width = prepared.width,
                         height = prepared.height,
                         durationMs = null,
+                        // A note's picture only on that family's board
+                        // (docs/protocol.md, "Uploads name their family").
+                        familyId = settings.state.first().pathFamily(family),
                     )
                     val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment
                     if (attachment == null) {
@@ -129,6 +144,9 @@ class BoardViewModel @Inject constructor(
                         x = 0.12 + slot * 0.03,
                         y = 0.10 + slot * 0.06,
                         attachmentId = attachment.id,
+                        // The family the upload was for, not whichever is
+                        // shown now.
+                        familyId = family,
                     )
                     if (!pinned) _pinFailed.value = true
                 } finally {
@@ -169,7 +187,7 @@ class BoardViewModel @Inject constructor(
      * they have blocked — exactly what the chat's own composer offers.
      */
     val mentionRoster: StateFlow<List<MentionDto>> = combine(
-        memberDao.observeActiveMembers(),
+        memberDao.observeCurrentActiveMembers(settings),
         settings.state,
     ) { members, state ->
         members
@@ -200,8 +218,12 @@ class BoardViewModel @Inject constructor(
      */
     fun refresh() {
         viewModelScope.launch {
-            val serverMax = familyRepository.refreshMine().okOrNull()?.maxBoardSeq ?: 0L
-            boardRepository.catchUpBoard(serverMax)
+            // One family for both halves: the cursor the read answered is
+            // THAT family's, and catching another family's board up to it
+            // after a switch mid-read would skip or re-read the wrong range.
+            val family = settings.state.first().familyKey
+            val serverMax = familyRepository.refreshFamily(family).okOrNull()?.maxBoardSeq ?: 0L
+            boardRepository.catchUpBoard(serverMax, family)
         }
     }
 
@@ -212,12 +234,15 @@ class BoardViewModel @Inject constructor(
      */
     fun markBoardSeen() {
         viewModelScope.launch {
+            // The CURRENT family's board, against its own marks — read once,
+            // so the notes and the marks are the same family's.
+            val familyId = settings.state.first().familyKey
             val marks = BoardBadge.marksAfterShowing(
-                boardRepository.observeNotes().first().marks(),
-                settings.state.first().badgeMarks(),
+                boardRepository.observeNotes(familyId).first().marks(),
+                settings.state.first().badgeMarks(familyId),
             )
-            settings.setBoardSeenNoteId(marks.seenNoteId)
-            settings.setBoardSeenContentSeq(marks.seenContentSeq)
+            settings.setBoardSeenNoteId(familyId, marks.seenNoteId)
+            settings.setBoardSeenContentSeq(familyId, marks.seenContentSeq)
         }
     }
 

@@ -9,6 +9,12 @@
 //! while the dialog is open, it is built again. A read that FAILED is not a
 //! family with nobody left in it: that dialog says leaving deletes the
 //! family, and it is shown only when the server said so.
+//!
+//! The family here is the one on screen. For an account in several, leaving
+//! says WHICH, and that its direct chats stay with anybody it shares
+//! another family with; in one family the dialog is today's, word for word
+//! (docs/protocol.md, "Several families"). This is also where a second
+//! family starts: "New Family…" and "Join Another Family…".
 
 use fc_text::i18n::{t, t1, tn, tp};
 use fc_text::lookups;
@@ -19,6 +25,7 @@ use yew::prelude::*;
 
 use crate::actions::{Action, LeaveContext};
 use crate::api::ApiError;
+use crate::live::Panel;
 use crate::model::{Assistant, Family, Me, MemberStats, Stats};
 use crate::notify;
 use crate::prep;
@@ -48,6 +55,15 @@ pub struct SettingsProps {
     pub on_close: Callback<()>,
     /// Asks the app to sign out — which asks first.
     pub on_sign_out: Callback<()>,
+    /// The account is in more than one family: leaving says which.
+    #[prop_or_default]
+    pub several: bool,
+    /// "New Family…" is offered (fc_text::families::offers_new_family).
+    #[prop_or_default]
+    pub new_family: bool,
+    /// "Join Another Family…" is offered.
+    #[prop_or_default]
+    pub join_another: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -98,6 +114,22 @@ pub fn leave_title(context: &LeaveContext) -> &'static str {
     match context {
         LeaveContext::LastMember => t("Delete the family?"),
         _ => t("Leave the family?"),
+    }
+}
+
+/// The leave dialog's title and words: today's in one family; in one of
+/// several, which family, and that the direct chats shared through another
+/// family stay. Leaving as its LAST member still deletes it, and says so
+/// as it always has: that is a different dialog, not a sentence changed.
+pub fn leave_wording(context: &LeaveContext, several: Option<&str>) -> (String, String) {
+    match (context, several) {
+        (LeaveContext::LastMember, _) | (_, None) => {
+            (leave_title(context).to_string(), leave_message(context))
+        }
+        (_, Some(family)) => (
+            fc_text::families::leave_title(family),
+            fc_text::families::leave_message().to_string(),
+        ),
     }
 }
 
@@ -332,19 +364,32 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
     let has_picture = me.avatar_version > 0;
     let close = props.on_close.reform(|_: MouseEvent| ());
 
+    let several = props
+        .family
+        .as_ref()
+        .filter(|_| props.several)
+        .map(|family| family.name.clone());
     let leave_dialog = match &*leave {
-        Leave::Ready(context) | Leave::Leaving(context) => html! {
+        Leave::Ready(context) | Leave::Leaving(context) => {
+            let (title, message) = leave_wording(context, several.as_deref());
+            html! {
             <Confirm
-                title={leave_title(context)}
-                message={leave_message(context)}
+                {title}
+                {message}
                 confirm={leave_button(context)}
                 busy={matches!(*leave, Leave::Leaving(_))}
                 error={(*leave_error).clone()}
                 on_confirm={confirm_leave}
                 on_cancel={cancel_leave}
             />
-        },
+            }
+        }
         _ => Html::default(),
+    };
+    let open_panel = |panel: Panel| {
+        props
+            .on_action
+            .reform(move |_: MouseEvent| Action::OpenPanel(panel))
     };
     let dialog = match &*open {
         Open::Nothing => Html::default(),
@@ -493,6 +538,21 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                         </div>
                         if let (Some(message), Leave::Closed) = ((*leave_error).clone(), &*leave) {
                             <p class="error" role="alert">{ message }</p>
+                        }
+                        // The way in to another family — here even with one
+                        // family and nothing pending, where there is no
+                        // switcher to find it in.
+                        if props.new_family || props.join_another {
+                            <div class="setting-row">
+                                <span class="row-actions">
+                                    if props.new_family {
+                                        <button class="link" onclick={open_panel(Panel::NewFamily)}>{ t("New Family…") }</button>
+                                    }
+                                    if props.join_another {
+                                        <button class="link" onclick={open_panel(Panel::JoinFamily)}>{ t("Join Another Family…") }</button>
+                                    }
+                                </span>
+                            </div>
                         }
                     </section>
                 }
@@ -1099,6 +1159,9 @@ mod tests {
                 on_action: Callback::from(move |action| sink.borrow_mut().push(action)),
                 on_close: Callback::noop(),
                 on_sign_out: Callback::noop(),
+                several: false,
+                new_family: false,
+                join_another: false,
             };
             yew::Renderer::<SettingsPane>::with_root_and_props(root.clone(), props).render();
             (root, log)

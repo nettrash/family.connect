@@ -22,6 +22,14 @@
 //                      401 against it.
 //    - kicked/left   → wipe chat data only; the account (token) and server
 //                      are still valid, the user just has no family now.
+//                      Only for the LAST family: leaving one of several
+//                      drops that family's data and nothing else
+//                      (`removeFamily`, docs/protocol.md "Several families").
+//
+//  SEVERAL FAMILIES (2026-10-22): `families` is every family the account is
+//  in, from `GET /me`; one of them is CURRENT, persisted per account on the
+//  device, and `family`/`role` are that one's — so every screen that read
+//  "the" family reads the current one. The decisions are `FamilyRules`.
 //
 //  The store-touching side effects (`hasCachedChats`, `clearChatStore`)
 //  are injected closures rather than a ModelContainer dependency, so the
@@ -46,10 +54,28 @@ nonisolated enum SessionLogic {
         case needsFamily(declined: Bool)
     }
 
+    /// From the family LIST (docs/protocol.md, "Several families"): any
+    /// family at all is the chat list; an account in none with a request
+    /// still waiting — to any family — is the waiting screen; otherwise the
+    /// gate, exactly as before.
     static func resolve(me: MeResponse, wasAwaitingApproval: Bool) -> ResolvedPhase {
-        if me.family != nil { return .active }
-        if me.pendingJoinRequest != nil { return .pendingApproval }
+        if !FamilyRules.families(from: me).isEmpty { return .active }
+        if !FamilyRules.pendingRequests(from: me).isEmpty { return .pendingApproval }
         return .needsFamily(declined: wasAwaitingApproval)
+    }
+
+    /// Where an account goes the moment it is out of its LAST family — it
+    /// left, it was removed, the family was deleted under it — with no
+    /// `/me` in hand to ask: `resolve(me:)`'s rule, read off what the
+    /// session already holds. Since several families an account may be in
+    /// a family AND have join requests pending elsewhere (docs/protocol.md,
+    /// "Several families"), so losing the last family with one still
+    /// waiting is the waiting screen, not the gate — the gate would offer
+    /// to create or join, and re-entering that code answers
+    /// `join_request_pending`. Android (`FamilyList.status`), Windows
+    /// (`Gate.Pending`) and the web route it the same way.
+    static func afterLastFamily(pendingRequests: [PendingJoinRequestDTO]) -> ResolvedPhase {
+        pendingRequests.isEmpty ? .needsFamily(declined: false) : .pendingApproval
     }
 
     /// Why local state is being purged; drives what survives.
@@ -112,18 +138,113 @@ final class AppSession {
     func applyProfile(_ user: UserDTO) {
         currentUser = user
     }
-    private(set) var family: FamilyDTO?
+    /// Every family this account is in, home family first, each wearing
+    /// the account's own `role` in it (docs/protocol.md, "Several
+    /// families"). Empty for an account in none — the gate.
+    private(set) var families: [FamilyDTO] = []
 
-    /// Replace the cached family after the owner changes a setting on it
-    /// — the twin of `applyProfile`, and narrow for the same reason.
-    /// PATCH /families/mine answers with the whole family, and nothing
-    /// else re-reads it until the next resync, so a settings screen that
-    /// did not write back here would keep showing the old value.
-    func applyFamily(_ family: FamilyDTO) {
-        self.family = family
+    /// The family the app is showing. Persisted per account
+    /// (`AppSettings.currentFamilyID(forUser:)`); falls back to the first of
+    /// `families` when the stored one is gone (`FamilyRules.currentFamilyID`).
+    private(set) var currentFamilyID: Int64?
+
+    /// Whether this server predates several families (`/me` without
+    /// `families`): it is then spoken to about the home family alone, by
+    /// the paths it knows (`apiFamilyID`).
+    private(set) var isLegacyServer = false
+
+    /// Join requests still waiting, to any family — rows in the switcher
+    /// while the account is in a family, the waiting screen while it is in
+    /// none.
+    private(set) var pendingJoinRequests: [PendingJoinRequestDTO] = []
+
+    /// Invitations waiting on this account: the banner over the chat list
+    /// and rows in the switcher. Kept live by the `invitation` and
+    /// `invitation_removed` frames.
+    private(set) var invitations: [InvitationDTO] = []
+
+    /// `[families] member_families`: may a member start another family?
+    private(set) var memberFamiliesEnabled = false
+
+    /// The most families one account may be in (1 on an older server).
+    private(set) var maxFamiliesPerAccount = 1
+
+    /// Bumped by every invitation frame, so an owner's "Pending
+    /// Invitations" list re-reads instead of going stale under them.
+    private(set) var invitationsGeneration = 0
+
+    /// The current family — what every screen that said "the family" means.
+    var family: FamilyDTO? {
+        families.first { $0.id == currentFamilyID }
     }
-    /// "owner" | "member" | nil — from the last /me or family call.
-    private(set) var role: String?
+
+    /// The HOME family: the first of `families`, which `GET /me` always
+    /// lists first (and `addFamily` only ever appends to). A chat that names
+    /// no family — cached before several families, or from a server that
+    /// predates them — is this one's (`FamilyRules.isListed`). Nil while no
+    /// list is held, an offline launch before the first `/me` included.
+    var homeFamilyID: Int64? { families.first?.id }
+
+    /// "owner" | "member" | nil — the account's role in the CURRENT family.
+    var role: String? { family?.role }
+
+    /// The id a family request names in its path for the current family:
+    /// nil — the home family's old form — on a server that predates several
+    /// families (`FamilyRules.pathFamilyID`).
+    var apiFamilyID: Int64? {
+        FamilyRules.pathFamilyID(currentFamilyID, legacy: isLegacyServer)
+    }
+
+    /// The same for any family this device holds.
+    func apiFamilyID(for familyID: Int64?) -> Int64? {
+        FamilyRules.pathFamilyID(familyID, legacy: isLegacyServer)
+    }
+
+    /// Whether the switcher exists at all: two or more families, or
+    /// something pending to show.
+    var showsFamilySwitcher: Bool {
+        FamilyRules.showsSwitcher(
+            familyCount: families.count,
+            pendingRequests: pendingJoinRequests.count,
+            invitations: invitations.count)
+    }
+
+    var offersNewFamily: Bool {
+        FamilyRules.offersNewFamily(
+            memberFamiliesEnabled: memberFamiliesEnabled, families: families,
+            maxFamilies: maxFamiliesPerAccount)
+    }
+
+    var offersJoinAnotherFamily: Bool {
+        FamilyRules.offersJoinAnother(families: families, maxFamilies: maxFamiliesPerAccount)
+    }
+
+    /// Replace one cached family after its owner changes a setting on it —
+    /// the twin of `applyProfile`, and narrow for the same reason. PATCH
+    /// answers with the whole family, and nothing else re-reads it until
+    /// the next resync, so a settings screen that did not write back here
+    /// would keep showing the old value. The family's id says which entry;
+    /// the account's role in it is kept, because a PATCH answer carries none.
+    func applyFamily(_ family: FamilyDTO) {
+        guard let index = families.firstIndex(where: { $0.id == family.id }) else { return }
+        families[index] = family.withRole(family.role ?? families[index].role)
+    }
+
+    /// Show another family. Everything family-level follows: the chat list
+    /// filters by it, the roster re-projects onto it (`onCurrentFamilyChanged`),
+    /// and the choice is remembered for this account on this device.
+    func switchFamily(to familyID: Int64) {
+        guard families.contains(where: { $0.id == familyID }), familyID != currentFamilyID else { return }
+        setCurrentFamily(familyID)
+    }
+
+    private func setCurrentFamily(_ familyID: Int64?) {
+        currentFamilyID = familyID
+        if let user = currentUser?.id ?? AppSettings.currentUserID {
+            AppSettings.setCurrentFamilyID(familyID, forUser: user)
+        }
+        onCurrentFamilyChanged(familyID)
+    }
     /// Whether the server signals voice calls (docs/protocol.md, "Voice
     /// calls"). The call button hides behind it rather than discovering
     /// `calls_disabled` at the moment somebody wants to talk.
@@ -177,6 +298,39 @@ final class AppSession {
     /// Cleared by every purge: a route into a family we just left (or a
     /// session we just dropped) must not navigate the next user.
     var pendingPushRoute: PushRoute?
+
+    /// The family a parked push names, waiting for `/me` to say whether
+    /// this account is in it (a cold-start tap lands before bootstrap).
+    private(set) var pendingPushFamilyID: Int64?
+
+    /// A tapped notification: open the app in ITS family (docs/protocol.md,
+    /// "Several families" — Pushes), then route. A push naming a family
+    /// opens there; a direct chat's names none and opens in the family on
+    /// screen when that lists it, else in the first that does.
+    func routePush(_ route: PushRoute, familyID: Int64?) {
+        pendingPushFamilyID = familyID
+        pendingPushRoute = route
+        if phase == .active { resolvePendingPushFamily() }
+    }
+
+    private func resolvePendingPushFamily() {
+        guard pendingPushRoute != nil || pendingPushFamilyID != nil else { return }
+        // The chat's `family_ids` as this device holds them, with ABSENT kept
+        // apart from empty. Absent (nil) is a chat cached before several
+        // families, and the protocol makes that the HOME family's
+        // (`FamilyRules.isListed`); folding it into `[]` — listed in NO
+        // family — left a push for it in whichever family was on screen,
+        // though the home family is the only one that lists it. A chat this
+        // device does not hold at all (a direct chat newer than the last
+        // sync) has nothing to go by, and the app stays where it is: `[]`.
+        var chatFamilies: [Int64]? = []
+        if case .chat(let chatID) = pendingPushRoute, let held = chatFamilyIDs(chatID) { chatFamilies = held }
+        let target = FamilyRules.pushFamily(
+            pushFamilyID: pendingPushFamilyID, chatFamilyIDs: chatFamilies,
+            current: currentFamilyID, held: families.map(\.id))
+        pendingPushFamilyID = nil
+        if let target { switchFamily(to: target) }
+    }
 
     /// A call the SYSTEM asked for — a Recents row, a contact card's
     /// "Family" button, Siri (CallIntents) — waiting for the chat list to
@@ -328,6 +482,31 @@ final class AppSession {
     /// account, never sent, wiped at sign-out"). A closure for the reason
     /// the two above are.
     var clearRoundVideoPlays: (() -> Void)?
+    /// The family on screen changed: the coordinator re-points the roster
+    /// at it. A closure for the reason `clearChatStore` is one.
+    var onCurrentFamilyChanged: (Int64?) -> Void = { _ in }
+    /// Drop everything this device holds that is ONE family's: its chats
+    /// (a direct chat while another held family still lists it excepted),
+    /// its board, its pack, its roster memberships and their cursors.
+    var dropFamilyData: (Int64) -> Void = { _ in }
+    /// Rows a build from before several families cached were the home
+    /// family's (it read nothing else): hand them to it, once.
+    var adoptUnattributedFamilyData: (Int64) -> Void = { _ in }
+    /// The `family_ids` of a held chat, or `.none` when this device does not
+    /// hold the chat — for a push that names no family. Doubly optional
+    /// because a held chat's own answer may be nil: `family_ids` nobody sent
+    /// (cached before several families, the HOME family's), which is not
+    /// "not held" and must not be read as it (`resolvePendingPushFamily`).
+    var chatFamilyIDs: (Int64) -> [Int64]?? = { _ in nil }
+    /// Whether this device still holds anything that is a family's — chats,
+    /// a roster, a board, a pack, or their marks — read from what is
+    /// PERSISTED and not from `families`, which a cold launch has not filled
+    /// yet (`apply(me:)`). A closure for the reason `clearChatStore` is one.
+    var holdsFamilyData: () -> Bool = { false }
+    /// Run a resync: a family was added and its roster, board, pack and
+    /// chats are to be fetched now, not at the next reconnect.
+    var requestResync: () -> Void = {}
+
     /// Best-effort push deregistration (PushRegistrar.deregister), also
     /// injected at wiring time so the phase machine stays UIKit-free.
     /// logout() awaits it BEFORE /auth/logout, because DELETE /devices
@@ -388,11 +567,22 @@ final class AppSession {
                 // Offline but with history: open the chat list read-only;
                 // the coordinator keeps retrying the socket + resync.
                 AppLog.app.info("Bootstrap offline; opening cached chats")
-                phase = .active
+                openOffline()
             } else {
                 bootError = Self.describeTransport(error)
             }
         }
+    }
+
+    /// The cached chats, opened with no `/me` in hand: the family this
+    /// account was last shown is current, so the list is that family's chats
+    /// until `/me` can say more — and there is NO family list, which only
+    /// `/me` gives. Internal rather than private so a test can reach that
+    /// state without a stored token, which an unsigned test host cannot
+    /// write.
+    func openOffline() {
+        currentFamilyID = AppSettings.currentUserID.flatMap(AppSettings.currentFamilyID(forUser:))
+        phase = .active
     }
 
     func retryBootstrap() async {
@@ -426,25 +616,83 @@ final class AppSession {
         applyBlockedIDs(me.blockedUserIDs)
         let wasActive = phase == .active
         let wasAwaiting = phase == .pendingApproval || AppSettings.joinPending
+        // Whether this device held a family — and with it, family data —
+        // before this answer: the condition under which a `/me` that lists
+        // none is a loss to purge for, on either of the two family-less
+        // branches below. The list as well as the phase, as Android reads
+        // it (`wasInFamily || before.families.isNotEmpty()`).
+        //
+        // Neither can see a COLD launch: the list lives in memory and is
+        // empty in `.booting`, and the phase has no past there. An app
+        // terminated while in family A alone, with a request pending to B,
+        // and removed from A before it was next opened, purged nothing on
+        // its bootstrap `/me` — the waiting screen — and nothing again when
+        // B then declined — the gate — so A's messages, roster, board, pack,
+        // contact links and cursors stayed on the device for good. So those
+        // two branches also ask what is PERSISTED (`holdsFamilyData`): with
+        // no family listed, whatever a family left on this device belongs to
+        // a family the account no longer has. Asked there alone, since it
+        // reads the store, and answered "no" once a purge has run — so the
+        // waiting screen's `/me` poll does not purge again on every tick.
+        let heldFamilies = wasActive || !families.isEmpty
+        // Several families (docs/protocol.md, "Several families"): the list,
+        // whatever this server is — one that predates them describes its
+        // one family the old way, and `FamilyRules` reads both.
+        let listed = FamilyRules.families(from: me)
+        isLegacyServer = FamilyRules.isLegacy(me)
+        pendingJoinRequests = FamilyRules.pendingRequests(from: me)
+        invitations = me.invitations
+        memberFamiliesEnabled = me.memberFamiliesEnabled
+        maxFamiliesPerAccount = max(1, me.maxFamiliesPerAccount)
 
         switch SessionLogic.resolve(me: me, wasAwaitingApproval: wasAwaiting) {
         case .active:
-            family = me.family
-            role = me.role
+            // A family this device held that `/me` no longer lists is gone
+            // for this account — left on another device, or removed while
+            // the socket was down — and its data goes with it, alone. On a
+            // cold launch there is no list to compare against and this finds
+            // nothing; the resync that follows every way into `.active`
+            // drops what such a family left behind (`pruneFamilies`, and
+            // `GET /chats` for its chats).
+            let gone = Set(families.map(\.id)).subtracting(listed.map(\.id))
+            families = listed
+            if let home = listed.first {
+                AppSettings.adoptLegacyFamilyState(into: home.id)
+                adoptUnattributedFamilyData(home.id)
+            }
+            for familyID in gone { forgetFamily(familyID) }
+            let stored = currentFamilyID
+                ?? (currentUser?.id).flatMap(AppSettings.currentFamilyID(forUser:))
+            let chosen = FamilyRules.currentFamilyID(stored: stored, families: listed)
+            if chosen != currentFamilyID { setCurrentFamily(chosen) }
             AppSettings.joinPending = false
             joinDeclined = false
             phase = .active
+            resolvePendingPushFamily()
         case .pendingApproval:
-            family = nil
-            role = nil
+            // No family, and a join request still waiting somewhere. Before
+            // several families only an account that had never been in a
+            // family could get here; now an ACTIVE one can — in A with a
+            // request pending to B, removed from A while the socket was
+            // down, so no `member_left` ever reached this device — and what
+            // it held of A is not its to keep. Purged exactly as the gate's
+            // branch below purges a kick (Android and Windows do the same).
+            // Skipped here, nothing else would: A's chats, board, pack and
+            // cursors sat under the waiting screen, and when B then declined,
+            // the gate's branch skipped its purge too, the phase being
+            // `.pendingApproval` rather than `.active` by then. On a cold
+            // launch it is what the device persisted that says A was here.
+            families = []
+            currentFamilyID = nil
             AppSettings.joinPending = true
+            if heldFamilies || holdsFamilyData() { purge(.kicked) }
             phase = .pendingApproval
         case .needsFamily(let declined):
-            family = nil
-            role = nil
+            families = []
+            currentFamilyID = nil
             AppSettings.joinPending = false
             if declined { joinDeclined = true }
-            if wasActive { purge(.kicked) }
+            if heldFamilies || holdsFamilyData() { purge(.kicked) }
             phase = .needsFamily
         }
     }
@@ -566,12 +814,31 @@ final class AppSession {
         AppSettings.currentUserID = response.user.id
     }
 
+    /// Create a family — the account's first, from the gate, or ANOTHER
+    /// one from "New Family…" (docs/protocol.md, "Several families"). The
+    /// creator owns it, and the app switches to it at once.
     func createFamily(name: String) async throws {
         let created = try await api.createFamily(name: name)
-        family = created
-        role = "owner"
+        let wasActive = phase == .active
+        addFamily(created.withRole("owner"))
         joinDeclined = false
         phase = .active
+        // Already in the connected world: the new family's roster, chat and
+        // marks are fetched now (the gate's way in starts a resync of its
+        // own when the phase turns active).
+        if wasActive { requestResync() }
+    }
+
+    /// Hold a family the account has just entered, and show it.
+    private func addFamily(_ family: FamilyDTO) {
+        if let index = families.firstIndex(where: { $0.id == family.id }) {
+            families[index] = family
+        } else {
+            families.append(family)
+        }
+        pendingJoinRequests.removeAll { $0.familyID == family.id }
+        invitations.removeAll { $0.familyID == family.id }
+        setCurrentFamily(family.id)
     }
 
     enum JoinOutcome: Equatable {
@@ -579,11 +846,22 @@ final class AppSession {
         case pending
     }
 
+    /// Join by invite code — from the gate, or "Join Another Family…" from
+    /// inside the app. An account already in a family whose request now
+    /// waits on an owner stays where it is, with a pending row in the
+    /// switcher; one that got straight in is switched to the new family.
     @discardableResult
     func join(code: String) async throws -> JoinOutcome {
         let response = try await api.joinFamily(inviteCode: code)
         joinDeclined = false
+        let wasActive = phase == .active
+        let held = Set(families.map(\.id))
         if response.status == "pending" {
+            if wasActive {
+                // The new request is a switcher row: /me lists it.
+                if let me = try? await api.me() { apply(me: me) }
+                return .pending
+            }
             AppSettings.joinPending = true
             phase = .pendingApproval
             return .pending
@@ -591,10 +869,67 @@ final class AppSession {
         // "joined" — fetch /me for the family object + role.
         do {
             apply(me: try await api.me())
+            // The family the answer names; an older server names none, and
+            // the family /me lists that this device did not hold is it.
+            if let joined = response.familyID ?? families.first(where: { !held.contains($0.id) })?.id {
+                switchFamily(to: joined)
+            }
         } catch {
             phase = .active // joined for sure; details refresh on resync
         }
+        if wasActive { requestResync() }
         return .joined
+    }
+
+    // MARK: - Invitations (docs/protocol.md, "Several families")
+
+    /// Accept: membership is immediate, and the app switches to the family.
+    /// `invitation_not_pending` — accepted, declined or withdrawn meanwhile —
+    /// takes the stale row away before the error reaches the screen, which
+    /// says "This invitation is no longer available."
+    func acceptInvitation(_ invitation: InvitationDTO) async throws {
+        do {
+            let family = try await api.acceptInvitation(id: invitation.id)
+            invitations.removeAll { $0.id == invitation.id }
+            let wasActive = phase == .active
+            addFamily(family.withRole(family.role ?? "member"))
+            phase = .active
+            if wasActive { requestResync() }
+        } catch APIError.conflict(let code, let message) where code == "invitation_not_pending" {
+            invitations.removeAll { $0.id == invitation.id }
+            throw APIError.conflict(code: code, message: message)
+        }
+    }
+
+    /// Decline. Idempotent on the server; gone here either way.
+    func declineInvitation(_ invitation: InvitationDTO) async throws {
+        do {
+            try await api.declineInvitation(id: invitation.id)
+        } catch APIError.conflict(let code, _) where code == "invitation_not_pending" {
+            // Nothing left to decline: the outcome the person asked for.
+        }
+        invitations.removeAll { $0.id == invitation.id }
+    }
+
+    /// The `invitation` frame: to the invited person (a row to answer) and to
+    /// the family's owner (their pending list moved).
+    func applyInvitation(_ invitation: InvitationDTO) {
+        let me = currentUser?.id ?? AppSettings.currentUserID
+        if invitation.user.id == me, !families.contains(where: { $0.id == invitation.familyID }) {
+            if let index = invitations.firstIndex(where: { $0.id == invitation.id }) {
+                invitations[index] = invitation
+            } else {
+                invitations.append(invitation)
+            }
+        }
+        invitationsGeneration &+= 1
+    }
+
+    /// The `invitation_removed` frame: accepted, declined, withdrawn or
+    /// lapsed — gone from both lists.
+    func removeInvitation(id: Int64) {
+        invitations.removeAll { $0.id == id }
+        invitationsGeneration &+= 1
     }
 
     /// One poll tick while waiting for approval; also the pull-to-refresh
@@ -625,14 +960,128 @@ final class AppSession {
     /// (docs/protocol.md, `POST /families/leave`).
     ///
     /// An owner is never refused. `owner_cannot_leave` is retired.
+    ///
+    /// Leaves the CURRENT family only (docs/protocol.md, "Several
+    /// families"). With others left, that family's data goes and the app
+    /// switches to the first remaining one; leaving the last is the old
+    /// path to the gate — or to the waiting screen, while a join request
+    /// is pending elsewhere (`SessionLogic.afterLastFamily`).
+    ///
+    /// The decision must not depend on whether this device's own
+    /// `member_left` got here first. The server sends it to EVERY connection
+    /// of the leaver, this one included — for an ordinary departure as it
+    /// always has, and also when the leaver was the last member and the
+    /// family was deleted — and it can land while this call is still
+    /// waiting on its answer (the server deletes the family's attachment
+    /// files before it answers). The coordinator's handler has then already
+    /// removed the family (`removeFamily`). Reading `families.count > 1`
+    /// after the await saw the list that echo had shrunk, so an account in
+    /// two families leaving one took the "left my LAST family" branch:
+    /// purged the whole store, emptied the list and went to the gate while
+    /// still in the other family. So what is decided before the request is
+    /// only whether the family being left is one this session lists, and
+    /// what is decided after it is only what remains OTHER than that family
+    /// — which is the same answer whichever of the two arrived first.
+    ///
+    /// The echo is not the only thing that can change the list under the
+    /// request: a `/me` can too. A cold start whose first `/me` failed opens
+    /// the cached chats with NO list (`openOffline`); connectivity returns
+    /// while the leave is in flight, and a resync's `/me` fills `families`
+    /// with the account's other families. Deciding the no-list fallback
+    /// before the request then purged the whole store, emptied the list and
+    /// went to the gate while the account was still in those. So the
+    /// fallback, too, is decided after the request, from what is known
+    /// then: the whole store goes only when no family other than the one
+    /// left is known even now.
     func leaveFamily(resolveName: (Int64) -> String?) async throws -> String? {
-        let successor = try await api.leaveFamily()
+        let leaving = currentFamilyID
+        let listedBefore = leaving.map { id in families.contains { $0.id == id } } ?? false
+        let successor = try await api.leaveFamily(family: apiFamilyID)
         let name = successor.flatMap(resolveName)
+        if let leaving, families.contains(where: { $0.id == leaving }) {
+            // Still listed. Last or not is `removeFamily`'s question, asked
+            // of what is left now.
+            removeFamily(leaving, reason: .leftFamily)
+            return name
+        }
+        if families.contains(where: { $0.id != leaving }) {
+            // Another family is known, and the one left is not on the list.
+            // When it was before the request, whatever took it off — the
+            // echo (`removeFamily`) or a `/me` (`apply(me:)`'s `gone`) —
+            // dropped its data as it did: the leave is already carried out.
+            // When it was not, the list arrived during the request with a
+            // `/me` that had nothing to compare it to and so dropped nothing,
+            // and the family left goes now, alone (one an echo has since
+            // dropped as well has nothing left to drop). A leave that named
+            // no family left the HOME family as the server counted it when
+            // the request landed, which a list that arrived meanwhile cannot
+            // say — a resync asks again, and its `/me` and prune drop
+            // whatever is no longer listed.
+            if !listedBefore {
+                if let leaving {
+                    forgetFamily(leaving)
+                    if currentFamilyID == leaving { setCurrentFamily(families.first?.id) }
+                } else {
+                    requestResync()
+                }
+            }
+            return name
+        }
+        // No family other than the one left is known, even now. With a list
+        // before the request, the echo or a `/me` has emptied it since — and
+        // purged and routed with it (`removeFamily`, `apply(me:)`) — so a
+        // second purge would have nothing to take. Without one — a session no
+        // `/me` has described since several families — the one family there
+        // is, left: the old path, unchanged.
+        guard !listedBefore else { return name }
         purge(.leftFamily)
-        family = nil
-        role = nil
-        phase = .needsFamily
+        families = []
+        currentFamilyID = nil
+        enterFamilyless()
         return name
+    }
+
+    /// The account is out of one family — it left, or a `member_left` naming
+    /// it arrived. THAT family's data goes and only that family's; when it
+    /// was the one on screen, the first remaining family is shown, and when
+    /// it was the last, everything goes (`purge(reason)`) and the app is
+    /// routed as a family-less account is (`enterFamilyless`). A family this
+    /// session does not hold — already removed — changes nothing.
+    func removeFamily(_ familyID: Int64, reason: SessionLogic.PurgeReason = .kicked) {
+        guard families.contains(where: { $0.id == familyID }) else { return }
+        families.removeAll { $0.id == familyID }
+        guard !families.isEmpty else {
+            currentFamilyID = nil
+            purge(reason)
+            enterFamilyless()
+            return
+        }
+        forgetFamily(familyID)
+        if currentFamilyID == familyID { setCurrentFamily(families.first?.id) }
+    }
+
+    /// Out of the last family, with no `/me` in hand: the waiting screen
+    /// while a join request is still pending (`SessionLogic.afterLastFamily`),
+    /// else the gate. The waiting screen's own `/me` poll is what routes an
+    /// approval in — the socket closes outside `.active`, so on the gate
+    /// nothing would until a relaunch. The waiting bit goes up with it, as
+    /// `apply(me:)` and `join(code:)` raise it: it is how a relaunch knows
+    /// this account was waiting, so that a `/me` then showing neither a
+    /// family nor the request is read as the decline it is.
+    private func enterFamilyless() {
+        switch SessionLogic.afterLastFamily(pendingRequests: pendingJoinRequests) {
+        case .pendingApproval:
+            AppSettings.joinPending = true
+            phase = .pendingApproval
+        case .needsFamily, .active:
+            phase = .needsFamily
+        }
+    }
+
+    /// One family's local data and marks, gone.
+    private func forgetFamily(_ familyID: Int64) {
+        dropFamilyData(familyID)
+        AppSettings.forgetFamily(familyID)
     }
 
     func logout() async {
@@ -676,8 +1125,13 @@ final class AppSession {
     private func resetToSignIn(_ reason: SessionLogic.PurgeReason) {
         purge(reason)
         currentUser = nil
-        family = nil
-        role = nil
+        families = []
+        currentFamilyID = nil
+        isLegacyServer = false
+        pendingJoinRequests = []
+        invitations = []
+        memberFamiliesEnabled = false
+        maxFamiliesPerAccount = 1
         // What the server said about itself goes too: the next sign-in may
         // be to a different server, and a gate that quoted the old one's
         // grace or door until /me answered would be quoting the wrong server.
@@ -706,10 +1160,15 @@ final class AppSession {
     /// (docs/protocol.md, `POST /families/leave`).
     private(set) var familyOwnerGeneration = 0
 
-    func applyFamilyOwner(userID: Int64) {
-        guard family != nil else { return }
+    /// `familyID` is the family the frame names; nil is the current one
+    /// (a server that predates several families names only its own). A
+    /// frame about a family this account is not in changes nothing.
+    func applyFamilyOwner(familyID: Int64? = nil, userID: Int64) {
+        guard let target = familyID ?? currentFamilyID,
+              let index = families.firstIndex(where: { $0.id == target })
+        else { return }
         let me = currentUser?.id ?? AppSettings.currentUserID
-        role = (userID == me) ? "owner" : "member"
+        families[index] = families[index].withRole((userID == me) ? "owner" : "member")
         familyOwnerGeneration &+= 1
     }
 
@@ -739,11 +1198,18 @@ final class AppSession {
             // went — family-scoped like the roster, not defaults-scoped,
             // so they go with it on a kick or a leave as well.
             ContactLinks.shared.removeAll()
+            // And every family's board and pack marks. They live in
+            // UserDefaults and the rows in the store, and a kick or a leave
+            // wipes the store WITHOUT wiping the defaults — so a cursor
+            // that outlived its board said "caught up" over an empty one
+            // and the next family's board was never read.
+            AppSettings.forgetFamilies(except: [])
         }
         if scope.wipesDefaults {
             AppSettings.wipe(keepServerURL: !scope.wipesServerURL)
         }
         pendingPushRoute = nil
+        pendingPushFamilyID = nil
         pendingCallRequest = nil
         // Shared files waiting for a chat are family-scoped too: a share
         // parked before a logout must not land in the next session —

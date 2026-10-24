@@ -65,6 +65,7 @@ import me.nettrash.familyconnect.ui.chat.ChatViewModel
 import me.nettrash.familyconnect.ui.chat.buildChatItems
 import me.nettrash.familyconnect.util.Clock
 import me.nettrash.familyconnect.util.resolvedDisplayNames
+import me.nettrash.familyconnect.data.repo.observeCurrentActiveMembers
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -132,7 +133,7 @@ class ThreadViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /** Everybody a mention may name (docs/protocol.md, "Mentioning a member"). */
-    val mentionRoster: StateFlow<List<MentionDto>> = memberDao.observeActiveMembers()
+    val mentionRoster: StateFlow<List<MentionDto>> = memberDao.observeCurrentActiveMembers(settings)
         .map { members -> members.map { MentionDto(it.userId, it.resolvedDisplayName(appContext)) } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -170,7 +171,7 @@ class ThreadViewModel @Inject constructor(
         target.filterNotNull().flatMapLatest { messageDao.observeThread(it.second) },
         chat,
         memberDao.observeMembers(),
-        memberDao.observeActiveMembers(),
+        memberDao.observeCurrentActiveMembers(settings),
         settings.state,
     ) { rows, chat, members, active, settingsState ->
         buildChatItems(

@@ -25,17 +25,15 @@ pub async fn family_stats(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     // Same rule every family endpoint follows: no family, nothing to count.
-    let family_id = sqlx::query("SELECT family_id FROM users WHERE id = $1")
-        .bind(auth.user_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .and_then(|row| row.get::<Option<i64>, _>("family_id"))
-        .ok_or_else(|| {
-            ApiError::conflict(
-                crate::error::codes::NOT_IN_FAMILY,
-                "you are not in a family",
-            )
-        })?;
+    // The family is the request's — `/families/{family}/stats`, `mine`
+    // being the home family — so each family's statistics are its own
+    // (docs/protocol.md, "Several families").
+    let family_id = auth.family_id.ok_or_else(|| {
+        ApiError::conflict(
+            crate::error::codes::NOT_IN_FAMILY,
+            "you are not in a family",
+        )
+    })?;
 
     // Every SUM is cast to BIGINT: PostgreSQL widens SUM() over a bigint to
     // NUMERIC, which does not decode to i64 and fails at the row read
@@ -105,7 +103,8 @@ pub async fn family_stats(
              WHERE family_id = $1
              GROUP BY user_id
          ) ai ON ai.user_id = u.id
-         WHERE u.family_id = $1
+         WHERE EXISTS (SELECT 1 FROM family_members fm
+                        WHERE fm.family_id = $1 AND fm.user_id = u.id)
            -- A member the caller has blocked is left out of the per-member
            -- rows: a leaderboard row naming somebody whose every bubble is
            -- a hidden row is exactly the presence a block removes, and this
@@ -164,7 +163,7 @@ pub async fn family_stats(
     // what dedup saved.
     let totals = sqlx::query(
         "SELECT
-            (SELECT COUNT(*) FROM users WHERE family_id = $1) AS members,
+            (SELECT COUNT(*) FROM family_members WHERE family_id = $1) AS members,
             (SELECT COUNT(*) FROM messages msg
                 JOIN chats c ON c.id = msg.chat_id
                 WHERE c.family_id = $1) AS messages,

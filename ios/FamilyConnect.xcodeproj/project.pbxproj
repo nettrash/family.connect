@@ -544,7 +544,7 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -602,7 +602,7 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -656,7 +656,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -681,7 +681,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -705,7 +705,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -729,7 +729,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -821,7 +821,7 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -875,7 +875,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -899,7 +899,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -924,7 +924,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -960,7 +960,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
@@ -996,7 +996,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 172;
+				CURRENT_PROJECT_VERSION = 174;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;

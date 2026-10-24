@@ -124,6 +124,28 @@
                         </StackPanel>
                     </Border>
 
+                    <!--
+                        Invitations into this family for members of the owner's OTHER families (docs/protocol.md, "Several families"):
+                        only while the owner has another family to invite from.
+                    -->
+                    <Border x:Name="InvitationsSection" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <Grid Padding="0,0,16,0" ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Style="{StaticResource CardHeader}">
+                                    <FontIcon Style="{StaticResource CardIcon}" Glyph="&#xE715;" />
+                                    <TextBlock x:Name="InvitationsHeading" Style="{StaticResource CardTitle}" />
+                                </StackPanel>
+                                <Button x:Name="InviteButton" Grid.Column="1" Margin="0,8,0,0" VerticalAlignment="Center" />
+                            </Grid>
+                            <StackPanel x:Name="InvitationsList" Padding="0,0,0,8" />
+                            <TextBlock x:Name="InvitationsError" Margin="20,0,20,16" Style="{StaticResource Problem}" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <StackPanel Style="{StaticResource CardHeader}">

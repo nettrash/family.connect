@@ -6,7 +6,10 @@
  * ("Best-effort delivery" — the socket is a live wire, REST is the
  * source of truth):
  *
- *   1. GET /me                — reconcile membership.
+ *   1. GET /me                — reconcile membership: the family LIST.
+ *      Then, for EACH family the account is in (docs/protocol.md, "Several
+ *      families"), GET /families/{id} and that family's board and pack
+ *      catch-ups, each on its own cursor.
  *   2. GET /chats             — chat list, previews, authoritative unread.
  *   3. Per chat: after_id=<max known id> pages (limit 200) until short —
  *      message ids are globally monotonic, so max(serverId) is the cursor.
@@ -61,10 +64,15 @@ class SyncEngine @Inject constructor(
         if (!me.canChat) return
 
         // Which connection the pack's catch-up below will vouch for —
-        // asked BEFORE the family read whose mark it catches up to (see
+        // asked BEFORE the family reads whose marks it catches up to (see
         // PackRepository.connectionNow).
         val packConnection = packRepository.connectionNow()
-        val mine = familyRepository.refreshMine().okOrNull()
+        // EVERY family the account is in, not only the one shown: the
+        // roster, board and pack of each are kept (docs/protocol.md,
+        // resync step 1, amended 2026-10-22), each under its own key.
+        val reads = familyRepository.heldFamilyIds().mapNotNull { familyId ->
+            familyRepository.refreshFamily(familyId).okOrNull()?.let { familyId to it }
+        }
 
         // 2. Chat list + authoritative unread counts (and the server's
         // per-chat max_reaction_seq, driving step 3b below).
@@ -125,7 +133,7 @@ class SyncEngine @Inject constructor(
         // the moment somebody DRAGGED it, and a badge counting whatever had
         // materialised counted that drag as news (issue #53). The Apple
         // clients have always caught the board up in their resync.
-        boardRepository.catchUpBoard(mine?.maxBoardSeq ?: 0L)
+        for ((familyId, read) in reads) boardRepository.catchUpBoard(read.maxBoardSeq ?: 0L, familyId)
 
         // 3d¾. The family's sticker pack, on ITS own cursor — the board's
         // machinery unchanged (docs/protocol.md, "Sticker pack"): a device
@@ -138,8 +146,8 @@ class SyncEngine @Inject constructor(
         // Only after a family read that ANSWERED. A failed one says nothing
         // about the pack, and treating it as "untouched" would be a
         // decision made from no information.
-        if (mine != null) {
-            packRepository.catchUpPack(mine.maxPackSeq ?: 0L, packConnection)
+        for ((familyId, read) in reads) packRepository.catchUpPack(read.maxPackSeq ?: 0L, packConnection, familyId)
+        if (reads.isNotEmpty()) {
             // The pictures, behind the rows: fetched now, while there is a
             // network, so a sticker can be sent later without one.
             packRepository.prefetchInBackground()

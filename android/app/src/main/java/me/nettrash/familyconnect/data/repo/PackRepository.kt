@@ -46,9 +46,13 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -67,6 +71,11 @@ import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
+import me.nettrash.familyconnect.data.settings.familyKey
+import me.nettrash.familyconnect.data.settings.localFamilyKey
+import me.nettrash.familyconnect.data.settings.packCursor
+import me.nettrash.familyconnect.data.settings.pathFamily
+import java.util.concurrent.ConcurrentHashMap
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.TimeFormat
 import java.io.File
@@ -134,13 +143,14 @@ class PackRepository @Inject constructor(
 ) {
 
     /**
-     * The connection ([ChatSocket.connectionSerial]) a catch-up pass has
-     * COMPLETED on, or -1 while none has. A frame moves the cursor only
-     * while this names the connection that is open now; a reconnect makes
-     * a new serial, so the answer goes back to "not yet" by itself.
+     * Per family, the connection ([ChatSocket.connectionSerial]) a catch-up
+     * pass has COMPLETED on; absent while none has. A frame moves a family's
+     * cursor only while this names the connection that is open now; a
+     * reconnect makes a new serial, so the answer goes back to "not yet" by
+     * itself. Per family since several families: each pack is caught up on
+     * its own cursor (docs/protocol.md, "Several families").
      */
-    @Volatile
-    private var caughtUpOn = -1L
+    private val caughtUpOn = ConcurrentHashMap<Long, Long>()
 
     /** One catch-up pass at a time: two resyncs can start at the same moment. */
     private val syncGuard = Mutex()
@@ -153,14 +163,16 @@ class PackRepository @Inject constructor(
             socket.frames.collect { frame ->
                 if (frame is ServerFrame.PackItem) {
                     // Every member gets this frame, a blocker of the adder
-                    // included — nothing is filtered (see the header).
-                    val changed = applyItem(frame.item)
+                    // included — nothing is filtered (see the header). Its
+                    // family is the one the item names.
+                    val family = settings.state.first().localFamilyKey(frame.item.familyId)
+                    val changed = applyItem(frame.item, familyHint = family)
                     // "A pack_item frame [moves the cursor] to its own
                     // pack_seq — the frame only once this connection has
                     // caught up." Whether or not the item itself was news:
                     // what the frame says about the cursor is where the
                     // pack has got to, not whether this device had it.
-                    if (caughtUpOn == socket.connectionSerial) advanceCursor(frame.item.packSeq)
+                    if (caughtUpOn[family] == socket.connectionSerial) advanceCursor(family, frame.item.packSeq)
                     if (changed) {
                         // The picture too, now, while there is a network:
                         // a sticker somebody added this afternoon should be
@@ -205,16 +217,37 @@ class PackRepository @Inject constructor(
     /** One prefetch pass at a time; a flapping socket must not start a second. */
     private val prefetchGuard = Mutex()
 
-    /** The pack in the order it was added, which is the order a panel shows it in. */
-    fun observeItems(): Flow<List<PackItemEntity>> = packDao.observeItems()
+    /**
+     * The CURRENT family's pack in the order it was added, which is the order
+     * a panel shows it in.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeItems(): Flow<List<PackItemEntity>> =
+        settings.state.map { it.familyKey }.distinctUntilChanged().flatMapLatest { packDao.observeItems(it) }
 
-    private suspend fun packCursor(): Long = settings.state.first().packCursor
+    private suspend fun packCursor(familyId: Long): Long = settings.state.first().packCursor(familyId)
 
-    /** Move the cursor to [seq] if that is forward. It never goes back this way. */
-    private suspend fun advanceCursor(seq: Long) {
+    /** The family shown — whose pack the panel adds to. */
+    private suspend fun currentFamily(): Long = settings.state.first().familyKey
+
+    /** How a request path names [familyId]: its id, or nothing on a server from before. */
+    private suspend fun path(familyId: Long): Long? = settings.state.first().pathFamily(familyId)
+
+    /** Move [familyId]'s cursor to [seq] if that is forward. It never goes back this way. */
+    private suspend fun advanceCursor(familyId: Long, seq: Long) {
         cursorGuard.withLock {
-            if (seq > packCursor()) settings.setPackCursor(seq)
+            if (seq > packCursor(familyId)) settings.setPackCursor(familyId, seq)
         }
+    }
+
+    /**
+     * This account is out of [familyId]: its items and their pictures go,
+     * and its catch-up state (docs/protocol.md, "Several families").
+     */
+    suspend fun dropFamily(familyId: Long) {
+        packDao.items(familyId).forEach { item -> item.attachment?.let { dropBytes(it.id) } }
+        packDao.deleteFamily(familyId)
+        caughtUpOn.remove(familyId)
     }
 
     /**
@@ -239,9 +272,10 @@ class PackRepository @Inject constructor(
 
     /**
      * Apply one item under the per-item seq guard. Returns whether anything
-     * changed.
+     * changed. Filed under the item's own `family_id`, else [familyHint]'s,
+     * else the family shown.
      */
-    suspend fun applyItem(item: PackItemDto): Boolean {
+    suspend fun applyItem(item: PackItemDto, familyHint: Long? = null): Boolean {
         // A TOMBSTONE IS THE LAST WORD, as on the board: item ids are never
         // reused, so an item this device has seen removed — by a tombstone,
         // by a full read that left it out, or by its own DELETE — is never
@@ -274,6 +308,7 @@ class PackRepository @Inject constructor(
         }
         packDao.upsert(
             PackItemEntity(
+                familyId = settings.state.first().localFamilyKey(item.familyId ?: familyHint ?: existing?.familyId),
                 id = item.id,
                 addedBy = addedBy,
                 // Stored WITHOUT the `sticker` flag whatever arrived: the
@@ -291,9 +326,10 @@ class PackRepository @Inject constructor(
         return true
     }
 
-    /** Full pack read — a device that holds no pack. */
-    suspend fun loadPack(): Boolean {
-        val pack = packApi.getPack().okOrNull() ?: return false
+    /** Full pack read of [familyId] — a device that holds none of that pack. */
+    suspend fun loadPack(familyId: Long? = null): Boolean {
+        val family = familyId ?: currentFamily()
+        val pack = packApi.getPack(path(family)).okOrNull() ?: return false
         // "A client ignores a full read whose max_pack_seq is below one it
         // has already applied": such a read was taken before changes this
         // device already has, and REPLACING with it would undo them —
@@ -301,7 +337,7 @@ class PackRepository @Inject constructor(
         // since seen removed by a read that left it out. (A cursor that
         // outlived its family is put back to the start in [catchUp], so it
         // cannot veto the new family's first read from here.)
-        if (pack.maxPackSeq < packCursor()) return true
+        if (pack.maxPackSeq < packCursor(family)) return true
         // It REPLACES what is held: the read never returns tombstones, so an
         // item it leaves out is an item that is gone. One held ABOVE the
         // read's mark arrived after the read was taken, and stays —
@@ -310,16 +346,16 @@ class PackRepository @Inject constructor(
         val listed = pack.items.map { it.id }
         // Read BEFORE they are dropped, and remembered as gone for the
         // reason a tombstone is.
-        val dropped = packDao.idsNotListed(pack.maxPackSeq, listed)
+        val dropped = packDao.idsNotListed(family, pack.maxPackSeq, listed)
         dropped.forEach { id ->
             packDao.findById(id)?.attachment?.let { dropBytes(it.id) }
             packDao.remember(GonePackItemEntity(id))
         }
-        packDao.deleteNotListed(pack.maxPackSeq, listed)
-        pack.items.forEach { applyItem(it) }
+        packDao.deleteNotListed(family, pack.maxPackSeq, listed)
+        pack.items.forEach { applyItem(it, familyHint = family) }
         // A full read sets the cursor to its max_pack_seq — forward only:
         // a frame may have carried it further while the read was applied.
-        advanceCursor(pack.maxPackSeq)
+        advanceCursor(family, pack.maxPackSeq)
         return true
     }
 
@@ -338,26 +374,27 @@ class PackRepository @Inject constructor(
      * still the open connection marks it caught up, and from then on a
      * `pack_item` frame moves the cursor.
      */
-    suspend fun catchUpPack(serverMaxSeq: Long, connection: Long? = null) {
+    suspend fun catchUpPack(serverMaxSeq: Long, connection: Long? = null, familyId: Long? = null) {
+        val family = familyId ?: currentFamily()
         syncGuard.withLock {
             // Only a pass that COMPLETED, and only for the connection it
             // was started for: one a reconnect has overtaken read a mark
             // from before the new connection, and must not vouch for it.
-            if (catchUp(serverMaxSeq) && connection != null && connection == socket.connectionSerial) {
-                caughtUpOn = connection
+            if (catchUp(family, serverMaxSeq) && connection != null && connection == socket.connectionSerial) {
+                caughtUpOn[family] = connection
             }
         }
     }
 
     /** The pass itself. False when a request failed and the pack may still be behind. */
-    private suspend fun catchUp(serverMaxSeq: Long): Boolean {
-        val cursor = packCursor()
-        if (packDao.count() == 0) {
+    private suspend fun catchUp(family: Long, serverMaxSeq: Long): Boolean {
+        val cursor = packCursor(family)
+        if (packDao.count(family) == 0) {
             return when {
                 // Untouched. A cursor left over from somewhere else means
                 // nothing here, so it goes back to the start.
                 serverMaxSeq <= 0L -> {
-                    if (cursor != 0L) cursorGuard.withLock { settings.setPackCursor(0L) }
+                    if (cursor != 0L) cursorGuard.withLock { settings.setPackCursor(family, 0L) }
                     true
                 }
                 // Level with the server and holding nothing: every sticker
@@ -371,19 +408,19 @@ class PackRepository @Inject constructor(
                     // and the family just joined may sit far below the mark
                     // the last one left. Back to the start, or the read
                     // below would be ignored as older than what is applied.
-                    if (cursor > serverMaxSeq) cursorGuard.withLock { settings.setPackCursor(0L) }
-                    loadPack()
+                    if (cursor > serverMaxSeq) cursorGuard.withLock { settings.setPackCursor(family, 0L) }
+                    loadPack(family)
                 }
             }
         }
         if (serverMaxSeq <= cursor) return true
         var after = cursor
         while (true) {
-            val page = packApi.getPackChanges(after, PACK_PAGE).okOrNull()?.items ?: return false
-            page.forEach { applyItem(it) }
+            val page = packApi.getPackChanges(path(family), after, PACK_PAGE).okOrNull()?.items ?: return false
+            page.forEach { applyItem(it, familyHint = family) }
             val pageMax = page.maxOfOrNull { it.packSeq }
             if (pageMax != null) {
-                advanceCursor(pageMax)
+                advanceCursor(family, pageMax)
                 after = pageMax
             }
             if (page.size < PACK_PAGE) return true
@@ -511,7 +548,7 @@ class PackRepository @Inject constructor(
      * which for most stickers in most chats is never.
      */
     suspend fun holding(mime: String, size: Long, bytes: suspend () -> ByteArray?): PackItemEntity? {
-        val candidates = packDao.items().filter { item ->
+        val candidates = packDao.items(currentFamily()).filter { item ->
             val picture = item.attachment
             picture != null && picture.size == size && picture.mime == mime
         }
@@ -557,7 +594,8 @@ class PackRepository @Inject constructor(
         // error even when the pack is full — it is simply already there.
         holding(picture.mime, picture.bytes.size.toLong()) { picture.bytes }
             ?.let { return AddResult.ALREADY_IN_PACK }
-        if (packDao.count() >= limits.maxItems) return AddResult.FULL
+        val family = currentFamily()
+        if (packDao.count(family) >= limits.maxItems) return AddResult.FULL
 
         val upload = withContext(Dispatchers.IO) {
             val directory = File(context.cacheDir, UPLOAD_DIR).apply { mkdirs() }
@@ -579,9 +617,12 @@ class PackRepository @Inject constructor(
                     width = picture.width,
                     height = picture.height,
                     durationMs = null,
+                    // A sticker only in that family's pack (docs/protocol.md,
+                    // "Uploads name their family").
+                    familyId = path(family),
                 )
                 val attachment = uploaded.okOrNull()?.attachment ?: return AddResult.FAILED
-                when (val claimed = packApi.addItem(attachment.id, wireLabel)) {
+                when (val claimed = packApi.addItem(path(family), attachment.id, wireLabel)) {
                     is ApiResult.Ok -> {
                         val item = claimed.value.item
                         // A `200` names the item the pack ALREADY had, and the
@@ -604,7 +645,7 @@ class PackRepository @Inject constructor(
                         // Applied under the per-item guard, and moving NO
                         // cursor: the answer to this device's own POST says
                         // nothing about another item's lower seq.
-                        applyItem(item)
+                        applyItem(item, familyHint = family)
                         return if (already) AddResult.ALREADY_IN_PACK else AddResult.ADDED
                     }
                     is ApiResult.HttpError -> when (claimed.code) {
@@ -657,7 +698,13 @@ class PackRepository @Inject constructor(
      * Every message ever sent with that sticker keeps its own copy and goes
      * on drawing — removing an item breaks nothing that was sent.
      */
-    suspend fun remove(id: Long): RemoveResult = when (val result = packApi.removeItem(id)) {
+    suspend fun remove(id: Long): RemoveResult = when (
+        val result = packApi.removeItem(
+            // The family whose pack holds it — the one shown, in practice.
+            path(packDao.findById(id)?.familyId?.takeIf { it > 0L } ?: currentFamily()),
+            id,
+        )
+    ) {
         is ApiResult.Ok -> {
             forget(id)
             RemoveResult.REMOVED

@@ -270,12 +270,15 @@ class MainActivity : ComponentActivity() {
                 ?.let { put(PushNotifications.EXTRA_KIND, it) }
             intent.getStringExtra(PushNotifications.EXTRA_CHAT_ID)
                 ?.let { put(PushNotifications.EXTRA_CHAT_ID, it) }
+            intent.getStringExtra(PushNotifications.EXTRA_FAMILY_ID)
+                ?.let { put(PushNotifications.EXTRA_FAMILY_ID, it) }
             intent.getStringExtra(PushRouteParser.KEY_CALL_ACTION)
                 ?.let { put(PushRouteParser.KEY_CALL_ACTION, it) }
         }
         val route = PushRouteParser.parse(data) ?: return
         if (route is PendingRoute.Call && route.answer) viewModel.requestAnswer()
-        viewModel.onPendingRoute(route)
+        // In its family: the switch happens before the route is followed.
+        viewModel.onPendingRoute(route, familyId = PushRouteParser.familyId(data))
     }
 
     /**

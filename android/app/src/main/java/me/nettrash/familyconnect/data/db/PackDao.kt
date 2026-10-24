@@ -31,14 +31,25 @@ interface PackDao {
     @Query("SELECT * FROM packItems ORDER BY id ASC")
     fun observeItems(): Flow<List<PackItemEntity>>
 
+    /** One family's pack — the CURRENT family's is what the panel shows. */
+    @Query("SELECT * FROM packItems WHERE familyId = :familyId ORDER BY id ASC")
+    fun observeItems(familyId: Long): Flow<List<PackItemEntity>>
+
+    /** Every family's items — what the prefetch fills the disk with. */
     @Query("SELECT * FROM packItems ORDER BY id ASC")
     suspend fun items(): List<PackItemEntity>
+
+    @Query("SELECT * FROM packItems WHERE familyId = :familyId ORDER BY id ASC")
+    suspend fun items(familyId: Long): List<PackItemEntity>
 
     @Query("SELECT * FROM packItems WHERE id = :id")
     suspend fun findById(id: Long): PackItemEntity?
 
     @Query("SELECT COUNT(*) FROM packItems")
     suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM packItems WHERE familyId = :familyId")
+    suspend fun count(familyId: Long): Int
 
     @Upsert
     suspend fun upsert(item: PackItemEntity)
@@ -52,12 +63,20 @@ interface PackDao {
      * after the read was taken, and stays (docs/protocol.md, "Sticker
      * pack").
      */
-    @Query("DELETE FROM packItems WHERE packSeq <= :max AND id NOT IN (:listed)")
-    suspend fun deleteNotListed(max: Long, listed: List<Long>)
+    @Query("DELETE FROM packItems WHERE familyId = :familyId AND packSeq <= :max AND id NOT IN (:listed)")
+    suspend fun deleteNotListed(familyId: Long, max: Long, listed: List<Long>)
 
     /** The ids a full read is about to drop, read BEFORE it drops them. */
-    @Query("SELECT id FROM packItems WHERE packSeq <= :max AND id NOT IN (:listed)")
-    suspend fun idsNotListed(max: Long, listed: List<Long>): List<Long>
+    @Query("SELECT id FROM packItems WHERE familyId = :familyId AND packSeq <= :max AND id NOT IN (:listed)")
+    suspend fun idsNotListed(familyId: Long, max: Long, listed: List<Long>): List<Long>
+
+    /** This account is out of [familyId]: its pack goes with it. */
+    @Query("DELETE FROM packItems WHERE familyId = :familyId")
+    suspend fun deleteFamily(familyId: Long)
+
+    /** Items cached before several families (family 0) are the home family's. */
+    @Query("UPDATE packItems SET familyId = :homeFamilyId WHERE familyId = 0")
+    suspend fun claimLegacy(homeFamilyId: Long)
 
     // ---- the items a tombstone has taken ---------------------------------
 

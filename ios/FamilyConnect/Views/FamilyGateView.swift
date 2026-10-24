@@ -19,6 +19,16 @@ struct FamilyGateView: View {
     var body: some View {
         NavigationStack {
             List {
+                // An invitation outlives the account's last family (it keeps
+                // the familyless sweep away, docs/protocol.md "Several
+                // families"), so the gate is where it is answered then.
+                // Nothing at all while there is none — the gate unchanged.
+                if !session.invitations.isEmpty {
+                    Section {
+                        InvitationBanner()
+                            .listRowInsets(EdgeInsets())
+                    }
+                }
                 if session.joinDeclined {
                     Section {
                         Label {

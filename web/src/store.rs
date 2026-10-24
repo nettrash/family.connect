@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::model::{
-    AiFailure, Assistant, Chat, ChatListItem, Me, Member, Mention, Message, Poll, PollOption,
-    Reaction, ReplyParent, ReplyTo, Roster, User,
+    AiFailure, Assistant, Chat, ChatListItem, Family, Invitation, JoinRequest, Me, Member, Mention,
+    Message, Poll, PollOption, Reaction, ReplyParent, ReplyTo, Report, Roster, User,
 };
 use crate::staged::{OutgoingItem, Prepared, StagedBytes};
 
@@ -492,6 +492,22 @@ pub struct NotSent {
     pub caption: String,
 }
 
+/// What this client holds of ONE family: its roster and assistant, its
+/// board and sticker pack, and its owner's lists (docs/protocol.md,
+/// "Several families"). The family on screen keeps its own in the
+/// [`Store`]'s fields of the same names, where every screen reads them; the
+/// others wait in [`Store::away`], and showing another family swaps.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Held {
+    pub members: Vec<Member>,
+    pub assistant: Option<Assistant>,
+    pub board: crate::board::Board,
+    pub pack: crate::pack::Pack,
+    pub join_requests: Vec<JoinRequest>,
+    pub reports: Vec<Report>,
+    pub sent_invitations: Vec<Invitation>,
+}
+
 /// Everything the signed-in app knows.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Store {
@@ -502,8 +518,26 @@ pub struct Store {
     /// The live roster, which the mention suggestions offer from.
     pub members: Vec<Member>,
     pub assistant: Option<Assistant>,
-    /// The reader's family, with the owner's switches for the assistant.
+    /// The family on screen, with the owner's switches for the assistant —
+    /// and with this account's own `role` in it. Its entry in
+    /// [`Store::families`] is kept equal to it.
     pub family: Option<crate::model::Family>,
+    /// Every family this account is in, the home family first, each with
+    /// this account's role in it (`GET /me`'s `families`; docs/protocol.md,
+    /// "Several families").
+    pub families: Vec<crate::model::Family>,
+    /// Everything held of the families NOT on screen, by family id: their
+    /// rosters, boards, packs and owner's lists, kept current by their
+    /// frames and resyncs so that showing one is instant.
+    pub away: HashMap<i64, Held>,
+    /// The invitations this account has been sent and not answered, oldest
+    /// first.
+    pub invitations: Vec<Invitation>,
+    /// The family on screen's pending invitations, for its owner.
+    pub sent_invitations: Vec<Invitation>,
+    /// The family this device showed last, as it keeps it for the account —
+    /// shown first after a reload while the account is still in it.
+    pub preferred_family: Option<i64>,
     /// The reader's own block list — replaced whole on every resync.
     pub blocked: HashSet<i64>,
     /// Hidden rows the reader has peeked at. Per row, per device, never on
@@ -633,10 +667,18 @@ impl Store {
         self.chats.iter_mut().find(|item| item.chat.id == chat_id)
     }
 
-    /// The list as it is drawn: the family chat first, then everything else
-    /// newest conversation first (ios MacChatView).
+    /// The list as it is drawn: the chats of the family on screen — the
+    /// family chat first, which is THAT family's, then everything else
+    /// newest conversation first (ios MacChatView; docs/protocol.md,
+    /// "Several families": a client shows in the current family exactly the
+    /// chats that name it).
     pub fn sorted_chats(&self) -> Vec<ChatListItem> {
-        let mut chats = self.chats.clone();
+        let mut chats: Vec<ChatListItem> = self
+            .chats
+            .iter()
+            .filter(|item| self.listed_here(&item.chat))
+            .cloned()
+            .collect();
         let newest = |item: &ChatListItem| -> i64 {
             item.last_message
                 .as_ref()
@@ -702,28 +744,49 @@ impl Store {
         }
     }
 
-    /// `GET /me`: who this is, and the block list — REPLACED, never merged.
-    /// Answers whether the account's family changed, which the app answers
-    /// by putting away whatever pane was open on the old one.
+    /// `GET /me`: who this is, the families it is in, and the block list —
+    /// REPLACED, never merged. A family no longer listed is put away
+    /// ([`Store::forget_family`]); the family on screen stays while it is
+    /// still listed, else the one this device showed last, else the first
+    /// (fc_text::families::current_after). Answers whether the family on
+    /// screen changed, which the app answers by putting away whatever pane
+    /// was open on the old one.
     pub fn apply_me(&mut self, me: &Me) -> bool {
-        let family = |family: &Option<crate::model::Family>| family.as_ref().map(|f| f.id);
         // Only a SECOND answer can say the family changed. The first one of
         // a session meets a store that holds no family yet — but may hold
         // the outbox a reload put back, bubbles and all, which a "change"
         // would wipe (and a row that then failed would fail on no bubble).
-        let changed = self.account.is_some()
-            && self.my_user_id == me.user.id
-            && family(&self.family) != family(&me.family);
-        if changed {
-            self.forget_family();
+        let second = self.account.is_some() && self.my_user_id == me.user.id;
+        let before = self.current_family_id();
+        let listed = families_of_me(me);
+        let ids: Vec<i64> = listed.iter().map(|family| family.id).collect();
+        if second {
+            let gone: Vec<i64> = self
+                .families
+                .iter()
+                .map(|family| family.id)
+                .chain(before)
+                .filter(|id| !ids.contains(id))
+                .collect();
+            for family_id in gone {
+                self.forget_family(family_id);
+            }
         }
+        self.families = listed;
         self.my_user_id = me.user.id;
-        self.family = me.family.clone();
         self.names.insert(me.user.id, me.user.display_name.clone());
         self.blocked = me.blocked_user_ids.iter().copied().collect();
         self.support_contact = me.support_contact.clone();
+        self.invitations = me.invitations.clone();
         self.account = Some(me.clone());
         self.account_reads += 1;
+        let chosen =
+            fc_text::families::current_after(&ids, self.current_family_id(), self.preferred_family);
+        self.swap_to(chosen);
+        // `/me`'s copy is as fresh as any: the shown family's settings and
+        // this account's role in it come from it.
+        self.family = chosen.and_then(|id| self.families.iter().find(|f| f.id == id).cloned());
+        self.sync_view();
         // A join request is only ever answered by vanishing: the account
         // that was waiting and now has neither a family nor a request was
         // declined (ios AppSession.apply(me:)).
@@ -743,67 +806,403 @@ impl Store {
                 self.awaiting_join = false;
             }
         }
-        changed
+        second && before != chosen
     }
 
-    /// Everything that belonged to the family this account WAS in, gone:
-    /// it left, it was removed, or it is in another one now (the last member
-    /// left and a new one was started, from another device). Nothing of the
-    /// old family's feeds will ever reach this client again to tidy it — no
-    /// tombstone for its notes, no read for its chats — so it goes now, and
-    /// the next reads are whole ones. What is the PERSON's stays: the board's
-    /// seen-marks, the block list, and an outbox whose rows the server will
-    /// refuse on their own if they can no longer go.
-    pub fn forget_family(&mut self) {
-        let board = std::mem::take(&mut self.board);
-        self.board.marks = board.marks;
-        self.board.marks_for = board.marks_for;
-        // The pack was the old family's, whole: nothing of it is the
-        // person's to keep, and the new family's is read from nothing.
-        self.pack = crate::pack::Pack::default();
-        // The assistant's chat is the person's, not the family's: leaving
-        // takes the family chat, the direct chats and every group, and
-        // nothing else (docs/protocol.md, `POST /families/leave` — a rejoin
-        // does not put a member back in a group), so it keeps its history,
-        // its draft and whatever is still on its way.
-        let theirs: HashSet<i64> = self
-            .chats
-            .iter()
-            .filter(|item| item.chat.is_ai())
-            .map(|item| item.chat.id)
-            .collect();
-        self.chats.retain(|item| theirs.contains(&item.chat.id));
-        self.threads.retain(|chat_id, _| theirs.contains(chat_id));
-        self.cursors.retain(|chat_id, _| theirs.contains(chat_id));
-        self.listed.retain(|chat_id, _| theirs.contains(chat_id));
-        // What was written in the old family's chats can never go now —
-        // each would be refused `not_chat_member`, on a bubble nobody can
-        // see any more — so it goes with its chats, as the apps' purge
-        // takes it, bytes and all.
-        let gone: Vec<i64> = self
-            .outbox
-            .iter()
-            .filter(|row| !theirs.contains(&row.chat_id))
-            .flat_map(|row| row.items.iter().map(|item| item.provisional_id))
-            .collect();
-        for provisional in gone {
-            self.bytes.remove(&provisional);
+    /// Everything that belonged to ONE family this account WAS in, gone: it
+    /// left, it was removed, or the family was deleted. Nothing of that
+    /// family's feeds will ever reach this client again to tidy it — no
+    /// tombstone for its notes, no read for its chats — so it goes now: its
+    /// roster, board, pack and owner's lists, and every chat listed in it
+    /// alone — its family chat, its groups, its assistant's chat. A direct
+    /// chat stays while it still names another family this account holds,
+    /// listed there and no longer here (docs/protocol.md, "Several
+    /// families"). What is the PERSON's stays: the block list, and an outbox
+    /// whose rows for the chats that are left go on.
+    pub fn forget_family(&mut self, family_id: i64) {
+        let home = self.home_family_id();
+        let ids: Vec<i64> = self.chats.iter().map(|item| item.chat.id).collect();
+        for chat_id in ids {
+            let Some(item) = self.item(chat_id) else {
+                continue;
+            };
+            let named = fc_text::families::families_of(item.chat.family_ids.as_deref(), home);
+            if !named.contains(&family_id) {
+                continue;
+            }
+            let rest: Vec<i64> = named.into_iter().filter(|id| *id != family_id).collect();
+            if rest.is_empty() {
+                self.remove_chat(chat_id);
+            } else if let Some(item) = self.item_mut(chat_id) {
+                item.chat.family_ids = Some(rest);
+            }
         }
-        self.outbox.retain(|row| theirs.contains(&row.chat_id));
-        self.members.clear();
-        self.assistant = None;
-        self.typing.clear();
-        self.peer_read.clear();
+        if self.current_family_id() == Some(family_id) {
+            // The roster, the board, the pack and the owner's lists were
+            // that family's, whole.
+            drop(self.take_held());
+            self.family = None;
+            self.thread_view = None;
+            self.open_polls = None;
+            self.sync_view();
+        }
+        self.away.remove(&family_id);
+        self.families.retain(|family| family.id != family_id);
+    }
+
+    /// `member_left` naming THIS account: out of that family, and only that
+    /// one. The family on screen falls back to the first left — or to none,
+    /// and the gate. Answers whether the family on screen changed.
+    pub fn leave_family(&mut self, family_id: i64) -> bool {
+        let before = self.current_family_id();
+        self.forget_family(family_id);
+        let ids: Vec<i64> = self.families.iter().map(|family| family.id).collect();
+        let chosen = fc_text::families::current_after(&ids, self.current_family_id(), None);
+        self.swap_to(chosen);
+        before != chosen
+    }
+
+    /// The family on screen, by id.
+    pub fn current_family_id(&self) -> Option<i64> {
+        self.family.as_ref().map(|family| family.id)
+    }
+
+    /// The home family — the first `/me` lists, which is what a chat that
+    /// names no family means (docs/protocol.md, `Chat`).
+    pub fn home_family_id(&self) -> Option<i64> {
+        self.families
+            .first()
+            .map(|family| family.id)
+            .or_else(|| self.current_family_id())
+    }
+
+    /// Every family this account is in, as the switcher lists them — the
+    /// one on screen as it now stands.
+    pub fn family_list(&self) -> Vec<Family> {
+        self.families
+            .iter()
+            .map(|family| match &self.family {
+                Some(shown) if shown.id == family.id => shown.clone(),
+                _ => family.clone(),
+            })
+            .collect()
+    }
+
+    /// A family's name, for a notification about it.
+    pub fn family_name(&self, family_id: i64) -> Option<String> {
+        self.family_list()
+            .into_iter()
+            .find(|family| family.id == family_id)
+            .map(|family| family.name)
+    }
+
+    /// Whether this account owns any of its families — and so may not start
+    /// another (docs/protocol.md, "Getting another family").
+    pub fn owns_a_family(&self) -> bool {
+        self.family_list().iter().any(Family::is_owner)
+    }
+
+    /// The families a chat is listed in.
+    pub fn chat_families(&self, chat: &Chat) -> Vec<i64> {
+        fc_text::families::families_of(chat.family_ids.as_deref(), self.home_family_id())
+    }
+
+    /// Whether a chat is shown in the family on screen. With no family on
+    /// screen every chat is: there is nothing to tell them apart by.
+    pub fn listed_here(&self, chat: &Chat) -> bool {
+        match self.current_family_id() {
+            Some(family_id) => fc_text::families::listed_in(
+                chat.family_ids.as_deref(),
+                family_id,
+                self.home_family_id(),
+            ),
+            None => true,
+        }
+    }
+
+    /// The family to show a chat in: the one on screen when the chat is
+    /// listed there, else the first that lists it — which is also the
+    /// family an upload for it is made in (docs/protocol.md, "Uploads name
+    /// their family").
+    pub fn family_of_chat(&self, chat_id: i64) -> Option<i64> {
+        let Some(item) = self.item(chat_id) else {
+            return self.current_family_id();
+        };
+        if self.listed_here(&item.chat) {
+            return self.current_family_id();
+        }
+        self.chat_families(&item.chat).first().copied()
+    }
+
+    /// What is unread in one family: the unread of the chats listed in it —
+    /// a direct chat counts in each family that lists it.
+    pub fn unread_in(&self, family_id: i64) -> i64 {
+        let home = self.home_family_id();
+        self.chats
+            .iter()
+            .filter(|item| {
+                fc_text::families::listed_in(item.chat.family_ids.as_deref(), family_id, home)
+            })
+            .map(|item| item.unread_count)
+            .sum()
+    }
+
+    /// Show another family: what the one on screen holds goes away, and
+    /// what was held of that one comes out. Answers whether it changed —
+    /// not for a family this account is not in, nor for the one on screen.
+    pub fn switch_family(&mut self, family_id: i64) -> bool {
+        if self.current_family_id() == Some(family_id)
+            || !self.families.iter().any(|family| family.id == family_id)
+        {
+            return false;
+        }
+        self.swap_to(Some(family_id));
         self.thread_view = None;
         self.open_polls = None;
-        self.drafts.retain(|chat_id, _| theirs.contains(chat_id));
-        self.staged.retain(|chat_id, _| theirs.contains(chat_id));
-        self.not_sent.retain(|chat_id, _| theirs.contains(chat_id));
-        self.revealed.clear();
-        self.revealed_quotes.clear();
-        self.ai_failed.clear();
-        self.join_requests.clear();
-        self.reports.clear();
+        true
+    }
+
+    /// Run `apply` on one family's state, wherever it is held — on screen or
+    /// away — leaving the family on screen as it was. None for a family
+    /// this account is not in.
+    pub fn with_family<R>(
+        &mut self,
+        family_id: i64,
+        apply: impl FnOnce(&mut Store) -> R,
+    ) -> Option<R> {
+        let shown = self.current_family_id();
+        if shown == Some(family_id) {
+            return Some(apply(self));
+        }
+        if !self.families.iter().any(|family| family.id == family_id) {
+            return None;
+        }
+        let (thread_view, open_polls) = (self.thread_view.take(), self.open_polls.take());
+        self.swap_to(Some(family_id));
+        let answer = apply(self);
+        self.swap_to(shown);
+        self.thread_view = thread_view;
+        self.open_polls = open_polls;
+        Some(answer)
+    }
+
+    /// One family's board, on screen or away.
+    pub fn board_of(&self, family_id: i64) -> Option<&crate::board::Board> {
+        if self.current_family_id() == Some(family_id) {
+            return Some(&self.board);
+        }
+        self.away.get(&family_id).map(|held| &held.board)
+    }
+
+    pub fn board_mut(&mut self, family_id: i64) -> Option<&mut crate::board::Board> {
+        if self.current_family_id() == Some(family_id) {
+            return Some(&mut self.board);
+        }
+        self.away.get_mut(&family_id).map(|held| &mut held.board)
+    }
+
+    /// One family's sticker pack, on screen or away.
+    pub fn pack_of(&self, family_id: i64) -> Option<&crate::pack::Pack> {
+        if self.current_family_id() == Some(family_id) {
+            return Some(&self.pack);
+        }
+        self.away.get(&family_id).map(|held| &held.pack)
+    }
+
+    pub fn pack_mut(&mut self, family_id: i64) -> Option<&mut crate::pack::Pack> {
+        if self.current_family_id() == Some(family_id) {
+            return Some(&mut self.pack);
+        }
+        self.away.get_mut(&family_id).map(|held| &mut held.pack)
+    }
+
+    /// The board an answer was asked of — `family`'s, or the one on screen
+    /// when none was named.
+    pub fn board_for(&mut self, family: Option<i64>) -> Option<&mut crate::board::Board> {
+        match family {
+            Some(family_id) => self.board_mut(family_id),
+            None => Some(&mut self.board),
+        }
+    }
+
+    /// The pack an answer was asked of, the same way.
+    pub fn pack_for(&mut self, family: Option<i64>) -> Option<&mut crate::pack::Pack> {
+        match family {
+            Some(family_id) => self.pack_mut(family_id),
+            None => Some(&mut self.pack),
+        }
+    }
+
+    /// A note this device's own change was answered with, onto the board it
+    /// is on: the one it names, else the one asked of.
+    pub fn apply_note(&mut self, family: Option<i64>, note: crate::model::Note) {
+        if let Some(board) = self.board_for(note.family_id.or(family)) {
+            board.apply(note);
+        }
+    }
+
+    /// Every board held, on screen and away.
+    pub fn boards_mut(&mut self) -> impl Iterator<Item = &mut crate::board::Board> {
+        std::iter::once(&mut self.board).chain(self.away.values_mut().map(|held| &mut held.board))
+    }
+
+    /// Every pack held, on screen and away.
+    pub fn packs_mut(&mut self) -> impl Iterator<Item = &mut crate::pack::Pack> {
+        std::iter::once(&mut self.pack).chain(self.away.values_mut().map(|held| &mut held.pack))
+    }
+
+    /// One family's roster, on screen or away: (user id, name) for each
+    /// live member — what the owner's "Invite…" picks from.
+    pub fn roster_of(&self, family_id: i64) -> Vec<(i64, String)> {
+        let members = if self.current_family_id() == Some(family_id) {
+            &self.members
+        } else {
+            match self.away.get(&family_id) {
+                Some(held) => &held.members,
+                None => return Vec::new(),
+            }
+        };
+        members
+            .iter()
+            .filter(|member| !member.deleted)
+            .map(|member| (member.id, member.display_name.clone()))
+            .collect()
+    }
+
+    /// Whom the owner of the family on screen may invite: the members of
+    /// their OTHER families who are not in this one.
+    pub fn invitable(&self) -> Vec<(i64, String)> {
+        let Some(shown) = self.current_family_id() else {
+            return Vec::new();
+        };
+        let here: Vec<i64> = self.members.iter().map(|member| member.id).collect();
+        let others: Vec<Vec<(i64, String)>> = self
+            .families
+            .iter()
+            .filter(|family| family.id != shown)
+            .map(|family| self.roster_of(family.id))
+            .collect();
+        fc_text::families::invitable(&here, &others, self.my_user_id)
+    }
+
+    /// An `invitation` frame: to ME, onto my list; otherwise to the owner
+    /// of the family it is into, onto that family's list. Replaced when
+    /// held, never doubled.
+    pub fn apply_invitation(&mut self, invitation: Invitation) {
+        let upsert = |list: &mut Vec<Invitation>, invitation: Invitation| match list
+            .iter_mut()
+            .find(|held| held.id == invitation.id)
+        {
+            Some(held) => *held = invitation,
+            None => list.push(invitation),
+        };
+        if invitation.user.id == self.my_user_id {
+            // And on the account, which the family gate draws from.
+            if let Some(account) = self.account.as_mut() {
+                upsert(&mut account.invitations, invitation.clone());
+            }
+            upsert(&mut self.invitations, invitation);
+            return;
+        }
+        let family_id = invitation.family_id;
+        self.with_family(family_id, |store| {
+            upsert(&mut store.sent_invitations, invitation)
+        });
+    }
+
+    /// `invitation_removed`, or this device's own answer: off every list.
+    pub fn remove_invitation(&mut self, invitation_id: i64) {
+        self.invitations.retain(|held| held.id != invitation_id);
+        if let Some(account) = self.account.as_mut() {
+            account.invitations.retain(|held| held.id != invitation_id);
+        }
+        self.sent_invitations
+            .retain(|held| held.id != invitation_id);
+        for held in self.away.values_mut() {
+            held.sent_invitations
+                .retain(|held| held.id != invitation_id);
+        }
+    }
+
+    /// What the family on screen holds, taken out.
+    fn take_held(&mut self) -> Held {
+        Held {
+            members: std::mem::take(&mut self.members),
+            assistant: self.assistant.take(),
+            board: std::mem::take(&mut self.board),
+            pack: std::mem::take(&mut self.pack),
+            join_requests: std::mem::take(&mut self.join_requests),
+            reports: std::mem::take(&mut self.reports),
+            sent_invitations: std::mem::take(&mut self.sent_invitations),
+        }
+    }
+
+    fn put_held(&mut self, held: Held) {
+        self.members = held.members;
+        self.assistant = held.assistant;
+        self.board = held.board;
+        self.pack = held.pack;
+        self.join_requests = held.join_requests;
+        self.reports = held.reports;
+        self.sent_invitations = held.sent_invitations;
+    }
+
+    /// The family on screen becomes `family_id`: what the old one holds is
+    /// kept away — while the account is still in it — and the new one's is
+    /// brought out, or begun.
+    fn swap_to(&mut self, family_id: Option<i64>) {
+        let shown = self.current_family_id();
+        if shown == family_id {
+            return;
+        }
+        self.write_back();
+        let held = self.take_held();
+        if let Some(shown) = shown.filter(|id| self.families.iter().any(|f| f.id == *id)) {
+            self.away.insert(shown, held);
+        }
+        let next = family_id
+            .and_then(|id| self.away.remove(&id))
+            .unwrap_or_default();
+        self.put_held(next);
+        self.family = family_id.and_then(|id| self.families.iter().find(|f| f.id == id).cloned());
+        self.sync_view();
+    }
+
+    /// The family on screen, written back into the list of families.
+    fn write_back(&mut self) {
+        if let Some(shown) = &self.family {
+            if let Some(entry) = self.families.iter_mut().find(|f| f.id == shown.id) {
+                *entry = shown.clone();
+            }
+        }
+    }
+
+    /// The account as the screens read it: the family on screen and this
+    /// account's role in it — `/me`'s own `family` and `role` are the home
+    /// family's, which is what an app from before several families sees.
+    fn sync_view(&mut self) {
+        self.write_back();
+        let family = self.family.clone();
+        if let Some(account) = self.account.as_mut() {
+            account.role = family.as_ref().and_then(|family| family.role.clone());
+            account.family = family;
+        }
+    }
+
+    /// This account's role in the family on screen, as a roster or a
+    /// `family_owner` frame said it.
+    fn set_my_role(&mut self, role: &str) {
+        match self.family.as_mut() {
+            Some(family) => {
+                family.role = Some(role.to_string());
+                self.sync_view();
+            }
+            None => {
+                if let Some(account) = self.account.as_mut() {
+                    account.role = Some(role.to_string());
+                }
+            }
+        }
     }
 
     /// Whether this account is the family's owner, as `/me` last said — kept
@@ -850,25 +1249,27 @@ impl Store {
         // The roster names every member's role, this account's too — and it
         // is fresher than the `/me` it may follow, and than a `family_owner`
         // frame this tab missed while its socket was down.
+        if let Some(family) = roster.family.as_ref().filter(|family| {
+            self.family
+                .as_ref()
+                .is_some_and(|held| held.id == family.id)
+        }) {
+            // A family read carries no role: this account's is kept, and
+            // set again just below from the roster itself.
+            let role = self.family.as_ref().and_then(|held| held.role.clone());
+            self.family = Some(Family {
+                role: family.role.clone().or(role),
+                ..family.clone()
+            });
+            self.sync_view();
+        }
         if let Some(role) = roster
             .members
             .iter()
             .find(|member| member.id == self.my_user_id)
             .and_then(|member| member.role.clone())
         {
-            if let Some(account) = self.account.as_mut() {
-                account.role = Some(role);
-            }
-        }
-        if let Some(family) = roster.family.as_ref().filter(|family| {
-            self.family
-                .as_ref()
-                .is_some_and(|held| held.id == family.id)
-        }) {
-            self.family = Some(family.clone());
-            if let Some(account) = self.account.as_mut() {
-                account.family = Some(family.clone());
-            }
+            self.set_my_role(&role);
         }
     }
 
@@ -877,18 +1278,16 @@ impl Store {
     /// family, so the code already held is kept rather than blanked.
     pub fn apply_family(&mut self, family: crate::model::Family) {
         self.family_writes += 1;
-        let code = self
-            .family
-            .as_ref()
-            .and_then(|held| held.invite_code.clone());
+        let held = self.family.as_ref().filter(|held| held.id == family.id);
+        let code = held.and_then(|held| held.invite_code.clone());
+        let role = held.and_then(|held| held.role.clone());
         let family = crate::model::Family {
             invite_code: family.invite_code.or(code),
+            role: family.role.or(role),
             ..family
         };
-        if let Some(account) = self.account.as_mut() {
-            account.family = Some(family.clone());
-        }
         self.family = Some(family);
+        self.sync_view();
     }
 
     /// A member's birthday, as the owner's own change left it — or mine.
@@ -910,6 +1309,7 @@ impl Store {
         if let Some(family) = self.family.as_mut() {
             family.invite_code = Some(code.clone());
         }
+        self.sync_view();
         if let Some(family) = self.account.as_mut().and_then(|a| a.family.as_mut()) {
             family.invite_code = Some(code);
         }
@@ -2007,11 +2407,25 @@ impl Store {
         self.chat_touched.insert(chat_id, self.chat_changes);
     }
 
-    pub fn member_joined(&mut self, user: &User) {
+    /// Somebody arrived. `password_reset` is the flag the family OWNER's
+    /// copy of the frame carries — whether they may reset the newcomer's
+    /// password, false when the newcomer is also in a family they do not
+    /// own (docs/protocol.md, "Several families"). Everybody else's copy,
+    /// and an older server's, carries none, and absent says NOTHING: a flag
+    /// already held for that member (the roster a resync read a moment ago
+    /// can beat the frame here) is kept, never clobbered with an unknown.
+    /// Only a newcomer with no flag at all falls back to the old rule,
+    /// where the reset is offered.
+    pub fn member_joined(&mut self, user: &User, password_reset: Option<bool>) {
         self.roster_changes += 1;
         self.names.insert(user.id, user.display_name.clone());
-        if !self.members.iter().any(|member| member.id == user.id) {
-            self.members.push(Member {
+        match self.members.iter_mut().find(|member| member.id == user.id) {
+            Some(member) => {
+                if password_reset.is_some() {
+                    member.password_reset = password_reset;
+                }
+            }
+            None => self.members.push(Member {
                 id: user.id,
                 display_name: user.display_name.clone(),
                 username: user.username.clone(),
@@ -2019,7 +2433,8 @@ impl Store {
                 deleted: false,
                 avatar_version: user.avatar_version,
                 birthday: user.birthday,
-            });
+                password_reset,
+            }),
         }
     }
 
@@ -2040,15 +2455,12 @@ impl Store {
 
     pub fn family_owner(&mut self, user_id: i64) {
         self.roster_changes += 1;
-        if let Some(account) = self.account.as_mut() {
-            account.role = Some(
-                if account.user.id == user_id {
-                    "owner"
-                } else {
-                    "member"
-                }
-                .to_string(),
-            );
+        if self.account.is_some() {
+            self.set_my_role(if self.my_user_id == user_id {
+                "owner"
+            } else {
+                "member"
+            });
         }
         for member in self.members.iter_mut() {
             member.role = Some(
@@ -2144,6 +2556,23 @@ impl Store {
             .cloned()
             .unwrap_or_else(|| t("Someone").to_string())
     }
+}
+
+/// The families `/me` lists — or, from a server that predates several
+/// families, the one it names, with the role it names (docs/protocol.md,
+/// "Apps from before this section").
+pub fn families_of_me(me: &Me) -> Vec<Family> {
+    if !me.families.is_empty() {
+        return me.families.clone();
+    }
+    me.family
+        .clone()
+        .map(|family| Family {
+            role: family.role.clone().or_else(|| me.role.clone()),
+            ..family
+        })
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -3137,13 +3566,16 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_roster_follows_joins_leaves_deletions_and_a_new_owner() {
         let mut store = store();
-        store.member_joined(&User {
-            id: 11,
-            username: "junior".into(),
-            display_name: "Junior".into(),
-            deleted: false,
-            ..Default::default()
-        });
+        store.member_joined(
+            &User {
+                id: 11,
+                username: "junior".into(),
+                display_name: "Junior".into(),
+                deleted: false,
+                ..Default::default()
+            },
+            None,
+        );
         assert_eq!(store.name_of(11), "Junior");
         assert!(store.members.iter().any(|m| m.id == 11));
 
@@ -3181,6 +3613,60 @@ mod tests {
             store.name_of(11),
             "Deleted account",
             "the tombstone is written"
+        );
+    }
+
+    /// The owner's copy of `member_joined` says whether the newcomer's
+    /// password is theirs to reset — false for somebody also in a family
+    /// they do not own, whom the server would refuse with
+    /// `member_in_other_families`. A copy without the flag (everybody
+    /// else's, or one racing a resync that already read the roster) never
+    /// turns a known `false` back into the old rule's "offered".
+    #[wasm_bindgen_test]
+    fn a_newcomers_reset_flag_is_kept_and_never_clobbered() {
+        let mut store = store();
+        let junior = User {
+            id: 11,
+            display_name: "Junior".into(),
+            ..Default::default()
+        };
+        let flag = |store: &Store| {
+            store
+                .members
+                .iter()
+                .find(|m| m.id == 11)
+                .and_then(|m| m.password_reset)
+        };
+
+        store.member_joined(&junior, Some(false));
+        assert_eq!(flag(&store), Some(false), "a newcomer takes the flag");
+
+        store.member_joined(&junior, None);
+        assert_eq!(flag(&store), Some(false), "absent keeps what is held");
+
+        store.member_joined(&junior, Some(true));
+        assert_eq!(flag(&store), Some(true), "present replaces it");
+        assert_eq!(
+            store.members.iter().filter(|m| m.id == 11).count(),
+            1,
+            "still one row"
+        );
+
+        // A newcomer the frame says nothing about: the old rule, offered.
+        store.member_joined(
+            &User {
+                id: 12,
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(
+            store
+                .members
+                .iter()
+                .find(|m| m.id == 12)
+                .map(|m| m.password_reset),
+            Some(None)
         );
     }
 
@@ -3702,11 +4188,11 @@ mod tests {
         store.apply_me(&me(Some(4)));
         assert!(store.board.notes.is_empty() && !store.board.loaded);
         assert_eq!(store.board.cursor, 0);
-        assert_eq!(
-            store.board.marks.content_seq, 50,
-            "the marks are the person's"
-        );
-        assert_eq!(store.board.marks_for, 7);
+        // A board is a family's, and so are its marks: the new wall starts
+        // with none until its own are taken from what the browser kept
+        // (sync::take_kept_marks).
+        assert_eq!(store.board.marks, fc_text::board::Marks::default());
+        assert_eq!(store.board.marks_for, 0);
     }
 
     fn account(family: Option<i64>, pending: bool) -> Me {
@@ -3852,10 +4338,13 @@ mod tests {
         let before = store.roster_changes;
         store.family_owner(ANNA);
         assert_eq!(store.roster_changes, before + 1);
-        store.member_joined(&User {
-            id: 12,
-            ..Default::default()
-        });
+        store.member_joined(
+            &User {
+                id: 12,
+                ..Default::default()
+            },
+            None,
+        );
         store.member_left(12);
         assert_eq!(
             store.roster_changes,
@@ -3891,13 +4380,30 @@ mod tests {
     }
 
     /// Leaving takes the family chat and the direct chats, and whatever
-    /// was on its way to them — it can never go now — but the assistant's
-    /// chat is the person's, and keeps its history and its unsent rows.
+    /// was on its way to them — it can never go now — but what belongs to
+    /// another family this account is still in stays: here its assistant's
+    /// chat, with its history and its unsent rows (docs/protocol.md,
+    /// "Several families": the `ai` chat is per family).
     #[wasm_bindgen_test]
     fn leaving_keeps_only_what_is_the_persons() {
         let mut store = store();
-        store.chats.push(chat(50, "ai"));
-        store.apply_me(&account(Some(3), false));
+        let mut theirs = chat(50, "ai");
+        theirs.chat.family_ids = Some(vec![4]);
+        store.chats.push(theirs);
+        let mut both = account(Some(3), false);
+        both.families = vec![
+            crate::model::Family {
+                id: 3,
+                name: "The Smiths".into(),
+                ..Default::default()
+            },
+            crate::model::Family {
+                id: 4,
+                name: "Ours".into(),
+                ..Default::default()
+            },
+        ];
+        store.apply_me(&both);
         store.queue_send(42, "family".into(), text("to the family"));
         store.queue_send(50, "ai".into(), text("to the assistant"));
         store.drafts.insert(42, "half a thought".into());
@@ -3909,7 +4415,9 @@ mod tests {
         };
         store.park(42, voice(), 3_000, None, String::new());
         store.park(50, voice(), 3_000, None, String::new());
-        assert!(store.apply_me(&account(None, false)), "a change");
+        let mut left = account(Some(4), false);
+        left.families = vec![both.families[1].clone()];
+        assert!(store.apply_me(&left), "a change");
         let rows: Vec<&str> = store
             .outbox
             .iter()
@@ -4095,16 +4603,21 @@ mod tests {
     }
 
     /// Leaving the family takes every group too: a rejoin does not put a
-    /// member back in one (docs/protocol.md, `POST /families/leave`).
+    /// member back in one (docs/protocol.md, `POST /families/leave`) — and,
+    /// since the assistant's chat is per family, that family's `ai` chat
+    /// with it (docs/protocol.md, "Several families").
     #[wasm_bindgen_test]
     fn leaving_the_family_takes_its_groups() {
         let mut store = store();
+        store.apply_me(&account(Some(3), false));
         store.chats.push(chat(50, "ai"));
         store.upsert_chat(group(77, &[ANNA, ME], ME));
         store.drafts.insert(77, "half".into());
-        store.forget_family();
-        assert!(store.item(77).is_none() && store.item(50).is_some());
+        store.forget_family(3);
+        assert!(store.item(77).is_none() && store.item(50).is_none());
+        assert!(store.item(42).is_none(), "its family chat");
         assert!(!store.drafts.contains_key(&77));
+        assert!(store.family.is_none() && store.families.is_empty());
     }
 
     /// The roster is fresher than `/me` about this account's own role — and
@@ -4445,5 +4958,343 @@ mod tests {
         store.set_assistant_consent(None);
         assert!(store.assistant_consent_at().is_none());
         assert!(store.assistant_lookup_consent_at().is_none());
+    }
+
+    // --- several families (#88; docs/protocol.md, "Several families") -----
+
+    fn fam(id: i64, name: &str, role: &str) -> crate::model::Family {
+        crate::model::Family {
+            id,
+            name: name.into(),
+            role: Some(role.into()),
+            ..Default::default()
+        }
+    }
+
+    /// `/me` from a server that knows several families: the list, home
+    /// first, each with this account's own role.
+    fn several(families: &[(i64, &str, &str)]) -> Me {
+        let listed: Vec<crate::model::Family> = families
+            .iter()
+            .map(|(id, name, role)| fam(*id, name, role))
+            .collect();
+        Me {
+            user: User {
+                id: ME,
+                username: "me".into(),
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+            family: listed.first().cloned(),
+            role: families.first().map(|(_, _, role)| role.to_string()),
+            families: listed,
+            member_families_enabled: true,
+            max_families_per_account: Some(5),
+            ..Default::default()
+        }
+    }
+
+    fn listed_in(id: i64, kind: &str, family_ids: &[i64]) -> ChatListItem {
+        let mut item = chat(id, kind);
+        item.chat.family_ids = Some(family_ids.to_vec());
+        item
+    }
+
+    fn member(id: i64, name: &str) -> Member {
+        Member {
+            id,
+            display_name: name.into(),
+            role: Some("member".into()),
+            ..Default::default()
+        }
+    }
+
+    /// The model is a LIST: the home family is shown first, the role read
+    /// is THAT family's, and a server from before several families is one
+    /// family with the role it names.
+    #[wasm_bindgen_test]
+    fn the_account_is_in_a_list_of_families_and_shows_one() {
+        let mut store = Store::default();
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        assert_eq!(store.current_family_id(), Some(3), "the home family");
+        assert_eq!(store.families.len(), 2);
+        assert!(!store.is_owner(), "a member of the family on screen");
+        assert!(store.owns_a_family(), "but the owner of another");
+        assert_eq!(store.family_name(4).as_deref(), Some("Ours"));
+
+        let mut old = Store::default();
+        let mut me = account(Some(3), false);
+        me.role = Some("owner".into());
+        old.apply_me(&me);
+        assert_eq!(old.families.len(), 1, "a server that predates the list");
+        assert!(old.is_owner());
+        assert_eq!(old.families[0].role.as_deref(), Some("owner"));
+    }
+
+    /// The family on screen stays while it is listed, a reload opens the one
+    /// this device showed last, and when it goes the first left is shown.
+    #[wasm_bindgen_test]
+    fn the_family_on_screen_stays_until_it_is_gone() {
+        let mut store = Store {
+            preferred_family: Some(4),
+            ..Store::default()
+        };
+        let both = several(&[(3, "Parents", "member"), (4, "Ours", "owner")]);
+        store.apply_me(&both);
+        assert_eq!(store.current_family_id(), Some(4), "shown here last");
+        assert!(store.is_owner(), "this account's role in THAT family");
+        assert!(store.switch_family(3));
+        assert!(!store.apply_me(&both), "the same family is no change");
+        assert_eq!(store.current_family_id(), Some(3));
+        assert!(
+            store.apply_me(&several(&[(4, "Ours", "owner")])),
+            "the family on screen went: a change"
+        );
+        assert_eq!(store.current_family_id(), Some(4));
+        assert!(store.apply_me(&several(&[])), "none left");
+        assert!(store.family.is_none() && store.account.as_ref().unwrap().family.is_none());
+        assert!(!store.switch_family(3), "not a family this account is in");
+    }
+
+    /// The chat list is the family on screen's: its family chat first — THAT
+    /// family's, not the other's — and a direct chat in every family it
+    /// names. Unread counts per family count a direct chat in each.
+    #[wasm_bindgen_test]
+    fn the_list_shows_the_chats_of_the_family_on_screen() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        let mut parents = listed_in(42, "family", &[3]);
+        parents.unread_count = 2;
+        let mut ours = listed_in(43, "family", &[4]);
+        ours.unread_count = 5;
+        let mut anna = listed_in(60, "direct", &[3, 4]);
+        anna.unread_count = 1;
+        store.chats = vec![
+            ours,
+            parents,
+            anna,
+            listed_in(50, "ai", &[3]),
+            listed_in(51, "ai", &[4]),
+        ];
+        let ids = |store: &Store| -> Vec<i64> {
+            store
+                .sorted_chats()
+                .iter()
+                .map(|item| item.chat.id)
+                .collect()
+        };
+        let shown = ids(&store);
+        assert_eq!(shown[0], 42, "the family chat of the family on screen");
+        assert!(shown.contains(&60) && shown.contains(&50));
+        assert!(!shown.contains(&43) && !shown.contains(&51));
+        store.switch_family(4);
+        let shown = ids(&store);
+        assert_eq!(shown[0], 43);
+        assert!(shown.contains(&60) && shown.contains(&51) && !shown.contains(&50));
+        assert_eq!(store.unread_in(3), 3, "the family chat and the direct chat");
+        assert_eq!(store.unread_in(4), 6, "the direct chat counts in both");
+        assert_eq!(
+            store.unread_total(),
+            8,
+            "the tab's title counts each chat once"
+        );
+        assert_eq!(
+            store.family_of_chat(42),
+            Some(3),
+            "not listed here: its own"
+        );
+        assert_eq!(store.family_of_chat(60), Some(4), "listed here: here");
+    }
+
+    /// Switching keeps each family's roster, board and pack where they were:
+    /// what was on screen waits away, and comes back as it was.
+    #[wasm_bindgen_test]
+    fn switching_keeps_every_familys_roster_board_and_pack() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        store.members = vec![member(ME, "Me"), member(ANNA, "Anna")];
+        store.board.apply_full(
+            vec![crate::model::Note {
+                id: 1,
+                board_seq: 10,
+                author_id: Some(ANNA),
+                text: Some("Milk".into()),
+                color: Some("yellow".into()),
+                x: Some(0.1),
+                y: Some(0.1),
+                family_id: Some(3),
+                ..Default::default()
+            }],
+            10,
+        );
+        store.switch_family(4);
+        assert!(store.members.is_empty() && store.board.notes.is_empty());
+        assert_eq!(store.board_of(3).map(|board| board.notes.len()), Some(1));
+        store.members = vec![member(ME, "Me"), member(12, "Cleo")];
+        store.switch_family(3);
+        assert_eq!(store.members.len(), 2);
+        assert_eq!(store.members[1].display_name, "Anna");
+        assert_eq!(store.board.notes.len(), 1);
+        assert_eq!(store.roster_of(4).len(), 2);
+    }
+
+    /// A frame for another family is applied to THAT family — the one on
+    /// screen is left as it was — and its owner's change is that family's.
+    #[wasm_bindgen_test]
+    fn a_frame_is_applied_to_the_family_it_names() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "member")]));
+        store.members = vec![member(ME, "Me")];
+        let joined = store.with_family(4, |store| {
+            store.member_joined(
+                &User {
+                    id: 12,
+                    display_name: "Cleo".into(),
+                    ..Default::default()
+                },
+                None,
+            )
+        });
+        assert!(joined.is_some());
+        assert_eq!(store.members.len(), 1, "not the family on screen");
+        assert_eq!(store.roster_of(4), vec![(12, "Cleo".to_string())]);
+        assert!(store.with_family(9, |_| ()).is_none(), "a family not held");
+        store.with_family(4, |store| store.family_owner(ME));
+        assert!(!store.is_owner(), "the family on screen is unchanged");
+        assert!(store.families[1].is_owner(), "the owner of THAT family");
+        store.switch_family(4);
+        assert!(store.is_owner());
+        assert!(store.account.as_ref().unwrap().is_owner());
+    }
+
+    /// `member_left` naming ME: out of that family only — its chats go, a
+    /// direct chat stays while it names another family held (and is no
+    /// longer listed in the one gone), and the family on screen falls back
+    /// to the first left.
+    #[wasm_bindgen_test]
+    fn leaving_one_family_keeps_the_rest() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        store.switch_family(4);
+        store.chats = vec![
+            listed_in(42, "family", &[3]),
+            listed_in(43, "family", &[4]),
+            listed_in(60, "direct", &[3, 4]),
+            listed_in(61, "direct", &[4]),
+            listed_in(51, "ai", &[4]),
+        ];
+        store.drafts.insert(61, "half".into());
+        assert!(store.leave_family(4), "it was on screen");
+        assert_eq!(store.current_family_id(), Some(3));
+        assert!(store.item(43).is_none() && store.item(61).is_none() && store.item(51).is_none());
+        assert!(!store.drafts.contains_key(&61));
+        assert_eq!(
+            store.item(60).and_then(|item| item.chat.family_ids.clone()),
+            Some(vec![3]),
+            "the direct chat stays, listed where it still is"
+        );
+        assert!(store.item(42).is_some());
+        assert!(!store.away.contains_key(&4));
+        assert!(!store.leave_family(9), "a family not held changes nothing");
+        assert!(store.leave_family(3));
+        assert!(store.family.is_none() && store.chats.is_empty(), "the gate");
+    }
+
+    /// Invitations: mine onto my list (and the account's, which the gate
+    /// draws), an owner's onto THAT family's, never doubled — and a removal
+    /// takes it off every list.
+    #[wasm_bindgen_test]
+    fn invitations_land_on_the_right_list_and_go_from_all() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        let invitation = |id: i64, family_id: i64, user: i64| Invitation {
+            id,
+            family_id,
+            family_name: "Ivanovs".into(),
+            invited_by: User {
+                id: ANNA,
+                display_name: "Anna".into(),
+                ..Default::default()
+            },
+            user: User {
+                id: user,
+                display_name: "Somebody".into(),
+                ..Default::default()
+            },
+            created_at: None,
+        };
+        store.apply_invitation(invitation(1, 9, ME));
+        store.apply_invitation(invitation(1, 9, ME));
+        assert_eq!(store.invitations.len(), 1, "never doubled");
+        assert_eq!(store.account.as_ref().unwrap().invitations.len(), 1);
+        store.apply_invitation(invitation(2, 4, 12));
+        assert!(
+            store.sent_invitations.is_empty(),
+            "not the family on screen's"
+        );
+        assert_eq!(store.away[&4].sent_invitations.len(), 1);
+        store.remove_invitation(1);
+        store.remove_invitation(2);
+        assert!(store.invitations.is_empty());
+        assert!(store.account.as_ref().unwrap().invitations.is_empty());
+        assert!(store.away[&4].sent_invitations.is_empty());
+    }
+
+    /// Whom the owner may invite: the members of their OTHER families who
+    /// are not in this one.
+    #[wasm_bindgen_test]
+    fn the_owner_invites_from_their_other_families() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        store.members = vec![member(ME, "Me"), member(ANNA, "Anna"), member(11, "Bob")];
+        store.switch_family(4);
+        store.members = vec![member(ME, "Me"), member(11, "Bob")];
+        assert_eq!(store.invitable(), vec![(ANNA, "Anna".to_string())]);
+    }
+
+    /// A note this device's change was answered with goes on the board it
+    /// is on — even after a switch.
+    #[wasm_bindgen_test]
+    fn an_answered_note_lands_on_its_own_board() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        store.board.apply_full(Vec::new(), 0);
+        store.switch_family(4);
+        store.apply_note(
+            Some(3),
+            crate::model::Note {
+                id: 1,
+                board_seq: 1,
+                author_id: Some(ME),
+                text: Some("Milk".into()),
+                color: Some("yellow".into()),
+                x: Some(0.1),
+                y: Some(0.1),
+                ..Default::default()
+            },
+        );
+        assert!(store.board.notes.is_empty());
+        assert_eq!(store.board_of(3).map(|board| board.notes.len()), Some(1));
     }
 }

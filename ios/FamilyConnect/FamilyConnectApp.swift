@@ -245,6 +245,29 @@ struct FamilyConnectApp: App {
             session.applyBlockedIDs = { [weak coordinator] ids in
                 coordinator?.replaceBlocks(with: ids)
             }
+            // Several families (docs/protocol.md, "Several families"): the
+            // session decides which family is shown and which are held; the
+            // store follows through these.
+            session.onCurrentFamilyChanged = { [weak coordinator] familyID in
+                coordinator?.projectRoster(onto: familyID ?? 0)
+            }
+            session.dropFamilyData = { [weak coordinator] familyID in
+                coordinator?.dropFamily(familyID)
+            }
+            session.adoptUnattributedFamilyData = { [weak coordinator] homeID in
+                coordinator?.adoptUnattributed(into: homeID)
+            }
+            session.chatFamilyIDs = { [weak coordinator] chatID in
+                coordinator?.chatFamilyIDs(of: chatID)
+            }
+            // What a `/me` listing no family asks on a cold launch, before
+            // the session holds any list of its own (`AppSession.apply(me:)`).
+            session.holdsFamilyData = { [weak coordinator] in
+                coordinator?.holdsFamilyData() ?? false
+            }
+            session.requestResync = { [weak coordinator] in
+                Task { await coordinator?.resync() }
+            }
             session.clearChatStore = { [weak coordinator] in
                 let context = container.mainContext
                 try? context.delete(model: MessageEntity.self)
@@ -256,6 +279,10 @@ struct FamilyConnectApp: App {
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
+                // The board's gone set with its notes. It used to survive a
+                // kick or a leave — ids that can never come back, kept for a
+                // family the account is no longer in.
+                try? context.delete(model: GoneNoteEntity.self)
                 // The pack is the family's, like the board: the next account
                 // on this device may be in another family, or in none.
                 // Through the coordinator and not row by row here, because

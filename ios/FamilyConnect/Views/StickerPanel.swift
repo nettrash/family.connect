@@ -27,8 +27,16 @@ struct StickerPanel: View {
     /// A sticker was chosen. The caller sends it and takes the panel down.
     let onPick: (PackItemSnapshot) -> Void
 
+    @Environment(ChatSyncCoordinator.self) private var coordinator
+
     // Added order. `itemID` is the server's id, handed out in that order.
-    @Query(sort: \PackItemEntity.itemID) private var stored: [PackItemEntity]
+    @Query(sort: \PackItemEntity.itemID) private var allStored: [PackItemEntity]
+    /// The pack of the family on screen — every family has its own
+    /// (docs/protocol.md, "Several families").
+    private var stored: [PackItemEntity] {
+        let familyKey = coordinator.currentFamilyKey
+        return allStored.filter { $0.familyID == familyKey }
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 68), spacing: 8)]
 

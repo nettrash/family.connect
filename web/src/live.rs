@@ -71,6 +71,12 @@ pub enum Panel {
     Settings,
     /// Who is in the family — and, for its owner, the family's settings.
     Family,
+    /// Starting another family, for an account already in one — the create
+    /// screen with a word on what it means (docs/protocol.md, "Getting
+    /// another family").
+    NewFamily,
+    /// Joining another family with its invite code — the join screen.
+    JoinFamily,
 }
 
 /// What the viewer shows: a message's media, in sent order, at one of them.

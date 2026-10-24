@@ -45,10 +45,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Cake
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Shield
@@ -117,6 +119,10 @@ import me.nettrash.familyconnect.ui.components.ErrorCard
 fun SettingsScreen(
     onBack: () -> Unit,
     onManageFamily: () -> Unit,
+    /** "New Family…" — the way in to another family (docs/protocol.md, "Several families"). */
+    onNewFamily: () -> Unit = {},
+    /** "Join Another Family…". */
+    onJoinFamily: () -> Unit = {},
     onOpenStatistics: () -> Unit,
     onLoggedOut: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -449,6 +455,36 @@ fun SettingsScreen(
                     },
                     modifier = Modifier.clickable { confirmLeave = true },
                 )
+                // The way in to another family, beside the way out of this
+                // one — present even with ONE family, which is the only
+                // place an account in one family sees several families at
+                // all (docs/protocol.md, "Several families").
+                if (state.canStartAnother) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_new_family)) },
+                        leadingContent = {
+                            Icon(
+                                Icons.Outlined.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        },
+                        modifier = Modifier.clickable(onClick = onNewFamily),
+                    )
+                }
+                if (state.canJoinAnother) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_join_another_family)) },
+                        leadingContent = {
+                            Icon(
+                                Icons.Outlined.GroupAdd,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        },
+                        modifier = Modifier.clickable(onClick = onJoinFamily),
+                    )
+                }
                 HorizontalDivider(
                     modifier = Modifier.padding(start = 16.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -736,9 +772,21 @@ fun SettingsScreen(
     }
 
     if (confirmLeave) {
+        // With several families the dialog names the one being left
+        // (docs/protocol.md, "Several families"); with one it is today's
+        // dialog, word for word.
+        val severalFamilies = state.familyCount > 1
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
-            title = { Text(stringResource(R.string.s_leave_the_family)) },
+            title = {
+                Text(
+                    if (severalFamilies) {
+                        stringResource(R.string.s_leave_named_family, state.familyName.orEmpty())
+                    } else {
+                        stringResource(R.string.s_leave_the_family)
+                    },
+                )
+            },
             text = {
                 // Three readers, three sentences. An owner is never
                 // refused — they hand the family on — so the dialog says
@@ -746,9 +794,14 @@ fun SettingsScreen(
                 // goes with them (docs/protocol.md, `POST /families/leave`).
                 // Bound to a local first: `state` is a delegated property,
                 // so a smart cast off `state.nextOwnerName` is refused.
+                // In several families every reader is told what goes and
+                // what stays — except the last member, whose family goes
+                // with them, which is a different consequence altogether.
                 val successor = state.nextOwnerName
                 Text(
                     when {
+                        severalFamilies && !(state.isOwner && successor == null) ->
+                            stringResource(R.string.s_leave_one_of_families_explanation)
                         !state.isOwner -> stringResource(R.string.s_leave_family_explanation)
                         successor != null ->
                             stringResource(R.string.s_leave_family_explanation_owner, successor)

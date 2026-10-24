@@ -87,7 +87,7 @@ class PackRecentsPersistenceTest {
         launch(file) { settings ->
             settings.setServerUrl("https://example.invalid")
             settings.setPackRecents(listOf(9L, 2L, 5L))
-            settings.setPackCursor(41)
+            settings.setPackCursor(0L, 41)
             // What SessionRepository.clearSession does to the settings.
             settings.resetKeepingServerUrl()
         }
@@ -95,7 +95,7 @@ class PackRecentsPersistenceTest {
         val after = launch(file) { settings -> settings.state.first() }
 
         assertThat(after.packRecents).isEmpty()
-        assertThat(after.packCursor).isEqualTo(0)
+        assertThat(after.packCursor(0L)).isEqualTo(0)
         // The one thing a sign-out keeps, so the test is known to have
         // read the file it wrote.
         assertThat(after.serverUrl).isEqualTo("https://example.invalid")

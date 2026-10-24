@@ -125,6 +125,7 @@
     <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">На других твоих устройствах сессия завершится. Это останется в системе.</string>
     <string name="e_action_failed">Не удалось выполнить</string>
     <string name="e_already_in_family">Ты уже в семье — потяни, чтобы обновить</string>
+    <string name="e_already_in_that_family">Ты уже в этой семье.</string>
     <string name="e_change_password_failed">Не удалось сменить пароль.</string>
     <string name="e_change_policy_failed">Не удалось изменить правило</string>
     <string name="e_create_family_failed">Не удалось создать семью</string>
@@ -839,4 +840,26 @@
     <string name="e_create_group_failed">Не удалось создать группу.</string>
     <string name="e_change_group_failed">Не удалось изменить группу.</string>
     <string name="s_everyone_already_in_group">Все члены семьи уже в этой группе.</string>
+    <!-- Several families (#88; docs/protocol.md, "Several families"). -->
+    <string name="s_families">Семьи</string>
+    <string name="s_new_family">Новая семья…</string>
+    <string name="s_join_another_family">Вступить в другую семью…</string>
+    <string name="s_switch_family">Сменить семью</string>
+    <string name="s_family_unread">%1$s, непрочитанных: %2$d</string>
+    <string name="s_invited_you_to">%1$s приглашает тебя в «%2$s»</string>
+    <string name="s_invitations">Приглашения</string>
+    <string name="s_invite">Пригласить…</string>
+    <string name="s_invite_to">Пригласить в «%s»</string>
+    <string name="s_invite_empty">Здесь появятся участники других твоих семей, которых нет в этой.</string>
+    <string name="s_invited">Приглашение отправлено</string>
+    <string name="s_pending_invitations">Ожидающие приглашения</string>
+    <string name="s_withdraw_invitation">Отозвать приглашение</string>
+    <string name="e_invitation_gone">Это приглашение больше недоступно.</string>
+    <string name="e_too_many_families">Ты уже состоишь в максимальном числе семей для одной учётной записи (%d).</string>
+    <string name="e_already_own_a_family">У тебя уже есть своя семья, поэтому создать другую нельзя.</string>
+    <string name="e_member_families_disabled">На этом сервере участники не могут создавать новые семьи.</string>
+    <string name="e_member_in_other_families">Этот участник состоит и в семье, которой ты не владеешь, поэтому пароль может сменить только сам участник.</string>
+    <string name="s_leave_named_family">Покинуть «%s»?</string>
+    <string name="s_leave_one_of_families_explanation">Ты потеряешь доступ к чатам этой семьи. Личные чаты с теми, с кем ты состоишь в другой семье, останутся.</string>
+    <string name="s_new_family_explanation">Создай свою семью. Она будет твоей, и ты сможешь пригласить участников других своих семей.</string>
 </resources>

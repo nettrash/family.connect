@@ -19,6 +19,12 @@
 //!
 //! Not built, here as on the Mac: the jump from a report to the message it
 //! names, which the protocol offers while `message_id` survives.
+//!
+//! With several families (docs/protocol.md, "Several families") this is the
+//! family on screen. Its owner may invite the members of their OTHER
+//! families ("Invite…", hidden when there is no other family) and withdraw
+//! what is still pending; a password is offered for reset only where the
+//! server says this owner owns every family the member is in.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -34,12 +40,12 @@ use yew::prelude::*;
 use crate::actions::{Action, Done};
 use crate::api::{ApiError, FamilyPatch};
 use crate::model::{
-    Assistant, Family, JoinRequest, Me, Member, PackItem, Report, ReportedAttachment,
+    Assistant, Family, Invitation, JoinRequest, Me, Member, PackItem, Report, ReportedAttachment,
 };
 use crate::time;
 use crate::views::avatar::Avatar;
 use crate::views::birthday::BirthdayDialog;
-use crate::views::dialog::{generic_failure, Confirm};
+use crate::views::dialog::{generic_failure, Confirm, Modal};
 use crate::views::password::ResetPasswordDialog;
 use crate::views::report::{ReportDialog, ReportTarget, REASONS};
 use crate::views::stickers::PackSection;
@@ -66,6 +72,17 @@ pub struct FamilyProps {
     /// A sticker is on its way into the pack.
     #[prop_or_default]
     pub pack_adding: bool,
+    /// For the owner: whom they may invite — the members of their other
+    /// families who are not in this one (Store::invitable).
+    #[prop_or_default]
+    pub invitable: Vec<(i64, String)>,
+    /// For the owner: whether they are in another family at all. Without
+    /// one there is nobody to invite, and no "Invite…".
+    #[prop_or_default]
+    pub other_families: bool,
+    /// For the owner: this family's invitations still pending.
+    #[prop_or_default]
+    pub sent_invitations: Vec<Invitation>,
     pub on_action: Callback<Action>,
     pub on_close: Callback<()>,
 }
@@ -81,6 +98,7 @@ enum Tool {
     Remove(i64),
     Report(i64),
     Rotate,
+    Invite,
 }
 
 #[function_component(FamilyPane)]
@@ -287,6 +305,18 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                     requests={props.join_requests.clone()}
                     on_action={props.on_action.clone()}
                 />
+                if props.other_families {
+                    <section class="group" aria-labelledby="family-invitations">
+                        <h3 id="family-invitations">{ t("Invitations") }</h3>
+                        <div class="setting-row">
+                            <button class="link" aria-haspopup="dialog" onclick={set_tool(Tool::Invite)}>{ t("Invite…") }</button>
+                        </div>
+                    </section>
+                }
+                <PendingInvitations
+                    invitations={props.sent_invitations.clone()}
+                    on_action={props.on_action.clone()}
+                />
                 <Reports reports={props.reports.clone()} on_action={props.on_action.clone()} />
                 <JoinPolicy family={family.clone()} on_action={props.on_action.clone()} />
                 if let Some(ceiling) = props.account.max_family_members {
@@ -382,8 +412,13 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                                 <div class="menu-backdrop" onclick={set_tool(Tool::Nothing)} aria-hidden="true"></div>
                                 <div class="menu" role="menu" onkeydown={menu_keys.clone()}>
                                     <button role="menuitem" onclick={set_tool(Tool::Birthday(id))}>{ t("Birthday…") }</button>
-                                    if removable {
+                                    // Not where the server says it will not
+                                    // work: a member also in a family this
+                                    // owner does not own.
+                                    if removable && member.password_reset != Some(false) {
                                         <button role="menuitem" onclick={set_tool(Tool::Password(id))}>{ t("Reset Password…") }</button>
+                                    }
+                                    if removable {
                                         <button role="menuitem" class="danger" onclick={set_tool(Tool::Remove(id))}>{ t("Remove from Family") }</button>
                                     }
                                 </div>
@@ -446,6 +481,15 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                 />
             }
         }
+        Tool::Invite => html! {
+            <InviteDialog
+                family={family.name.clone()}
+                invitable={props.invitable.clone()}
+                invited={props.sent_invitations.iter().map(|invitation| invitation.user.id).collect::<HashSet<i64>>()}
+                on_action={props.on_action.clone()}
+                on_close={close_tool.clone()}
+            />
+        },
         Tool::Report(id) => {
             let id = *id;
             let submit = {
@@ -503,6 +547,136 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                 }
             </div>
             { tool_dialog }
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct InviteProps {
+    family: String,
+    invitable: Vec<(i64, String)>,
+    /// Who already has an invitation waiting.
+    invited: HashSet<i64>,
+    on_action: Callback<Action>,
+    on_close: Callback<()>,
+}
+
+/// The owner's picker: the members of their other families who are not in
+/// this one, and nobody else on the server — each a press away from an
+/// invitation, or marked as invited already (docs/protocol.md, "Several
+/// families"). The invited person accepts or declines; until then they are
+/// not in the family.
+#[function_component(InviteDialog)]
+fn invite_dialog(props: &InviteProps) -> Html {
+    let busy = use_state(|| Option::<i64>::None);
+    let error = use_state(|| Option::<String>::None);
+    let close = props.on_close.reform(|_: MouseEvent| ());
+    let rows = props.invitable.iter().map(|(id, name)| {
+        let id = *id;
+        let invited = props.invited.contains(&id);
+        let invite = {
+            let busy = busy.clone();
+            let error = error.clone();
+            let on_action = props.on_action.clone();
+            Callback::from(move |_: MouseEvent| {
+                if busy.is_some() {
+                    return;
+                }
+                busy.set(Some(id));
+                error.set(None);
+                let busy = busy.clone();
+                let error = error.clone();
+                on_action.emit(Action::Invite {
+                    user_id: id,
+                    done: Callback::from(move |failure: Option<ApiError>| {
+                        busy.set(None);
+                        error.set(failure.map(|failure| generic_failure(&failure)));
+                    }),
+                });
+            })
+        };
+        html! {
+            <li key={id.to_string()} class="member-row">
+                <Avatar title={name.clone()} user_id={Some(id)} size={28} />
+                <button
+                    type="button"
+                    class="link invite-row"
+                    disabled={invited || busy.is_some()}
+                    onclick={invite}
+                >
+                    { name.clone() }
+                </button>
+                if invited {
+                    <span class="capsule">{ t("Invited") }</span>
+                }
+            </li>
+        }
+    });
+    html! {
+        <Modal title={fc_text::families::invite_title(&props.family)} on_cancel={props.on_close.clone()} busy={busy.is_some()}>
+            if props.invitable.is_empty() {
+                <p class="dialog-message hint">{ t("Members of your other families who aren't in this one appear here.") }</p>
+            } else {
+                <ul class="members invitable">{ for rows }</ul>
+            }
+            if let Some(message) = (*error).clone() {
+                <p class="error" role="alert">{ message }</p>
+            }
+            <div class="dialog-actions">
+                <button type="button" class="primary" onclick={close}>{ t("Done") }</button>
+            </div>
+        </Modal>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct PendingInvitationsProps {
+    invitations: Vec<Invitation>,
+    on_action: Callback<Action>,
+}
+
+/// The owner's invitations still waiting on an answer, each withdrawable.
+#[function_component(PendingInvitations)]
+fn pending_invitations(props: &PendingInvitationsProps) -> Html {
+    let error = use_state(|| Option::<String>::None);
+    if props.invitations.is_empty() {
+        return Html::default();
+    }
+    let rows = props.invitations.iter().map(|invitation| {
+        let id = invitation.id;
+        let withdraw = {
+            let error = error.clone();
+            let on_action = props.on_action.clone();
+            Callback::from(move |_: MouseEvent| {
+                error.set(None);
+                let error = error.clone();
+                on_action.emit(Action::WithdrawInvitation {
+                    invitation_id: id,
+                    done: Callback::from(move |failure: Option<ApiError>| {
+                        error.set(failure.map(|failure| generic_failure(&failure)));
+                    }),
+                });
+            })
+        };
+        html! {
+            <li class="member-row" key={id.to_string()}>
+                <Avatar title={invitation.user.display_name.clone()} user_id={Some(invitation.user.id)} version={invitation.user.avatar_version} size={28} />
+                <div class="identity-text">
+                    <strong>{ invitation.user.display_name.clone() }</strong>
+                </div>
+                <span class="row-actions">
+                    <button class="link danger" onclick={withdraw}>{ t("Withdraw Invitation") }</button>
+                </span>
+            </li>
+        }
+    });
+    html! {
+        <section class="group" aria-labelledby="family-pending-invitations">
+            <h3 id="family-pending-invitations">{ t("Pending Invitations") }</h3>
+            <ul class="members">{ for rows }</ul>
+            if let Some(message) = (*error).clone() {
+                <p class="error" role="alert">{ message }</p>
+            }
         </section>
     }
 }

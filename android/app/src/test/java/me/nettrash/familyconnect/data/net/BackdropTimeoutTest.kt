@@ -73,7 +73,7 @@ class BackdropTimeoutTest {
 
     @Test
     fun `a backdrop waits at least 90 seconds for its answer`() = runTest {
-        boardApi().drawBackdrop(5L)
+        boardApi().drawBackdrop(null, 5L)
 
         val budget = seen.single()
         assertThat(budget.path).endsWith("/families/mine/board/notes/5/backdrop")
@@ -89,8 +89,8 @@ class BackdropTimeoutTest {
     @Test
     fun `every other call keeps the ordinary budget`() = runTest {
         val api = boardApi()
-        api.tickTask(5L, 11L, done = true)
-        api.deleteNote(5L)
+        api.tickTask(null, 5L, 11L, done = true)
+        api.deleteNote(null, 5L)
 
         assertThat(seen).hasSize(2)
         for (budget in seen) {

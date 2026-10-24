@@ -53,7 +53,11 @@ object ServerUrlNormalizer {
             normalizedUrl.startsWith("http://") -> "ws://" + normalizedUrl.removePrefix("http://")
             else -> normalizedUrl
         }
-        return "$wsBase/api/v1/ws"
+        // `families=1`: the socket's counterpart of the X-FC-Families header
+        // (a browser cannot set headers on an upgrade, so the protocol puts it
+        // in the query) — without it the server sends only what concerns the
+        // home family (docs/protocol.md, "WebSocket protocol").
+        return "$wsBase/api/v1/ws?families=1"
     }
 
     /** True when the normalized URL is cleartext http — drives the UX warning. */
