@@ -515,8 +515,16 @@ impl std::io::Write for CapturedLog {
 }
 
 impl CapturedLog {
+    /// What was logged, less sqlx's statement timings: it times every
+    /// statement (`elapsed=69.66…ms`), and under a loaded test run a timing
+    /// matched the bare coordinate this file looks for. A timing is never
+    /// content, so dropping those two fields hides no leak.
     fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        String::from_utf8_lossy(&self.0.lock().unwrap())
+            .split(' ')
+            .filter(|word| !word.starts_with("elapsed=") && !word.starts_with("elapsed_secs="))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 

@@ -17,6 +17,7 @@ use axum::routing::post;
 use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
 use family_connect::config::Config;
 use family_connect::handlers_auth::{Scrubbed, scrub_account};
+use family_connect::keyring::Owner;
 use family_connect::push_payload::PushEvent;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -1366,10 +1367,11 @@ async fn the_transcript_calls_the_assistant_by_the_name_the_family_sees() {
     say(&ts, &owner, chat, "@ai capital of Serbia?").await;
     sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
-         VALUES ($1, $2, gen_random_uuid(), 'Belgrade.')",
+         VALUES ($1, $2, gen_random_uuid(), $3)",
     )
     .bind(chat)
     .bind(assistant_id)
+    .bind(ts.seal(Owner::Chat(chat), "Belgrade.").await)
     .execute(&ts.state.pool)
     .await
     .expect("writing the assistant's past reply");
@@ -4852,21 +4854,22 @@ async fn the_shared_scrub_refuses_the_assistant_however_it_is_called() {
 /// the statement — a future sweep, or a hand-run ops line at 2am.
 #[tokio::test]
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
-async fn the_database_refuses_to_remove_or_rename_the_assistant() {
+async fn the_database_refuses_to_remove_or_unmark_the_assistant() {
     let ts = spawn_server().await;
     let assistant = assistant_id(&ts).await;
 
-    // The three ways the row stops being a live account named `assistant`.
-    // The middle one is what `scrub_account` writes, and the quietest: no
-    // lookup of the assistant would ever find it again.
+    // The three ways the row stops being the live, marked assistant account.
+    // The first is what `scrub_account` writes; the middle is the quietest:
+    // no lookup of the assistant would ever find it again, since its name is
+    // sealed and it is found by its mark (0059).
     for (what, sql) in [
         (
             "tombstoning it",
             "UPDATE users SET deleted_at = now() WHERE id = $1",
         ),
         (
-            "renaming it",
-            "UPDATE users SET username = 'deleted-' || id WHERE id = $1",
+            "unmarking it",
+            "UPDATE users SET is_assistant = false WHERE id = $1",
         ),
         ("deleting the row", "DELETE FROM users WHERE id = $1"),
     ] {
@@ -4888,8 +4891,9 @@ async fn the_database_refuses_to_remove_or_rename_the_assistant() {
 
     // What the assistant LOOKS like is still ordinary data: the trigger
     // guards whether the account exists, not how it is presented.
-    sqlx::query("UPDATE users SET display_name = 'Helper', avatar_version = 3 WHERE id = $1")
+    sqlx::query("UPDATE users SET display_name = $2, avatar_version = 3 WHERE id = $1")
         .bind(assistant)
+        .bind(ts.seal(Owner::Account(assistant), "Helper").await)
         .execute(&ts.state.pool)
         .await
         .expect("a display name and an avatar are not the account's existence");

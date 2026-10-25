@@ -138,13 +138,12 @@ async fn members_pending_joiners_and_the_assistant_are_never_candidates() {
     );
 
     // The assistant has no family by design and is never a candidate: its
-    // clock is not running, and it is excluded by name regardless.
-    let assistant: Option<(i64, Option<time::OffsetDateTime>)> = sqlx::query_as(
-        "SELECT id, familyless_since FROM users WHERE lower(username) = 'assistant'",
-    )
-    .fetch_optional(&ts.state.pool)
-    .await
-    .expect("query");
+    // clock is not running, and it is excluded by its mark regardless.
+    let assistant: Option<(i64, Option<time::OffsetDateTime>)> =
+        sqlx::query_as("SELECT id, familyless_since FROM users WHERE is_assistant")
+            .fetch_optional(&ts.state.pool)
+            .await
+            .expect("query");
     let (assistant_id, clock) = assistant.expect("0015 inserted the assistant");
     assert!(clock.is_none());
     age(&ts, assistant_id, 400).await;

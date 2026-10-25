@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::error::ApiError;
 use crate::handlers_chat::ReactionState;
 use crate::handlers_poll::PollState;
+use crate::keyring::{KeyError, SealedRow};
 use crate::models::{Member, Message, Note, PackItem, UserBrief};
 use crate::push::DevicePush;
 use crate::push_payload::{self, CallPush, Notification};
@@ -220,7 +221,7 @@ async fn deliver_board_note_inner(
         return Ok(());
     }
     let live_sessions = state.registry.live_sessions(&members).await;
-    let devices = devices_for_users(&state.pool, &members).await?;
+    let devices = devices_for_users(state, &members).await?;
     let devices = devices_to_wake(devices, &live_sessions, author_id);
     if devices.is_empty() {
         return Ok(());
@@ -235,8 +236,8 @@ async fn deliver_board_note_inner(
     .bind(author_id)
     .fetch_one(&state.pool)
     .await?;
-    let family_name: String = row.get("family_name");
-    let author_name: String = row.get("author_name");
+    let family_name = row.text(&state.keys, "family_name")?;
+    let author_name = row.text(&state.keys, "author_name")?;
     // A photo note's caption may be empty, and an alert with a blank body
     // tells the family nothing. The picture is then the news, exactly as a
     // caption-less photo message pushes its attachment summary
@@ -421,13 +422,13 @@ async fn fan_out_new_message(
 }
 
 /// Is this message the assistant's own? The reserved account (migration
-/// 0015) is the one user with that name, in no family; asked only on a
-/// reply that quotes somebody else, which is where the second block gate
-/// lives (protocol.md, "Push notifications").
+/// 0015) is the one user marked `is_assistant` (0059), in no family; asked
+/// only on a reply that quotes somebody else, which is where the second
+/// block gate lives (protocol.md, "Push notifications").
 async fn sender_is_assistant(state: &AppState, sender_id: i64) -> Result<bool, ApiError> {
     let is_assistant = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM users
-         WHERE id = $1 AND lower(username) = 'assistant'
+         WHERE id = $1 AND is_assistant
            AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = users.id))",
     )
     .bind(sender_id)
@@ -507,7 +508,7 @@ async fn push_message_to(
     // would let it swallow the alert on the strength of a socket that never
     // carried the message.
     let live_sessions = state.registry.live_sessions(&candidates).await;
-    let devices = devices_for_users(&state.pool, &candidates).await?;
+    let devices = devices_for_users(state, &candidates).await?;
     let devices = devices_to_wake(devices, &live_sessions, Some(message.sender_id));
     if devices.is_empty() {
         return Ok(());
@@ -531,8 +532,9 @@ async fn push_message_to(
     .fetch_one(&state.pool)
     .await?;
     let chat_kind: String = row.get("kind");
-    let family_name: String = row.get("family_name");
-    let sender_name: String = row.get("sender_name");
+    // A group's name or the family's: one sealed value either way.
+    let family_name = row.text(&state.keys, "family_name")?;
+    let sender_name = row.text(&state.keys, "sender_name")?;
     // The family a tap should open the app in (docs/protocol.md, "Several
     // families"): a family chat's, a group's or an `ai` chat's own. A direct
     // chat carries none — it belongs to the pair, is listed in every family
@@ -609,15 +611,17 @@ pub async fn push_join_request_created(
     // in exactly one direction: it would make the member an owner has
     // stopped reading the member the owner is never told about.
     let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
-    let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
+    let devices = devices_for_users(state, &[owner_user_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
     }
-    let requester_name: String = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
-        .bind(requester_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let requester_name: Vec<u8> =
+        sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+            .bind(requester_id)
+            .fetch_one(&state.pool)
+            .await?;
+    let requester_name = state.keys.open_text(&requester_name)?;
     let badge = unread_badge(&state.pool, owner_user_id).await?;
     let note =
         push_payload::join_request_notification(family_name, &requester_name, family_id, badge);
@@ -658,7 +662,7 @@ pub async fn push_report_created(
     // moderating, which is the one thing this whole feature exists to make
     // impossible (protocol.md, "Push notifications").
     let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
-    let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
+    let devices = devices_for_users(state, &[owner_user_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
@@ -680,7 +684,7 @@ pub async fn push_join_approved(
     requester_id: i64,
 ) -> Result<(), ApiError> {
     let live_sessions = state.registry.live_sessions(&[requester_id]).await;
-    let devices = devices_for_users(&state.pool, &[requester_id]).await?;
+    let devices = devices_for_users(state, &[requester_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
@@ -721,7 +725,10 @@ struct DeviceTarget {
 /// `session_id IS NULL` survives this filter on purpose. That is the
 /// pre-0020 row that never told us anything, and the direction of the doubt
 /// has not changed for it.
-async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DeviceTarget>, ApiError> {
+async fn devices_for_users(
+    state: &AppState,
+    user_ids: &[i64],
+) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
         "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id, d.language
          FROM devices d
@@ -731,21 +738,23 @@ async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<Device
            AND (d.session_id IS NULL OR s.expires_at > now())",
     )
     .bind(user_ids)
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
     Ok(rows
         .iter()
-        .map(|row| DeviceTarget {
-            push: DevicePush {
-                device_id: row.get("id"),
-                user_id: row.get("user_id"),
-                platform: row.get("platform"),
-                push_token: row.get("push_token"),
-                language: row.get("language"),
-            },
-            session_id: row.get("session_id"),
+        .map(|row| {
+            Ok(DeviceTarget {
+                push: DevicePush {
+                    device_id: row.get("id"),
+                    user_id: row.get("user_id"),
+                    platform: row.get("platform"),
+                    push_token: row.text(&state.keys, "push_token")?,
+                    language: row.get("language"),
+                },
+                session_id: row.get("session_id"),
+            })
         })
-        .collect())
+        .collect::<Result<_, KeyError>>()?)
 }
 
 /// Narrow a set of candidate devices down to the ones actually worth
@@ -879,7 +888,10 @@ pub async fn has_wakeable_device(pool: &PgPool, user_id: i64) -> Result<bool, Ap
 /// own session is not already carrying a socket. For an iOS/macOS row the
 /// VoIP token is what the transport addresses, so it is loaded into
 /// `DevicePush.push_token`; an Android row uses its ordinary push token.
-async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<DeviceTarget>, ApiError> {
+async fn wakeable_call_devices(
+    state: &AppState,
+    user_id: i64,
+) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
         "SELECT d.id, d.user_id, d.platform, d.session_id, d.language,
                 CASE WHEN d.platform = 'android' THEN d.push_token ELSE d.voip_token END AS token
@@ -891,21 +903,23 @@ async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<Device
                 OR (d.platform = 'android' AND d.push_token IS NOT NULL))",
     )
     .bind(user_id)
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
     Ok(rows
         .iter()
-        .map(|row| DeviceTarget {
-            push: DevicePush {
-                device_id: row.get("id"),
-                user_id: row.get("user_id"),
-                platform: row.get("platform"),
-                push_token: row.get("token"),
-                language: row.get("language"),
-            },
-            session_id: row.get("session_id"),
+        .map(|row| {
+            Ok(DeviceTarget {
+                push: DevicePush {
+                    device_id: row.get("id"),
+                    user_id: row.get("user_id"),
+                    platform: row.get("platform"),
+                    push_token: row.text(&state.keys, "token")?,
+                    language: row.get("language"),
+                },
+                session_id: row.get("session_id"),
+            })
         })
-        .collect())
+        .collect::<Result<_, KeyError>>()?)
 }
 
 /// Ring the callee's offline devices for an incoming call (protocol.md,
@@ -920,7 +934,7 @@ pub async fn push_incoming_call(
     call: CallPush,
 ) -> Result<(), ApiError> {
     let live_sessions = state.registry.live_sessions(&[callee_id]).await;
-    let devices = wakeable_call_devices(&state.pool, callee_id).await?;
+    let devices = wakeable_call_devices(state, callee_id).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
@@ -942,7 +956,7 @@ fn spawn_notify_call(state: &AppState, devices: Vec<DevicePush>, call: CallPush)
             return;
         }
         if let Err(err) = sqlx::query(
-            "UPDATE devices SET voip_token = NULL
+            "UPDATE devices SET voip_token = NULL, voip_token_key = NULL
              WHERE id = ANY($1) AND platform IN ('ios', 'macos')",
         )
         .bind(&dead)
@@ -1354,7 +1368,7 @@ pub async fn push_invitation(
     // push: an app from before several families is not (`deliver_invitation`),
     // and its device must still be woken.
     let live_sessions = state.registry.live_multi_sessions(&[invited]).await;
-    let devices = devices_for_users(&state.pool, &[invited]).await?;
+    let devices = devices_for_users(state, &[invited]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());

@@ -44,6 +44,7 @@ use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::handlers_chat::{clamp_limit, parse_pagination_param};
+use crate::keyring::{KeyError, Keyring, Owner};
 use crate::models::{Attachment, PackItem};
 use crate::state::AppState;
 
@@ -159,6 +160,7 @@ async fn begin_pack_read(
 /// that read the items (`begin_pack_read`), and never on the pool.
 async fn attach_pictures(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    keys: &Keyring,
     items: &mut [PackItem],
 ) -> Result<(), ApiError> {
     let ids: Vec<i64> = items
@@ -177,8 +179,8 @@ async fn attach_pictures(
     .await?;
     let mut by_item: HashMap<i64, Attachment> = rows
         .iter()
-        .map(|row| (row.get("pack_item_id"), Attachment::from_row(row)))
-        .collect();
+        .map(|row| Ok((row.get("pack_item_id"), Attachment::from_row(row, keys)?)))
+        .collect::<Result<_, KeyError>>()?;
     for item in items.iter_mut() {
         item.attachment = by_item.remove(&item.id);
     }
@@ -207,20 +209,24 @@ async fn remove_file_after_commit(state: &AppState, storage_key: &str) {
 /// the answer to a claim that found the pack already holding what it named.
 async fn read_item(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    keys: &Keyring,
     item_id: i64,
 ) -> Result<PackItem, ApiError> {
     let row = sqlx::query(&format!("SELECT {PACK_COLS} FROM pack_items WHERE id = $1"))
         .bind(item_id)
         .fetch_one(&mut **tx)
         .await?;
-    let mut item = PackItem::from_row(&row);
+    let mut item = PackItem::from_row(&row, keys)?;
     let picture = sqlx::query(&format!(
         "SELECT {PICTURE_COLS} FROM attachments WHERE pack_item_id = $1"
     ))
     .bind(item_id)
     .fetch_optional(&mut **tx)
     .await?;
-    item.attachment = picture.as_ref().map(Attachment::from_row);
+    item.attachment = picture
+        .as_ref()
+        .map(|row| Attachment::from_row(row, keys))
+        .transpose()?;
     Ok(item)
 }
 
@@ -252,8 +258,11 @@ pub async fn get_pack(auth: AuthUser, State(state): State<AppState>) -> Result<R
     .bind(family_id)
     .fetch_all(&mut *tx)
     .await?;
-    let mut items: Vec<PackItem> = rows.iter().map(PackItem::from_row).collect();
-    attach_pictures(&mut tx, &mut items).await?;
+    let mut items: Vec<PackItem> = rows
+        .iter()
+        .map(|row| PackItem::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
+    attach_pictures(&mut tx, &state.keys, &mut items).await?;
     tx.commit().await?;
 
     Ok((
@@ -290,8 +299,11 @@ pub async fn get_pack_changes(
     .bind(limit)
     .fetch_all(&mut *tx)
     .await?;
-    let mut items: Vec<PackItem> = rows.iter().map(PackItem::from_row).collect();
-    attach_pictures(&mut tx, &mut items).await?;
+    let mut items: Vec<PackItem> = rows
+        .iter()
+        .map(|row| PackItem::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
+    attach_pictures(&mut tx, &state.keys, &mut items).await?;
     tx.commit().await?;
 
     Ok((StatusCode::OK, Json(json!({"items": items}))).into_response())
@@ -364,7 +376,7 @@ pub async fn add_pack_item(
     // item — `attachment_already_used` would tell a client its sticker was
     // refused when it was in fact added.
     if let Some(item_id) = upload.get::<Option<i64>, _>("pack_item_id") {
-        let item = read_item(&mut tx, item_id).await?;
+        let item = read_item(&mut tx, &state.keys, item_id).await?;
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(json!({"item": item}))).into_response());
     }
@@ -434,7 +446,7 @@ pub async fn add_pack_item(
                 .bind(req.attachment_id)
                 .execute(&mut *tx)
                 .await?;
-            let item = read_item(&mut tx, item_id).await?;
+            let item = read_item(&mut tx, &state.keys, item_id).await?;
             tx.commit().await?;
             remove_file_after_commit(&state, &storage_key).await;
             return Ok((StatusCode::OK, Json(json!({"item": item}))).into_response());
@@ -460,6 +472,8 @@ pub async fn add_pack_item(
     let seq: i64 = sqlx::query_scalar("SELECT nextval('family_pack_seq')")
         .fetch_one(&mut *tx)
         .await?;
+    // The label is sealed under the family's key (#59).
+    let key = state.keys.key(&mut *tx, Owner::Family(family_id)).await?;
     let row = sqlx::query(&format!(
         "INSERT INTO pack_items (family_id, added_by, label, pack_seq)
          VALUES ($1, $2, $3, $4)
@@ -467,12 +481,12 @@ pub async fn add_pack_item(
     ))
     .bind(family_id)
     .bind(auth.user_id)
-    .bind(label.as_deref())
+    .bind(key.seal_opt(label.as_deref()))
     .bind(seq)
     .fetch_one(&mut *tx)
     .await?;
     advance_family_seq(&mut tx, family_id, seq).await?;
-    let mut item = PackItem::from_row(&row);
+    let mut item = PackItem::from_row(&row, &state.keys)?;
 
     // The claim, in the transaction that made the item: an item committed
     // beside an unclaimed picture would point at nothing, and the sweep
@@ -485,7 +499,9 @@ pub async fn add_pack_item(
     .bind(item.id)
     .fetch_one(&mut *tx)
     .await?;
-    item.attachment = Some(Attachment::from_row(&picture));
+    // Nothing to re-seal (#59): a sticker stays with its family, whose key
+    // the upload was sealed under.
+    item.attachment = Some(Attachment::from_row(&picture, &state.keys)?);
     tx.commit().await?;
 
     events::log_fanout_error(
@@ -570,7 +586,7 @@ pub async fn remove_pack_item(
     tx.commit().await?;
     // The frame FIRST, then the file: from the commit on, nothing may stand
     // between a removal and the members being told of it.
-    let item = PackItem::from_row(&row);
+    let item = PackItem::from_row(&row, &state.keys)?;
     events::log_fanout_error(
         "pack_item",
         events::deliver_pack_item(&state, family_id, &item).await,

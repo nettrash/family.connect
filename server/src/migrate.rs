@@ -13,6 +13,9 @@ use anyhow::{Context, Result};
 use sqlx::{Acquire, PgConnection, PgPool};
 use tracing::info;
 
+use crate::keyring::Keyring;
+use crate::seal_existing;
+
 /// A single migration step, embedded in the binary at compile time so the
 /// deployed artifact never depends on files on disk.
 pub struct Migration {
@@ -313,14 +316,60 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "session_families",
         sql: include_str!("../migrations/0058_session_families.sql"),
     },
+    Migration {
+        version: 59,
+        name: "encryption_at_rest",
+        sql: include_str!("../migrations/0059_encryption_at_rest.sql"),
+    },
+    Migration {
+        version: 60,
+        name: "sealed",
+        sql: include_str!("../migrations/0060_sealed.sql"),
+    },
+];
+
+/// The first migration that may run only once every value is sealed. Before
+/// it, the migrator runs the conversion that seals what 0059 left behind
+/// (`seal_existing`), and on a database that held anything, compacts the
+/// converted tables so the old plaintext row versions leave the table files.
+pub const SEALED_FROM: i32 = 60;
+
+/// The tables `VACUUM FULL` compacts after the conversion: every table whose
+/// rows held plaintext before 0059.
+const CONVERTED_TABLES: &[&str] = &[
+    "families",
+    "join_requests",
+    "chats",
+    "users",
+    "user_avatars",
+    "devices",
+    "messages",
+    "message_reactions",
+    "message_mentions",
+    "poll_options",
+    "transcripts",
+    "notes",
+    "note_task_items",
+    "note_mentions",
+    "pack_items",
+    "member_reports",
+    "assistant_reports",
+    "attachments",
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among
 /// advisory locks on the database ("famconn" left-padded, as it were).
-const ADVISORY_LOCK_KEY: i64 = 0x66616d_636f6e6e;
+pub const ADVISORY_LOCK_KEY: i64 = 0x66616d_636f6e6e;
 
-/// Apply every migration that is not yet recorded in `schema_migrations`.
-pub async fn run(pool: &PgPool) -> Result<()> {
+/// Apply every migration that is not yet recorded in `schema_migrations`,
+/// sealing the database on the way if it predates encryption at rest.
+pub async fn run(pool: &PgPool, keys: &Keyring) -> Result<()> {
+    run_up_to(pool, keys, i32::MAX).await
+}
+
+/// Apply the pending migrations up to and including `last` — how the upgrade
+/// test builds a database as an older version of the server left it.
+pub async fn run_up_to(pool: &PgPool, keys: &Keyring, last: i32) -> Result<()> {
     let mut conn = pool
         .acquire()
         .await
@@ -333,7 +382,7 @@ pub async fn run(pool: &PgPool) -> Result<()> {
         .context("taking the migration advisory lock")?;
 
     // Run the body, then unlock unconditionally before propagating any error.
-    let result = apply_pending(&mut conn).await;
+    let result = apply_pending(&mut conn, keys, last).await;
 
     let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(ADVISORY_LOCK_KEY)
@@ -346,7 +395,7 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-async fn apply_pending(conn: &mut PgConnection) -> Result<()> {
+async fn apply_pending(conn: &mut PgConnection, keys: &Keyring, last: i32) -> Result<()> {
     sqlx::raw_sql(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
              version    INTEGER PRIMARY KEY,
@@ -364,8 +413,28 @@ async fn apply_pending(conn: &mut PgConnection) -> Result<()> {
         .context("reading applied migrations")?;
 
     for migration in MIGRATIONS {
+        if migration.version > last {
+            break;
+        }
         if applied.contains(&migration.version) {
             continue;
+        }
+        if migration.version == SEALED_FROM {
+            let sealed = seal_existing::run(&mut *conn, keys)
+                .await
+                .context("sealing the database (#59)")?;
+            // Outside any transaction, as VACUUM must be, and BEFORE 0060 is
+            // recorded: a server stopped in the middle of it seals nothing new
+            // on its next start but compacts again, because 0060 is still
+            // pending. A fresh database has nothing to compact.
+            if sealed.had_data {
+                info!("compacting the converted tables");
+                sqlx::raw_sql(&format!("VACUUM (FULL) {}", CONVERTED_TABLES.join(", ")))
+                    .execute(&mut *conn)
+                    .await
+                    .context("compacting the converted tables")?;
+                info!("compacted the converted tables");
+            }
         }
         // Each migration commits atomically together with its bookkeeping
         // row: either both land or neither does.

@@ -68,6 +68,15 @@ rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
 
+# Encryption at rest (#59, src/vault.rs): XChaCha20-Poly1305 seals every
+# value and file chunk — pure Rust, a 192-bit nonce so random nonces never
+# need counting — and HKDF-SHA256 derives the wrapping and lookup keys from
+# the server key. hkdf was already in the tree under sqlx-postgres. The
+# 0.10 line of the AEAD for its settled API; "getrandom" is left off because
+# every nonce comes from rand's OsRng, as the session tokens do.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+
 # URL-safe base64 for the opaque session tokens handed to clients.
 base64 = "0.22"
 

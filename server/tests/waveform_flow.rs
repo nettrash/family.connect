@@ -14,6 +14,7 @@ mod common;
 use std::time::Duration;
 
 use common::{TestServer, assert_error, spawn_server};
+use family_connect::keyring::Owner;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
@@ -261,14 +262,17 @@ async fn a_voice_notes_waveform_round_trips_on_every_read() {
     assert_eq!(edits["messages"][0]["id"], message_id);
     assert_eq!(edits["messages"][0]["attachments"][0]["waveform"], SHAPE);
 
-    // Stored as given.
-    let stored: Option<String> =
+    // Stored as given — sealed (#59), and opening to exactly what was sent.
+    let stored: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT waveform FROM attachments WHERE id = $1")
             .bind(id)
             .fetch_one(&server.state.pool)
             .await
             .expect("reading the row");
-    assert_eq!(stored.as_deref(), Some(SHAPE));
+    assert_eq!(
+        stored.map(|sealed| server.open_text(&sealed)).as_deref(),
+        Some(SHAPE)
+    );
 }
 
 /// Without one — a picked sound file, an old client — the key is ABSENT,
@@ -479,14 +483,18 @@ async fn a_waveform_on_any_other_kind_is_refused() {
 // --- 0053's CHECK ---------------------------------------------------------------
 
 /// The half no request can reach: a write that bypasses the upload meets
-/// the constraint — a waveform only on audio, and only well-formed — rather
+/// the constraints — a waveform only on audio, and only ever sealed — rather
 /// than a row the protocol forbids. And the column's default is the truth
 /// about the past: nothing uploaded without one has one.
+///
+/// Its FORM (48 lowercase hex digits) was 0053's to check too, until the
+/// value was sealed (#59): the database cannot read it any more, and the
+/// upload has always refused a malformed one before it got this far.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
-async fn the_0053_check_keeps_waveforms_on_audio_and_well_formed() {
+async fn the_checks_keep_waveforms_on_audio_and_sealed() {
     let server = spawn_server().await;
-    let (owner, _member, _chat_id) = family_of_two(&server).await;
+    let (owner, _member, chat_id) = family_of_two(&server).await;
 
     let audio = upload(
         &server,
@@ -548,7 +556,7 @@ async fn the_0053_check_keeps_waveforms_on_audio_and_well_formed() {
         Ok(_) => None,
         Err(other) => panic!("not a constraint refusal: {other}"),
     };
-    let set = |id: i64, value: String| {
+    let set = |id: i64, value: Vec<u8>| {
         let pool = server.state.pool.clone();
         async move {
             sqlx::query("UPDATE attachments SET waveform = $2 WHERE id = $1")
@@ -558,28 +566,31 @@ async fn the_0053_check_keeps_waveforms_on_audio_and_well_formed() {
                 .await
         }
     };
+    // Sealed as the server seals it: under the family's key, which is the
+    // family chat's.
+    let sealed = server.seal(Owner::Chat(chat_id), SHAPE).await;
 
     for other in &others {
         let id = other["id"].as_i64().expect("id");
         assert_eq!(
-            constraint_of(set(id, SHAPE.to_string()).await).as_deref(),
+            constraint_of(set(id, sealed.clone()).await).as_deref(),
             Some("attachments_waveform_is_audio"),
             "{other}"
         );
     }
-    for malformed in [
-        String::new(),
-        "0".repeat(47),
-        SHAPE.to_uppercase(),
-        format!("{SHAPE}\n"),
+    // In the clear, or behind the conversion's "not sealed yet" byte: either
+    // way refused.
+    for unsealed in [
+        SHAPE.as_bytes().to_vec(),
+        [b"\0".as_slice(), SHAPE.as_bytes()].concat(),
     ] {
         assert_eq!(
-            constraint_of(set(audio, malformed.clone()).await).as_deref(),
-            Some("attachments_waveform_is_audio"),
-            "{malformed:?}"
+            constraint_of(set(audio, unsealed.clone()).await).as_deref(),
+            Some("attachments_waveform_sealed"),
+            "{unsealed:?}"
         );
     }
-    set(audio, SHAPE.to_string())
+    set(audio, sealed)
         .await
-        .expect("a well-formed waveform on audio is the allowed state");
+        .expect("a sealed waveform on audio is the allowed state");
 }

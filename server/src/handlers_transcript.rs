@@ -52,6 +52,7 @@ use crate::auth::AuthUser;
 use crate::config::TranscribeRoute;
 use crate::error::{ApiError, codes};
 use crate::handlers_chat::ensure_chat_access;
+use crate::keyring::{KeyError, Owner, SealedRow};
 use crate::state::AppState;
 
 /// How many transcription calls may be in flight on one server at once.
@@ -141,6 +142,9 @@ struct Held {
     size_bytes: i64,
     duration_ms: Option<i32>,
     storage_key: String,
+    /// The recording's own key, sealed (#59) — `None` for a file from before
+    /// encryption at rest that the background conversion has not reached.
+    file_key: Option<Vec<u8>>,
 }
 
 /// What a call is FOR — handed to the spawned task, which outlives the
@@ -149,6 +153,9 @@ struct Ask {
     route: TranscribeRoute,
     asker: i64,
     family_id: Option<i64>,
+    /// The chat the recording was sent in: a transcript is sealed under its
+    /// key, and goes with it (#59).
+    chat_id: i64,
     message_id: i64,
     attachment_id: i64,
     duration_ms: Option<i32>,
@@ -247,6 +254,7 @@ pub async fn transcript(
         route,
         asker: auth.user_id,
         family_id,
+        chat_id,
         message_id,
         attachment_id,
         duration_ms: held.duration_ms,
@@ -315,7 +323,7 @@ async fn load(
         ));
     };
     let attachment = sqlx::query(
-        "SELECT kind, mime, size_bytes, duration_ms, storage_key
+        "SELECT kind, mime, size_bytes, duration_ms, storage_key, file_key
          FROM attachments
          WHERE id = $1 AND message_id = $2",
     )
@@ -341,6 +349,7 @@ async fn load(
         storage_key: attachment
             .get::<Option<String>, _>("storage_key")
             .unwrap_or_default(),
+        file_key: attachment.get("file_key"),
     })
 }
 
@@ -396,10 +405,14 @@ async fn stored_answer(
         .bind(attachment_id)
         .fetch_optional(&state.pool)
         .await?;
-    Ok(row.map(|row| Transcript {
-        text: row.get("text"),
-        language: row.get("language"),
-    }))
+    Ok(row
+        .map(|row| {
+            Ok::<_, KeyError>(Transcript {
+                text: row.text(&state.keys, "text")?,
+                language: row.get("language"),
+            })
+        })
+        .transpose()?)
 }
 
 /// `200 {"transcript": {"text": "…", "language": "ru"}}` — `language` only
@@ -516,11 +529,27 @@ async fn call_with_stored_bytes(
         .find(|(mime, _)| *mime == held.mime)
         .map(|(mime, _)| *mime)
         .unwrap_or(SUPPLIED_MIME);
-    let path = state.storage.blob_path(&held.storage_key);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
+    // Opened from its seal (#59), or read as it is when the background
+    // conversion has not reached it yet.
+    let bytes = match crate::handlers_attachment::read_whole(
+        state,
+        &held.storage_key,
+        false,
+        held.file_key.as_deref(),
+    )
+    .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            warn!(
+                attachment_id = ask.attachment_id,
+                "a recording to transcribe is not on disk"
+            );
+            log_outcome(ask, "failed");
+            return Outcome::Failed;
+        }
         Err(error) => {
-            warn!(attachment_id = ask.attachment_id, %error, "could not read a recording to transcribe");
+            warn!(attachment_id = ask.attachment_id, error = ?error, "could not read a recording to transcribe");
             log_outcome(ask, "failed");
             return Outcome::Failed;
         }
@@ -540,16 +569,22 @@ async fn call_with_stored_bytes(
         // can only already be here if a second call was somehow made; the
         // first answer stands. A failure to keep it is not the asker's
         // problem: they get their answer, and the next asker pays again.
-        if let Err(error) = sqlx::query(
-            "INSERT INTO transcripts (attachment_id, text, language) VALUES ($1, $2, $3)
-             ON CONFLICT (attachment_id) DO NOTHING",
-        )
-        .bind(ask.attachment_id)
-        .bind(&transcript.text)
-        .bind(&transcript.language)
-        .execute(&state.pool)
-        .await
-        {
+        // Sealed under the chat's key (#59).
+        let kept = match state.keys.key(&state.pool, Owner::Chat(ask.chat_id)).await {
+            Ok(key) => sqlx::query(
+                "INSERT INTO transcripts (attachment_id, text, language) VALUES ($1, $2, $3)
+                 ON CONFLICT (attachment_id) DO NOTHING",
+            )
+            .bind(ask.attachment_id)
+            .bind(key.seal_str(&transcript.text))
+            .bind(&transcript.language)
+            .execute(&state.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = kept {
             warn!(attachment_id = ask.attachment_id, %error, "could not keep a transcript");
         }
         log_outcome(ask, "stored");

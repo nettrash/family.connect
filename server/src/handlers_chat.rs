@@ -24,6 +24,7 @@ use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::handlers_call::attach_calls;
 use crate::handlers_poll::attach_polls;
+use crate::keyring::{KeyError, Keyring, Owner, SealKey, SealedRow};
 use crate::models::{
     Attachment, Chat, ChatListEntry, Mention, Message, Poll, QuotedParent, Reaction, ReplyTo,
 };
@@ -315,7 +316,7 @@ async fn attach_reactions(state: &AppState, messages: &mut [Message]) -> Result<
             .or_default()
             .push(Reaction {
                 user_id: row.get("user_id"),
-                emoji: row.get("emoji"),
+                emoji: row.text(&state.keys, "emoji")?,
             });
     }
     for message in messages.iter_mut() {
@@ -339,7 +340,7 @@ async fn attach_reactions(state: &AppState, messages: &mut [Message]) -> Result<
 /// first element. Never one without the other, and neither on a message
 /// that carries none — absent, not an empty array, on the wire.
 pub async fn attach_attachments(
-    pool: &sqlx::PgPool,
+    state: &AppState,
     messages: &mut [Message],
 ) -> Result<(), ApiError> {
     if messages.is_empty() {
@@ -355,14 +356,14 @@ pub async fn attach_attachments(
          ORDER BY message_id, position, id",
     )
     .bind(&message_ids)
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
     let mut by_message: HashMap<i64, Vec<Attachment>> = HashMap::new();
     for row in &rows {
         by_message
             .entry(row.get("message_id"))
             .or_default()
-            .push(Attachment::from_row(row));
+            .push(Attachment::from_row(row, &state.keys)?);
     }
     for message in messages.iter_mut() {
         if let Some(list) = by_message.remove(&message.id) {
@@ -378,10 +379,7 @@ pub async fn attach_attachments(
 /// the same members on every read: a page, the edits catch-up, a thread, a
 /// dedup re-ack (protocol.md, "Mentioning a member"). Absent, never an
 /// empty array, on a message that names nobody.
-pub async fn attach_mentions(
-    pool: &sqlx::PgPool,
-    messages: &mut [Message],
-) -> Result<(), ApiError> {
+pub async fn attach_mentions(state: &AppState, messages: &mut [Message]) -> Result<(), ApiError> {
     if messages.is_empty() {
         return Ok(());
     }
@@ -393,7 +391,7 @@ pub async fn attach_mentions(
          ORDER BY message_id, position",
     )
     .bind(&message_ids)
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
     let mut by_message: HashMap<i64, Vec<Mention>> = HashMap::new();
     for row in &rows {
@@ -402,7 +400,7 @@ pub async fn attach_mentions(
             .or_default()
             .push(Mention {
                 user_id: row.get("user_id"),
-                name: row.get("name"),
+                name: row.text(&state.keys, "name")?,
             });
     }
     for message in messages.iter_mut() {
@@ -859,7 +857,7 @@ pub async fn create_message(
             let grandparent = match (
                 parent.get::<Option<i64>, _>("g_id"),
                 parent.get::<Option<i64>, _>("g_sender_id"),
-                parent.get::<Option<String>, _>("g_body"),
+                parent.text_opt(&state.keys, "g_body")?,
             ) {
                 (Some(id), Some(sender_id), Some(body)) => {
                     Some(QuotedParent::new(id, sender_id, &body))
@@ -870,7 +868,7 @@ pub async fn create_message(
                 ReplyTo::new(
                     parent.get("id"),
                     parent.get("sender_id"),
-                    parent.get::<String, _>("body").as_str(),
+                    &parent.text(&state.keys, "body")?,
                 )
                 .with_parent(grandparent),
             )
@@ -886,6 +884,10 @@ pub async fn create_message(
     // empty body, what everyone would be left with is a permanent, blank,
     // undeletable bubble that is also the chat's newest message.
     let mut tx = state.pool.begin().await?;
+    // The body, the mentions and the poll options are sealed under the
+    // chat's key (#59) — its own for a group, a direct or an assistant chat,
+    // the family's for the family chat.
+    let key = state.keys.key(&mut *tx, Owner::Chat(chat_id)).await?;
 
     // The chain's root, decided here and never again: the quoted message's
     // own root when it is a reply, the quoted message itself when it is
@@ -904,13 +906,13 @@ pub async fn create_message(
     .bind(chat_id)
     .bind(sender_id)
     .bind(client_msg_id)
-    .bind(body)
+    .bind(key.seal_str(body))
     .bind(reply_to_message_id)
     .fetch_optional(&mut *tx)
     .await?;
 
     if let Some(row) = inserted {
-        let mut message = Message::from_row(&row);
+        let mut message = Message::from_row(&row, &state.keys)?;
         // RETURNING cannot join, so the snippet resolved above is attached
         // here rather than re-read.
         message.reply_to = reply_to;
@@ -951,6 +953,8 @@ pub async fn create_message(
                     position,
                     claim_attachment(
                         &mut tx,
+                        &state.keys,
+                        &key,
                         attachment_id,
                         sender_id,
                         message.id,
@@ -1077,7 +1081,7 @@ pub async fn create_message(
                 )
                 .bind(message.id)
                 .bind(mention.user_id)
-                .bind(&mention.name)
+                .bind(key.seal_str(&mention.name))
                 .bind(position as i32)
                 .execute(&mut *tx)
                 .await?;
@@ -1091,8 +1095,14 @@ pub async fn create_message(
             // `chat_id` is taken from the row just inserted, not from the
             // request — nothing in the schema ties the two together.
             message.poll = Some(
-                crate::handlers_poll::create_poll(&mut tx, message.chat_id, message.id, options)
-                    .await?,
+                crate::handlers_poll::create_poll(
+                    &mut tx,
+                    &key,
+                    message.chat_id,
+                    message.id,
+                    options,
+                )
+                .await?,
             );
         }
         tx.commit().await?;
@@ -1147,7 +1157,7 @@ pub async fn create_message(
     .bind(client_msg_id)
     .fetch_one(&state.pool)
     .await?;
-    let mut message = Message::from_row(&row);
+    let mut message = Message::from_row(&row, &state.keys)?;
     // A retry re-acks the ORIGINAL message, which is a `Message` like any
     // other and must be hydrated like one. Both of these are load-bearing
     // rather than tidy:
@@ -1163,10 +1173,10 @@ pub async fn create_message(
     //     first write won, poll and all — and a client that retried would
     //     otherwise draw the question with no options.
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
-    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(state, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(state, std::slice::from_mut(&mut message)).await?;
     Ok((message, false))
 }
 
@@ -1262,9 +1272,11 @@ pub async fn apply_edit(
     // rewrite like any other. Only the body changes below — the flag lives
     // on the attachment, which no edit touches.
 
-    let current_body: String = locked.get("body");
+    // Compared opened (#59): two sealings of the same words never match.
+    let current_body = locked.text(&state.keys, "body")?;
     let changed = current_body != body;
     if changed {
+        let key = state.keys.key(&mut *tx, Owner::Chat(chat_id)).await?;
         let seq: i64 = sqlx::query_scalar("SELECT nextval('message_edit_seq')")
             .fetch_one(&mut *tx)
             .await?;
@@ -1272,7 +1284,7 @@ pub async fn apply_edit(
             "UPDATE messages SET body = $2, edit_seq = $3, edited_at = now() WHERE id = $1",
         )
         .bind(message_id)
-        .bind(&body)
+        .bind(key.seal_str(&body))
         .bind(seq)
         .execute(&mut *tx)
         .await?;
@@ -1309,12 +1321,12 @@ pub async fn fetch_message(
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let mut message = Message::from_row(&row);
+    let mut message = Message::from_row(&row, &state.keys)?;
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
-    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(state, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(state, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -1338,12 +1350,12 @@ pub async fn fetch_message_by_client_id(
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let mut message = Message::from_row(&row);
+    let mut message = Message::from_row(&row, &state.keys)?;
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
-    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(state, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
-    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(state, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -1387,6 +1399,10 @@ pub fn merge_attachment_ids(
 #[allow(clippy::too_many_arguments)]
 async fn claim_attachment(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    keys: &Keyring,
+    // The chat's key: a claimed upload's file key and words are re-sealed
+    // under it (#59), so the picture goes with the conversation.
+    holder: &SealKey,
     attachment_id: i64,
     uploader_id: i64,
     message_id: i64,
@@ -1433,7 +1449,9 @@ async fn claim_attachment(
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
-        return Ok(Attachment::from_row(&row));
+        let attachment = Attachment::from_row(&row, keys)?;
+        crate::handlers_attachment::reseal_for(tx, keys, attachment_id, holder).await?;
+        return Ok(attachment);
     }
 
     // Tell "already claimed" apart from "not yours / no such thing" — the
@@ -1556,24 +1574,41 @@ pub async fn apply_reaction(
     };
     let current_seq: i64 = locked.get("reaction_seq");
 
-    // RETURNING yields a row only when something was actually written, so
-    // a re-PUT of the same emoji or a DELETE of nothing is detected here
-    // and burns neither a sequence value nor a fan-out.
+    // A re-PUT of the same emoji or a DELETE of nothing is detected here
+    // and burns neither a sequence value nor a fan-out. The emoji is sealed
+    // (#59), so "the same" is decided on the opened value rather than by the
+    // database — under the message lock taken above, which no other reaction
+    // to this message can get past.
     let changed = match &emoji {
-        Some(emoji) => sqlx::query(
-            "INSERT INTO message_reactions (message_id, user_id, emoji)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (message_id, user_id) DO UPDATE
-             SET emoji = EXCLUDED.emoji, created_at = now()
-             WHERE message_reactions.emoji IS DISTINCT FROM EXCLUDED.emoji
-             RETURNING message_id",
-        )
-        .bind(message_id)
-        .bind(user_id)
-        .bind(emoji)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some(),
+        Some(emoji) => {
+            let current: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT emoji FROM message_reactions WHERE message_id = $1 AND user_id = $2",
+            )
+            .bind(message_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let current = current
+                .map(|sealed| state.keys.open_text(&sealed))
+                .transpose()?;
+            if current.as_deref() == Some(emoji.as_str()) {
+                false
+            } else {
+                let key = state.keys.key(&mut *tx, Owner::Chat(chat_id)).await?;
+                sqlx::query(
+                    "INSERT INTO message_reactions (message_id, user_id, emoji)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (message_id, user_id) DO UPDATE
+                     SET emoji = EXCLUDED.emoji, created_at = now()",
+                )
+                .bind(message_id)
+                .bind(user_id)
+                .bind(key.seal_str(emoji))
+                .execute(&mut *tx)
+                .await?;
+                true
+            }
+        }
         None => sqlx::query(
             "DELETE FROM message_reactions
              WHERE message_id = $1 AND user_id = $2
@@ -1609,7 +1644,7 @@ pub async fn apply_reaction(
         current_seq
     };
 
-    let reactions = fetch_reaction_rows(&mut *tx, message_id).await?;
+    let reactions = fetch_reaction_rows(&mut *tx, &state.keys, message_id).await?;
     tx.commit().await?;
 
     Ok(ReactionState {
@@ -1622,7 +1657,11 @@ pub async fn apply_reaction(
 }
 
 /// A message's current reactions, in stable (created_at, user_id) order.
-async fn fetch_reaction_rows<'e, E>(executor: E, message_id: i64) -> Result<Vec<Reaction>, ApiError>
+async fn fetch_reaction_rows<'e, E>(
+    executor: E,
+    keys: &Keyring,
+    message_id: i64,
+) -> Result<Vec<Reaction>, ApiError>
 where
     E: sqlx::PgExecutor<'e>,
 {
@@ -1636,11 +1675,13 @@ where
     .await?;
     Ok(rows
         .iter()
-        .map(|row| Reaction {
-            user_id: row.get("user_id"),
-            emoji: row.get("emoji"),
+        .map(|row| {
+            Ok(Reaction {
+                user_id: row.get("user_id"),
+                emoji: row.text(keys, "emoji")?,
+            })
         })
-        .collect())
+        .collect::<Result<_, KeyError>>()?)
 }
 
 /// `GET /chats` — every chat the caller is a member of, with a last-message
@@ -1850,7 +1891,7 @@ pub async fn list_chats(
                     height: None,
                     duration_ms: None,
                     has_preview: row.get("has_preview"),
-                    name: row.get("name"),
+                    name: row.text_opt(&state.keys, "name")?,
                     latitude: None,
                     longitude: None,
                     accuracy_m: None,
@@ -1877,16 +1918,17 @@ pub async fn list_chats(
         .map(|row| {
             let kind: String = row.get("kind");
             let peer_user_id: Option<i64> = row.get("peer_user_id");
+            // Whichever name the row needs is opened, and only that one.
             let title: String = match kind.as_str() {
-                "family" => row.get("family_name"),
+                "family" => row.text(&state.keys, "family_name")?,
                 // The assistant has no peer to name it after — and its
                 // reserved account is not in the roster, so a lookup would
                 // find nothing anyway.
                 "ai" => state.cfg.ai.title.clone(),
                 "group" => row
-                    .get::<Option<String>, _>("group_title")
+                    .text_opt(&state.keys, "group_title")?
                     .unwrap_or_default(),
-                _ => row.get("peer_display_name"),
+                _ => row.text(&state.keys, "peer_display_name")?,
             };
             let (member_ids, admin_user_id) = if kind == "group" {
                 (
@@ -1900,56 +1942,59 @@ pub async fn list_chats(
                 (None, None)
             };
             let chat_id: i64 = row.get("chat_id");
-            let last_message = row.get::<Option<i64>, _>("last_id").map(|last_id| {
-                // The attachments DO come along: without them a client has
-                // nothing to write on the row for a caption-less photo.
-                // Hydrated above; the legacy `attachment` is the first
-                // element, exactly as on a full message.
-                let attachments = preview_attachments.remove(&last_id);
-                Message {
-                    id: last_id,
-                    chat_id,
-                    sender_id: row.get("last_sender_id"),
-                    client_msg_id: row.get("last_client_msg_id"),
-                    body: row.get("last_body"),
-                    created_at: row.get("last_created_at"),
-                    reactions: None,
-                    reaction_seq: None,
-                    // Previews carry neither reactions nor the quote: the chat
-                    // list draws one line of text, not a bubble.
-                    reply_to: None,
-                    // Nor the chain: a preview is one line of text, and
-                    // "N replies" is drawn on the bubble it belongs to.
-                    thread_root_id: None,
-                    reply_count: None,
-                    // Nor who it names: the mark is on the row, not the preview.
-                    mentions: None,
-                    // Nor the edit stamps — the preview is the current text,
-                    // and whether it was edited is a bubble's business.
-                    edited_at: None,
-                    edit_seq: None,
-                    attachment: attachments.as_ref().and_then(|list| list.first().cloned()),
-                    attachments,
-                    // Nor the poll. A poll's QUESTION is the body, which the
-                    // preview already carries — the options are a bubble's
-                    // business and three tables' worth of reads per chat.
-                    poll: None,
-                    // The call record DOES come along: its placeholder body is
-                    // not something a client should show, so a preview needs the
-                    // outcome to draw its own line ("Missed voice call", "5:12").
-                    call: row.get::<Option<String>, _>("call_outcome").map(|outcome| {
-                        crate::models::CallRecord {
-                            outcome,
-                            duration_secs: row.get("call_duration_secs"),
-                            video: row.get::<Option<bool>, _>("call_video").unwrap_or(false),
-                        }
-                    }),
-                }
-            });
+            let last_message = row
+                .get::<Option<i64>, _>("last_id")
+                .map(|last_id| -> Result<Message, KeyError> {
+                    // The attachments DO come along: without them a client has
+                    // nothing to write on the row for a caption-less photo.
+                    // Hydrated above; the legacy `attachment` is the first
+                    // element, exactly as on a full message.
+                    let attachments = preview_attachments.remove(&last_id);
+                    Ok(Message {
+                        id: last_id,
+                        chat_id,
+                        sender_id: row.get("last_sender_id"),
+                        client_msg_id: row.get("last_client_msg_id"),
+                        body: row.text(&state.keys, "last_body")?,
+                        created_at: row.get("last_created_at"),
+                        reactions: None,
+                        reaction_seq: None,
+                        // Previews carry neither reactions nor the quote: the chat
+                        // list draws one line of text, not a bubble.
+                        reply_to: None,
+                        // Nor the chain: a preview is one line of text, and
+                        // "N replies" is drawn on the bubble it belongs to.
+                        thread_root_id: None,
+                        reply_count: None,
+                        // Nor who it names: the mark is on the row, not the preview.
+                        mentions: None,
+                        // Nor the edit stamps — the preview is the current text,
+                        // and whether it was edited is a bubble's business.
+                        edited_at: None,
+                        edit_seq: None,
+                        attachment: attachments.as_ref().and_then(|list| list.first().cloned()),
+                        attachments,
+                        // Nor the poll. A poll's QUESTION is the body, which the
+                        // preview already carries — the options are a bubble's
+                        // business and three tables' worth of reads per chat.
+                        poll: None,
+                        // The call record DOES come along: its placeholder body is
+                        // not something a client should show, so a preview needs the
+                        // outcome to draw its own line ("Missed voice call", "5:12").
+                        call: row.get::<Option<String>, _>("call_outcome").map(|outcome| {
+                            crate::models::CallRecord {
+                                outcome,
+                                duration_secs: row.get("call_duration_secs"),
+                                video: row.get::<Option<bool>, _>("call_video").unwrap_or(false),
+                            }
+                        }),
+                    })
+                })
+                .transpose()?;
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");
             let last_poll_seq: i64 = row.get("last_poll_seq");
-            ChatListEntry {
+            Ok(ChatListEntry {
                 chat: Chat {
                     id: chat_id,
                     kind,
@@ -1966,9 +2011,9 @@ pub async fn list_chats(
                 max_edit_seq: (last_edit_seq > 0).then_some(last_edit_seq),
                 max_poll_seq: (last_poll_seq > 0).then_some(last_poll_seq),
                 mentioned: row.get::<bool, _>("mentioned").then_some(true),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
 
     Ok((StatusCode::OK, Json(json!({"chats": chats}))).into_response())
 }
@@ -2037,20 +2082,32 @@ pub async fn direct_chat(
     // Y keeps one chat (and its history) across moves, and a family being
     // deleted can never take by cascade a chat whose row names it while the
     // pair still shares another.
-    let chat_id: i64 = sqlx::query_scalar(
-        "INSERT INTO chats (family_id, kind, user_a_id, user_b_id)
-         VALUES ($1, 'direct', $2, $3)
+    //
+    // A direct chat has a key of its own (#59), so it outlives any one family
+    // and goes with its account. The key made here is used only when the row
+    // is new; a chat that already existed keeps its own, and the new one is
+    // discarded in the same transaction.
+    let key = state.keys.create(&mut tx).await?;
+    let (chat_id, key_id): (i64, i64) = sqlx::query_as(
+        "INSERT INTO chats (family_id, kind, user_a_id, user_b_id, key_id)
+         VALUES ($1, 'direct', $2, $3, $5)
          ON CONFLICT (user_a_id, user_b_id) WHERE kind = 'direct'
          DO UPDATE SET family_id = CASE WHEN chats.family_id = ANY($4) THEN chats.family_id
                                         ELSE EXCLUDED.family_id END
-         RETURNING id",
+         RETURNING id, key_id",
     )
     .bind(shared[0])
     .bind(user_a)
     .bind(user_b)
     .bind(&shared)
+    .bind(key.id())
     .fetch_one(&mut *tx)
     .await?;
+    if key_id == key.id() {
+        state.keys.remember(Owner::Chat(chat_id), &key);
+    } else {
+        state.keys.discard(&mut tx, key).await?;
+    }
     sqlx::query(
         "INSERT INTO chat_members (chat_id, user_id)
          VALUES ($1, $2), ($1, $3)
@@ -2066,7 +2123,7 @@ pub async fn direct_chat(
     let chat = Chat {
         id: chat_id,
         kind: "direct".to_string(),
-        title: peer.get("display_name"),
+        title: peer.text(&state.keys, "display_name")?,
         peer_user_id: Some(req.user_id),
         member_ids: None,
         admin_user_id: None,
@@ -2129,12 +2186,15 @@ pub async fn get_messages(
         .await?
     };
 
-    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    let mut messages: Vec<Message> = rows
+        .iter()
+        .map(|row| Message::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
     attach_reactions(&state, &mut messages).await?;
-    attach_attachments(&state.pool, &mut messages).await?;
-    attach_polls(&state.pool, &mut messages).await?;
+    attach_attachments(&state, &mut messages).await?;
+    attach_polls(&state, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
-    attach_mentions(&state.pool, &mut messages).await?;
+    attach_mentions(&state, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -2317,12 +2377,15 @@ pub async fn get_edits(
     .fetch_all(&state.pool)
     .await?;
 
-    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    let mut messages: Vec<Message> = rows
+        .iter()
+        .map(|row| Message::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
     attach_reactions(&state, &mut messages).await?;
-    attach_attachments(&state.pool, &mut messages).await?;
-    attach_polls(&state.pool, &mut messages).await?;
+    attach_attachments(&state, &mut messages).await?;
+    attach_polls(&state, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
-    attach_mentions(&state.pool, &mut messages).await?;
+    attach_mentions(&state, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -2384,12 +2447,15 @@ pub async fn get_open_polls(
     .fetch_all(&state.pool)
     .await?;
 
-    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    let mut messages: Vec<Message> = rows
+        .iter()
+        .map(|row| Message::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
     attach_reactions(&state, &mut messages).await?;
-    attach_attachments(&state.pool, &mut messages).await?;
-    attach_polls(&state.pool, &mut messages).await?;
+    attach_attachments(&state, &mut messages).await?;
+    attach_polls(&state, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
-    attach_mentions(&state.pool, &mut messages).await?;
+    attach_mentions(&state, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -2450,12 +2516,15 @@ pub async fn get_thread(
     .fetch_all(&state.pool)
     .await?;
 
-    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    let mut messages: Vec<Message> = rows
+        .iter()
+        .map(|row| Message::from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
     attach_reactions(&state, &mut messages).await?;
-    attach_attachments(&state.pool, &mut messages).await?;
-    attach_polls(&state.pool, &mut messages).await?;
+    attach_attachments(&state, &mut messages).await?;
+    attach_polls(&state, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
-    attach_mentions(&state.pool, &mut messages).await?;
+    attach_mentions(&state, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -2506,7 +2575,7 @@ pub async fn get_reactions(
                 .or_default()
                 .push(Reaction {
                     user_id: row.get("user_id"),
-                    emoji: row.get("emoji"),
+                    emoji: row.text(&state.keys, "emoji")?,
                 });
         }
     }

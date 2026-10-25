@@ -21,6 +21,7 @@ use sqlx::{PgConnection, Row};
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
+use crate::keyring::{Keyring, Owner, SealedRow};
 use crate::models::Chat;
 use crate::state::AppState;
 
@@ -121,7 +122,11 @@ async fn ensure_family_members(
 
 /// The group as `Chat`: its name, its members in the order they joined,
 /// and its admin.
-pub async fn group_chat(conn: &mut PgConnection, chat_id: i64) -> Result<Chat, ApiError> {
+pub async fn group_chat(
+    conn: &mut PgConnection,
+    keys: &Keyring,
+    chat_id: i64,
+) -> Result<Chat, ApiError> {
     let row = sqlx::query(
         "SELECT c.title, c.admin_user_id, c.family_id,
                 COALESCE((SELECT array_agg(gm.user_id ORDER BY gm.joined_at, gm.user_id)
@@ -138,7 +143,7 @@ pub async fn group_chat(conn: &mut PgConnection, chat_id: i64) -> Result<Chat, A
     Ok(Chat {
         id: chat_id,
         kind: "group".to_string(),
-        title: row.get::<Option<String>, _>("title").unwrap_or_default(),
+        title: row.text_opt(keys, "title")?.unwrap_or_default(),
         peer_user_id: None,
         member_ids: Some(row.get("member_ids")),
         admin_user_id: row.get("admin_user_id"),
@@ -351,7 +356,7 @@ pub async fn announce_exits(
 /// `chat_updated` with the group as it now stands, to every member.
 async fn announce_group(state: &AppState, chat_id: i64) {
     let chat = match state.pool.acquire().await {
-        Ok(mut conn) => group_chat(&mut conn, chat_id).await,
+        Ok(mut conn) => group_chat(&mut conn, &state.keys, chat_id).await,
         Err(error) => Err(error.into()),
     };
     match chat {
@@ -414,16 +419,21 @@ pub async fn create_group(
             "this family already has the most groups it may have",
         ));
     }
+    // A group has a key of its own (#59): deleting it makes what was said in
+    // it unreadable in every backup once the key copies have expired.
+    let key = state.keys.create(&mut tx).await?;
     let chat_id: i64 = sqlx::query_scalar(
-        "INSERT INTO chats (family_id, kind, title, admin_user_id)
-         VALUES ($1, 'group', $2, $3)
+        "INSERT INTO chats (family_id, kind, title, admin_user_id, key_id)
+         VALUES ($1, 'group', $2, $3, $4)
          RETURNING id",
     )
     .bind(family_id)
-    .bind(&title)
+    .bind(key.seal_str(&title))
     .bind(auth.user_id)
+    .bind(key.id())
     .fetch_one(&mut *tx)
     .await?;
+    state.keys.remember(Owner::Chat(chat_id), &key);
     // The creator first, then the others: `clock_timestamp()` moves on row
     // by row where `now()` is the transaction's one instant, so "the order
     // they joined" starts with the person who made the group.
@@ -443,7 +453,7 @@ pub async fn create_group(
     .bind(&members)
     .execute(&mut *tx)
     .await?;
-    let chat = group_chat(&mut tx, chat_id).await?;
+    let chat = group_chat(&mut tx, &state.keys, chat_id).await?;
     tx.commit().await?;
 
     events::log_fanout_error(
@@ -464,12 +474,13 @@ pub async fn rename_group(
     let group = lock_group(&mut tx, chat_id, auth.user_id).await?;
     let title = clean_title(&req.title)?;
     require_admin(&group, auth.user_id)?;
+    let key = state.keys.key(&mut *tx, Owner::Chat(chat_id)).await?;
     sqlx::query("UPDATE chats SET title = $2 WHERE id = $1")
         .bind(chat_id)
-        .bind(&title)
+        .bind(key.seal_str(&title))
         .execute(&mut *tx)
         .await?;
-    let chat = group_chat(&mut tx, chat_id).await?;
+    let chat = group_chat(&mut tx, &state.keys, chat_id).await?;
     tx.commit().await?;
 
     events::log_fanout_error(
@@ -523,7 +534,7 @@ pub async fn add_members(
         .execute(&mut *tx)
         .await?;
     }
-    let chat = group_chat(&mut tx, chat_id).await?;
+    let chat = group_chat(&mut tx, &state.keys, chat_id).await?;
     tx.commit().await?;
 
     if !added.is_empty() {
@@ -565,7 +576,7 @@ pub async fn remove_member(
             "that member is not in this group",
         ));
     }
-    let chat = group_chat(&mut tx, chat_id).await?;
+    let chat = group_chat(&mut tx, &state.keys, chat_id).await?;
     tx.commit().await?;
 
     events::log_fanout_error(

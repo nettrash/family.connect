@@ -988,13 +988,13 @@ async fn a_video_message_cannot_be_edited_and_is_told_so_last() {
 
     // Nothing moved: no body, no edit mark, no seq, still a video message.
     // (0 is "never edited": the column is NOT NULL DEFAULT 0, 0007.)
-    let (body, edit_seq): (String, i64) =
+    let (body, edit_seq): (Vec<u8>, i64) =
         sqlx::query_as("SELECT body, edit_seq FROM messages WHERE id = $1")
             .bind(round_id)
             .fetch_one(&server.state.pool)
             .await
             .expect("reading the row");
-    assert_eq!(body, "");
+    assert_eq!(server.open_text(&body), "");
     assert_eq!(edit_seq, 0, "a refused edit takes no edit_seq");
     let read = newest_message(&server, &member, chat_id).await;
     assert_eq!(read["id"], round_id);

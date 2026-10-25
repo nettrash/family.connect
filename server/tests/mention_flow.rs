@@ -223,7 +223,7 @@ async fn every_refusal_the_section_promises_is_validation() {
         "validation",
     )
     .await;
-    let assistant_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = 'assistant'")
+    let assistant_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE is_assistant")
         .fetch_one(&ts.state.pool)
         .await
         .expect("the assistant's row");

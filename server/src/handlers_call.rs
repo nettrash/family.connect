@@ -33,6 +33,7 @@ use crate::config::Config;
 use crate::error::{ApiError, codes};
 use crate::events;
 use crate::handlers_chat::ensure_chat_access;
+use crate::keyring::Owner;
 use crate::models::{CallRecord, IceCandidate, IceServer, Message};
 use crate::state::AppState;
 use crate::ws::ServerFrame;
@@ -288,7 +289,7 @@ async fn ring(
 
     // Ring: deliver the offer to every connection the callee has, and wake
     // the devices that have none.
-    let caller_name = display_name(&state.pool, auth.user_id).await?;
+    let caller_name = display_name(state, auth.user_id).await?;
     let offer_frame = ServerFrame::CallOffer {
         call_id,
         chat_id,
@@ -501,6 +502,8 @@ pub async fn finish_call(state: &AppState, ended: Ended) {
 async fn record_call(state: &AppState, ended: &Ended) -> Result<Message, ApiError> {
     let body = ended.outcome.placeholder_body(ended.video);
     let mut tx = state.pool.begin().await?;
+    // Even the placeholder is sealed: the column takes nothing else (#59).
+    let key = state.keys.key(&mut *tx, Owner::Chat(ended.chat_id)).await?;
     let inserted = sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
          VALUES ($1, $2, $3, $4)
@@ -510,7 +513,7 @@ async fn record_call(state: &AppState, ended: &Ended) -> Result<Message, ApiErro
     .bind(ended.chat_id)
     .bind(ended.caller_id)
     .bind(ended.call_id)
-    .bind(body)
+    .bind(key.seal_str(body))
     .fetch_optional(&mut *tx)
     .await?;
 
@@ -542,7 +545,7 @@ async fn record_call(state: &AppState, ended: &Ended) -> Result<Message, ApiErro
     .await?;
     tx.commit().await?;
 
-    let mut message = Message::from_row(&row);
+    let mut message = Message::from_row(&row, &state.keys)?;
     message.call = Some(CallRecord {
         outcome: ended.outcome.as_str().to_string(),
         duration_secs: ended.duration_secs,
@@ -594,12 +597,12 @@ pub async fn attach_calls(pool: &PgPool, messages: &mut [Message]) -> Result<(),
     Ok(())
 }
 
-async fn display_name(pool: &PgPool, user_id: i64) -> Result<String, ApiError> {
-    let name: String = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+async fn display_name(state: &AppState, user_id: i64) -> Result<String, ApiError> {
+    let name: Vec<u8> = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
         .bind(user_id)
-        .fetch_one(pool)
+        .fetch_one(&state.pool)
         .await?;
-    Ok(name)
+    Ok(state.keys.open_text(&name)?)
 }
 
 #[cfg(test)]

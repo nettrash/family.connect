@@ -1,9 +1,10 @@
 //! Auth endpoints: register, login, logout, and `GET /me`.
 //!
-//! Registration relies on the database (the `users_username_lower_uq` index)
-//! for username uniqueness rather than a check-then-insert — the unique
-//! violation is mapped to `409 username_taken`, so two concurrent
-//! registrations of the same name can never both succeed.
+//! Registration relies on the database (the `users_username_key_uq` index
+//! over the name's lookup, migration 0059) for username uniqueness rather
+//! than a check-then-insert — the unique violation is mapped to `409
+//! username_taken`, so two concurrent registrations of the same name can
+//! never both succeed.
 
 use axum::Json;
 use axum::extract::State;
@@ -17,8 +18,10 @@ use time::OffsetDateTime;
 use crate::auth::{self, AuthUser};
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{AssistantConsentRequest, Family, PendingJoinRequest, User};
+use crate::keyring::{KeyError, Owner, SealedRow};
+use crate::models::{AssistantConsentRequest, Birthday, Family, PendingJoinRequest, User};
 use crate::state::AppState;
+use crate::vault::Lookup;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -123,22 +126,29 @@ pub async fn register(
 
     let password_hash = auth::hash_password(req.password).await?;
 
+    // The account's key is made with it (#59), in one transaction: an account
+    // never exists without its key, and a refused name leaves no key behind.
+    let mut tx = state.pool.begin().await?;
+    let key = state.keys.create(&mut tx).await?;
+    // The name is found again by its lookup, which is what keeps it unique
+    // regardless of case: the HMAC is of the lower-cased name.
     let inserted = sqlx::query(
-        "INSERT INTO users (username, display_name, password_hash)
-         VALUES ($1, $2, $3)
-         RETURNING id, username, display_name, created_at, avatar_version,
-                   birthday_month, birthday_day",
+        "INSERT INTO users (username, username_key, display_name, password_hash, key_id)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, username, display_name, created_at, avatar_version, birthday",
     )
-    .bind(&req.username)
-    .bind(&display_name)
-    .bind(&password_hash)
-    .fetch_one(&state.pool)
+    .bind(key.seal_str(&req.username))
+    .bind(state.keys.lookup(Lookup::Username, &req.username))
+    .bind(key.seal_str(&display_name))
+    .bind(key.seal_str(&password_hash))
+    .bind(key.id())
+    .fetch_one(&mut *tx)
     .await;
 
     let row = match inserted {
         Ok(row) => row,
         Err(sqlx::Error::Database(db_err))
-            if db_err.constraint() == Some("users_username_lower_uq") =>
+            if db_err.constraint() == Some("users_username_key_uq") =>
         {
             return Err(ApiError::conflict(
                 codes::USERNAME_TAKEN,
@@ -147,8 +157,10 @@ pub async fn register(
         }
         Err(err) => return Err(err.into()),
     };
+    tx.commit().await?;
 
-    let user = User::from_row(&row);
+    let user = User::from_row(&row, &state.keys)?;
+    state.keys.remember(Owner::Account(user.id), &key);
     let token =
         auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((
@@ -170,27 +182,52 @@ pub async fn login(
     // `deleted-<id>` — a name the register charset cannot even spell. This
     // line means none of that has to hold for the refusal to: a tombstone
     // is not an account, whatever is in its columns.
+    //
+    // Found by the lookup of the name (#59): the HMAC of its lower case, so
+    // signing in stays as case-insensitive as `lower(username)` made it.
     let row = sqlx::query(
-        "SELECT id, username, display_name, password_hash, created_at, avatar_version,
-                birthday_month, birthday_day
-         FROM users WHERE lower(username) = lower($1) AND deleted_at IS NULL",
+        "SELECT id, username, display_name, password_hash, created_at, avatar_version, birthday
+         FROM users WHERE username_key = $1 AND deleted_at IS NULL",
     )
-    .bind(&req.username)
+    .bind(state.keys.lookup(Lookup::Username, &req.username))
     .fetch_optional(&state.pool)
     .await?;
 
     // Verify even when the user is unknown (dummy hash inside) so timing
     // does not reveal which usernames exist.
-    let stored_hash: Option<String> = row.as_ref().map(|r| r.get("password_hash"));
+    let stored_hash = row
+        .as_ref()
+        .map(|r| r.text(&state.keys, "password_hash"))
+        .transpose()?;
     if !auth::verify_login_password(stored_hash, req.password).await? {
         return Err(ApiError::invalid_credentials());
     }
     let row = row.expect("password verified, so the user row exists");
 
-    let user = User::from_row(&row);
+    let user = User::from_row(&row, &state.keys)?;
     let token =
         auth::create_session(&state.pool, &state.cfg, user.id, auth::says_multi(&headers)).await?;
     Ok((StatusCode::OK, Json(json!({"token": token, "user": user}))).into_response())
+}
+
+/// An account's password hash, opened — `None` when there is no such
+/// account (or, with `live_only`, it is a tombstone). The callers verify
+/// against it whether or not there is one, so the timing does not tell.
+async fn stored_password_hash(
+    state: &AppState,
+    user_id: i64,
+    live_only: bool,
+) -> Result<Option<String>, ApiError> {
+    let sealed: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT password_hash FROM users WHERE id = $1 AND (deleted_at IS NULL OR NOT $2)",
+    )
+    .bind(user_id)
+    .bind(live_only)
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(sealed
+        .map(|sealed| state.keys.open_text(&sealed))
+        .transpose()?)
 }
 
 /// `POST /me/password` — change your own password.
@@ -206,23 +243,23 @@ pub async fn change_password(
 ) -> Result<Response, ApiError> {
     validate_password(&req.new_password)?;
 
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
-            .bind(auth.user_id)
-            .fetch_optional(&state.pool)
-            .await?;
+    let stored = stored_password_hash(&state, auth.user_id, false).await?;
     if !auth::verify_login_password(stored, req.current_password).await? {
         return Err(ApiError::invalid_credentials());
     }
 
     let password_hash = auth::hash_password(req.new_password).await?;
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Account(auth.user_id))
+        .await?;
     // The new hash and the revocation go together: a change that stored the
     // password but left the old sessions alive would look done and protect
     // nothing.
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
         .bind(auth.user_id)
-        .bind(&password_hash)
+        .bind(key.seal_str(&password_hash))
         .execute(&mut *tx)
         .await?;
     let revoked: Vec<i64> =
@@ -364,11 +401,7 @@ pub async fn delete_account(
     //    for the same reason: the case this protects against is an
     //    unattended unlocked phone, where a session is what the attacker
     //    already has.
-    let stored_hash: Option<String> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL")
-            .bind(auth.user_id)
-            .fetch_optional(&state.pool)
-            .await?;
+    let stored_hash = stored_password_hash(&state, auth.user_id, true).await?;
     if !auth::verify_login_password(stored_hash, req.password).await? {
         return Err(ApiError::invalid_credentials());
     }
@@ -425,6 +458,9 @@ async fn direct_peers_outside_families(
     Ok(peers)
 }
 
+/// What a scrubbed account is called, on the wire and in the row.
+const DELETED_DISPLAY_NAME: &str = "Deleted account";
+
 /// Scrub one account: the shared body of `POST /me/delete` and of the
 /// familyless sweep (docs/protocol.md, "Deleting an account" and "Accounts
 /// without a family"). Everything the former promises, the latter gets,
@@ -439,18 +475,19 @@ pub async fn scrub_account(
     user_id: i64,
     guard: Option<FamilylessGuard>,
 ) -> Result<Scrubbed, ApiError> {
-    // The username comes back with the family: the reserved account must
-    // never be scrubbed, and reading the name here costs nothing where
-    // asking for it separately would be a second round-trip on every
+    // Whether it is the assistant comes back with the row: the reserved
+    // account must never be scrubbed, and reading the mark here costs nothing
+    // where asking for it separately would be a second round-trip on every
     // deletion.
-    let Some(row) = sqlx::query("SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL")
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await?
+    let Some(is_assistant) = sqlx::query_scalar::<_, bool>(
+        "SELECT is_assistant FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await?
     else {
         return Ok(Scrubbed::Spared);
     };
-    let username: String = row.get("username");
     // Every family the account is in — it leaves EACH of them, each with its
     // own owner hand-off (docs/protocol.md, "Deleting an account", amended
     // 2026-10-22). Locked below in ascending id order, the one order two
@@ -460,19 +497,15 @@ pub async fn scrub_account(
     family_ids.sort_unstable();
 
     // The assistant is not an account anybody may delete (migration 0015).
-    // The familyless sweep already excludes it by name in its own scan, and
-    // no other caller can reach it — `POST /me/delete` needs a login the
+    // The familyless sweep already excludes it by its mark in its own scan,
+    // and no other caller can reach it — `POST /me/delete` needs a login the
     // unusable `'!'` hash can never satisfy. So this refusal is for the
     // caller that does not exist yet: it lives in the ONE routine every
     // removal path shares, where a new sweep written next year inherits it
     // without having to know the rule. Logged at error because the account
     // is spared either way and the caller is the bug.
-    if is_reserved_username(&username) {
-        tracing::error!(
-            user_id,
-            username = %username,
-            "refused to scrub a reserved account"
-        );
+    if is_assistant {
+        tracing::error!(user_id, "refused to scrub the assistant's account");
         return Ok(Scrubbed::Spared);
     }
 
@@ -732,7 +765,7 @@ pub async fn scrub_account(
         crate::handlers_poll::stamp_new_seq(&mut tx, chat_id, poll_id).await?;
         // Read from inside the transaction, so what is broadcast is what
         // was committed.
-        let poll = crate::handlers_poll::fetch_poll(&mut *tx, poll_id).await?;
+        let poll = crate::handlers_poll::fetch_poll(&mut *tx, &state.keys, poll_id).await?;
         retracted.push(crate::handlers_poll::PollState {
             chat_id,
             message_id: poll_id,
@@ -886,28 +919,49 @@ pub async fn scrub_account(
     //     counter from 0004, and reusing a version would hand every client
     //     that cached this user's picture a stale one under a URL it
     //     already believes is immutable. `avatar_version` going back to 0
-    //     is the wire saying "no picture", which is a different fact.
+    //     is the wire saying "no picture", which is a different fact;
+    //   * and the account's KEY is replaced (#59). Everything it sealed —
+    //     the name, the hash, the birthday, the picture and the push tokens
+    //     — is gone from this database by now, and replacing the key (a
+    //     trigger deletes the old one) is what makes it gone from every
+    //     backup once the key copies have expired. The tombstone's own few
+    //     words are sealed under the new key.
+    // The old key may already be gone: `storage forget-missing` scrubs the
+    // accounts a restore left without theirs, which is the whole point of
+    // running it (docs/operations.md, "Restoring").
+    let old_key = match state.keys.key(&mut *tx, Owner::Account(user_id)).await {
+        Ok(key) => Some(key.id()),
+        Err(crate::keyring::KeyError::NoKey(_)) => None,
+        Err(err) => return Err(err.into()),
+    };
+    let key = state.keys.create(&mut tx).await?;
+    let tombstone = format!("deleted-{user_id}");
     let scrubbed = sqlx::query(
         "UPDATE users
-            SET username = 'deleted-' || id,
-                display_name = 'Deleted account',
-                password_hash = '!',
+            SET username = $2,
+                username_key = $3,
+                display_name = $4,
+                password_hash = $5,
+                key_id = $6,
                 familyless_since = NULL,
                 deleted_at = now(),
                 avatar_version = 0,
-                birthday_month = NULL,
-                birthday_day = NULL
+                birthday = NULL
           WHERE id = $1
-          RETURNING id, username, display_name, avatar_version,
-                    birthday_month, birthday_day, deleted_at",
+          RETURNING id, username, display_name, avatar_version, birthday, deleted_at",
     )
     .bind(user_id)
+    .bind(key.seal_str(&tombstone))
+    .bind(state.keys.lookup(Lookup::Username, &tombstone))
+    .bind(key.seal_str(DELETED_DISPLAY_NAME))
+    .bind(key.seal_str("!"))
+    .bind(key.id())
     .fetch_one(&mut *tx)
     .await?;
     // The frame carries exactly the row that was written. The owner id
     // passed here decides nothing: the row is a tombstone, and a tombstone
     // is given no role at all.
-    let member = crate::handlers_family::member_from_row(&scrubbed, user_id);
+    let member = crate::handlers_family::member_from_row(&scrubbed, &state.keys, user_id)?;
 
     // (f) Sole owner: the family goes with them — its chat, its board, its
     //     attachments, its invite code and its invitations. Last, because
@@ -925,6 +979,8 @@ pub async fn scrub_account(
     }
 
     tx.commit().await?;
+    state.keys.forget(Owner::Account(user_id), old_key);
+    state.keys.remember(Owner::Account(user_id), &key);
 
     // 4. After the commit, never inside it — and so NOTHING below may fail
     //    the request. The account is already deleted: a `?` here would
@@ -1027,10 +1083,10 @@ pub async fn sweep_familyless_accounts(state: &AppState) -> Result<u64, ApiError
     if ttl_days <= 0 {
         return Ok(0);
     }
-    // The assistant is excluded by name, the way `assistant_user_id` finds
-    // it, and not only by its NULL `familyless_since`: 0034 blanks that
-    // once, and a defence that lives in one migration's UPDATE is a defence
-    // the next data fix can undo.
+    // The assistant is excluded by its mark, the way `assistant_user_id`
+    // finds it, and not only by its NULL `familyless_since`: 0034 blanks
+    // that once, and a defence that lives in one migration's UPDATE is a
+    // defence the next data fix can undo.
     let candidates: Vec<i64> = sqlx::query_scalar(
         "SELECT u.id
            FROM users u
@@ -1038,7 +1094,7 @@ pub async fn sweep_familyless_accounts(state: &AppState) -> Result<u64, ApiError
             AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = u.id)
             AND u.familyless_since IS NOT NULL
             AND u.familyless_since <= now() - make_interval(days => $1)
-            AND lower(u.username) <> 'assistant'
+            AND NOT u.is_assistant
             AND NOT EXISTS (SELECT 1 FROM join_requests jr
                              WHERE jr.user_id = u.id AND jr.status = 'pending')
             AND NOT EXISTS (SELECT 1 FROM invitations i WHERE i.user_id = u.id)
@@ -1070,19 +1126,28 @@ pub async fn set_birthday(
     AppJson(req): AppJson<BirthdayRequest>,
 ) -> Result<Response, ApiError> {
     validate_birthday(req.month, req.day)?;
-    // Both columns in one statement, always: they are one fact, and the
-    // equivalence constraint would refuse them separately anyway.
+    // One sealed value, month and day together (#59).
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Account(auth.user_id))
+        .await?;
+    let birthday = Birthday {
+        month: req.month,
+        day: req.day,
+    };
     let row = sqlx::query(
-        "UPDATE users SET birthday_month = $2, birthday_day = $3 WHERE id = $1
-         RETURNING id, username, display_name, created_at, avatar_version,
-                   birthday_month, birthday_day",
+        "UPDATE users SET birthday = $2 WHERE id = $1
+         RETURNING id, username, display_name, created_at, avatar_version, birthday",
     )
     .bind(auth.user_id)
-    .bind(req.month)
-    .bind(req.day)
+    .bind(key.seal(&birthday.plain()))
     .fetch_one(&state.pool)
     .await?;
-    Ok((StatusCode::OK, Json(json!({"user": User::from_row(&row)}))).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(json!({"user": User::from_row(&row, &state.keys)?})),
+    )
+        .into_response())
 }
 
 /// `DELETE /me/birthday` — clear it. Idempotent, like the avatar delete:
@@ -1091,7 +1156,7 @@ pub async fn delete_birthday(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    sqlx::query("UPDATE users SET birthday_month = NULL, birthday_day = NULL WHERE id = $1")
+    sqlx::query("UPDATE users SET birthday = NULL WHERE id = $1")
         .bind(auth.user_id)
         .execute(&state.pool)
         .await?;
@@ -1119,15 +1184,14 @@ pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Res
 /// wrong.
 pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.display_name, u.created_at, u.avatar_version,
-                u.birthday_month, u.birthday_day
+        "SELECT u.id, u.username, u.display_name, u.created_at, u.avatar_version, u.birthday
          FROM users u
          WHERE u.id = $1",
     )
     .bind(auth.user_id)
     .fetch_one(&state.pool)
     .await?;
-    let user = User::from_row(&row);
+    let user = User::from_row(&row, &state.keys)?;
 
     // Every family, home first and then in the order they were joined —
     // the order `AuthUser.family_ids` was read in, on this same request.
@@ -1152,11 +1216,16 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             let is_owner = owner_user_id == auth.user_id;
             let family = Family {
                 id: row.get("family_id"),
-                name: row.get("family_name"),
+                name: row.text(&state.keys, "family_name")?,
                 join_policy: row.get("join_policy"),
                 created_at: row.get("family_created_at"),
-                // The invite code is owner-only information.
-                invite_code: is_owner.then(|| row.get("invite_code")),
+                // The invite code is owner-only information — and opened
+                // only for the owner.
+                invite_code: if is_owner {
+                    Some(row.text(&state.keys, "invite_code")?)
+                } else {
+                    None
+                },
                 // Everyone sees the language, owner or not: it is what the
                 // assistant answers the whole family in.
                 language: row.get("language"),
@@ -1189,11 +1258,11 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 ai_lookups: row.get("ai_lookups"),
                 // And the place names the greeting sends to the weather
                 // provider — the owner's words, which every member may read.
-                greeting_places: row.get("greeting_places"),
+                greeting_places: row.json(&state.keys, "greeting_places")?,
             };
-            (family, if is_owner { "owner" } else { "member" })
+            Ok((family, if is_owner { "owner" } else { "member" }))
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     // The HOME family is the first: what `family` and `role` have always
     // meant, and the whole world of an app that predates several families.
     let (family, role) = match families.first() {
@@ -1228,15 +1297,18 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
     .await?;
     let pending_requests: Vec<PendingJoinRequest> = pending_rows
         .iter()
-        .map(|row| PendingJoinRequest {
-            family_id: row.get("family_id"),
-            family_name: row.get("family_name"),
-            created_at: row.get::<OffsetDateTime, _>("created_at"),
+        .map(|row| {
+            Ok(PendingJoinRequest {
+                family_id: row.get("family_id"),
+                family_name: row.text(&state.keys, "family_name")?,
+                created_at: row.get::<OffsetDateTime, _>("created_at"),
+            })
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     let pending = pending_requests.last().cloned();
     let invitations =
-        crate::handlers_invitation::invitations_for_user(&state.pool, auth.user_id).await?;
+        crate::handlers_invitation::invitations_for_user(&state.pool, &state.keys, auth.user_id)
+            .await?;
 
     Ok((
         StatusCode::OK,
@@ -1496,9 +1568,9 @@ pub async fn set_assistant_lookup_consent(
 const RESERVED_USERNAMES: [&str; 1] = ["assistant"];
 
 /// Whether a name is one of those, case-insensitively — the casing the
-/// unique index (`users_username_lower_uq`) and every assistant lookup
-/// already use. A rule that recognised only one casing would not be the
-/// rule the database enforces.
+/// unique index (`users_username_key_uq`, over the lookup of the lower-cased
+/// name) already uses. A rule that recognised only one casing would not be
+/// the rule the database enforces.
 fn is_reserved_username(username: &str) -> bool {
     RESERVED_USERNAMES
         .iter()

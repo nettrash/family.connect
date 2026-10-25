@@ -28,9 +28,11 @@ use tokio_util::io::ReaderStream;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, codes};
+use crate::keyring::{Keyring, Owner, SealKey, SealedRow};
 use crate::models::Attachment;
 use crate::state::AppState;
 use crate::storage::Storage;
+use crate::vault::DataKey;
 
 #[derive(Debug, Deserialize)]
 pub struct UploadParams {
@@ -64,6 +66,110 @@ pub struct UploadParams {
 
 const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, \
                                has_preview, name, latitude, longitude, accuracy_m, waveform";
+
+/// A file's own key, opened from its row's sealed `file_key` (#59): `None`
+/// for a file written before encryption at rest, which is still plaintext
+/// until the background conversion reaches it.
+pub(crate) fn file_key(keys: &Keyring, sealed: Option<&[u8]>) -> Result<Option<DataKey>, ApiError> {
+    let Some(sealed) = sealed else {
+        return Ok(None);
+    };
+    let bytes = keys.open(sealed).map_err(|err| err.in_column("file_key"))?;
+    DataKey::from_bytes(&bytes)
+        .map(Some)
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("an attachment's file key is not a key")))
+}
+
+/// A stored file whole, or its preview: opened when it is sealed, read as it
+/// is when it was written before #59 and the background conversion has not
+/// reached it (`sealed_file_key` is the row's `file_key`). For the readers
+/// that need the plaintext in one piece — a photo going to the model, a
+/// recording going to be transcribed. `Ok(None)` when the file is not there.
+pub(crate) async fn read_whole(
+    state: &AppState,
+    storage_key: &str,
+    preview: bool,
+    sealed_file_key: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>, ApiError> {
+    let path = if preview {
+        state.storage.preview_path(storage_key)
+    } else {
+        state.storage.blob_path(storage_key)
+    };
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        return Ok(None);
+    }
+    match file_key(&state.keys, sealed_file_key)? {
+        Some(own_key) => {
+            let sealed = state.storage.open_sealed(&path, &own_key).await?;
+            sealed
+                .read_to_end()
+                .await
+                .map(Some)
+                .map_err(|err| ApiError::Internal(anyhow::anyhow!("reading {path:?}: {err}")))
+        }
+        None => tokio::fs::read(&path)
+            .await
+            .map(Some)
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("reading {path:?}: {err}"))),
+    }
+}
+
+/// A file's key, sealed for its row under the key of whatever holds it.
+pub(crate) fn seal_file_key(holder: &SealKey, file_key: &DataKey) -> Vec<u8> {
+    holder.seal(file_key.secret_bytes())
+}
+
+/// Re-seal one attachment's sealed columns under `holder` — what a message
+/// does to the upload it claims, so that a picture in a group, a direct or an
+/// assistant chat goes with that conversation rather than with the family it
+/// was uploaded for (docs/encryption-at-rest-2026-10-24.md, "Files"). Only
+/// the 32-byte file key and the row's few words are re-sealed; the file is
+/// untouched. A value already under `holder` is left alone, which is every
+/// value of an upload claimed in its own family's chat.
+pub(crate) async fn reseal_for(
+    conn: &mut sqlx::PgConnection,
+    keys: &Keyring,
+    attachment_id: i64,
+    holder: &SealKey,
+) -> Result<(), ApiError> {
+    const SEALED: [&str; 5] = ["name", "latitude", "longitude", "waveform", "file_key"];
+    let row = sqlx::query(
+        "SELECT name, latitude, longitude, waveform, file_key FROM attachments WHERE id = $1",
+    )
+    .bind(attachment_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let mut resealed: Vec<Option<Vec<u8>>> = Vec::with_capacity(SEALED.len());
+    let mut changed = false;
+    for column in SEALED {
+        let value: Option<Vec<u8>> = row.get(column);
+        resealed.push(match value {
+            Some(sealed) if crate::vault::key_id_of(&sealed).ok() != Some(holder.id()) => {
+                changed = true;
+                let plain = keys.open(&sealed).map_err(|err| err.in_column(column))?;
+                Some(holder.seal(&plain))
+            }
+            other => other,
+        });
+    }
+    if changed {
+        sqlx::query(
+            "UPDATE attachments
+                SET name = $2, latitude = $3, longitude = $4, waveform = $5, file_key = $6
+              WHERE id = $1",
+        )
+        .bind(attachment_id)
+        .bind(&resealed[0])
+        .bind(&resealed[1])
+        .bind(&resealed[2])
+        .bind(&resealed[3])
+        .bind(&resealed[4])
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
 
 /// The waveform an upload of `kind` may carry, or the `validation` 400 it
 /// earns (protocol.md, "A voice note's waveform"). Asked before a byte of
@@ -195,6 +301,11 @@ async fn upload_location(
         .filter(|name| !name.is_empty() && name.chars().count() <= Attachment::MAX_NAME_LEN);
 
     let family_id = uploader_family(auth, params)?;
+    // Sealed under the family's key until a message claims it (#59).
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Family(family_id))
+        .await?;
 
     // A storage_key is still allocated, because the column is NOT NULL and
     // every shared path reads it. Nothing is ever written there, and
@@ -212,17 +323,17 @@ async fn upload_location(
     .bind(Attachment::KIND_LOCATION)
     .bind(Attachment::LOCATION_MIME)
     .bind(&storage_key)
-    .bind(label)
+    .bind(key.seal_opt(label))
     .bind(family_id)
-    .bind(latitude)
-    .bind(longitude)
+    .bind(key.seal(&latitude.to_be_bytes()))
+    .bind(key.seal(&longitude.to_be_bytes()))
     .bind(params.accuracy_m)
     .fetch_one(&state.pool)
     .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(json!({"attachment": Attachment::from_row(&row)})),
+        Json(json!({"attachment": Attachment::from_row(&row, &state.keys)?})),
     )
         .into_response())
 }
@@ -337,14 +448,23 @@ pub async fn upload_attachment(
     // family, and the file belongs to the family that received it.
     let family_id = uploader_family(&auth, &params)?;
 
+    // The file has a key of its own, and the row keeps it sealed under the
+    // family's — as it keeps the name and the waveform — until a message
+    // claims it (#59).
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Family(family_id))
+        .await?;
+    let own_key = DataKey::generate();
+
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
     let storage_key = format!("{}-{}", auth.user_id, crate::tokens::gen_session_token());
     let row = sqlx::query(&format!(
         "INSERT INTO attachments
             (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name,
-             family_id, waveform)
-         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10)
+             family_id, waveform, file_key)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(auth.user_id)
@@ -354,9 +474,10 @@ pub async fn upload_attachment(
     .bind(params.height)
     .bind(params.duration_ms)
     .bind(&storage_key)
-    .bind(name.as_deref())
+    .bind(key.seal_opt(name.as_deref()))
     .bind(family_id)
-    .bind(waveform)
+    .bind(key.seal_opt(waveform))
+    .bind(seal_file_key(&key, &own_key))
     .fetch_one(&state.pool)
     .await?;
     let id: i64 = row.get("id");
@@ -368,6 +489,7 @@ pub async fn upload_attachment(
             &path,
             body.into_data_stream(),
             state.cfg.limits.max_attachment_bytes,
+            &own_key,
         )
         .await
     {
@@ -383,15 +505,10 @@ pub async fn upload_attachment(
         }
     };
 
-    // Magic check AFTER the write: the head is on disk by then and reading
-    // 12 bytes back is cheaper than buffering the stream to inspect it.
-    // Files skip it entirely — there is no type to contradict.
-    let head = if is_file {
-        Vec::new()
-    } else {
-        read_head(&path).await
-    };
-    if !is_file && !matches_magic(&mime, &head) {
+    // Magic check AFTER the write, on the plaintext head the write kept as
+    // it streamed past — what is on disk is sealed and says nothing. Files
+    // skip it entirely — there is no type to contradict.
+    if !is_file && !matches_magic(&mime, &written.head) {
         let _ = sqlx::query("DELETE FROM attachments WHERE id = $1")
             .bind(id)
             .execute(&state.pool)
@@ -415,66 +532,65 @@ pub async fn upload_attachment(
     // A concurrent pair of identical uploads can both miss here and keep
     // two copies. That is the acceptable outcome: a missed saving, never a
     // wrong or shared-too-far file.
-    let existing: Option<(String, bool)> = {
+    //
+    // The digest is keyed by the family (#59), so it matches only within the
+    // family, as the lookup always did — and an old backup cannot be asked
+    // whether a family once held a known picture. A file the background
+    // conversion has not sealed yet is never matched: its copy is about to
+    // move, and the new upload keeps its own sealed one instead.
+    let content_hash = key.content_hash(&written.sha256);
+    let existing: Option<(String, bool, Vec<u8>)> = {
         sqlx::query_as(
-            "SELECT storage_key, has_preview FROM attachments
+            "SELECT storage_key, has_preview, file_key FROM attachments
              WHERE family_id = $1 AND content_hash = $2 AND size_bytes = $3 AND id <> $4
+               AND file_key IS NOT NULL
              ORDER BY id
              LIMIT 1",
         )
         .bind(family_id)
-        .bind(&written.sha256)
+        .bind(&content_hash)
         .bind(written.bytes as i64)
         .bind(id)
         .fetch_optional(&state.pool)
         .await?
     };
 
-    let (final_key, inherited_preview) = match existing {
-        Some((key, has_preview)) => {
+    let (final_key, inherited_preview, final_file_key) = match existing {
+        Some((existing_key, has_preview, sealed)) => {
+            // The shared file's own key, wrapped for this row too — one file
+            // under one key, wrapped once per row that holds it.
+            let shared = file_key(&state.keys, Some(&sealed))?
+                .expect("the row was chosen for having a file key");
             state.storage.discard(&path).await;
             // The preview belongs to bytes that are identical, so it is
             // this attachment's preview too — the sender's client will
             // upload its own anyway, but the bubble can draw before it.
-            (key, has_preview)
+            (existing_key, has_preview, seal_file_key(&key, &shared))
         }
-        None => (storage_key.clone(), false),
+        None => (storage_key.clone(), false, seal_file_key(&key, &own_key)),
     };
 
     let row = sqlx::query(&format!(
         "UPDATE attachments
-         SET size_bytes = $2, content_hash = $3, storage_key = $4, has_preview = $5
+         SET size_bytes = $2, content_hash = $3, storage_key = $4, has_preview = $5,
+             file_key = $6
          WHERE id = $1
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(id)
     .bind(written.bytes as i64)
-    .bind(&written.sha256)
+    .bind(&content_hash)
     .bind(&final_key)
     .bind(inherited_preview)
+    .bind(&final_file_key)
     .fetch_one(&state.pool)
     .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(json!({"attachment": Attachment::from_row(&row)})),
+        Json(json!({"attachment": Attachment::from_row(&row, &state.keys)?})),
     )
         .into_response())
-}
-
-async fn read_head(path: &std::path::Path) -> Vec<u8> {
-    use tokio::io::AsyncReadExt;
-    let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return Vec::new();
-    };
-    let mut head = vec![0u8; 12];
-    match file.read(&mut head).await {
-        Ok(read) => {
-            head.truncate(read);
-            head
-        }
-        Err(_) => Vec::new(),
-    }
 }
 
 /// `PUT /attachments/{id}/preview` — the downscaled photo or poster frame.
@@ -500,12 +616,21 @@ pub async fn upload_preview(
     // Uploader only, and only before the row is claimed or after — either
     // way it is theirs; a member who did not upload it has no business
     // replacing what a bubble draws.
-    let row =
-        sqlx::query("SELECT storage_key, kind FROM attachments WHERE id = $1 AND uploader_id = $2")
-            .bind(id)
-            .bind(auth.user_id)
-            .fetch_optional(&state.pool)
-            .await?;
+    //
+    // The row is LOCKED while the preview is written: the background
+    // conversion of a file written before #59 moves the row's file under the
+    // same lock, so a preview can never land beside a file that has just
+    // moved away from it.
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT storage_key, kind, file_key FROM attachments
+          WHERE id = $1 AND uploader_id = $2
+          FOR UPDATE",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some(row) = row else {
         return Err(ApiError::not_found(
             codes::ATTACHMENT_NOT_FOUND,
@@ -530,7 +655,41 @@ pub async fn upload_preview(
             format!("a {kind} has no preview"),
         ));
     }
-    let storage_key: String = row.get("storage_key");
+    // The preview is sealed under the file's own key (#59). A file written
+    // before encryption at rest has none yet: it is sealed now, ahead of the
+    // background conversion, and the row is read again under its lock.
+    let (storage_key, own_key) = match file_key(
+        &state.keys,
+        row.get::<Option<Vec<u8>>, _>("file_key").as_deref(),
+    )? {
+        Some(own_key) => (row.get::<String, _>("storage_key"), own_key),
+        None => {
+            let legacy: String = row.get("storage_key");
+            tx.rollback().await?;
+            crate::seal_files::seal_one(&state, &legacy)
+                .await
+                .map_err(ApiError::Internal)?;
+            tx = state.pool.begin().await?;
+            let row = sqlx::query(
+                "SELECT storage_key, file_key FROM attachments
+                  WHERE id = $1 AND uploader_id = $2
+                  FOR UPDATE",
+            )
+            .bind(id)
+            .bind(auth.user_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                ApiError::not_found(codes::ATTACHMENT_NOT_FOUND, "no such attachment")
+            })?;
+            let own_key = file_key(
+                &state.keys,
+                row.get::<Option<Vec<u8>>, _>("file_key").as_deref(),
+            )?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("a file that would not seal")))?;
+            (row.get::<String, _>("storage_key"), own_key)
+        }
+    };
 
     let path = state.storage.preview_path(&storage_key);
     state
@@ -539,13 +698,15 @@ pub async fn upload_preview(
             &path,
             body.into_data_stream(),
             state.cfg.limits.max_preview_bytes,
+            &own_key,
         )
         .await?;
 
     sqlx::query("UPDATE attachments SET has_preview = true WHERE id = $1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -591,7 +752,7 @@ async fn serve(
         // the family for the board's reason: a pack belongs to no chat
         // either, and a panel of stickers only their adder could fetch is
         // not a pack (protocol.md, "Sticker pack").
-        "SELECT a.storage_key, a.mime, a.has_preview, a.kind, a.name
+        "SELECT a.storage_key, a.mime, a.has_preview, a.kind, a.name, a.file_key
          FROM attachments a
          LEFT JOIN messages m ON m.id = a.message_id
          LEFT JOIN notes n ON n.id = a.note_id
@@ -640,12 +801,28 @@ async fn serve(
     } else {
         state.storage.blob_path(&storage_key)
     };
-    let file = tokio::fs::File::open(&path).await.map_err(|err| {
-        // The row says it exists and the file does not: a partial delete,
-        // or a restore that missed the attachments directory.
-        ApiError::Internal(anyhow::anyhow!("opening {path:?}: {err}"))
-    })?;
-    let len = file.metadata().await.map(|meta| meta.len()).unwrap_or(0);
+    // Sealed (#59), or a file from before encryption at rest that the
+    // background conversion has not reached yet. Either way the sizes and
+    // ranges below are of the PLAINTEXT, so nothing on the wire changes.
+    // A missing file is the row saying it exists and the disk saying it does
+    // not: a partial delete, or a restore that missed the attachments
+    // directory.
+    let own_key = file_key(
+        &state.keys,
+        row.get::<Option<Vec<u8>>, _>("file_key").as_deref(),
+    )?;
+    let body = match own_key {
+        Some(own_key) => Stored::Sealed(state.storage.open_sealed(&path, &own_key).await?),
+        None => Stored::Plain(
+            tokio::fs::File::open(&path)
+                .await
+                .map_err(|err| ApiError::Internal(anyhow::anyhow!("opening {path:?}: {err}")))?,
+        ),
+    };
+    let len = match &body {
+        Stored::Sealed(sealed) => sealed.plain_len(),
+        Stored::Plain(file) => file.metadata().await.map(|meta| meta.len()).unwrap_or(0),
+    };
 
     // Content is immutable: an attachment's bytes never change, so the id
     // alone is a complete cache key.
@@ -672,9 +849,13 @@ async fn serve(
     // that the bytes look like HTML, and the filename is sanitised because
     // a header is a line and a newline in a name would let the uploader
     // write headers of their own.
+    let name = if !preview && row.get::<String, _>("kind") == Attachment::KIND_FILE {
+        row.text_opt(&state.keys, "name")?
+    } else {
+        None
+    };
     let disposition =
         (!preview && row.get::<String, _>("kind") == Attachment::KIND_FILE).then(|| {
-            let name: Option<String> = row.get("name");
             let name = name.unwrap_or_else(|| "download".to_string());
             let ascii = Attachment::ascii_filename(&name);
             // RFC 5987: the ASCII form for old clients, filename* for the
@@ -708,14 +889,20 @@ async fn serve(
         }
     };
 
-    let mut file = file;
-    if start > 0 {
-        use tokio::io::AsyncSeekExt;
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .map_err(|err| ApiError::Internal(anyhow::anyhow!("seeking {path:?}: {err}")))?;
-    }
-    let stream = ReaderStream::new(file.take(count));
+    let stream_body = match body {
+        Stored::Sealed(sealed) => Body::from_stream(sealed.range_stream(start, count)),
+        Stored::Plain(mut file) => {
+            if start > 0 {
+                use tokio::io::AsyncSeekExt;
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .map_err(|err| {
+                        ApiError::Internal(anyhow::anyhow!("seeking {path:?}: {err}"))
+                    })?;
+            }
+            Body::from_stream(ReaderStream::new(file.take(count)))
+        }
+    };
 
     let mut response = (
         status,
@@ -729,7 +916,7 @@ async fn serve(
             ),
             (header::ACCEPT_RANGES, "bytes".to_string()),
         ],
-        Body::from_stream(stream),
+        stream_body,
     )
         .into_response();
     if let Some(disposition) = disposition {
@@ -750,6 +937,12 @@ async fn serve(
         );
     }
     Ok(response)
+}
+
+/// What `serve` streams from: a sealed file, or one written before #59.
+enum Stored {
+    Sealed(crate::storage::SealedFile),
+    Plain(tokio::fs::File),
 }
 
 /// Percent-encode a filename for RFC 5987's `filename*` form.

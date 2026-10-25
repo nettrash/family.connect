@@ -109,11 +109,142 @@ entry matters more than the manual mount.
 
 ---
 
-## 4. Backups
+## 4. Encryption at rest
+
+*Since #59 (2026-10-25).* What people wrote, said, showed or are is encrypted
+by the server before it reaches PostgreSQL or the disk (docs/protocol.md,
+"Stored encrypted"; the design is `docs/encryption-at-rest-2026-10-24.md`).
+A dump, a backup, a snapshot or a stolen disk opens nothing without **the key
+file**. It protects copies, not the running box: whoever has root there can
+read what the server reads, exactly as before.
+
+### The key file
+
+One file, 32 random bytes in base64. Every family, conversation and account
+has its own key inside the database, and this file is what unlocks them. The
+server **refuses to start** without it or with the wrong one, and says which
+fingerprint it expected; it never falls back to storing plaintext.
+
+```sh
+sudo family-connect storage-key new /etc/family-connect/storage.key   # refuses to overwrite
+sudo chown family-connect:family-connect /etc/family-connect/storage.key
+sudo chmod 0400 /etc/family-connect/storage.key
+```
+
+```toml
+# /etc/family-connect/config.toml
+[storage]
+key_file = "/etc/family-connect/storage.key"
+```
+
+> **Copy it off the box now, once, by hand** — into a password manager, or
+> printed and put away: `sudo family-connect storage-key show`. Without it
+> nothing the server ever stored can be opened again: not the database, not a
+> backup, not one photograph. It is in **no** backup, deliberately — a backup
+> that carried its own key would protect nothing.
+
+**Stronger: systemd's encrypted credentials.** The key then never sits on disk
+in the clear, and with a TPM it opens only on this machine:
+
+```sh
+sudo systemd-creds encrypt --name=storage.key \
+  /etc/family-connect/storage.key /etc/credstore.encrypted/storage.key
+sudo systemctl edit family-connect   # add the two lines below
+#   [Service]
+#   LoadCredentialEncrypted=storage.key:/etc/credstore.encrypted/storage.key
+# and in config.toml:
+#   key_file = "/run/credentials/family-connect.service/storage.key"
+sudo shred -u /etc/family-connect/storage.key   # only after the server starts with the credential
+```
+
+A TPM-bound credential cannot be opened on new hardware, so the off-box copy
+is what a rebuilt server is restored with. Keep it.
+
+### Upgrading a server that has data
+
+The first start of a version with this section converts everything already
+stored. Do it in this order:
+
+1. **Take a backup** with the old version (section 5). It holds plaintext and
+   will be deleted in step 6, but it is the only way back: **after the
+   conversion, the older version cannot read the database.**
+2. Make the key file and copy it off the box, as above.
+3. Install the new binary, the new backup script (section 5) and the
+   `key_file` line, and restart. Before it answers anything the server seals
+   the database (seconds for one family; the log counts rows, never names
+   them), then compacts the converted tables so the old plaintext rows leave
+   the table files. Then it serves, and seals the attachment files in the
+   background — `journalctl -u family-connect` shows the count. An interrupted
+   conversion continues where it stopped on the next start.
+4. Check: `sudo -u postgres psql -d family_connect -tAc "SELECT substr(body, 1, 4) FROM messages LIMIT 3"`
+   shows `\x01…`, not words. Then open the app and look at a photo.
+5. Run a backup with the new script and check that it wrote the key copy.
+6. **Delete every backup from before the upgrade** — restic snapshots, rsync
+   mirrors, local dumps, a WAL archive if you keep one. They hold plaintext and
+   always will. Free disk blocks keep old bytes until they are overwritten,
+   which is why an encrypted volume underneath (LUKS) is still worth having.
+
+### Rotating the key
+
+```sh
+sudo systemctl stop family-connect
+sudo family-connect storage-key rotate   # shows the NEW key: copy it off the box
+sudo systemctl start family-connect
+```
+
+`rotate` writes the new key beside the old one, and in one transaction
+re-wraps the per-family keys under it and recomputes the lookups that are
+keyed by it — one per username, invite code and device token. Only then does
+it move the old file to `storage.key.old` and the new one into its place,
+owned as the old one was. Nothing that was sealed is touched, so it takes a
+moment however much the family has stored. With an encrypted credential,
+decrypt it to a file first (`systemd-creds decrypt`), rotate that, and encrypt
+the new one in its place.
+
+**Keep the old key for 7 days**: the key copies in your backups from before the
+rotation are wrapped by it (section 5). After that, destroy it.
+
+### Reading the assistant reports
+
+A member's report about the assistant comes to you, not to the family owner
+(docs/protocol.md, "Reporting the assistant"), and the server logs a WARN
+line when one arrives. The row is sealed like everything else, so `psql` shows
+bytes; read them with:
+
+```sh
+sudo -u family-connect family-connect reports            # the newest 50
+sudo -u family-connect family-connect reports --limit 200
+```
+
+A report about a conversation that has since been deleted shows its reason and
+date, and `(gone with its conversation)` where the reply was — deleting a
+conversation takes its words from the reports too.
+
+### What deletion means now
+
+Deleting a family, a group, a direct or assistant chat, or an account destroys
+its key. The backup keeps key copies for **7 days**, so a week later no backup
+can open what was deleted, even with the key file. A single message, note or
+file deleted on its own (by its author or by retention) is not covered; older
+backups hold it until they expire.
+
+---
+
+## 5. Backups
 
 **A database dump is not a backup.** Attachment bytes live on disk, not in
 PostgreSQL, so a `pg_dump` alone restores a family's history with every
 photograph missing. Both halves, or neither.
+
+**And since #59 there is a third part: the keys.** The script leaves the
+per-family keys out of the main dump (`--exclude-table-data=storage_keys`) and
+writes them in the same run to a separate key copy, kept **7 days** — restic
+under the tag `family-connect-keys`, rsync under `keys/`, pruned to the same
+7 days. That separation is the whole point of a key per family: if the keys
+travelled with the data, the backup kept for a year would open every family
+deleted during that year. Do not put the keys back into the main dump, and do
+not run a plain `pg_dump` of the live database by hand and keep it. The key
+FILE is in no backup at all (section 4).
 
 Shipped in `server/ops/`:
 
@@ -168,7 +299,7 @@ the night it happens rather than on the day it is needed.
 
 ---
 
-## 5. Restoring
+## 6. Restoring
 
 **This procedure has been run end to end** (PostgreSQL 16, rsync
 destination): 500 message rows and a sharded attachment tree wiped and
@@ -183,6 +314,10 @@ checksum. Two things it turned up, both of which will bite you at 3am:
 > **`--no-owner --no-privileges`** on `pg_restore`, unless you are restoring
 > onto a box with the identical role names.
 
+*Since #59* a restore needs two more things: **the key file**, from your
+off-box copy (section 4), and **a key copy** — the one with the same stamp as
+the dump, or, when that one has expired, the newest there is.
+
 ```sh
 sudo systemctl stop family-connect
 
@@ -192,13 +327,36 @@ sudo -u postgres dropdb --if-exists family_connect
 sudo -u postgres createdb -O family-connect family_connect
 sudo -u postgres pg_restore --dbname=family_connect --no-owner --no-privileges "$DUMP"
 
+# --- the keys, as postgres: the copy with the dump's stamp, else the newest ---
+KEYS=/mnt/offbox/family-connect/keys/keys-$(basename "$DUMP" .dump | cut -d- -f2).dump
+[ -f "$KEYS" ] || KEYS=$(ls -t /mnt/offbox/family-connect/keys/keys-*.dump | head -1)
+sudo -u postgres pg_restore --dbname=family_connect --data-only --no-owner --no-privileges "$KEYS"
+
 # --- half 2: the bytes, as family-connect ---
 sudo install -d -o family-connect -g family-connect /var/lib/family-connect/attachments
 sudo -u family-connect rsync -a \
   /mnt/offbox/family-connect/attachments/ /var/lib/family-connect/attachments/
 
+# --- the key file, from your off-box copy, if this is a new box ---
+#     (section 4: owner family-connect, mode 0400)
+
 sudo systemctl start family-connect
 ```
+
+**A key copy newer than the dump** — because the dump is older than 7 days —
+is expected, and it means what was deleted after the dump stays deleted. The
+server finds the rows whose key no longer exists and **refuses to start**,
+naming how many families, conversations and accounts they are. Deleting them
+again is one command, and it is yours to run, because it is the one step of a
+restore that removes data:
+
+```sh
+sudo -u family-connect family-connect storage forget-missing
+```
+
+A key copy **older** than the dump would leave families created in between
+without keys; the same refusal names them, and the fix is a newer key copy,
+not `forget-missing`.
 
 Verify before you believe it:
 
@@ -224,7 +382,7 @@ never restored is a belief, not a plan.
 
 ---
 
-## 6. Monitoring
+## 7. Monitoring
 
 `GET /api/v1/healthz` does a real `SELECT 1`, so it fails when the database is
 gone rather than only when the process is. Nothing polls it — that is
@@ -257,7 +415,7 @@ this section.
 
 ---
 
-## 7. The web client
+## 8. The web client
 
 A browser client lives in `web/` and is served **by this same nginx, from
 this same origin** — which is not a deployment convenience but the reason

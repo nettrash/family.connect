@@ -5,7 +5,7 @@
 # peer authentication over the local socket is the credential.
 
 [Unit]
-Description=family-connect backup (database + attachment bytes)
+Description=family-connect backup (database, attachment bytes, and the 7-day key copy)
 Documentation=https://github.com/nettrash/family.connect
 After=postgresql.service
 Wants=postgresql.service

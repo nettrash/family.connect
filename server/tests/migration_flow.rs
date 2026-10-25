@@ -10,7 +10,9 @@
 mod common;
 
 use common::{TestServer, spawn_server};
+use family_connect::keyring::Owner;
 use family_connect::migrate::MIGRATIONS;
+use family_connect::vault::Lookup;
 use sqlx::Row;
 use time::OffsetDateTime;
 
@@ -43,11 +45,12 @@ async fn insert_orphan_device(
     updated_at: OffsetDateTime,
 ) -> i64 {
     sqlx::query_scalar(
-        "INSERT INTO devices (user_id, platform, push_token, session_id, updated_at)
-         VALUES ($1, 'ios', $2, NULL, $3) RETURNING id",
+        "INSERT INTO devices (user_id, platform, push_token, push_token_key, session_id, updated_at)
+         VALUES ($1, 'ios', $2, $3, NULL, $4) RETURNING id",
     )
     .bind(user_id)
-    .bind(push_token)
+    .bind(ts.seal(Owner::Account(user_id), push_token).await)
+    .bind(ts.lookup(Lookup::PushToken, push_token))
     .bind(updated_at)
     .fetch_one(&ts.state.pool)
     .await
@@ -697,11 +700,12 @@ async fn the_0041_default_reads_every_older_note_as_plain() {
         .expect("a board seq");
     sqlx::query(
         "INSERT INTO notes (family_id, author_id, text, color, size, x, y, board_seq, content_seq)
-         VALUES ($1, $2, 'Older than fonts', 'yellow', 'medium', 0.2, 0.3, $3, $3)",
+         VALUES ($1, $2, $4, 'yellow', 'medium', 0.2, 0.3, $3, $3)",
     )
     .bind(family_id)
     .bind(owner_id)
     .bind(seq)
+    .bind(ts.seal(Owner::Family(family_id), "Older than fonts").await)
     .execute(&ts.state.pool)
     .await
     .expect("inserting a pre-0041 note");

@@ -15,6 +15,7 @@
 mod common;
 
 use common::{TestServer, assert_error, spawn_server_with_config};
+use family_connect::keyring::Owner;
 use serde_json::{Value, json};
 
 /// A fresh client id, as `report_flow` does it: the column is a real uuid.
@@ -63,7 +64,7 @@ async fn plant_reply(ts: &TestServer, chat_id: i64, body: &str) -> i64 {
     )
     .bind(chat_id)
     .bind(assistant)
-    .bind(body)
+    .bind(ts.seal(Owner::Chat(chat_id), body).await)
     .fetch_one(&ts.state.pool)
     .await
     .expect("plant an assistant reply")
@@ -335,12 +336,12 @@ async fn a_swept_reply_leaves_the_report_standing() {
         .await
         .expect("the sweep must go on working");
 
-    let (kept_id, excerpt) = sqlx::query_as::<_, (Option<i64>, String)>(
+    let (kept_id, excerpt) = sqlx::query_as::<_, (Option<i64>, Vec<u8>)>(
         "SELECT message_id, message_excerpt FROM assistant_reports",
     )
     .fetch_one(&ts.state.pool)
     .await
     .expect("the row survives");
     assert_eq!(kept_id, None, "the pointer goes");
-    assert_eq!(excerpt, "Swept later.", "the evidence stays");
+    assert_eq!(ts.open_text(&excerpt), "Swept later.", "the evidence stays");
 }

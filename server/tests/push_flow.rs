@@ -29,6 +29,7 @@ use common::{
     write_test_service_account,
 };
 use family_connect::config::{ApnsConfig, FcmConfig, PushConfig};
+use family_connect::vault::Lookup;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -731,9 +732,10 @@ async fn a_devices_language_is_kept_cleared_and_never_refused() {
     let (token, user_id) = ts.register("owner", "Olive").await;
     let language = || async {
         sqlx::query_scalar::<_, Option<String>>(
-            "SELECT language FROM devices WHERE user_id = $1 AND push_token = 'tok'",
+            "SELECT language FROM devices WHERE user_id = $1 AND push_token_key = $2",
         )
         .bind(user_id)
+        .bind(ts.lookup(Lookup::PushToken, "tok"))
         .fetch_one(&ts.state.pool)
         .await
         .expect("the device row")
@@ -1290,8 +1292,8 @@ async fn a_live_mac_does_not_silence_the_requesters_iphone_when_approved() {
 /// database — the only way to reach a session id from a test, since the
 /// wire never carries one.
 async fn session_of_device(ts: &TestServer, push_token: &str) -> Option<i64> {
-    sqlx::query_scalar("SELECT session_id FROM devices WHERE push_token = $1")
-        .bind(push_token)
+    sqlx::query_scalar("SELECT session_id FROM devices WHERE push_token_key = $1")
+        .bind(ts.lookup(Lookup::PushToken, push_token))
         .fetch_one(&ts.state.pool)
         .await
         .expect("the device row exists")
@@ -1449,8 +1451,8 @@ async fn a_device_from_before_the_session_column_is_still_pushed() {
     // with a real token that never told anybody which session it was. It
     // must keep the benefit of the doubt — the whole reason the column is
     // nullable — and it heals the moment the app launches again.
-    sqlx::query("UPDATE devices SET session_id = NULL WHERE push_token = $1")
-        .bind("junior-ios-token")
+    sqlx::query("UPDATE devices SET session_id = NULL WHERE push_token_key = $1")
+        .bind(ts.lookup(Lookup::PushToken, "junior-ios-token"))
         .execute(&ts.state.pool)
         .await
         .expect("orphaning the device row");
