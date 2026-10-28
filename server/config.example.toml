@@ -302,6 +302,16 @@ include_message_body = true
 # The default matches the systemd unit's StateDirectory=family-connect.
 attachments_dir = "/var/lib/family-connect/attachments"
 
+# The server key: everything people wrote, said, showed or are is sealed
+# before it reaches PostgreSQL or the disk, and this file is what opens it
+# (docs/operations.md, "Encryption at rest"). Required — the server refuses to
+# start without it, and with the wrong one. Make it once with
+#   sudo family-connect storage-key new /etc/family-connect/storage.key
+# (owner family-connect, mode 0400), and copy it off the box by hand
+# (`family-connect storage-key show`). It is in no backup, deliberately:
+# LOSING IT LOSES EVERY FAMILY ON THIS SERVER.
+key_file = "/etc/family-connect/storage.key"
+
 # ---------------------------------------------------------------------------
 # Voice calls
 # ---------------------------------------------------------------------------

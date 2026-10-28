@@ -24,8 +24,10 @@ about the four places where something does. Every one of them is yours to switch
 | **A map on a shared location** | on, per device | The Apple apps draw it with Apple's MapKit and the Windows app from OpenStreetMap's tiles, so Apple or OpenStreetMap is asked for the map around the place a member shared — roughly where it is, and nothing else. Each device's "Map Previews" setting turns it off; the bubble then keeps its pin and a link out. The web client draws no map. |
 
 Turn them all off and nothing leaves the box — at the cost of lock-screen previews and of calls
-between different networks. Messages are stored in plaintext in *your* PostgreSQL: the model is
-"your household, your box", not end-to-end encryption.
+between different networks. What is stored is encrypted at rest by the server, under keys a key
+file on the box unlocks, so a dump, a backup or a stolen disk opens nothing without that file —
+but the server itself reads everything it holds: the model is "your household, your box", not
+end-to-end encryption (`docs/protocol.md`, "Stored encrypted").
 
 ## Repository layout
 
@@ -163,6 +165,14 @@ sudo chmod 0640 /etc/family-connect/firebase-service-account.json
 # credentials_file). The server refuses to start on unreadable or malformed
 # key files, so a typo shows up in `journalctl`, not as silently lost pushes.
 
+# 5b. The storage key — everything stored is sealed under it, and the server
+#     refuses to start without it. Copy it off the box NOW (password manager or
+#     paper): losing it loses every family on the server, and it is in no backup.
+sudo family-connect storage-key new /etc/family-connect/storage.key
+sudo chown family-connect:family-connect /etc/family-connect/storage.key
+sudo family-connect storage-key show     # the copy to keep somewhere safe
+# config.toml already names it: [storage] key_file = "/etc/family-connect/storage.key"
+
 # 6. systemd
 sudo cp server/systemd/family-connect.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -211,7 +221,9 @@ journalctl -u family-connect -f                     # logs
   password indistinguishable by timing.
 - Uploads stop before the disk does (`limits.min_free_disk_bytes`), so a filling attachments
   directory cannot take PostgreSQL down with it.
-- Storage is plaintext in *your* PostgreSQL, per "Who can see your messages" above.
+- Storage is encrypted at rest (XChaCha20-Poly1305, a key per family, conversation and account,
+  wrapped by one key file); see "Who can see your messages" above for what that does and does not
+  protect, and `docs/operations.md`, "Encryption at rest", for the key file and its copy.
 - **Read `docs/operations.md` before putting this on the public internet.** It covers the
   limits above, backups (a database dump alone is *not* a complete backup — the attachment
   bytes live on disk), a tested restore procedure, and what to monitor.

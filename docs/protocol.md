@@ -5738,6 +5738,37 @@ buffering 100 MB in memory on every read and write, and a `pg_dump` that grows w
 **This means a database dump is no longer a complete backup**; the attachments directory has to be
 backed up alongside it.
 
+### Stored encrypted
+
+*Added 2026-10-25 (#59).* **Nothing on the wire changes, and a client does nothing differently.** This
+section says what the server keeps and how, so that nobody reads more into it than it promises.
+
+**What a person wrote, said, showed or is, the server stores encrypted** under keys of its own that
+are never in the database: message bodies, notes and their tasks and places, poll options, transcripts,
+group and family names, usernames and display names, password hashes, birthdays, profile pictures,
+file names, coordinates, voice-note waveforms, reactions, mention names, report excerpts, invite codes,
+push tokens — and every attachment file and preview on disk. PostgreSQL holds only ciphertext there, and
+the server decrypts in memory to answer. What stays readable is what the server routes, orders and counts
+by: ids, memberships, times, kinds, sizes and switches.
+
+**It protects a copy, not the running server.** A database dump, a backup, a hosting snapshot or a disk
+opens nothing without the server's key file. The server itself still reads everything it reads today —
+the assistant, push text, reply quotes, report excerpts, the magic-number check — because it holds the
+keys, and so does whoever runs it. Keeping the server out of a conversation would be end-to-end
+encryption, which this is not.
+
+**Deleting reaches the backups.** Every family, every conversation (group, direct and assistant chat)
+and every account has its own key. Deleting one destroys its key, and the server keeps its copies of
+the keys for 7 days, so a week after a family, a conversation or an account is deleted (see "Deleting
+an account", "Several families", "Groups"), no backup can open it any more. A single message, note or
+file deleted on its own — by its author, or by "Retention" — is not covered: its conversation's key
+lives on, and older backups hold it until they expire.
+
+**A value the server cannot open is a server fault**: `internal` (500), like any other, and never
+returned as text. A client treats it as it treats any `internal`.
+
+**Apps from before this section** are unaffected; there is nothing for them to know.
+
 ### Deleting an account
 
 Anyone may delete their own account, from inside the app, without asking anybody — which is what
@@ -5748,6 +5779,10 @@ password, and it cannot be undone.
 *Amended 2026-10-22 (several families):* an account in several families leaves EVERY one of them,
 each with its own owner hand-off (and a family it was the last member of is deleted with it), and it
 appears in each family's `former_members` (see "Several families").
+
+*Amended 2026-10-25 (#59):* what the deletion destroys is gone from the server's backups too a week
+later — its profile, its direct and assistant chats, and any family deleted with it (see "Stored
+encrypted"). The words that stay are kept under the family's or group's key, as before.
 
 *Amended 2026-10-22:* the member's messages in a GROUP stay under "Deleted account", as the family
 chat's do; they leave every group, and a group they were admin of passes to the member who joined it

@@ -9,22 +9,100 @@
 //! Files are sharded two levels deep by the id's low digits. One flat
 //! directory with tens of thousands of entries is slow to list and unkind
 //! to every backup tool that has to walk it.
+//!
+//! EVERY FILE IS SEALED AS IT STREAMS (#59): each has its own key, the chunks
+//! go to disk already encrypted (src/vault.rs, `FileSealer`), and reading one
+//! back opens only the chunks a request covers, so a video still seeks. The
+//! file's key is kept in its attachment row, sealed under the key of whatever
+//! holds the file. A file written before #59 stays plaintext — its row has no
+//! `file_key` — until the background conversion seals it.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use bytes::Bytes;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::error::ApiError;
+use crate::vault::{CHUNK_LEN, DataKey, FILE_HEADER_LEN, FileOpener, FileSealer};
 
-/// What a completed write produced.
+/// How many plaintext bytes a write keeps for the magic-number check.
+pub const HEAD_LEN: usize = 12;
+
+/// What a completed write produced. Everything here is about the PLAINTEXT:
+/// what was uploaded, not what lies on disk.
 #[derive(Debug, Clone)]
 pub struct Written {
+    /// The plaintext size — what `size_bytes` holds and what `Content-Length`
+    /// answers.
     pub bytes: u64,
-    /// Hex SHA-256 of the stored bytes — the dedup key.
-    pub sha256: String,
+    /// SHA-256 of the plaintext: the dedup key, before the family's key turns
+    /// it into the stored `content_hash`.
+    pub sha256: [u8; 32],
+    /// The plaintext's first [`HEAD_LEN`] bytes, for the magic-number check.
+    pub head: Vec<u8>,
+}
+
+/// A sealed file, opened for reading by plaintext position.
+pub struct SealedFile {
+    file: fs::File,
+    opener: FileOpener,
+}
+
+impl SealedFile {
+    /// The plaintext size.
+    pub fn plain_len(&self) -> u64 {
+        self.opener.plain_len()
+    }
+
+    /// Plaintext bytes `start..start + count`, a chunk at a time: only the
+    /// chunks the range touches are read and opened. A chunk that does not
+    /// open ends the stream with an error — never with bytes that did not
+    /// authenticate.
+    pub fn range_stream(
+        self,
+        start: u64,
+        count: u64,
+    ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send {
+        let end = start + count;
+        let chunks = self.opener.chunks_covering(start, count);
+        let state = (self, *chunks.start(), *chunks.end(), count == 0);
+        futures_util::stream::try_unfold(state, move |(mut sealed, index, last, done)| async move {
+            if done || index > last {
+                return Ok(None);
+            }
+            let bytes = sealed.read_chunk(index).await?;
+            let chunk_start = index * CHUNK_LEN as u64;
+            let from = start.max(chunk_start) - chunk_start;
+            let to = end.min(chunk_start + bytes.len() as u64) - chunk_start;
+            let piece = Bytes::copy_from_slice(&bytes[from as usize..to as usize]);
+            Ok(Some((piece, (sealed, index + 1, last, false))))
+        })
+    }
+
+    async fn read_chunk(&mut self, index: u64) -> Result<Vec<u8>, std::io::Error> {
+        let (offset, len) = self.opener.chunk_span(index);
+        self.file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut sealed = vec![0u8; len];
+        self.file.read_exact(&mut sealed).await?;
+        self.opener.open_chunk(index, &sealed).map_err(|err| {
+            std::io::Error::new(ErrorKind::InvalidData, format!("a sealed file: {err}"))
+        })
+    }
+
+    /// The whole plaintext, for the few readers that need it in one piece —
+    /// a photo going to the model, a recording going to be transcribed —
+    /// whose sizes the upload ceiling already bounds.
+    pub async fn read_to_end(mut self) -> Result<Vec<u8>, std::io::Error> {
+        let mut plain = Vec::with_capacity(self.plain_len() as usize);
+        let chunks = self.opener.chunks_covering(0, self.plain_len());
+        for index in chunks {
+            plain.extend(self.read_chunk(index).await?);
+        }
+        Ok(plain)
+    }
 }
 
 /// Where one attachment's bytes and its preview live.
@@ -115,13 +193,16 @@ impl Storage {
         self.path_for(key, ".preview")
     }
 
-    /// Write a stream to `path`, refusing past `max_bytes`.
+    /// Write a stream to `path`, sealed under `key`, refusing past
+    /// `max_bytes` of plaintext.
     ///
-    /// Returns the byte count and the SHA-256 of what was written. The
-    /// digest is computed as the bytes go past — they are in hand anyway,
-    /// and re-reading a 100 MB file to hash it afterwards would double the
-    /// I/O of every upload. It is what lets a family store one copy of a
-    /// photo it sends itself three times (migration 0011).
+    /// Returns the plaintext's size, SHA-256 and first bytes. The digest is
+    /// computed as the bytes go past — they are in hand anyway, and
+    /// re-reading a 100 MB file to hash it afterwards would double the I/O of
+    /// every upload. It is what lets a family store one copy of a photo it
+    /// sends itself three times (migration 0011). The bytes reach the disk
+    /// only sealed (#59): no plaintext of an upload is ever written, not even
+    /// to the `.part` file.
     ///
     /// The caller's route also carries a DefaultBodyLimit, but that one
     /// rejects with a bare 413 carrying no protocol error body — the count
@@ -131,6 +212,7 @@ impl Storage {
         path: &Path,
         mut stream: S,
         max_bytes: usize,
+        key: &DataKey,
     ) -> Result<Written, ApiError>
     where
         S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
@@ -140,6 +222,8 @@ impl Storage {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
+        let mut head = Vec::with_capacity(HEAD_LEN);
+        let (mut sealer, header) = FileSealer::new(key);
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -150,6 +234,12 @@ impl Storage {
         let mut file = fs::File::create(&temp)
             .await
             .map_err(|err| ApiError::Internal(anyhow::anyhow!("creating {temp:?}: {err}")))?;
+        if let Err(err) = file.write_all(&header).await {
+            let _ = fs::remove_file(&temp).await;
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "writing {temp:?}: {err}"
+            )));
+        }
 
         let mut written: u64 = 0;
         while let Some(chunk) = stream.next().await {
@@ -163,6 +253,10 @@ impl Storage {
             };
             written += chunk.len() as u64;
             hasher.update(&chunk);
+            if head.len() < HEAD_LEN {
+                let take = (HEAD_LEN - head.len()).min(chunk.len());
+                head.extend_from_slice(&chunk[..take]);
+            }
             if written > max_bytes as u64 {
                 let _ = fs::remove_file(&temp).await;
                 return Err(ApiError::payload_too_large(
@@ -170,12 +264,18 @@ impl Storage {
                     format!("attachment must be at most {max_bytes} bytes"),
                 ));
             }
-            if let Err(err) = file.write_all(&chunk).await {
+            if let Err(err) = file.write_all(&sealer.push(&chunk)).await {
                 let _ = fs::remove_file(&temp).await;
                 return Err(ApiError::Internal(anyhow::anyhow!(
                     "writing {temp:?}: {err}"
                 )));
             }
+        }
+        if let Err(err) = file.write_all(&sealer.finish()).await {
+            let _ = fs::remove_file(&temp).await;
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "writing {temp:?}: {err}"
+            )));
         }
         file.flush()
             .await
@@ -188,8 +288,44 @@ impl Storage {
             .map_err(|err| ApiError::Internal(anyhow::anyhow!("renaming into {path:?}: {err}")))?;
         Ok(Written {
             bytes: written,
-            sha256: hex::encode(hasher.finalize()),
+            sha256: hasher.finalize().into(),
+            head,
         })
+    }
+
+    /// Open the sealed file at `path` with its key. A file too short to hold
+    /// even a header, or one whose header is not ours, is an error, as is a
+    /// file that is missing — the row says it exists.
+    pub async fn open_sealed(&self, path: &Path, key: &DataKey) -> Result<SealedFile, ApiError> {
+        let mut file = fs::File::open(path)
+            .await
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("opening {path:?}: {err}")))?;
+        let sealed_len = file
+            .metadata()
+            .await
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("reading {path:?}: {err}")))?
+            .len();
+        let mut header = vec![0u8; FILE_HEADER_LEN];
+        file.read_exact(&mut header)
+            .await
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("reading {path:?}: {err}")))?;
+        let opener = FileOpener::new(key, &header, sealed_len)
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("opening {path:?}: {err}")))?;
+        Ok(SealedFile { file, opener })
+    }
+
+    /// Seal a plaintext file written before #59 into a new place, under
+    /// `key`, leaving the original untouched for the caller to remove once
+    /// the rows point at the copy. Answers the plaintext size.
+    pub async fn seal_file(&self, from: &Path, to: &Path, key: &DataKey) -> anyhow::Result<u64> {
+        let file = fs::File::open(from)
+            .await
+            .with_context(|| format!("opening {from:?}"))?;
+        let written = self
+            .write_stream(to, tokio_util::io::ReaderStream::new(file), usize::MAX, key)
+            .await
+            .map_err(|err| anyhow::anyhow!("sealing {from:?}: {err:?}"))?;
+        Ok(written.bytes)
     }
 
     /// Remove one file, without touching its preview. Used when an upload

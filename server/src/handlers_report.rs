@@ -26,6 +26,7 @@ use sqlx::postgres::PgRow;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
+use crate::keyring::{KeyError, Keyring, Owner, SealedRow};
 use crate::models::{
     AssistantReport, CreateAssistantReportRequest, Report, ReportedAttachment, User,
 };
@@ -46,13 +47,13 @@ pub struct CreateReportRequest {
     pub message_id: Option<i64>,
 }
 
-fn report_from_row(row: &PgRow) -> Report {
-    Report {
+fn report_from_row(row: &PgRow, keys: &Keyring) -> Result<Report, KeyError> {
+    Ok(Report {
         id: row.get("id"),
         reporter: User {
             id: row.get("reporter_id"),
-            username: row.get("reporter_username"),
-            display_name: row.get("reporter_display_name"),
+            username: row.text(keys, "reporter_username")?,
+            display_name: row.text(keys, "reporter_display_name")?,
             created_at: row.get("reporter_created_at"),
             avatar_version: row.get("reporter_avatar_version"),
             birthday: None,
@@ -60,8 +61,8 @@ fn report_from_row(row: &PgRow) -> Report {
         },
         reported: User {
             id: row.get("reported_id"),
-            username: row.get("reported_username"),
-            display_name: row.get("reported_display_name"),
+            username: row.text(keys, "reported_username")?,
+            display_name: row.text(keys, "reported_display_name")?,
             created_at: row.get("reported_created_at"),
             avatar_version: row.get("reported_avatar_version"),
             birthday: None,
@@ -69,11 +70,11 @@ fn report_from_row(row: &PgRow) -> Report {
         },
         reason: row.get("reason"),
         message_id: row.get("message_id"),
-        message_excerpt: row.get("message_excerpt"),
+        message_excerpt: row.text_opt(keys, "message_excerpt")?,
         // Filled by `carry`, which reads them for every report in one query.
         message_attachments: Vec::new(),
         created_at: row.get("created_at"),
-    }
+    })
 }
 
 const SELECT_REPORT: &str = "SELECT r.id, r.reason, r.message_id, r.message_excerpt, r.created_at,
@@ -96,7 +97,7 @@ const SELECT_REPORT: &str = "SELECT r.id, r.reason, r.message_id, r.message_exce
 /// which is the whole reason a client offers to open an attachment only while
 /// `message_id` survives. Two reports may name the same message — two members
 /// reporting one photo — so the map is read, never drained.
-async fn carry(pool: &sqlx::PgPool, reports: &mut [Report]) -> Result<(), ApiError> {
+async fn carry(state: &AppState, reports: &mut [Report]) -> Result<(), ApiError> {
     let ids: Vec<i64> = reports
         .iter()
         .filter_map(|report| report.message_id)
@@ -110,7 +111,7 @@ async fn carry(pool: &sqlx::PgPool, reports: &mut [Report]) -> Result<(), ApiErr
           ORDER BY message_id, position, id",
     )
     .bind(&ids)
-    .fetch_all(pool)
+    .fetch_all(&state.pool)
     .await?;
     let mut by_message: HashMap<i64, Vec<ReportedAttachment>> = HashMap::new();
     for row in &rows {
@@ -119,7 +120,7 @@ async fn carry(pool: &sqlx::PgPool, reports: &mut [Report]) -> Result<(), ApiErr
             .or_default()
             .push(ReportedAttachment {
                 kind: row.get("kind"),
-                name: row.get("name"),
+                name: row.text_opt(&state.keys, "name")?,
             });
     }
     for report in reports.iter_mut() {
@@ -184,7 +185,7 @@ pub async fn create_report(
             // family's owner, and naming it here answers exactly as a
             // message that does not exist (docs/protocol.md, "Several
             // families").
-            let body: Option<String> = sqlx::query_scalar(&format!(
+            let body: Option<Vec<u8>> = sqlx::query_scalar(&format!(
                 "SELECT m.body
                    FROM messages m
                    JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = $2
@@ -205,7 +206,7 @@ pub async fn create_report(
                     "no such message",
                 ));
             };
-            Some(body)
+            Some(state.keys.open_text(&body)?)
         }
     };
 
@@ -250,11 +251,17 @@ pub async fn create_report(
             .bind(id)
             .fetch_one(&state.pool)
             .await?;
-        let mut report = report_from_row(&row);
-        carry(&state.pool, std::slice::from_mut(&mut report)).await?;
+        let mut report = report_from_row(&row, &state.keys)?;
+        carry(&state, std::slice::from_mut(&mut report)).await?;
         return Ok((StatusCode::OK, Json(json!({"report": report}))).into_response());
     }
 
+    // The frozen excerpt is the family's, sealed under its key (#59): it is
+    // the owner's to read, and it goes with the family.
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Family(family_id))
+        .await?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO member_reports
              (family_id, reporter_user_id, reported_user_id, message_id, message_excerpt, reason)
@@ -265,7 +272,7 @@ pub async fn create_report(
     .bind(auth.user_id)
     .bind(req.reported_user_id)
     .bind(req.message_id)
-    .bind(&excerpt)
+    .bind(key.seal_opt(excerpt.as_deref()))
     .bind(&req.reason)
     .fetch_one(&state.pool)
     .await?;
@@ -274,8 +281,8 @@ pub async fn create_report(
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
-    let mut report = report_from_row(&row);
-    carry(&state.pool, std::slice::from_mut(&mut report)).await?;
+    let mut report = report_from_row(&row, &state.keys)?;
+    carry(&state, std::slice::from_mut(&mut report)).await?;
 
     // The owner is pushed and NO WebSocket frame is raised, exactly as for
     // a join request: they read the list on their next visit.
@@ -283,12 +290,13 @@ pub async fn create_report(
         .bind(family_id)
         .fetch_one(&state.pool)
         .await?;
+    let family_name = family.text(&state.keys, "name")?;
     events::log_fanout_error(
         "report_push",
         events::push_report_created(
             &state,
             family_id,
-            family.get::<String, _>("name").as_str(),
+            &family_name,
             family.get("owner_user_id"),
             req.reported_user_id,
         )
@@ -323,8 +331,11 @@ pub async fn list_reports(
     .bind(state.cfg.limits.max_page_size)
     .fetch_all(&state.pool)
     .await?;
-    let mut reports: Vec<Report> = rows.iter().map(report_from_row).collect();
-    carry(&state.pool, &mut reports).await?;
+    let mut reports: Vec<Report> = rows
+        .iter()
+        .map(|row| report_from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
+    carry(&state, &mut reports).await?;
     Ok((StatusCode::OK, Json(json!({"reports": reports}))).into_response())
 }
 
@@ -445,8 +456,8 @@ pub async fn create_assistant_report(
     // or a real message in a chat the caller is not in — is
     // `message_not_found`, so this endpoint never confirms that an id exists
     // elsewhere, the same non-enumeration rule `reply_to_message_id` follows.
-    let found: Option<(String, String)> = sqlx::query_as(
-        "SELECT m.body, c.kind
+    let found: Option<(Vec<u8>, String, i64)> = sqlx::query_as(
+        "SELECT m.body, c.kind, m.chat_id
            FROM messages m
            JOIN chats c ON c.id = m.chat_id
            JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = $2
@@ -457,12 +468,16 @@ pub async fn create_assistant_report(
     .bind(assistant_id)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((excerpt, chat_kind)) = found else {
+    let Some((excerpt, chat_kind, chat_id)) = found else {
         return Err(ApiError::not_found(
             codes::MESSAGE_NOT_FOUND,
             "no such message",
         ));
     };
+    let excerpt = state.keys.open_text(&excerpt)?;
+    // The report is sealed under the key of the conversation the reply was
+    // in (#59): it holds that conversation's words, and it goes with it.
+    let key = state.keys.key(&state.pool, Owner::Chat(chat_id)).await?;
 
     // A second tap on the same reply is the same report: the stored row comes
     // back and the stored reason is not overwritten, exactly as a member
@@ -479,7 +494,7 @@ pub async fn create_assistant_report(
     {
         return Ok((
             StatusCode::OK,
-            Json(json!({ "report": assistant_report(&row) })),
+            Json(json!({ "report": assistant_report(&row, &state.keys)? })),
         )
             .into_response());
     }
@@ -501,10 +516,10 @@ pub async fn create_assistant_report(
     )
     .bind(auth.user_id)
     .bind(req.message_id)
-    .bind(&excerpt)
+    .bind(key.seal_str(&excerpt))
     .bind(&chat_kind)
     .bind(&req.reason)
-    .bind(note.as_deref())
+    .bind(key.seal_opt(note.as_deref()))
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = inserted else {
@@ -519,11 +534,11 @@ pub async fn create_assistant_report(
         .await?;
         return Ok((
             StatusCode::OK,
-            Json(json!({ "report": assistant_report(&row) })),
+            Json(json!({ "report": assistant_report(&row, &state.keys)? })),
         )
             .into_response());
     };
-    let report = assistant_report(&row);
+    let report = assistant_report(&row, &state.keys)?;
 
     // WARN, because this is how the operator learns it happened at all: there
     // is no inbox, no push and no frame. The reply itself is NOT logged — the
@@ -541,14 +556,14 @@ pub async fn create_assistant_report(
     Ok((StatusCode::CREATED, Json(json!({ "report": report }))).into_response())
 }
 
-fn assistant_report(row: &PgRow) -> AssistantReport {
-    AssistantReport {
+fn assistant_report(row: &PgRow, keys: &Keyring) -> Result<AssistantReport, KeyError> {
+    Ok(AssistantReport {
         id: row.get("id"),
         message_id: row.get("message_id"),
-        message_excerpt: row.get("message_excerpt"),
+        message_excerpt: row.text(keys, "message_excerpt")?,
         chat_kind: row.get("chat_kind"),
         reason: row.get("reason"),
-        note: row.get("note"),
+        note: row.text_opt(keys, "note")?,
         created_at: row.get("created_at"),
-    }
+    })
 }

@@ -26,12 +26,13 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use sqlx::{PgPool, Row};
+use sqlx::Row;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::handlers_chat::{clamp_limit, ensure_chat_access, parse_pagination_param};
+use crate::keyring::{KeyError, Keyring, SealKey, SealedRow};
 use crate::models::{Message, Poll, PollOption};
 use crate::state::AppState;
 
@@ -80,6 +81,7 @@ pub async fn advance_chat_poll_seq(
 /// `messages.chat_id`, and the catch-up feed reads by `chat_id`.
 pub async fn create_poll(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &SealKey,
     chat_id: i64,
     message_id: i64,
     options: &[String],
@@ -95,15 +97,18 @@ pub async fn create_poll(
         .await?;
     // One statement for every option rather than a round trip each:
     // WITH ORDINALITY turns the array's order into `position`, which is what
-    // fixes creation order for the life of the poll.
+    // fixes creation order for the life of the poll. Each option is sealed
+    // under the chat's key (#59); the text the answer carries is the one
+    // just sealed, by its position.
+    let sealed: Vec<Vec<u8>> = options.iter().map(|option| key.seal_str(option)).collect();
     let rows = sqlx::query(
         "INSERT INTO poll_options (poll_id, position, text)
          SELECT $1, (opt.ord - 1)::smallint, opt.text
-         FROM unnest($2::text[]) WITH ORDINALITY AS opt(text, ord)
-         RETURNING id, position, text",
+         FROM unnest($2::bytea[]) WITH ORDINALITY AS opt(text, ord)
+         RETURNING id, position",
     )
     .bind(message_id)
-    .bind(options)
+    .bind(&sealed)
     .fetch_all(&mut **tx)
     .await?;
     advance_chat_poll_seq(tx, chat_id, poll_seq).await?;
@@ -114,11 +119,12 @@ pub async fn create_poll(
     let mut options: Vec<(i16, PollOption)> = rows
         .iter()
         .map(|row| {
+            let position = row.get::<i16, _>("position");
             (
-                row.get::<i16, _>("position"),
+                position,
                 PollOption {
                     id: row.get("id"),
-                    text: row.get("text"),
+                    text: options[position as usize].clone(),
                     votes: Vec::new(),
                 },
             )
@@ -139,7 +145,11 @@ pub async fn create_poll(
 /// Options come back in `position` order and each option's votes in
 /// `(created_at, user_id)` order — a poll rendered twice must not shuffle,
 /// and the frame is compared field by field by clients that hold it.
-pub async fn fetch_poll<'e, E>(executor: E, message_id: i64) -> Result<Poll, ApiError>
+pub async fn fetch_poll<'e, E>(
+    executor: E,
+    keys: &Keyring,
+    message_id: i64,
+) -> Result<Poll, ApiError>
 where
     E: sqlx::PgExecutor<'e>,
 {
@@ -174,13 +184,15 @@ where
     let options = rows
         .iter()
         .filter_map(|row| {
-            row.get::<Option<i64>, _>("option_id").map(|id| PollOption {
-                id,
-                text: row.get("option_text"),
-                votes: row.get("votes"),
+            row.get::<Option<i64>, _>("option_id").map(|id| {
+                Ok(PollOption {
+                    id,
+                    text: row.text(keys, "option_text")?,
+                    votes: row.get("votes"),
+                })
             })
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     Ok(Poll {
         poll_seq: first.get("poll_seq"),
         closed: first.get("closed"),
@@ -206,9 +218,10 @@ fn header_from_row(row: &sqlx::postgres::PgRow) -> PollHeader {
 /// Fill options and votes in for a whole page of poll headers: TWO `= ANY`
 /// queries for the page, never one per poll.
 async fn hydrate_headers(
-    pool: &PgPool,
+    state: &AppState,
     headers: &[PollHeader],
 ) -> Result<HashMap<i64, Poll>, ApiError> {
+    let pool = &state.pool;
     if headers.is_empty() {
         return Ok(HashMap::new());
     }
@@ -246,7 +259,7 @@ async fn hydrate_headers(
             .or_default()
             .push(PollOption {
                 id,
-                text: row.get("text"),
+                text: row.text(&state.keys, "text")?,
                 votes: votes_by_option.remove(&id).unwrap_or_default(),
             });
     }
@@ -273,7 +286,8 @@ async fn hydrate_headers(
 /// Three queries for the whole page — headers, options, votes — never one
 /// per message, exactly as `attach_reactions` does it. Messages that are not
 /// polls are left alone, and the key stays absent on the wire.
-pub async fn attach_polls(pool: &PgPool, messages: &mut [Message]) -> Result<(), ApiError> {
+pub async fn attach_polls(state: &AppState, messages: &mut [Message]) -> Result<(), ApiError> {
+    let pool = &state.pool;
     if messages.is_empty() {
         return Ok(());
     }
@@ -286,7 +300,7 @@ pub async fn attach_polls(pool: &PgPool, messages: &mut [Message]) -> Result<(),
     .fetch_all(pool)
     .await?;
     let headers: Vec<PollHeader> = header_rows.iter().map(header_from_row).collect();
-    let mut polls = hydrate_headers(pool, &headers).await?;
+    let mut polls = hydrate_headers(state, &headers).await?;
     for message in messages.iter_mut() {
         if let Some(poll) = polls.remove(&message.id) {
             message.poll = Some(poll);
@@ -373,7 +387,7 @@ pub async fn apply_vote(
     // Read from INSIDE the transaction, so the state that is broadcast is
     // the state that was committed — and, in the unchanged case, carries the
     // poll's CURRENT seq rather than a zero.
-    let poll = fetch_poll(&mut *tx, message_id).await?;
+    let poll = fetch_poll(&mut *tx, &state.keys, message_id).await?;
     tx.commit().await?;
 
     Ok(PollState {
@@ -420,7 +434,7 @@ pub async fn close_poll(
         stamp_new_seq(&mut tx, chat_id, message_id).await?;
     }
 
-    let poll = fetch_poll(&mut *tx, message_id).await?;
+    let poll = fetch_poll(&mut *tx, &state.keys, message_id).await?;
     tx.commit().await?;
 
     Ok(PollState {
@@ -578,7 +592,7 @@ pub async fn get_polls(
     .await?;
 
     let headers: Vec<PollHeader> = header_rows.iter().map(header_from_row).collect();
-    let mut polls = hydrate_headers(&state.pool, &headers).await?;
+    let mut polls = hydrate_headers(&state, &headers).await?;
     let entries: Vec<serde_json::Value> = headers
         .iter()
         .filter_map(|header| {

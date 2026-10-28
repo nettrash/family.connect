@@ -17,6 +17,7 @@ use sqlx::Row;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::keyring::{KeyError, SealedRow};
 use crate::state::AppState;
 
 /// `GET /families/mine/stats`
@@ -120,20 +121,27 @@ pub async fn family_stats(
                SELECT 1 FROM member_blocks mb
                 WHERE mb.blocker_user_id = $2 AND mb.blocked_user_id = u.id
            )
-         ORDER BY messages DESC, u.display_name ASC",
+         ORDER BY messages DESC, u.id ASC",
     )
     .bind(family_id)
     .bind(auth.user_id)
     .fetch_all(&state.pool)
     .await?;
 
-    let member_rows: Vec<serde_json::Value> = members
+    // Most messages first, and among equals by name — ordered here rather
+    // than in SQL, because the names are sealed (#59) and PostgreSQL can no
+    // longer compare them. Case is ignored, as a reader expects of a list of
+    // names; the id settles what is left.
+    let mut member_rows: Vec<(i64, String, i64, serde_json::Value)> = members
         .iter()
         .map(|row| {
-            json!({
-                "user_id": row.get::<i64, _>("id"),
-                "display_name": row.get::<String, _>("display_name"),
-                "messages": row.get::<i64, _>("messages"),
+            let display_name = row.text(&state.keys, "display_name")?;
+            let messages = row.get::<i64, _>("messages");
+            let id = row.get::<i64, _>("id");
+            let value = json!({
+                "user_id": id,
+                "display_name": display_name,
+                "messages": messages,
                 "attachments": {
                     "count": row.get::<i64, _>("att_count"),
                     "bytes": row.get::<i64, _>("att_bytes"),
@@ -152,8 +160,18 @@ pub async fn family_stats(
                     "transcript_duration_ms": row.get::<i64, _>("ai_audio_ms"),
                     "searches": row.get::<i64, _>("ai_searches"),
                 },
-            })
+            });
+            Ok((messages, display_name, id, value))
         })
+        .collect::<Result<_, KeyError>>()?;
+    member_rows.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let member_rows: Vec<serde_json::Value> = member_rows
+        .into_iter()
+        .map(|(_, _, _, value)| value)
         .collect();
 
     // Family totals. Summed in SQL rather than from the rows above, because

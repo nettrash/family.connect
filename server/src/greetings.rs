@@ -55,7 +55,8 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::events;
-use crate::models::Message;
+use crate::keyring::{Owner, SealedRow};
+use crate::models::{Birthday, Message};
 use crate::state::AppState;
 
 /// The ticker's period, and the reason it is a MINUTE and aligned to one.
@@ -318,13 +319,24 @@ pub async fn post_daily_greetings_at(
     .fetch_all(&state.pool)
     .await?;
 
+    // The places are sealed under each family's key (#59). One family whose
+    // places will not open is skipped, loudly, and the others are greeted.
     let candidates: Vec<Candidate> = rows
         .iter()
-        .map(|row| Candidate {
-            family_id: row.get("family_id"),
-            chat_id: row.get("chat_id"),
-            language: row.get("language"),
-            greeting_places: row.get("greeting_places"),
+        .filter_map(|row| {
+            let family_id: i64 = row.get("family_id");
+            match row.json(&state.keys, "greeting_places") {
+                Ok(greeting_places) => Some(Candidate {
+                    family_id,
+                    chat_id: row.get("chat_id"),
+                    language: row.get("language"),
+                    greeting_places,
+                }),
+                Err(error) => {
+                    warn!(family_id, %error, "a family's greeting places would not open");
+                    None
+                }
+            }
         })
         .collect();
 
@@ -452,6 +464,11 @@ async fn greet(
         )
     };
 
+    // Sealed under the family chat's key — the family's (#59).
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Chat(candidate.chat_id))
+        .await?;
     let inserted = sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
          VALUES ($1, $2, $3, $4)
@@ -461,7 +478,7 @@ async fn greet(
     .bind(candidate.chat_id)
     .bind(assistant_id)
     .bind(client_msg_id)
-    .bind(&body)
+    .bind(key.seal_str(&body))
     .fetch_optional(&state.pool)
     .await?;
 
@@ -471,7 +488,7 @@ async fn greet(
         return Ok(false);
     };
 
-    let message = Message::from_row(&row);
+    let message = Message::from_row(&row, &state.keys)?;
     // Fanned out, never pushed — see the module header.
     events::log_fanout_error(
         "delivering a daily greeting",
@@ -515,13 +532,15 @@ fn today_line(today: Date) -> String {
 /// about them and no special case: a family where nobody has set one produces
 /// an empty set, and the note about the day stands alone.
 async fn signs_in_family(state: &AppState, family_id: i64) -> Result<Vec<&'static str>, ApiError> {
+    // Every member's birthday, sealed (#59): no DISTINCT in SQL any more,
+    // because two sealings of one date are two different values. The
+    // distinct signs are taken here instead.
     let rows = sqlx::query(
-        "SELECT DISTINCT u.birthday_month, u.birthday_day
+        "SELECT u.birthday
            FROM family_members fm
            JOIN users u ON u.id = fm.user_id
           WHERE fm.family_id = $1
-            AND u.birthday_month IS NOT NULL
-            AND u.birthday_day IS NOT NULL",
+            AND u.birthday IS NOT NULL",
     )
     .bind(family_id)
     .fetch_all(&state.pool)
@@ -529,11 +548,9 @@ async fn signs_in_family(state: &AppState, family_id: i64) -> Result<Vec<&'stati
 
     let mut found: Vec<&'static str> = Vec::new();
     for row in &rows {
-        let month: Option<i16> = row.get("birthday_month");
-        let day: Option<i16> = row.get("birthday_day");
-        if let (Some(month), Some(day)) = (month, day)
-            && let Ok(month) = u8::try_from(month)
-            && let Ok(day) = u8::try_from(day)
+        if let Some(birthday) = Birthday::from_row(row, &state.keys)?
+            && let Ok(month) = u8::try_from(birthday.month)
+            && let Ok(day) = u8::try_from(birthday.day)
             && let Some(sign) = sign_for(month, day)
             && !found.contains(&sign)
         {

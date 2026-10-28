@@ -34,6 +34,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 use family_connect::push_payload::PushEvent;
+use family_connect::vault::Lookup;
 
 type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -294,16 +295,27 @@ async fn member_on_a_closed_server(ts: &TestServer) -> String {
         "family_registration_disabled",
     )
     .await;
+    // Sealed under the family's own key, as the server would write it (#59).
+    let key = ts.storage_key().await;
+    let no_places: [&str; 0] = [];
     let smiths: i64 = sqlx::query_scalar(
-        "INSERT INTO families (name, invite_code, owner_user_id, join_policy)
-         SELECT 'The Smiths', 'SEEDCODE', id, 'open' FROM users WHERE username = 'olive'
+        "INSERT INTO families (name, invite_code, invite_code_key, greeting_places,
+                               owner_user_id, join_policy, key_id)
+         VALUES ($3, $4, $5, $6, $2, 'open', $1)
          RETURNING id",
     )
+    .bind(key.id())
+    .bind(ts.user_id(&olive).await)
+    .bind(key.seal_str("The Smiths"))
+    .bind(key.seal_str("SEEDCODE"))
+    .bind(ts.lookup(Lookup::InviteCode, "SEEDCODE"))
+    .bind(key.seal_json(&no_places))
     .fetch_one(&ts.state.pool)
     .await
     .expect("seeding a family");
-    sqlx::query("INSERT INTO chats (family_id, kind) VALUES ($1, 'family')")
+    sqlx::query("INSERT INTO chats (family_id, kind, key_id) VALUES ($1, 'family', $2)")
         .bind(smiths)
+        .bind(key.id())
         .execute(&ts.state.pool)
         .await
         .expect("its chat");
@@ -1617,11 +1629,11 @@ async fn leaving_the_home_family_signs_out_apps_from_before() {
     };
     assert_eq!(code, 4401);
     assert_eq!(ts.get(&old_phone, "/me").await.status(), 401);
-    let devices: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM devices WHERE push_token = 'bob-old-phone'")
-            .fetch_one(&ts.state.pool)
-            .await
-            .expect("counting devices");
+    let devices: i64 = sqlx::query_scalar("SELECT count(*) FROM devices WHERE push_token_key = $1")
+        .bind(ts.lookup(Lookup::PushToken, "bob-old-phone"))
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("counting devices");
     assert_eq!(
         devices, 0,
         "the old phone's push token goes with its session"
@@ -1771,15 +1783,10 @@ async fn an_upload_is_used_only_where_its_family_is() {
     assert_eq!(send_with(smiths_chat, for_home).await.status(), 201);
 
     // A family the uploader is not in.
-    let (_, carl_family) = {
+    let (carls, _) = {
         let (carl, _) = ts.register("carl", "Carl").await;
         ts.create_family(&carl, "The Carls").await
     };
-    let _ = carl_family;
-    let carls: i64 = sqlx::query_scalar("SELECT id FROM families WHERE name = 'The Carls'")
-        .fetch_one(&ts.state.pool)
-        .await
-        .expect("the Carls");
     assert_error(
         upload_for(&ts, &bob, Some(carls)).await,
         404,
@@ -2211,30 +2218,28 @@ async fn the_0057_backfill_carries_every_membership_over() {
     };
     let bob_joined = joined_at(bob_id).await;
     // An `ai` thread of Bob's that still names a family he is not in.
-    let (_, _) = ts
+    let (others, _) = ts
         .create_family(&ts.register("other", "Other").await.0, "Others")
         .await;
-    let others: i64 = sqlx::query_scalar("SELECT id FROM families WHERE name = 'Others'")
-        .fetch_one(pool)
-        .await
-        .expect("the other family");
+    let thread_key = ts.storage_key().await;
     let thread: i64 = sqlx::query_scalar(
-        "INSERT INTO chats (family_id, kind, user_a_id) VALUES ($1, 'ai', $2) RETURNING id",
+        "INSERT INTO chats (family_id, kind, user_a_id, key_id) VALUES ($1, 'ai', $2, $3)
+         RETURNING id",
     )
     .bind(others)
     .bind(bob_id)
+    .bind(thread_key.id())
     .fetch_one(pool)
     .await
     .expect("a stale thread");
 
     // Back to the shape before 0057, filled the way the old server wrote it.
-    sqlx::raw_sql(
+    sqlx::raw_sql(&format!(
         "ALTER TABLE users ADD COLUMN family_id BIGINT REFERENCES families(id) ON DELETE SET NULL;
          ALTER TABLE users ADD COLUMN deleted_family_id BIGINT
              REFERENCES families(id) ON DELETE SET NULL;
          UPDATE users u SET family_id = fm.family_id
-           FROM family_members fm WHERE fm.user_id = u.id AND fm.family_id <> (
-               SELECT id FROM families WHERE name = 'Others');
+           FROM family_members fm WHERE fm.user_id = u.id AND fm.family_id <> {others};
          UPDATE users u SET deleted_family_id = ffm.family_id
            FROM former_family_members ffm WHERE ffm.user_id = u.id;
          DROP TABLE invitations;
@@ -2250,7 +2255,7 @@ async fn the_0057_backfill_carries_every_membership_over() {
          CREATE UNIQUE INDEX member_reports_open_person_uq
              ON member_reports (reporter_user_id, reported_user_id)
              WHERE status = 'open' AND message_id IS NULL AND message_excerpt IS NULL;",
-    )
+    ))
     .execute(pool)
     .await
     .expect("rewinding to the shape before 0057");

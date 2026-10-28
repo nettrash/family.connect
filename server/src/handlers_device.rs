@@ -26,7 +26,9 @@ use tokio::time::Duration;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
+use crate::keyring::Owner;
 use crate::state::AppState;
+use crate::vault::Lookup;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterDeviceRequest {
@@ -114,60 +116,109 @@ pub async fn register_device(
             .and_then(serde_json::Value::as_str),
     );
 
-    let device_id: i64 = match push_token {
-        Some(token) => {
-            // Upsert by token: if the token moved to another account (same
-            // physical device, new login), re-home the row.
-            //
-            // The UPDATE branch is the one that carries the session, and it
-            // is the one that matters: a device re-registers its token on
-            // every launch, which is what keeps the link pointing at the
-            // session that is actually opening sockets rather than at one
-            // that was revoked at some previous login.
-            // The VoIP token rides the same upsert: set it only when the
-            // key was present, so a launch carrying only the push token
-            // does not wipe a VoIP token registered a moment before.
-            sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, push_token, session_id, voip_token, language)
-                 VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN $6 ELSE NULL END,
-                         CASE WHEN $7 THEN $8 ELSE NULL END)
-                 ON CONFLICT (push_token) WHERE push_token IS NOT NULL
+    // The tokens are sealed under the account's key and found again by
+    // their lookups (#59): the server hands a token to APNs or FCM, so it is
+    // kept, but nothing can read it — or tell one phone from another —
+    // without the key.
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Account(auth.user_id))
+        .await?;
+    let mut voip_sealed = voip_value.as_deref().map(|token| key.seal_str(token));
+    let mut voip_lookup = voip_value
+        .as_deref()
+        .map(|token| state.keys.lookup(Lookup::VoipToken, token));
+
+    let mut tx = state.pool.begin().await?;
+    let device_id: i64 =
+        match push_token {
+            Some(token) => {
+                let token_lookup = state.keys.lookup(Lookup::PushToken, token);
+                // A token that moves to ANOTHER account keeps the VoIP token
+                // beside it when this launch does not name one — re-sealed under
+                // the new account's key, because the old account's key must not
+                // go on holding a row that is no longer its own (scrubbing that
+                // account would leave the phone unringable).
+                let mut voip_set = voip_set;
+                if !voip_set {
+                    let moving: Option<(i64, Option<Vec<u8>>)> = sqlx::query_as(
+                    "SELECT user_id, voip_token FROM devices WHERE push_token_key = $1 FOR UPDATE",
+                )
+                .bind(&token_lookup)
+                .fetch_optional(&mut *tx)
+                .await?;
+                    if let Some((owner, Some(sealed))) = moving
+                        && owner != auth.user_id
+                    {
+                        let voip = state.keys.open_text(&sealed)?;
+                        voip_set = true;
+                        voip_sealed = Some(key.seal_str(&voip));
+                        voip_lookup = Some(state.keys.lookup(Lookup::VoipToken, &voip));
+                    }
+                }
+                // Upsert by token: if the token moved to another account (same
+                // physical device, new login), re-home the row.
+                //
+                // The UPDATE branch is the one that carries the session, and it
+                // is the one that matters: a device re-registers its token on
+                // every launch, which is what keeps the link pointing at the
+                // session that is actually opening sockets rather than at one
+                // that was revoked at some previous login.
+                // The VoIP token rides the same upsert: set it only when the
+                // key was present, so a launch carrying only the push token
+                // does not wipe a VoIP token registered a moment before.
+                sqlx::query_scalar(
+                "INSERT INTO devices (user_id, platform, push_token, push_token_key, session_id,
+                                      voip_token, voip_token_key, language)
+                 VALUES ($1, $2, $3, $4, $5,
+                         CASE WHEN $6 THEN $7 ELSE NULL END,
+                         CASE WHEN $6 THEN $8 ELSE NULL END,
+                         CASE WHEN $9 THEN $10 ELSE NULL END)
+                 ON CONFLICT (push_token_key) WHERE push_token_key IS NOT NULL
                  DO UPDATE SET user_id = EXCLUDED.user_id,
                                platform = EXCLUDED.platform,
+                               push_token = EXCLUDED.push_token,
                                session_id = EXCLUDED.session_id,
-                               voip_token = CASE WHEN $5 THEN $6 ELSE devices.voip_token END,
-                               language = CASE WHEN $7 THEN $8 ELSE devices.language END,
+                               voip_token = CASE WHEN $6 THEN $7 ELSE devices.voip_token END,
+                               voip_token_key =
+                                   CASE WHEN $6 THEN $8 ELSE devices.voip_token_key END,
+                               language = CASE WHEN $9 THEN $10 ELSE devices.language END,
                                updated_at = now()
                  RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
-            .bind(token)
+            .bind(key.seal_str(token))
+            .bind(&token_lookup)
             .bind(auth.session_id)
             .bind(voip_set)
-            .bind(&voip_value)
+            .bind(&voip_sealed)
+            .bind(&voip_lookup)
             .bind(language_set)
             .bind(&language_value)
-            .fetch_one(&state.pool)
+            .fetch_one(&mut *tx)
             .await?
-        }
-        None => {
-            sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, session_id, voip_token, language)
-                 VALUES ($1, $2, $3, CASE WHEN $4 THEN $5 ELSE NULL END,
-                         CASE WHEN $6 THEN $7 ELSE NULL END) RETURNING id",
+            }
+            None => sqlx::query_scalar(
+                "INSERT INTO devices (user_id, platform, session_id, voip_token, voip_token_key,
+                                      language)
+                 VALUES ($1, $2, $3,
+                         CASE WHEN $4 THEN $5 ELSE NULL END,
+                         CASE WHEN $4 THEN $6 ELSE NULL END,
+                         CASE WHEN $7 THEN $8 ELSE NULL END) RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
             .bind(auth.session_id)
             .bind(voip_set)
-            .bind(&voip_value)
+            .bind(&voip_sealed)
+            .bind(&voip_lookup)
             .bind(language_set)
             .bind(&language_value)
-            .fetch_one(&state.pool)
-            .await?
-        }
-    };
+            .fetch_one(&mut *tx)
+            .await?,
+        };
+    tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(json!({"device_id": device_id}))).into_response())
 }

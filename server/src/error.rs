@@ -330,6 +330,15 @@ impl From<sqlx::Error> for ApiError {
     }
 }
 
+/// A value that would not seal or open (#59). Internal, like a database
+/// error: the log names the column and the key, and never the content
+/// (docs/protocol.md, "Stored encrypted").
+impl From<crate::keyring::KeyError> for ApiError {
+    fn from(err: crate::keyring::KeyError) -> Self {
+        Self::Internal(anyhow::Error::new(err).context("stored value"))
+    }
+}
+
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         Self::Internal(err)

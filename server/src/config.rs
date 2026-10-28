@@ -1570,7 +1570,7 @@ fn speech_url(endpoint: &str, api_version: &str) -> String {
     format!("{base}{SPEECH_PATH}?api-version={api_version}")
 }
 
-/// `[storage]` — where attachment bytes live.
+/// `[storage]` — where attachment bytes live, and the key that seals them.
 ///
 /// On disk, not in PostgreSQL: see migration 0009. The default matches the
 /// systemd unit's `StateDirectory=family-connect`, which has been reserved
@@ -1579,12 +1579,20 @@ fn speech_url(endpoint: &str, api_version: &str) -> String {
 pub struct StorageConfig {
     #[serde(default = "default_attachments_dir")]
     pub attachments_dir: PathBuf,
+    /// The server key (#59): the file every stored value and file is sealed
+    /// under, by way of the per-family keys it wraps (docs/operations.md,
+    /// "Encryption at rest"). No default, and the server refuses to start
+    /// without it: a path guessed for the operator is a key file nobody knew
+    /// to copy off the box.
+    #[serde(default)]
+    pub key_file: Option<PathBuf>,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             attachments_dir: default_attachments_dir(),
+            key_file: None,
         }
     }
 }
@@ -2262,6 +2270,17 @@ impl Config {
         if self.database.max_connections == 0 {
             anyhow::bail!("database.max_connections must be at least 1");
         }
+        // The key file must never be backed up with what it protects, and the
+        // backup copies the attachments directory whole (#59): a key inside
+        // it would travel in every backup and unlock every one of them.
+        if let Some(key_file) = &self.storage.key_file
+            && key_file.starts_with(&self.storage.attachments_dir)
+        {
+            anyhow::bail!(
+                "storage.key_file must not be inside storage.attachments_dir: the backup copies \
+                 that directory, and a backup that carries its own key protects nothing"
+            );
+        }
         if self.auth.session_ttl_days < 1 {
             anyhow::bail!("auth.session_ttl_days must be at least 1");
         }
@@ -2802,6 +2821,13 @@ mod tests {
         assert!(
             !cfg.ai.enabled,
             "the example must ship with the assistant off"
+        );
+        // The one key with no default, because the server refuses to start
+        // without it: the example names the path docs/operations.md makes.
+        assert_eq!(defaults.storage.key_file, None);
+        assert_eq!(
+            cfg.storage.key_file.as_deref(),
+            Some(std::path::Path::new("/etc/family-connect/storage.key"))
         );
         // The video-message ceiling is documented COMMENTED OUT, because
         // unset is a different statement from any number: the clamped
@@ -3841,6 +3867,19 @@ height = 1024
         );
         cfg.limits.max_family_members = 1;
         assert!(cfg.validate().is_ok(), "one is a legal, if lonely, ceiling");
+    }
+
+    #[test]
+    fn validate_refuses_a_key_file_inside_the_attachments_directory() {
+        let err = Config::from_toml_str(
+            "[storage]\nattachments_dir = \"/var/lib/fc\"\nkey_file = \"/var/lib/fc/storage.key\"\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("storage.key_file"), "{err:#}");
+        Config::from_toml_str(
+            "[storage]\nattachments_dir = \"/var/lib/fc\"\nkey_file = \"/etc/fc/storage.key\"\n",
+        )
+        .expect("a key file elsewhere is fine");
     }
 
     #[test]

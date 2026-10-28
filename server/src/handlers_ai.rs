@@ -65,16 +65,18 @@ use crate::ai::{self, ChatTurn, GeneratedImage, InlineImage};
 use crate::config::ModelRoute;
 use crate::events;
 use crate::handlers_chat;
+use crate::keyring::{KeyError, Owner, SealedRow};
 use crate::lookups::{self, Ledger, LookupLanguage, LookupPlan, LookupResult, LookupTool};
 use crate::models::{Attachment, Message};
 use crate::state::AppState;
 use crate::ws::{AiErrorReason, ServerFrame};
 
 /// The reserved account the assistant sends under (migration 0015). Looked
-/// up rather than hard-coded: the id is whatever the sequence gave it.
+/// up rather than hard-coded: the id is whatever the sequence gave it. Found
+/// by its mark (0059), since its name is sealed like everybody's.
 pub async fn assistant_user_id(state: &AppState) -> Result<Option<i64>> {
     let id = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM users u WHERE lower(username) = 'assistant'
+        "SELECT id FROM users u WHERE is_assistant
            AND NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.user_id = u.id)",
     )
     .fetch_optional(&state.pool)
@@ -197,19 +199,23 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64, family_id: i64) -> R
 
     // ON CONFLICT against the per-family uniqueness (0057), so two listings
     // racing to create the same family's thread end with one.
+    // Its own key (#59), rolled back with the insert when the race is lost.
+    let key = state.keys.create(&mut tx).await?;
     let created: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO chats (family_id, kind, user_a_id) VALUES ($1, 'ai', $2)
+        "INSERT INTO chats (family_id, kind, user_a_id, key_id) VALUES ($1, 'ai', $2, $3)
          ON CONFLICT (user_a_id, family_id) WHERE kind = 'ai' DO NOTHING
          RETURNING id",
     )
     .bind(family_id)
     .bind(user_id)
+    .bind(key.id())
     .fetch_optional(&mut *tx)
     .await?;
     let Some(chat_id) = created else {
         tx.rollback().await?;
         return Ok(None);
     };
+    state.keys.remember(Owner::Chat(chat_id), &key);
     // Only the owner is a member. That is what makes `GET /chats` return it
     // to them and nobody else, using the membership check every other chat
     // already goes through.
@@ -1548,7 +1554,7 @@ async fn load_history(
             attachments_by_message
                 .entry(row.get("message_id"))
                 .or_default()
-                .push(Attachment::from_row(row));
+                .push(Attachment::from_row(row, &state.keys)?);
         }
     }
 
@@ -1556,22 +1562,24 @@ async fn load_history(
 
     let messages: Vec<HistoryMessage> = rows
         .iter()
-        .map(|row| HistoryMessage {
-            id: row.get("id"),
-            sender_id: row.get("sender_id"),
-            at: row.get("created_at"),
-            sender: if row.get::<i64, _>("sender_id") == assistant_id {
-                state.cfg.ai.title.clone()
-            } else {
-                row.get("display_name")
-            },
-            body: row.get("body"),
-            attachments: attachments_by_message
-                .remove(&row.get::<i64, _>("id"))
-                .unwrap_or_default(),
-            poll: polls_by_message.remove(&row.get::<i64, _>("id")),
+        .map(|row| {
+            Ok(HistoryMessage {
+                id: row.get("id"),
+                sender_id: row.get("sender_id"),
+                at: row.get("created_at"),
+                sender: if row.get::<i64, _>("sender_id") == assistant_id {
+                    state.cfg.ai.title.clone()
+                } else {
+                    row.text(&state.keys, "display_name")?
+                },
+                body: row.text(&state.keys, "body")?,
+                attachments: attachments_by_message
+                    .remove(&row.get::<i64, _>("id"))
+                    .unwrap_or_default(),
+                poll: polls_by_message.remove(&row.get::<i64, _>("id")),
+            })
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     Ok(messages)
 }
 
@@ -1659,7 +1667,7 @@ async fn polls_for(
             })
             .options
             .push(HistoryPollOption {
-                text: row.get("text"),
+                text: row.text(&state.keys, "text")?,
                 votes: row.get("votes"),
             });
     }
@@ -1988,7 +1996,7 @@ async fn thread_prompt(
     let mut turns: Vec<ChatTurn> = Vec::with_capacity(history.len());
     // Oldest first, which is the order a conversation reads in.
     for row in history.iter().rev() {
-        let body: String = row.get("body");
+        let body = row.text(&state.keys, "body")?;
         let attachments = attachments_by_message
             .remove(&row.get::<i64, _>("id"))
             .unwrap_or_default();
@@ -2018,7 +2026,7 @@ async fn thread_prompt(
     // established is the member's.
     let question = history.first().expect("history is not empty here");
     let question_id: i64 = question.get("id");
-    let question_body: String = question.get("body");
+    let question_body = question.text(&state.keys, "body")?;
 
     // A picture request is decided from the body of that one message and
     // nothing else, and it short-circuits everything above: what leaves the
@@ -2117,7 +2125,7 @@ async fn attachments_for(
         by_message
             .entry(row.get("message_id"))
             .or_default()
-            .push(Attachment::from_row(row));
+            .push(Attachment::from_row(row, &state.keys)?);
     }
     Ok(by_message)
 }
@@ -2220,7 +2228,7 @@ struct LookedAt {
 /// family chat, or for its history, would be the copy that drifted.
 async fn vision_images(state: &AppState, message_id: i64, budget: usize) -> Result<LookedAt> {
     let rows = sqlx::query(
-        "SELECT id, kind, mime, has_preview, storage_key
+        "SELECT id, kind, mime, has_preview, storage_key, file_key
          FROM attachments
          WHERE message_id = $1 AND kind = 'photo'
          ORDER BY position, id",
@@ -2241,19 +2249,28 @@ async fn vision_images(state: &AppState, message_id: i64, budget: usize) -> Resu
         // The preview is a JPEG by definition (protocol.md, "Photos,
         // videos, audio, files and locations"), so preferring it also
         // settles the media type.
-        let (path, mime) = if has_preview {
-            (
-                state.storage.preview_path(&storage_key),
-                "image/jpeg".to_string(),
-            )
+        let mime = if has_preview {
+            "image/jpeg".to_string()
         } else {
-            (state.storage.blob_path(&storage_key), mime)
+            mime
         };
         if mime != "image/jpeg" && mime != "image/png" {
             looked.omitted += 1;
             continue;
         }
-        let Ok(bytes) = tokio::fs::read(&path).await else {
+        // Opened from its seal (#59) — or read as it is, for a file from
+        // before encryption at rest the background conversion has not
+        // reached yet.
+        let file_key: Option<Vec<u8>> = row.get("file_key");
+        let Some(bytes) = crate::handlers_attachment::read_whole(
+            state,
+            &storage_key,
+            has_preview,
+            file_key.as_deref(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("reading a photo for the model: {error:?}"))?
+        else {
             // Swept, or never finished uploading. Not an error: the
             // question is still worth answering without it.
             looked.omitted += 1;
@@ -2351,7 +2368,7 @@ async fn face_images(
     // chat's family now. The picture rides along when there is one.
     let rows = sqlx::query(
         "SELECT u.id,
-                u.username LIKE 'deleted-%' AS tombstone,
+                u.deleted_at IS NOT NULL AS tombstone,
                 EXISTS (SELECT 1 FROM family_members fm
                          WHERE fm.user_id = u.id
                            AND fm.family_id = (SELECT family_id FROM chats WHERE id = $2))
@@ -2374,8 +2391,8 @@ async fn face_images(
         .iter()
         .map(|row| {
             let mime: Option<String> = row.get("content_type");
-            let bytes: Option<Vec<u8>> = row.get("bytes");
-            (
+            let bytes = row.opened_opt(&state.keys, "bytes")?;
+            Ok((
                 row.get::<i64, _>("id"),
                 Found {
                     tombstone: row.get("tombstone"),
@@ -2384,9 +2401,9 @@ async fn face_images(
                         .zip(bytes)
                         .map(|(mime, bytes)| InlineImage { mime, bytes }),
                 },
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
 
     let mut looked = LookedAtFaces::default();
     for id in candidates {
@@ -2567,7 +2584,7 @@ async fn mention_prompt(
         return Ok(None);
     };
 
-    let body: String = row.get("body");
+    let body = row.text(&state.keys, "body")?;
     if body.trim().is_empty() {
         return Ok(None);
     }
@@ -2600,8 +2617,8 @@ async fn mention_prompt(
     let own_words = own_words(&draw, &body);
 
     let quoted_id: Option<i64> = row.get("quoted_id");
-    let quoted: Option<String> = row.get("quoted_body");
-    let quoted_author: Option<String> = row.get("quoted_author");
+    let quoted = row.text_opt(&state.keys, "quoted_body")?;
+    let quoted_author = row.text_opt(&state.keys, "quoted_author")?;
 
     // A quote is somebody else's words, deliberately pointed at — and the
     // asker cannot agree on its author's behalf to a query written from
@@ -2850,7 +2867,7 @@ async fn mention_prompt(
     if row.get::<String, _>("chat_kind") == "group" {
         instruction.push(' ');
         instruction.push_str(&group_note(
-            &row.get::<Option<String>, _>("group_title")
+            &row.text_opt(&state.keys, "group_title")?
                 .unwrap_or_default(),
         ));
     }
@@ -3585,6 +3602,9 @@ pub(crate) struct WrittenPicture {
     pub storage_key: String,
     pub mime: &'static str,
     pub bytes: i64,
+    /// The file's own key (#59): the row that holds the picture keeps it,
+    /// sealed under its holder's key.
+    pub file_key: crate::vault::DataKey,
 }
 
 impl WrittenPicture {
@@ -3623,15 +3643,22 @@ pub(crate) async fn write_picture(
     let one_chunk = Box::pin(futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
         chunk,
     )]));
+    let file_key = crate::vault::DataKey::generate();
     let written = state
         .storage
-        .write_stream(&path, one_chunk, state.cfg.limits.max_attachment_bytes)
+        .write_stream(
+            &path,
+            one_chunk,
+            state.cfg.limits.max_attachment_bytes,
+            &file_key,
+        )
         .await
         .map_err(|error| anyhow::anyhow!("writing the generated picture: {error:?}"))?;
     Ok(WrittenPicture {
         storage_key,
         mime: image.mime,
         bytes: written.bytes as i64,
+        file_key,
     })
 }
 
@@ -3653,11 +3680,15 @@ async fn store_picture(
             .flatten();
     let written = write_picture(state, &format!("ai-{message_id}"), image).await?;
     let storage_key = written.storage_key.clone();
+    // The picture is the chat's, from the start: its file key is sealed
+    // under the chat's key (#59).
+    let holder = state.keys.key(&state.pool, Owner::Chat(chat_id)).await?;
 
     if let Err(error) = sqlx::query(
         "INSERT INTO attachments
-            (uploader_id, message_id, kind, mime, size_bytes, storage_key, family_id, position)
-         VALUES ($1, $2, 'photo', $3, $4, $5, $6, 0)",
+            (uploader_id, message_id, kind, mime, size_bytes, storage_key, family_id, position,
+             file_key)
+         VALUES ($1, $2, 'photo', $3, $4, $5, $6, 0, $7)",
     )
     .bind(assistant_id)
     .bind(message_id)
@@ -3665,6 +3696,10 @@ async fn store_picture(
     .bind(written.bytes)
     .bind(&storage_key)
     .bind(family_id)
+    .bind(crate::handlers_attachment::seal_file_key(
+        &holder,
+        &written.file_key,
+    ))
     .execute(&state.pool)
     .await
     {
@@ -3715,10 +3750,14 @@ async fn answer(
     // The empty row the reply will fill. Created BEFORE the call, so the
     // bubble appears immediately and every device has the same id to stream
     // into.
-    let inserted: Message = sqlx::query(
+    //
+    // Sealed under the chat's key (#59) even while empty: the column takes
+    // nothing else.
+    let key = state.keys.key(&state.pool, Owner::Chat(chat_id)).await?;
+    let row = sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id,
                                thread_root_id)
-         VALUES ($1, $2, $3, '', $4,
+         VALUES ($1, $2, $3, $5, $4,
                  (SELECT COALESCE(q.thread_root_id, q.id) FROM messages q WHERE q.id = $4))
          RETURNING id, chat_id, sender_id, client_msg_id, body, created_at,
                    reaction_seq, edit_seq, edited_at, reply_to_message_id, thread_root_id",
@@ -3727,9 +3766,10 @@ async fn answer(
     .bind(assistant_id)
     .bind(Uuid::new_v4())
     .bind(prompt.reply_to)
+    .bind(key.seal_str(""))
     .fetch_one(&state.pool)
-    .await
-    .map(|row| Message::from_row(&row))?;
+    .await?;
+    let inserted = Message::from_row(&row, &state.keys)?;
 
     let message_id = inserted.id;
     // Re-read through the joined reader when the row quotes something: the
@@ -3972,7 +4012,7 @@ async fn answer(
          SET body = $1, edit_seq = $2, edited_at = now()
          WHERE id = $3",
     )
-    .bind(&text)
+    .bind(key.seal_str(&text))
     .bind(seq)
     .bind(message_id)
     .execute(&state.pool)

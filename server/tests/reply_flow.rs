@@ -5,6 +5,7 @@
 mod common;
 
 use common::{TestServer, assert_error, spawn_server};
+use family_connect::keyring::Owner;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -245,8 +246,9 @@ async fn the_excerpt_follows_the_quoted_message() {
     post_reply(&server, &member, chat_id, "Six works", quoted_id).await;
 
     // Stand in for a future edit endpoint.
-    sqlx::query("UPDATE messages SET body = 'See you at seven' WHERE id = $1")
+    sqlx::query("UPDATE messages SET body = $2 WHERE id = $1")
         .bind(quoted_id)
+        .bind(server.seal(Owner::Chat(chat_id), "See you at seven").await)
         .execute(&server.state.pool)
         .await
         .expect("edit the quoted message");

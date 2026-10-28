@@ -30,9 +30,11 @@ use time::OffsetDateTime;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
+use crate::keyring::{KeyError, Keyring, Owner, SealedRow};
 use crate::models::{Attachment, Birthday, Family, JoinRequest, Member, User, UserBrief};
 use crate::state::AppState;
 use crate::tokens;
+use crate::vault::Lookup;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateFamilyRequest {
@@ -258,11 +260,13 @@ struct FamilyRecord {
 }
 
 impl FamilyRecord {
-    fn from_row(row: &PgRow) -> Self {
-        Self {
+    /// The name, the code and the places are sealed under the family's key
+    /// (#59); the rest is what the server routes and enforces, in the clear.
+    fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
+        Ok(Self {
             id: row.get("id"),
-            name: row.get("name"),
-            invite_code: row.get("invite_code"),
+            name: row.text(keys, "name")?,
+            invite_code: row.text(keys, "invite_code")?,
             join_policy: row.get("join_policy"),
             language: row.get("language"),
             max_members: row.get("max_members"),
@@ -273,10 +277,10 @@ impl FamilyRecord {
             ai_faces: row.get("ai_faces"),
             ai_transcripts: row.get("ai_transcripts"),
             ai_lookups: row.get("ai_lookups"),
-            greeting_places: row.get("greeting_places"),
+            greeting_places: row.json(keys, "greeting_places")?,
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
-        }
+        })
     }
 
     /// Project to the API object; the invite code is owner-only.
@@ -349,7 +353,7 @@ async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, 
         .bind(family_id)
         .fetch_one(&state.pool)
         .await?;
-    Ok(FamilyRecord::from_row(&row))
+    Ok(FamilyRecord::from_row(&row, &state.keys)?)
 }
 
 /// One family as the API object, as `caller` may see it — the invite code
@@ -683,8 +687,8 @@ pub(crate) async fn user_brief(state: &AppState, user_id: i64) -> Result<UserBri
             .await?;
     Ok(UserBrief {
         id: row.get("id"),
-        username: row.get("username"),
-        display_name: row.get("display_name"),
+        username: row.text(&state.keys, "username")?,
+        display_name: row.text(&state.keys, "display_name")?,
         avatar_version: row.get("avatar_version"),
     })
 }
@@ -796,33 +800,44 @@ pub async fn create_family(
             ));
         }
 
+        // The family's key is made with it (#59): its name, its chat, its
+        // board and its pack are sealed under it, and it goes with the family.
+        let key = state.keys.create(&mut tx).await?;
+        let no_places: [&str; 0] = [];
         let inserted = sqlx::query(
-            "INSERT INTO families (name, invite_code, owner_user_id)
-             VALUES ($1, $2, $3)
+            "INSERT INTO families (name, invite_code, invite_code_key, greeting_places,
+                                   owner_user_id, key_id)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                        ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
                        ai_lookups, greeting_places, owner_user_id, created_at",
         )
-        .bind(&name)
-        .bind(&invite_code)
+        .bind(key.seal_str(&name))
+        .bind(key.seal_str(&invite_code))
+        .bind(state.keys.lookup(Lookup::InviteCode, &invite_code))
+        .bind(key.seal_json(&no_places))
         .bind(auth.user_id)
+        .bind(key.id())
         .fetch_one(&mut *tx)
         .await;
 
         let family = match inserted {
-            Ok(row) => FamilyRecord::from_row(&row),
+            Ok(row) => FamilyRecord::from_row(&row, &state.keys)?,
             Err(sqlx::Error::Database(db_err))
-                if db_err.constraint() == Some("families_invite_code_uq") =>
+                if db_err.constraint() == Some("families_invite_code_key_uq") =>
             {
                 continue; // regenerate and retry
             }
             Err(err) => return Err(err.into()),
         };
 
-        sqlx::query("INSERT INTO chats (family_id, kind) VALUES ($1, 'family')")
+        // The family chat seals with the family's key.
+        sqlx::query("INSERT INTO chats (family_id, kind, key_id) VALUES ($1, 'family', $2)")
             .bind(family.id)
+            .bind(key.id())
             .execute(&mut *tx)
             .await?;
+        state.keys.remember(Owner::Family(family.id), &key);
 
         // A family one statement old cannot be full — its creator is the
         // first member and the cap is at least one — so `FamilyFull` here
@@ -901,8 +916,9 @@ pub async fn join_family(
     // because humans type them from a screen across the room.
     let invite_code = req.invite_code.trim().to_uppercase();
 
-    let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE invite_code = $1"))
-        .bind(&invite_code)
+    // Found by the code's lookup (#59): the code itself is sealed.
+    let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE invite_code_key = $1"))
+        .bind(state.keys.lookup(Lookup::InviteCode, &invite_code))
         .fetch_optional(&state.pool)
         .await?;
     let Some(row) = row else {
@@ -911,7 +927,7 @@ pub async fn join_family(
             "no family with this invite code",
         ));
     };
-    let family = FamilyRecord::from_row(&row);
+    let family = FamilyRecord::from_row(&row, &state.keys)?;
 
     // A closed family admits nobody, and says so in the words of a code
     // that never existed: byte-identical to a wrong one, so a shut door
@@ -1039,12 +1055,13 @@ pub async fn join_family(
     if alive.is_none() {
         return Err(ApiError::unauthorized());
     }
+    let key = state.keys.key(&mut *tx, Owner::Family(family.id)).await?;
     let inserted = sqlx::query(
         "INSERT INTO join_requests (family_id, user_id, invite_code_used) VALUES ($1, $2, $3)",
     )
     .bind(family.id)
     .bind(auth.user_id)
-    .bind(&invite_code)
+    .bind(key.seal_str(&invite_code))
     .execute(&mut *tx)
     .await;
     match inserted {
@@ -1119,8 +1136,7 @@ pub async fn my_family(
     // needs (docs/protocol.md, "Several families"; D7). One boolean per
     // row, computed here so no other family's id ever leaves the server.
     let rows = sqlx::query(&format!(
-        "SELECT u.id, u.username, u.display_name, u.avatar_version,
-                u.birthday_month, u.birthday_day,
+        "SELECT u.id, u.username, u.display_name, u.avatar_version, u.birthday,
                 {} AS may_reset
          FROM family_members fm
          JOIN users u ON u.id = fm.user_id
@@ -1135,7 +1151,7 @@ pub async fn my_family(
     let members: Vec<Member> = rows
         .iter()
         .map(|row| {
-            let mut member = member_from_row(row, family.owner_user_id);
+            let mut member = member_from_row(row, &state.keys, family.owner_user_id)?;
             // On EVERY row of the owner's read, `false` included: a client
             // reads an absent flag as "a server that predates it, the old
             // rule holds" (docs/protocol.md, `Member`). The owner's own row
@@ -1145,9 +1161,9 @@ pub async fn my_family(
                 member.password_reset =
                     Some(member.id != auth.user_id && row.get::<bool, _>("may_reset"));
             }
-            member
+            Ok(member)
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     // The accounts that were deleted while in THIS family, which is what
     // `former_family_members` remembers and its only reader (0057; one row
     // per family the account was in, since an account may have been in
@@ -1158,8 +1174,7 @@ pub async fn my_family(
     // this server needs excluding them, because the scrub removed their
     // memberships and every membership question asks `family_members`.
     let former_rows = sqlx::query(
-        "SELECT u.id, u.username, u.display_name, u.avatar_version,
-                u.birthday_month, u.birthday_day, u.deleted_at
+        "SELECT u.id, u.username, u.display_name, u.avatar_version, u.birthday, u.deleted_at
          FROM former_family_members ffm
          JOIN users u ON u.id = ffm.user_id
          WHERE ffm.family_id = $1 AND u.deleted_at IS NOT NULL
@@ -1170,8 +1185,8 @@ pub async fn my_family(
     .await?;
     let former_members: Vec<Member> = former_rows
         .iter()
-        .map(|row| member_from_row(row, family.owner_user_id))
-        .collect();
+        .map(|row| member_from_row(row, &state.keys, family.owner_user_id))
+        .collect::<Result<_, KeyError>>()?;
     // The board cursor rides along: this is the call every client already
     // makes on resync, so learning whether a board catch-up is needed
     // costs no extra request. Omitted while the board has never been
@@ -1298,13 +1313,19 @@ pub async fn rotate_invite_code(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     let family = require_owner(&state, &auth).await?;
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Family(family.id))
+        .await?;
     for _attempt in 0..5 {
         let invite_code = tokens::gen_invite_code();
-        let updated = sqlx::query("UPDATE families SET invite_code = $1 WHERE id = $2")
-            .bind(&invite_code)
-            .bind(family.id)
-            .execute(&state.pool)
-            .await;
+        let updated =
+            sqlx::query("UPDATE families SET invite_code = $1, invite_code_key = $2 WHERE id = $3")
+                .bind(key.seal_str(&invite_code))
+                .bind(state.keys.lookup(Lookup::InviteCode, &invite_code))
+                .bind(family.id)
+                .execute(&state.pool)
+                .await;
         match updated {
             Ok(_) => {
                 return Ok(
@@ -1312,7 +1333,7 @@ pub async fn rotate_invite_code(
                 );
             }
             Err(sqlx::Error::Database(db_err))
-                if db_err.constraint() == Some("families_invite_code_uq") =>
+                if db_err.constraint() == Some("families_invite_code_key_uq") =>
             {
                 continue;
             }
@@ -1394,6 +1415,17 @@ pub async fn patch_family(
     };
 
     let family = require_owner(&state, &auth).await?;
+    // The places are sealed under the family's key (#59), as a JSON list.
+    let greeting_places = match greeting_places {
+        Some(places) => Some(
+            state
+                .keys
+                .key(&state.pool, Owner::Family(family.id))
+                .await?
+                .seal_json(&places),
+        ),
+        None => None,
+    };
     // The third switch may only be on while `ai_vision` is, judged against
     // what `ai_vision` WILL be once this same request has applied: turning
     // both on at once is fine, turning `ai_vision` off and this on is not,
@@ -1469,7 +1501,7 @@ pub async fn patch_family(
     .bind(greeting_places)
     .fetch_one(&state.pool)
     .await?;
-    let family = FamilyRecord::from_row(&row);
+    let family = FamilyRecord::from_row(&row, &state.keys)?;
     Ok((StatusCode::OK, Json(json!({"family": family.to_api(true)}))).into_response())
 }
 
@@ -1481,8 +1513,7 @@ pub async fn list_join_requests(
     let family = require_owner(&state, &auth).await?;
     let rows = sqlx::query(
         "SELECT jr.id, jr.created_at,
-                u.id AS user_id, u.username, u.display_name, u.avatar_version,
-                u.birthday_month, u.birthday_day,
+                u.id AS user_id, u.username, u.display_name, u.avatar_version, u.birthday,
                 u.created_at AS user_created_at
          FROM join_requests jr
          JOIN users u ON u.id = jr.user_id
@@ -1494,25 +1525,27 @@ pub async fn list_join_requests(
     .await?;
     let requests: Vec<JoinRequest> = rows
         .iter()
-        .map(|row| JoinRequest {
-            id: row.get("id"),
-            user: User {
-                id: row.get("user_id"),
-                username: row.get("username"),
-                display_name: row.get("display_name"),
-                created_at: row.get("user_created_at"),
-                avatar_version: row.get("avatar_version"),
-                birthday: Birthday::from_row(row),
-                // A scrubbed account keeps no family and no sessions, so it
-                // cannot have a live join request. Read from the row all the
-                // same rather than hard-coded: this is the one place a
-                // `User` is assembled by hand, and a literal `false` here is
-                // a claim the row is entitled to make instead.
-                deleted: crate::models::deleted_from_row(row),
-            },
-            created_at: row.get("created_at"),
+        .map(|row| {
+            Ok(JoinRequest {
+                id: row.get("id"),
+                user: User {
+                    id: row.get("user_id"),
+                    username: row.text(&state.keys, "username")?,
+                    display_name: row.text(&state.keys, "display_name")?,
+                    created_at: row.get("user_created_at"),
+                    avatar_version: row.get("avatar_version"),
+                    birthday: Birthday::from_row(row, &state.keys)?,
+                    // A scrubbed account keeps no family and no sessions, so it
+                    // cannot have a live join request. Read from the row all the
+                    // same rather than hard-coded: this is the one place a
+                    // `User` is assembled by hand, and a literal `false` here is
+                    // a claim the row is entitled to make instead.
+                    deleted: crate::models::deleted_from_row(row),
+                },
+                created_at: row.get("created_at"),
+            })
         })
-        .collect();
+        .collect::<Result<_, KeyError>>()?;
     Ok((StatusCode::OK, Json(json!({"requests": requests}))).into_response())
 }
 
@@ -1654,8 +1687,7 @@ pub async fn approve_join_request(
     // refuses (docs/protocol.md, `Member`). The birthday never travels in
     // the `member_joined` frame, whose payload is the brief alone.
     let row = sqlx::query(&format!(
-        "SELECT u.id, u.username, u.display_name, u.avatar_version,
-                u.birthday_month, u.birthday_day,
+        "SELECT u.id, u.username, u.display_name, u.avatar_version, u.birthday,
                 {} AS may_reset
            FROM users u WHERE u.id = $1",
         may_reset_sql("u.id", "$2")
@@ -1667,7 +1699,7 @@ pub async fn approve_join_request(
     // An account that has just been approved into a family is live by
     // construction — a tombstone holds no family and makes no requests —
     // which is what `member_from_row` reads off a row without `deleted_at`.
-    let mut member = member_from_row(&row, family.owner_user_id);
+    let mut member = member_from_row(&row, &state.keys, family.owner_user_id)?;
     member.password_reset = Some(row.get::<bool, _>("may_reset"));
     let joined = UserBrief {
         id: member.id,
@@ -2195,9 +2227,14 @@ pub async fn reset_member_password(
             "this member is in a family you do not own",
         ));
     }
+    // Sealed under the MEMBER's key: it is their account, whoever set it.
+    let key = state
+        .keys
+        .key(&mut *tx, Owner::Account(target_user_id))
+        .await?;
     sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
         .bind(target_user_id)
-        .bind(&password_hash)
+        .bind(key.seal_str(&password_hash))
         .execute(&mut *tx)
         .await?;
     // ALL of them, unlike a self-change: the member is not the one asking,
@@ -2239,19 +2276,26 @@ pub async fn set_member_birthday(
     crate::handlers_auth::validate_birthday(req.month, req.day)?;
     require_same_family(&state, &family, target_user_id).await?;
 
+    // Under the member's own key, as their own `PUT /me/birthday` writes it.
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Account(target_user_id))
+        .await?;
+    let birthday = Birthday {
+        month: req.month,
+        day: req.day,
+    };
     let row = sqlx::query(
-        "UPDATE users SET birthday_month = $2, birthday_day = $3 WHERE id = $1
-         RETURNING id, username, display_name, avatar_version,
-                   birthday_month, birthday_day",
+        "UPDATE users SET birthday = $2 WHERE id = $1
+         RETURNING id, username, display_name, avatar_version, birthday",
     )
     .bind(target_user_id)
-    .bind(req.month)
-    .bind(req.day)
+    .bind(key.seal(&birthday.plain()))
     .fetch_one(&state.pool)
     .await?;
     Ok((
         StatusCode::OK,
-        Json(json!({"member": member_from_row(&row, family.owner_user_id)})),
+        Json(json!({"member": member_from_row(&row, &state.keys, family.owner_user_id)?})),
     )
         .into_response())
 }
@@ -2268,7 +2312,7 @@ pub async fn delete_member_birthday(
     let family = require_owner(&state, &auth).await?;
     require_same_family(&state, &family, target_user_id).await?;
 
-    sqlx::query("UPDATE users SET birthday_month = NULL, birthday_day = NULL WHERE id = $1")
+    sqlx::query("UPDATE users SET birthday = NULL WHERE id = $1")
         .bind(target_user_id)
         .execute(&state.pool)
         .await?;
@@ -2319,30 +2363,35 @@ async fn require_same_family(
 }
 
 /// Build a `Member` from a row exposing `id, username, display_name,
-/// avatar_version, birthday_month, birthday_day`, and optionally
-/// `deleted_at` — a SELECT that omits the last reads as a live member.
+/// avatar_version, birthday`, and optionally `deleted_at` — a SELECT that
+/// omits the last reads as a live member. The sealed columns open with
+/// `keys` (#59).
 ///
 /// `pub(crate)` so the account deletion can build the tombstone its
 /// `member_deleted` frame carries out of the row it has just scrubbed,
 /// rather than assembling the same placeholder by hand in a second place.
-pub(crate) fn member_from_row(row: &PgRow, owner_user_id: i64) -> Member {
+pub(crate) fn member_from_row(
+    row: &PgRow,
+    keys: &Keyring,
+    owner_user_id: i64,
+) -> Result<Member, KeyError> {
     let id: i64 = row.get("id");
     let deleted = crate::models::deleted_from_row(row);
-    Member {
+    Ok(Member {
         id,
-        username: row.get("username"),
-        display_name: row.get("display_name"),
+        username: row.text(keys, "username")?,
+        display_name: row.text(keys, "display_name")?,
         // A former member holds no role — they are in `former_members`
         // precisely because they are in nothing else (protocol.md,
         // "Deleting an account"). Every live row gets one.
         role: (!deleted).then(|| member_role(id, owner_user_id).to_string()),
         avatar_version: row.get("avatar_version"),
-        birthday: Birthday::from_row(row),
+        birthday: Birthday::from_row(row, keys)?,
         deleted,
         // Filled in by the one read that carries it — the owner's own
         // roster (`my_family`) — and absent from every other Member.
         password_reset: None,
-    }
+    })
 }
 
 /// Delete a family inside the caller's transaction, and hand back the
@@ -3085,6 +3134,16 @@ pub(crate) async fn announce_direct_chats(state: &AppState, chat_ids: &[i64]) {
         let user_a: i64 = row.get("user_a_id");
         let user_b: i64 = row.get("user_b_id");
         let family_ids: Vec<i64> = row.get("family_ids");
+        let names = row
+            .text(&state.keys, "a_name")
+            .and_then(|a_name| Ok((a_name, row.text(&state.keys, "b_name")?)));
+        let (a_name, b_name) = match names {
+            Ok(names) => names,
+            Err(error) => {
+                tracing::warn!(%error, chat_id, "could not open a direct chat's names");
+                continue;
+            }
+        };
         // A pair that shares no family any more: the side that stayed in the
         // chat is sent it under a family of theirs, as `GET /chats` lists it
         // (`viewer_chat_family_ids_sql`); the side that left gets `[]`.
@@ -3135,8 +3194,8 @@ pub(crate) async fn announce_direct_chats(state: &AppState, chat_ids: &[i64]) {
             events::deliver_direct_chat_updated(
                 state,
                 [
-                    (user_a, side(user_b, row.get("b_name"), a_families)),
-                    (user_b, side(user_a, row.get("a_name"), b_families)),
+                    (user_a, side(user_b, b_name, a_families)),
+                    (user_b, side(user_a, a_name, b_families)),
                 ],
             )
             .await,

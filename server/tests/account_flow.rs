@@ -15,6 +15,8 @@ mod common;
 use std::time::Duration;
 
 use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
+use family_connect::keyring::Owner;
+use family_connect::vault::Lookup;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
@@ -1142,10 +1144,15 @@ async fn the_accounts_devices_go_with_its_sessions_so_nothing_is_pushed_to_them(
     // and every device row, and with them every push token", without an
     // exception for how the row got there.
     sqlx::query(
-        "INSERT INTO devices (user_id, platform, push_token, session_id)
-         VALUES ($1, 'ios', 'tok-junior-legacy', NULL)",
+        "INSERT INTO devices (user_id, platform, push_token, push_token_key, session_id)
+         VALUES ($1, 'ios', $2, $3, NULL)",
     )
     .bind(member_id)
+    .bind(
+        ts.seal(Owner::Account(member_id), "tok-junior-legacy")
+            .await,
+    )
+    .bind(ts.lookup(Lookup::PushToken, "tok-junior-legacy"))
     .execute(&ts.state.pool)
     .await
     .expect("inserting a pre-0020 device row");
@@ -1534,7 +1541,7 @@ async fn the_assistant_account_and_the_usage_it_recorded_are_untouched() {
 
     // The reserved account is exactly as migration 0015 left it: same name,
     // no family, and alive.
-    let assistant: (String, String, i64, Option<time::OffsetDateTime>) = sqlx::query_as(
+    let assistant: (Vec<u8>, Vec<u8>, i64, Option<time::OffsetDateTime>) = sqlx::query_as(
         "SELECT username, display_name,
                 (SELECT count(*) FROM family_members WHERE user_id = users.id),
                 deleted_at
@@ -1544,8 +1551,8 @@ async fn the_assistant_account_and_the_usage_it_recorded_are_untouched() {
     .fetch_one(&ts.state.pool)
     .await
     .expect("the assistant row");
-    assert_eq!(assistant.0, "assistant");
-    assert_eq!(assistant.1, "Assistant");
+    assert_eq!(ts.open_text(&assistant.0), "assistant");
+    assert_eq!(ts.open_text(&assistant.1), "Assistant");
     assert_eq!(assistant.2, 0, "the assistant belongs to no family");
     assert!(
         assistant.3.is_none(),

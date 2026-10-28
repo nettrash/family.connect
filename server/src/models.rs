@@ -14,6 +14,8 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::keyring::{KeyError, Keyring, SealedRow};
+
 /// `User` object: the public identity of an account.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct User {
@@ -37,18 +39,18 @@ pub struct User {
 
 impl User {
     /// Map a row exposing `id, username, display_name, created_at,
-    /// avatar_version, birthday_month, birthday_day`, and optionally
-    /// `deleted_at`.
-    pub fn from_row(row: &PgRow) -> Self {
-        Self {
+    /// avatar_version, birthday`, and optionally `deleted_at`. The three
+    /// sealed columns are opened with `keys` (#59).
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
+        Ok(Self {
             id: row.get("id"),
-            username: row.get("username"),
-            display_name: row.get("display_name"),
+            username: row.text(keys, "username")?,
+            display_name: row.text(keys, "display_name")?,
             created_at: row.get("created_at"),
             avatar_version: row.get("avatar_version"),
-            birthday: Birthday::from_row(row),
+            birthday: Birthday::from_row(row, keys)?,
             deleted: deleted_from_row(row),
-        }
+        })
     }
 }
 
@@ -86,8 +88,10 @@ pub fn deleted_from_row(row: &PgRow) -> bool {
 /// database enforces the same equivalence (migration 0018), so this type
 /// is the only shape either side can produce.
 ///
-/// `i16` because the columns are `SMALLINT`; the range is the validator's
-/// business and the constraint's, not the type's.
+/// Stored as ONE sealed value of two bytes, month then day (#59, migration
+/// 0059), so half a birthday cannot be written at all. The range is the
+/// validator's business; `i16` is what the wire and the validator have
+/// always spoken.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Birthday {
     pub month: i16,
@@ -95,19 +99,39 @@ pub struct Birthday {
 }
 
 impl Birthday {
-    /// Read `birthday_month`/`birthday_day` from a row, as the one or the
-    /// none they always are together.
+    /// Read the sealed `birthday` column from a row: absent when NULL.
     ///
-    /// Both columns must be in the SELECT: `.get` panics on a name the
-    /// query did not ask for, which is the loud failure this crate wants
-    /// when a column list and a DTO drift apart.
-    pub fn from_row(row: &PgRow) -> Option<Self> {
-        let month: Option<i16> = row.get("birthday_month");
-        let day: Option<i16> = row.get("birthday_day");
-        match (month, day) {
-            (Some(month), Some(day)) => Some(Self { month, day }),
-            // Half a birthday cannot be written (migration 0018), so this
-            // arm is only ever reached by "nobody set one".
+    /// The column must be in the SELECT: `.get` panics on a name the query
+    /// did not ask for, which is the loud failure this crate wants when a
+    /// column list and a DTO drift apart.
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Option<Self>, KeyError> {
+        Self::from_column(row, keys, "birthday")
+    }
+
+    /// The same, from a column of another name (a joined user's).
+    pub fn from_column(
+        row: &PgRow,
+        keys: &Keyring,
+        column: &str,
+    ) -> Result<Option<Self>, KeyError> {
+        Ok(row
+            .opened_opt(keys, column)?
+            .and_then(|plain| Self::from_plain(&plain)))
+    }
+
+    /// The two bytes a birthday is sealed as.
+    pub fn plain(self) -> [u8; 2] {
+        [self.month as u8, self.day as u8]
+    }
+
+    /// A birthday from the two bytes it was sealed as; anything else is no
+    /// birthday at all.
+    pub fn from_plain(plain: &[u8]) -> Option<Self> {
+        match plain {
+            [month, day] => Some(Self {
+                month: i16::from(*month),
+                day: i16::from(*day),
+            }),
             _ => None,
         }
     }
@@ -761,29 +785,32 @@ impl ReplyTo {
 impl Message {
     /// Map a row exposing `id, chat_id, sender_id, client_msg_id, body,
     /// created_at`. Reaction fields start `None`; the paths that expose
-    /// them (`get_messages`) enrich afterwards.
+    /// them (`get_messages`) enrich afterwards. The bodies — the message's
+    /// and the quoted ones — are sealed (#59) and opened with `keys`.
     ///
     /// The reply snippet is read with `try_get` from the joined columns
     /// `reply_to_message_id` / `reply_sender_id` / `reply_body`, so the
     /// SAME mapper serves both the narrow SELECTs (chat-list previews,
     /// which carry no quote) and the joined one in `get_messages`. All
-    /// three must be present and non-NULL for a snippet to appear.
-    pub fn from_row(row: &PgRow) -> Self {
+    /// three must be present and non-NULL for a snippet to appear. Only a
+    /// column that is ABSENT reads as no quote: one that is there but will
+    /// not open is an error, never a quote quietly dropped.
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
         let reply_to = match (
             row.try_get::<Option<i64>, _>("reply_to_message_id"),
             row.try_get::<Option<i64>, _>("reply_sender_id"),
-            row.try_get::<Option<String>, _>("reply_body"),
+            quoted_body(row, keys, "reply_body")?,
         ) {
-            (Ok(Some(message_id)), Ok(Some(sender_id)), Ok(Some(body))) => {
+            (Ok(Some(message_id)), Ok(Some(sender_id)), Some(body)) => {
                 // The second level, under the same all-three-or-nothing
                 // rule. A narrow SELECT that does not join it simply has no
                 // such columns, and `try_get` reports that as absent.
                 let parent = match (
                     row.try_get::<Option<i64>, _>("reply_parent_message_id"),
                     row.try_get::<Option<i64>, _>("reply_parent_sender_id"),
-                    row.try_get::<Option<String>, _>("reply_parent_body"),
+                    quoted_body(row, keys, "reply_parent_body")?,
                 ) {
-                    (Ok(Some(pid)), Ok(Some(psender)), Ok(Some(pbody))) => {
+                    (Ok(Some(pid)), Ok(Some(psender)), Some(pbody)) => {
                         Some(QuotedParent::new(pid, psender, &pbody))
                     }
                     _ => None,
@@ -818,12 +845,12 @@ impl Message {
             Ok(count) if count > 0 => Some(count),
             _ => None,
         };
-        Self {
+        Ok(Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
             sender_id: row.get("sender_id"),
             client_msg_id: row.get("client_msg_id"),
-            body: row.get("body"),
+            body: row.text(keys, "body")?,
             created_at: row.get("created_at"),
             reactions: None,
             reaction_seq,
@@ -840,7 +867,20 @@ impl Message {
             poll: None,
             call: None,
             mentions: None,
-        }
+        })
+    }
+}
+
+/// A quoted message's body off a joined row: `None` when the SELECT has no
+/// such column or the quote is NULL, the opened text otherwise.
+fn quoted_body(row: &PgRow, keys: &Keyring, column: &str) -> Result<Option<String>, KeyError> {
+    match row.try_get::<Option<Vec<u8>>, _>(column) {
+        Ok(Some(sealed)) => keys
+            .open_text(&sealed)
+            .map(Some)
+            .map_err(|err| err.in_column(column)),
+        Ok(None) | Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
+        Err(err) => Err(KeyError::Db(err)),
     }
 }
 
@@ -1157,8 +1197,10 @@ impl Attachment {
         }
     }
 
-    pub fn from_row(row: &PgRow) -> Self {
-        Self {
+    /// The name, the coordinates and the waveform are sealed (#59) under
+    /// the key of whatever holds the attachment, and opened with `keys`.
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
+        Ok(Self {
             id: row.get("id"),
             kind: row.get("kind"),
             mime: row.get("mime"),
@@ -1167,13 +1209,14 @@ impl Attachment {
             height: row.get("height"),
             duration_ms: row.get("duration_ms"),
             has_preview: row.get("has_preview"),
-            name: row.get("name"),
-            // `try_get` rather than `get`: these three arrived last and a
-            // narrow SELECT that forgets them must degrade to "not a
-            // location" rather than panic inside a handler, which surfaces
-            // as a dropped connection with no error body.
-            latitude: row.try_get("latitude").unwrap_or_default(),
-            longitude: row.try_get("longitude").unwrap_or_default(),
+            name: row.text_opt(keys, "name")?,
+            // A narrow SELECT that does not ask for these must degrade to
+            // "not a location" rather than panic inside a handler, which
+            // surfaces as a dropped connection with no error body — and,
+            // since they are sealed, ONLY a column that is absent degrades:
+            // one that is there and will not open is an error.
+            latitude: sealed_f64(row, keys, "latitude")?,
+            longitude: sealed_f64(row, keys, "longitude")?,
             accuracy_m: row.try_get("accuracy_m").unwrap_or_default(),
             // The same forgiveness, and for a better reason still: most
             // SELECTs have no business with this column — a note's picture
@@ -1189,9 +1232,31 @@ impl Attachment {
             // And for the waveform (0053): only audio has one, and a SELECT
             // that never asked for it — a note's picture, a pack item's, the
             // assistant's history — reads "none" rather than failing.
-            waveform: row.try_get("waveform").unwrap_or_default(),
-        }
+            waveform: row
+                .opened_if_selected(keys, "waveform")?
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|_| KeyError::Malformed {
+                    column: Some("waveform".to_string()),
+                    key_id: 0,
+                })?,
+        })
     }
+}
+
+/// A sealed coordinate: eight big-endian bytes, as `float8send` writes them
+/// (migration 0059) and as `f64::to_be_bytes` does.
+fn sealed_f64(row: &PgRow, keys: &Keyring, column: &str) -> Result<Option<f64>, KeyError> {
+    row.opened_if_selected(keys, column)?
+        .map(|plain| {
+            <[u8; 8]>::try_from(plain.as_slice())
+                .map(f64::from_be_bytes)
+                .map_err(|_| KeyError::Malformed {
+                    column: Some(column.to_string()),
+                    key_id: 0,
+                })
+        })
+        .transpose()
 }
 
 /// One sticker of a family's pack (docs/protocol.md, "Sticker pack").
@@ -1246,12 +1311,13 @@ impl PackItem {
     /// of something that no longer exists would be a small leak for no
     /// reader. The picture is attached by the caller, which knows whether
     /// it is reading one item or a page of them.
-    pub fn from_row(row: &PgRow) -> Self {
+    /// The label is sealed under the family's key (#59).
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
         let deleted = row
             .get::<Option<time::OffsetDateTime>, _>("deleted_at")
             .is_some();
         if deleted {
-            return Self {
+            return Ok(Self {
                 id: row.get("id"),
                 added_by: None,
                 label: None,
@@ -1260,18 +1326,18 @@ impl PackItem {
                 pack_seq: row.get("pack_seq"),
                 deleted: true,
                 family_id: row.try_get("family_id").ok(),
-            };
+            });
         }
-        Self {
+        Ok(Self {
             id: row.get("id"),
             added_by: Some(row.get("added_by")),
-            label: row.get("label"),
+            label: row.text_opt(keys, "label")?,
             attachment: None,
             created_at: Some(row.get("created_at")),
             pack_seq: row.get("pack_seq"),
             deleted: false,
             family_id: row.try_get("family_id").ok(),
-        }
+        })
     }
 }
 
@@ -1440,10 +1506,12 @@ impl Note {
         value.clamp(0.0, 1.0)
     }
 
-    pub fn from_row(row: &PgRow) -> Self {
+    /// The words and the place are sealed under the family's key (#59); a
+    /// tombstone opens nothing.
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
         let deleted_at: Option<OffsetDateTime> = row.get("deleted_at");
         if deleted_at.is_some() {
-            return Self {
+            return Ok(Self {
                 id: row.get("id"),
                 author_id: None,
                 text: None,
@@ -1466,12 +1534,12 @@ impl Note {
                 content_seq: None,
                 deleted: true,
                 family_id: row.try_get("family_id").ok(),
-            };
+            });
         }
-        Self {
+        Ok(Self {
             id: row.get("id"),
             author_id: Some(row.get("author_id")),
-            text: Some(row.get("text")),
+            text: Some(row.text(keys, "text")?),
             color: Some(row.get("color")),
             size: Some(row.get("size")),
             font: Some(row.get("font")),
@@ -1482,7 +1550,7 @@ impl Note {
             attachment: None,
             starts_at: row.get("starts_at"),
             ends_at: row.get("ends_at"),
-            place: row.get("place"),
+            place: row.text_opt(keys, "place")?,
             // Hydrated by the caller too, for the same reason — and `[]`
             // rather than absent on an event, which the caller decides
             // because only it knows the kind is meaningful here.
@@ -1502,7 +1570,7 @@ impl Note {
             content_seq: Some(row.get("content_seq")),
             deleted: false,
             family_id: row.try_get("family_id").ok(),
-        }
+        })
     }
 }
 
@@ -1535,16 +1603,17 @@ impl TaskItem {
     /// Longest one line may be. A thing to do, not a paragraph about it.
     pub const MAX_TEXT_CHARS: usize = 100;
 
-    pub fn from_row(row: &PgRow) -> Self {
+    /// The line is sealed under the family's key (#59).
+    pub fn from_row(row: &PgRow, keys: &Keyring) -> Result<Self, KeyError> {
         let done_at: Option<OffsetDateTime> = row.get("done_at");
-        Self {
+        Ok(Self {
             id: row.get("id"),
-            text: row.get("text"),
+            text: row.text(keys, "text")?,
             done: done_at.is_some(),
             // Only meaningful while it is done, and a deleted account's
             // tick keeps the item done without a name behind it.
             done_by: done_at.and_then(|_| row.get::<Option<i64>, _>("done_by")),
-        }
+        })
     }
 }
 

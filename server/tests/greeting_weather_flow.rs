@@ -813,18 +813,20 @@ async fn the_place_list_is_the_owners_and_is_validated_before_anything_is_writte
     }
 }
 
-/// The CHECK holds the shape even against a write that skips the handler.
+/// A write that skips the handler cannot put place names in the clear: the
+/// places are one sealed value (#59), and the database refuses anything that
+/// is not one. Their shape — at most three, none empty — is the handler's
+/// to enforce, before it seals them.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
-async fn the_database_refuses_a_fourth_place_or_a_null() {
+async fn the_database_refuses_places_that_are_not_sealed() {
     let (_stub, addr) = spawn_stub().await;
     let ts = server(addr, true, |_| {}).await;
     let (owner, _) = ts.register("owner", "Olive").await;
     let (family_id, _) = ts.create_family(&owner, "The Smiths").await;
     for bad in [
-        "ARRAY['a','b','c','d']::TEXT[]",
-        "ARRAY['a',NULL]::TEXT[]",
-        "ARRAY[ARRAY['a'],ARRAY['b']]::TEXT[]",
+        r#"convert_to('["a","b","c","d"]', 'UTF8')"#,
+        r#"'\x00'::bytea || convert_to('["Belgrade"]', 'UTF8')"#,
     ] {
         let refused = sqlx::query(&format!(
             "UPDATE families SET greeting_places = {bad} WHERE id = $1"
@@ -837,7 +839,7 @@ async fn the_database_refuses_a_fourth_place_or_a_null() {
         };
         assert_eq!(
             error.constraint(),
-            Some("families_greeting_places_check"),
+            Some("families_greeting_places_sealed"),
             "{bad}"
         );
     }

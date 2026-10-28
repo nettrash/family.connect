@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use crate::calls::CallRegistry;
 use crate::config::Config;
 use crate::handlers_transcript::Transcriptions;
+use crate::keyring::Keyring;
 use crate::lookups::WeatherCache;
 use crate::push::PushSender;
 use crate::registry::Registry;
@@ -33,6 +34,10 @@ pub struct AppState {
     /// Where attachment bytes live. On disk, not in PostgreSQL — see
     /// migration 0009.
     pub storage: Storage,
+    /// The data keys every stored value is sealed under, unwrapped by the
+    /// server key (#59, docs/protocol.md, "Stored encrypted"). Started —
+    /// every key loaded and checked — before the state is built.
+    pub keys: Arc<Keyring>,
     /// Shared client for outbound calls (today: the assistant). One rather
     /// than one-per-request, so the connection pool and the TLS session
     /// cache are actually reused.
@@ -51,7 +56,12 @@ pub struct AppState {
 impl AppState {
     /// Assemble the state; the registry's per-connection queue size comes
     /// from `[limits] ws_send_queue`.
-    pub fn new(pool: PgPool, cfg: Arc<Config>, push: Arc<dyn PushSender>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        cfg: Arc<Config>,
+        push: Arc<dyn PushSender>,
+        keys: Arc<Keyring>,
+    ) -> Self {
         let registry = Arc::new(Registry::new(cfg.limits.ws_send_queue));
         let calls = Arc::new(CallRegistry::new());
         let storage = Storage::new(cfg.storage.attachments_dir.clone());
@@ -71,6 +81,7 @@ impl AppState {
             cfg,
             http,
             storage,
+            keys,
             transcriptions: Arc::new(Transcriptions::default()),
             lookup_cache: Arc::new(WeatherCache::default()),
         }

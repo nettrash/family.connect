@@ -28,6 +28,7 @@ use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::handlers_family::{Granted, IdPath, LapsedInvitation};
+use crate::keyring::{KeyError, Keyring, SealedRow};
 use crate::models::{Birthday, Invitation, User};
 use crate::state::AppState;
 
@@ -47,11 +48,11 @@ pub struct CreateInvitationRequest {
 const SELECT_INVITATION: &str = "SELECT i.id, i.family_id, i.created_at, f.name AS family_name,
             u.id AS u_id, u.username AS u_username, u.display_name AS u_display_name,
             u.created_at AS u_created_at, u.avatar_version AS u_avatar_version,
-            u.birthday_month AS u_birthday_month, u.birthday_day AS u_birthday_day,
+            u.birthday AS u_birthday,
             u.deleted_at AS u_deleted_at,
             b.id AS b_id, b.username AS b_username, b.display_name AS b_display_name,
             b.created_at AS b_created_at, b.avatar_version AS b_avatar_version,
-            b.birthday_month AS b_birthday_month, b.birthday_day AS b_birthday_day,
+            b.birthday AS b_birthday,
             b.deleted_at AS b_deleted_at
        FROM invitations i
        JOIN families f ON f.id = i.family_id
@@ -59,53 +60,56 @@ const SELECT_INVITATION: &str = "SELECT i.id, i.family_id, i.created_at, f.name 
        LEFT JOIN users b ON b.id = i.invited_by";
 
 /// One side of an invitation, out of its prefixed columns.
-fn user_from_prefixed(row: &PgRow, prefix: &str) -> Option<User> {
+fn user_from_prefixed(row: &PgRow, keys: &Keyring, prefix: &str) -> Result<Option<User>, KeyError> {
     let id: Option<i64> = row.get(format!("{prefix}id").as_str());
-    let month: Option<i16> = row.get(format!("{prefix}birthday_month").as_str());
-    let day: Option<i16> = row.get(format!("{prefix}birthday_day").as_str());
-    id.map(|id| User {
-        id,
-        username: row.get(format!("{prefix}username").as_str()),
-        display_name: row.get(format!("{prefix}display_name").as_str()),
-        created_at: row.get(format!("{prefix}created_at").as_str()),
-        avatar_version: row.get(format!("{prefix}avatar_version").as_str()),
-        birthday: match (month, day) {
-            (Some(month), Some(day)) => Some(Birthday { month, day }),
-            _ => None,
-        },
-        deleted: row
-            .get::<Option<time::OffsetDateTime>, _>(format!("{prefix}deleted_at").as_str())
-            .is_some(),
+    id.map(|id| {
+        Ok(User {
+            id,
+            username: row.text(keys, &format!("{prefix}username"))?,
+            display_name: row.text(keys, &format!("{prefix}display_name"))?,
+            created_at: row.get(format!("{prefix}created_at").as_str()),
+            avatar_version: row.get(format!("{prefix}avatar_version").as_str()),
+            birthday: Birthday::from_column(row, keys, &format!("{prefix}birthday"))?,
+            deleted: row
+                .get::<Option<time::OffsetDateTime>, _>(format!("{prefix}deleted_at").as_str())
+                .is_some(),
+        })
     })
+    .transpose()
 }
 
-fn invitation_from_row(row: &PgRow) -> Invitation {
-    Invitation {
+fn invitation_from_row(row: &PgRow, keys: &Keyring) -> Result<Invitation, KeyError> {
+    Ok(Invitation {
         id: row.get("id"),
         family_id: row.get("family_id"),
-        family_name: row.get("family_name"),
-        invited_by: user_from_prefixed(row, "b_"),
-        user: user_from_prefixed(row, "u_").expect("an invitation always names its person"),
+        family_name: row.text(keys, "family_name")?,
+        invited_by: user_from_prefixed(row, keys, "b_")?,
+        user: user_from_prefixed(row, keys, "u_")?.expect("an invitation always names its person"),
         created_at: row.get("created_at"),
-    }
+    })
 }
 
 /// One invitation by id.
 async fn fetch_invitation<'e, E: PgExecutor<'e>>(
     executor: E,
+    keys: &Keyring,
     invitation_id: i64,
 ) -> Result<Option<Invitation>, ApiError> {
     let row = sqlx::query(&format!("{SELECT_INVITATION} WHERE i.id = $1"))
         .bind(invitation_id)
         .fetch_optional(executor)
         .await?;
-    Ok(row.as_ref().map(invitation_from_row))
+    Ok(row
+        .as_ref()
+        .map(|row| invitation_from_row(row, keys))
+        .transpose()?)
 }
 
 /// The caller's own pending invitations, oldest first — what `GET /me`
 /// carries as `invitations`.
 pub async fn invitations_for_user(
     pool: &sqlx::PgPool,
+    keys: &Keyring,
     user_id: i64,
 ) -> Result<Vec<Invitation>, ApiError> {
     let rows = sqlx::query(&format!(
@@ -114,7 +118,10 @@ pub async fn invitations_for_user(
     .bind(user_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows.iter().map(invitation_from_row).collect())
+    Ok(rows
+        .iter()
+        .map(|row| invitation_from_row(row, keys))
+        .collect::<Result<_, KeyError>>()?)
 }
 
 /// `POST /families/{family}/invitations` (owner) `{user_id}`.
@@ -188,7 +195,7 @@ pub async fn create_invitation(
             .fetch_optional(&mut *tx)
             .await?;
     if let Some(existing) = existing {
-        let invitation = fetch_invitation(&mut *tx, existing)
+        let invitation = fetch_invitation(&mut *tx, &state.keys, existing)
             .await?
             .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("invitation vanished under lock")))?;
         tx.commit().await?;
@@ -250,7 +257,7 @@ pub async fn create_invitation(
     .bind(auth.user_id)
     .fetch_one(&mut *tx)
     .await?;
-    let invitation = fetch_invitation(&mut *tx, id)
+    let invitation = fetch_invitation(&mut *tx, &state.keys, id)
         .await?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("invitation vanished in its own tx")))?;
     tx.commit().await?;
@@ -278,7 +285,10 @@ pub async fn list_invitations(
     .bind(family_id)
     .fetch_all(&state.pool)
     .await?;
-    let invitations: Vec<Invitation> = rows.iter().map(invitation_from_row).collect();
+    let invitations: Vec<Invitation> = rows
+        .iter()
+        .map(|row| invitation_from_row(row, &state.keys))
+        .collect::<Result<_, KeyError>>()?;
     Ok((StatusCode::OK, Json(json!({"invitations": invitations}))).into_response())
 }
 

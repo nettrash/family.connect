@@ -614,11 +614,13 @@ async fn a_voip_token_is_set_cleared_and_left_alone_by_absence() {
     let (token, user_id) = ts.register("callee", "Callee").await;
 
     async fn voip(ts: &TestServer, user_id: i64) -> Option<String> {
-        sqlx::query_scalar("SELECT voip_token FROM devices WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&ts.state.pool)
-            .await
-            .expect("device row")
+        let sealed: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT voip_token FROM devices WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&ts.state.pool)
+                .await
+                .expect("device row");
+        sealed.map(|sealed| ts.open_text(&sealed))
     }
 
     // Set both tokens.

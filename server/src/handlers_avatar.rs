@@ -23,6 +23,7 @@ use sqlx::Row;
 
 use crate::auth::AuthUser;
 use crate::error::{ApiError, codes};
+use crate::keyring::{Owner, SealedRow};
 use crate::models::User;
 use crate::state::AppState;
 
@@ -76,6 +77,11 @@ pub async fn put_avatar(
         ));
     }
 
+    // Sealed under the account's key (#59): a face is who somebody is.
+    let key = state
+        .keys
+        .key(&state.pool, Owner::Account(auth.user_id))
+        .await?;
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_avatars (user_id, content_type, bytes, updated_at)
@@ -87,7 +93,7 @@ pub async fn put_avatar(
     )
     .bind(auth.user_id)
     .bind(content_type)
-    .bind(body.as_ref())
+    .bind(key.seal(&body))
     .execute(&mut *tx)
     .await?;
     // The version comes off `avatar_seq`, which only ever goes up —
@@ -98,15 +104,14 @@ pub async fn put_avatar(
     let row = sqlx::query(
         "UPDATE users SET avatar_seq = avatar_seq + 1, avatar_version = avatar_seq + 1
          WHERE id = $1
-         RETURNING id, username, display_name, created_at, avatar_version,
-                   birthday_month, birthday_day",
+         RETURNING id, username, display_name, created_at, avatar_version, birthday",
     )
     .bind(auth.user_id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
-    let user = User::from_row(&row);
+    let user = User::from_row(&row, &state.keys)?;
     Ok((StatusCode::OK, Json(json!({"user": user}))).into_response())
 }
 
@@ -171,7 +176,6 @@ pub async fn get_avatar(
 
     let content_type: String = row.get("content_type");
     let version: i64 = row.get("avatar_version");
-    let bytes: Vec<u8> = row.get("bytes");
     let etag = format!("\"{user_id}-{version}\"");
 
     if headers
@@ -181,6 +185,9 @@ pub async fn get_avatar(
     {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
+    // Opened only when it is actually sent: a revalidation is answered
+    // above without touching the picture.
+    let bytes = row.opened(&state.keys, "bytes")?;
 
     Ok((
         StatusCode::OK,

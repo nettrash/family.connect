@@ -25,9 +25,11 @@ use serde_json::{Value, json};
 
 use family_connect::app::build_router;
 use family_connect::config::{Config, DatabaseConfig, PushConfig};
+use family_connect::keyring::{Keyring, Owner, SealKey};
 use family_connect::push::{DevicePush, PushSender};
 use family_connect::push_payload::{CallPush, Notification};
 use family_connect::state::AppState;
+use family_connect::vault::{Lookup, ServerKey};
 use family_connect::{db, migrate, push};
 
 /// One recorded `notify` call.
@@ -96,9 +98,12 @@ pub struct TestServer {
     pub client: reqwest::Client,
     pub state: AppState,
     pub push: Arc<RecordingPushSender>,
+    /// The server key this server was started with — what its key file
+    /// would hold — for the tests of rotation and refusals.
+    pub server_key: ServerKey,
     db_name: String,
     admin: DatabaseConfig,
-    attachments_dir: PathBuf,
+    pub attachments_dir: PathBuf,
     server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -147,9 +152,38 @@ async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
     spawn_server_inner_with(push_cfg, |_| {}).await
 }
 
+/// What an older server left behind, for the upgrade test: the schema at
+/// `version`, then `seed_sql` run against it, then `files` written into the
+/// attachments directory under their storage keys (`<key>.preview` for a
+/// preview) — exactly as that server would have stored them, in the clear.
+pub struct Before {
+    pub version: i32,
+    pub seed_sql: String,
+    pub files: Vec<(String, Vec<u8>)>,
+    /// A conversion that was interrupted: migration 0059 applied and the
+    /// sealing stopped after this many committed batches, as a crash would
+    /// leave it — before the real start-up runs and has to continue it.
+    pub interrupted_after: Option<u64>,
+}
+
+/// Boot a server on a database an OLDER server left behind (see
+/// [`Before`]): the rest of the migrations and the conversion run as they
+/// would on a deploy, before the router serves anything.
+pub async fn spawn_server_after(before: Before, tweak: impl FnOnce(&mut Config)) -> TestServer {
+    spawn_server_inner_full(None, tweak, Some(before)).await
+}
+
 async fn spawn_server_inner_with(
     push_cfg: Option<PushConfig>,
     tweak: impl FnOnce(&mut Config),
+) -> TestServer {
+    spawn_server_inner_full(push_cfg, tweak, None).await
+}
+
+async fn spawn_server_inner_full(
+    push_cfg: Option<PushConfig>,
+    tweak: impl FnOnce(&mut Config),
+    before: Option<Before>,
 ) -> TestServer {
     let admin = admin_config();
     let db_name = format!(
@@ -198,7 +232,48 @@ async fn spawn_server_inner_with(
     let pool = db::connect(&cfg.database)
         .await
         .expect("connecting to the scratch database");
-    migrate::run(&pool).await.expect("running migrations");
+    // A server key of its own per test server, as a real server has one key
+    // file: nothing one test seals opens under another's keys.
+    let server_key = ServerKey::generate();
+    let keys = Arc::new(Keyring::new(server_key.clone()));
+    if let Some(before) = before {
+        migrate::run_up_to(&pool, &keys, before.version)
+            .await
+            .expect("running the older server's migrations");
+        sqlx::raw_sql(&before.seed_sql)
+            .execute(&pool)
+            .await
+            .expect("seeding what the older server stored");
+        let storage = family_connect::storage::Storage::new(attachments_dir.clone());
+        for (storage_key, bytes) in &before.files {
+            // `<key>.preview` names the preview of `<key>`, which lives in its
+            // file's shard directory, not one of its own.
+            let path = match storage_key.strip_suffix(".preview") {
+                Some(file) => storage.preview_path(file),
+                None => storage.blob_path(storage_key),
+            };
+            std::fs::create_dir_all(path.parent().expect("a shard directory"))
+                .expect("creating a shard directory");
+            std::fs::write(&path, bytes).expect("writing a file the older server stored");
+        }
+        if let Some(batches) = before.interrupted_after {
+            migrate::run_up_to(&pool, &keys, migrate::SEALED_FROM - 1)
+                .await
+                .expect("applying the half of the conversion that is SQL");
+            let mut conn = pool.acquire().await.expect("a connection");
+            let outcome =
+                family_connect::seal_existing::run_limited(&mut conn, &keys, Some(batches))
+                    .await
+                    .expect("sealing part of the database");
+            assert!(!outcome.finished, "the interruption came before the end");
+        }
+    }
+    migrate::run(&pool, &keys)
+        .await
+        .expect("running migrations");
+    keys.start(&mut pool.acquire().await.expect("a connection"))
+        .await
+        .expect("starting the keyring");
 
     let push = Arc::new(RecordingPushSender::default());
     let push_sender: Arc<dyn PushSender> = if cfg.push.apns.is_some() || cfg.push.fcm.is_some() {
@@ -206,7 +281,7 @@ async fn spawn_server_inner_with(
     } else {
         push.clone()
     };
-    let state = AppState::new(pool, Arc::new(cfg), push_sender);
+    let state = AppState::new(pool, Arc::new(cfg), push_sender, keys);
     state
         .storage
         .ensure_root()
@@ -234,6 +309,7 @@ async fn spawn_server_inner_with(
         client: reqwest::Client::new(),
         state,
         push,
+        server_key,
         db_name,
         admin,
         attachments_dir,
@@ -242,6 +318,42 @@ async fn spawn_server_inner_with(
 }
 
 impl TestServer {
+    /// A new storage key, for a row a test writes by hand that has to own
+    /// one (#59): a family, a chat or an account.
+    pub async fn storage_key(&self) -> SealKey {
+        let mut conn = self.state.pool.acquire().await.expect("a connection");
+        self.state
+            .keys
+            .create(&mut conn)
+            .await
+            .expect("creating a storage key")
+    }
+
+    /// Seal text under an owner's key, as the server would store it — for a
+    /// row a test writes by hand (#59).
+    pub async fn seal(&self, owner: Owner, text: &str) -> Vec<u8> {
+        self.state
+            .keys
+            .key(&self.state.pool, owner)
+            .await
+            .expect("the owner has a storage key")
+            .seal_str(text)
+    }
+
+    /// The lookup column's value for `value` — how a test finds a row by a
+    /// sealed username, invite code or token (#59).
+    pub fn lookup(&self, what: Lookup, value: &str) -> Vec<u8> {
+        self.state.keys.lookup(what, value)
+    }
+
+    /// Open a sealed text value read straight from a row.
+    pub fn open_text(&self, sealed: &[u8]) -> String {
+        self.state
+            .keys
+            .open_text(sealed)
+            .expect("the value opens with this server's keys")
+    }
+
     pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
     }
