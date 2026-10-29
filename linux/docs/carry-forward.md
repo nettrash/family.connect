@@ -448,10 +448,12 @@ Found while building `app/src/media/` (wave 3, P3); each line names who must act
   own). `Denied` is the person's no — never fall back; `Absent` no camera; `Failed` anything else.
   Each `open` asks the portal again (GNOME prompts only the first time). The video recorder closes
   its camera on a call (the session watch's `Call`), before a call reaches for it.
-- **nettrash — not done (P3, and not at integration)**: "Show text" (transcripts) under a voice
-  bubble — `TranscriptModel` with the consent question (`consented_ask`) needs P1's consent dialog
-  as a free function; the bubble draws no button and `composer::integration::offers_text` answers
-  false.
+- **"Show text" (transcripts), done 2026-10-29**: `media::transcript` draws it under a voice note
+  and a circle (and answers the message menu's `offers_text`/`show_text`) from `TranscriptModel`;
+  the consent question is `composer::consent::ask`, a free function the composer uses too; a
+  circle's sound for the request is `media::sound_tracks::GstSoundTracks` (`SoundTrackMaker`, via
+  `transcript_sound::device_source`). Self-tests: `media.voice_text_shown_and_folded` (held text,
+  no server), `media.circle_sound_for_its_text`. Against a real server's transcriber: not yet.
 - **Real desktop (§C)**: whether `pipewiresrc` posts `RESOURCE_ERROR_BUSY` for a camera another app
   holds through PipeWire; whether `notify::suspended` fires on GNOME's minimise; the portal's prompt
   text; Orca on the waveform slider and the circle.

@@ -207,6 +207,12 @@ impl GstPlayer {
                 }
             }
             gst_play::PlayMessage::EndOfStream(_) => {
+                // `GstPlay` leaves its pipeline PLAYING at the end, and the sound server's stream
+                // with it: running, starved, the output kept open until the next load — so the
+                // next voice note recorded with the output busy (on a VMware guest's sound card
+                // that lost most of the take, measured). Paused, the stream goes idle at once;
+                // `play` and `seek` still start again from here.
+                self.play.pause();
                 self.position.set(self.duration.get());
                 self.set_state(PlayerState::Ended);
                 self.heard.emit(&Heard::Ended);

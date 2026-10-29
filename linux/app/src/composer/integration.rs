@@ -5,7 +5,7 @@
 //! | [`sticker_panel_offered`], [`open_sticker_panel`] | P2 | the family's sticker panel (§8.4) from the field's sticker glyph, where the server has a pack |
 //! | [`location_offered`], [`find_location`] | P2 | the Location portal, once (§8.5): the paperclip's Location where it answers |
 //! | [`open_full_screen`] | P2 | the attachment viewer window (§8.2) |
-//! | [`offers_text`], [`show_text`] | P3 | a recording's text (`TranscriptModel`, through the consent question) — not drawn yet |
+//! | [`offers_text`], [`show_text`] | P3 | a recording's text (`TranscriptModel`, through the consent question; `media::transcript`) |
 //! | [`prepare_file`] | P3 | `MediaPreparing` for a video, a sound or an animated picture (§10.7: transcode, poster, read-back, cancel); a still photo re-drawn as JPEG with a preview (gdk-pixbuf) and a file sent as it is |
 //!
 //! [`next_voice_speed`] is the `voice-speed` setting P3's player applies.
@@ -82,19 +82,21 @@ pub fn open_full_screen(message: &MessageDto, index: usize) {
     crate::viewer::open_message(message, index);
 }
 
-/// P3: whether "Show text" may be offered for `message` — its recording's place for its text is
-/// drawn (`message_menu::actions`' `offers_text`).
+/// P3: whether "Show text" may be offered for `message` — exactly where the words under its
+/// recording offer it (`message_menu::actions`' `offers_text`).
 pub fn offers_text(message: &MessageDto) -> bool {
-    let _ = message;
-    false
+    crate::media::transcript::menu_offers(message)
 }
 
-/// P3: a recording's text.
+/// P3: a recording's text, asked for as the words under it ask (the consent question over the
+/// page's window).
 pub fn show_text(page: &ConversationPage, message_id: i64) {
-    crate::fc_info!(
-        "transcript: message {message_id} in chat {} (not drawn yet)",
-        page.chat_id
-    );
+    let Ok(Some(message)) = page.connection().chats.message(message_id) else {
+        return;
+    };
+    if let Some(attachment) = crate::media::transcript::recording(&message) {
+        crate::media::transcript::ask(&page.widget(), &message, attachment);
+    }
 }
 
 /// The voice speed's next step (1× → 1.5× → 2× → 1×), kept in `settings.conf` for P3's player.

@@ -22,6 +22,7 @@
 //!   Ctrl+. / Ctrl+;. No spelling (D9).
 //! - **Recording** is P3's, through `ComposerSlots` (this composer is the `ComposerHost`).
 
+pub mod consent;
 pub mod drafts;
 pub mod integration;
 pub mod keys;
@@ -44,7 +45,6 @@ use fc_logic::composer_row::{self, FieldGlyph};
 use fc_logic::composer_staging::{self, ComposerStaging};
 use fc_logic::conversation::ConversationModel;
 use fc_logic::groups::chat_kinds;
-use fc_logic::lookups;
 use fc_logic::media_outbox::{StagedMedia, animation_send};
 use fc_logic::not_sent::{self, RecordingEnd};
 use fc_logic::pack::{pack_sending, pack_text};
@@ -1738,91 +1738,24 @@ impl Composer {
     /// Not Now — split into Agree With / Without Lookups where the server can look things up. A
     /// yes is recorded, `/me` re-read, and `then` (the send, the sticker) tried again.
     fn ask_consent(&self, then: Rc<dyn Fn(&Composer)>) {
-        let shell = Rc::clone(&self.shell);
-        let say = &shell.say;
-        let state = self.connection.session.state();
-        let Some(processor) = state
-            .assistant
-            .as_ref()
-            .and_then(|assistant| assistant.processor.clone())
-        else {
-            return;
-        };
-        let offered = lookups::offered(state.assistant.as_ref());
-        let providers = if offered {
-            lookups::providers(state.assistant.as_ref()).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let lines = assistant_consent::disclosure(
-            &processor,
-            state.family.as_ref().is_some_and(|f| f.ai_history),
-            state.family.as_ref().is_some_and(|f| f.ai_vision),
-            say.as_ref(),
-            state.assistant.as_ref().is_some_and(|a| a.transcribe),
-            &providers,
-        );
-        let dialog = adw::AlertDialog::new(
-            Some(say.get("The Assistant")),
-            Some(say.get("Before the assistant answers")),
-        );
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        for line in lines {
-            column.append(
-                &gtk::Label::builder()
-                    .label(&line)
-                    .wrap(true)
-                    .xalign(0.0)
-                    .build(),
-            );
-        }
-        dialog.set_extra_child(Some(&column));
-        dialog.add_response("not-now", say.get("Not Now"));
-        if offered {
-            dialog.add_response("without", say.get("Agree Without Lookups"));
-            dialog.add_response("agree", say.get("Agree With Lookups"));
-        } else {
-            dialog.add_response("agree", say.get("I Agree"));
-        }
-        dialog.set_response_appearance("agree", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("not-now"));
-        dialog.set_close_response("not-now");
-        let (connection, weak) = (Rc::clone(&self.connection), self.me.clone());
-        dialog.connect_response(None, move |_, response| {
-            let answer = lookups::answer_for(response == "agree", response == "without", offered);
-            if answer == lookups::ConsentAnswer::NotNow {
+        let answer = consent::ask(&self.root, &self.connection);
+        let weak = self.me.clone();
+        glib::spawn_future_local(async move {
+            let answer = answer.await;
+            let Some(composer) = weak.upgrade() else {
                 return;
+            };
+            match answer {
+                consent::Answer::Agreed => then(&composer),
+                consent::Answer::NotSaved => composer.notice(
+                    composer
+                        .shell
+                        .say
+                        .get("Couldn't save your answer. Try again."),
+                ),
+                consent::Answer::NotNow => {}
             }
-            let (connection, weak, then) = (Rc::clone(&connection), weak.clone(), Rc::clone(&then));
-            glib::spawn_future_local(async move {
-                let refused = lookups::record(&connection.api, answer, false).await;
-                if let Err(error) = connection.session.refresh().await {
-                    crate::fc_warn!("consent: the cache refused ({})", log::store_error(&error));
-                }
-                let Some(composer) = weak.upgrade() else {
-                    return;
-                };
-                if let Some(error) = refused {
-                    crate::fc_info!("consent: refused ({})", error.code);
-                    composer.notice(
-                        composer
-                            .shell
-                            .say
-                            .get("Couldn't save your answer. Try again."),
-                    );
-                    return;
-                }
-                if connection
-                    .session
-                    .state()
-                    .assistant_consent_at
-                    .is_some_and(|at| !at.trim().is_empty())
-                {
-                    then(&composer);
-                }
-            });
         });
-        dialog.present(Some(&self.root));
     }
 
     // ---- the paperclip -----------------------------------------------------------------------------

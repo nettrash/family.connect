@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use fc_core::protocol::{AttachmentDto, MessageDto, ServerUrl};
-use fc_core::rt::Cancel;
+use fc_core::rt::{Cancel, Clock};
+use fc_core::store::{KeptTranscript, TranscriptStore};
+use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::animated_pictures::animation_prep;
 use fc_logic::animation_preparing::{self, FrameFeed, H264Profile};
 use fc_logic::composer_button::Recording;
@@ -31,13 +33,15 @@ use fc_logic::round_look::Playing;
 use fc_logic::round_playback::RoundPhase;
 use fc_logic::round_recorder::RecorderStage;
 use fc_logic::transcode_attempts::Attempted;
-use fc_logic::{animation_timing, faststart};
+use fc_logic::transcript_sound::{MadeSound, SoundAttempt, SoundTrackMaker};
+use fc_logic::{animation_timing, faststart, media_encoding};
 
 use super::Harness;
 use super::fake_server::FakeResponse;
 use crate::media;
 use crate::media::preparing::Picked;
 use crate::seams::composer::ComposerHost;
+use crate::seams::conversation::ConversationSlots;
 use crate::seams::media::{MediaSource, Player, PlayerState};
 use crate::windows::main_window::GatePage;
 
@@ -107,6 +111,43 @@ pub async fn run(h: &Harness) {
     ]).await;
     if !h.check("test_files_made", made, folder.display().to_string()) {
         return;
+    }
+
+    // ---- a circle's sound, made for its text (media::sound_tracks) --------------------------------
+    {
+        let tracks = media::sound_tracks::GstSoundTracks::new(folder.clone());
+        let held: Rc<[u8]> = std::fs::read(&square).unwrap_or_default().into();
+        let reading = tracks.read(&held, "mp4").await;
+        let copied = tracks
+            .make(&held, "mp4", &SoundAttempt::PASSTHROUGH, Cancel::new())
+            .await;
+        let encode = SoundAttempt::reencode(media_encoding::voice_note_attempts()[0]);
+        let encoded = tracks.make(&held, "mp4", &encode, Cancel::new()).await;
+        let sound_only = |made: &Result<MadeSound, _>| {
+            made.as_ref().is_ok_and(|made| {
+                made.codec.as_deref() == Some("aac")
+                    && !made.has_video
+                    && made.bytes.get(4..8) == Some(b"ftyp".as_slice())
+            })
+        };
+        h.check(
+            "circle_sound_for_its_text",
+            matches!(&reading, Ok(Some(track)) if track.codec == "aac")
+                && sound_only(&copied)
+                && sound_only(&encoded),
+            format!(
+                "read {:?}; copied {:?}; encoded {:?}",
+                reading
+                    .as_ref()
+                    .map(|r| r.as_ref().map(|t| t.codec.clone())),
+                copied
+                    .as_ref()
+                    .map(|m| (m.codec.clone(), m.has_video, m.bytes.len())),
+                encoded
+                    .as_ref()
+                    .map(|m| (m.codec.clone(), m.has_video, m.bytes.len())),
+            ),
+        );
     }
 
     // ---- the fake server, a session --------------------------------------------------------------------
@@ -371,6 +412,53 @@ pub async fn run(h: &Harness) {
     bubble.press_play();
     column.remove(&bubble_widget);
     drop(bubble);
+
+    // ---- the text under a voice note (media::transcript) ---------------------------------------------------
+    // Text this device holds is always offered, and showing it asks nobody: kept here, then shown
+    // and folded away through the real slot.
+    let said = "Bring the tent, the long one.";
+    let kept = TranscriptStore::new(&connection.cache).keep(
+        &KeptTranscript {
+            attachment_id: VOICE_ID,
+            text: said.to_string(),
+            language: Some("en".to_string()),
+            supplied: false,
+        },
+        shell.clock.now(),
+    );
+    let with_text = media::MediaSlots.voice(&message, &note, false);
+    column.append(&with_text);
+    h.sleep(Duration::from_millis(300)).await;
+    let say = shell.say.clone();
+    let offered = super::settings::button(&with_text, say.get("Show text"));
+    if let Some(show) = &offered {
+        show.emit_clicked();
+    }
+    let shown = h
+        .wait_until(WAIT, || {
+            super::settings::find::<gtk::Label>(&with_text, |label| label.label() == said).is_some()
+        })
+        .await;
+    h.sleep(Duration::from_millis(300)).await;
+    h.screenshot("voice-text").await;
+    if let Some(hide) = super::settings::button(&with_text, say.get("Hide text")) {
+        hide.emit_clicked();
+    }
+    let folded = h
+        .wait_until(WAIT, || {
+            super::settings::button(&with_text, say.get("Show text")).is_some()
+        })
+        .await;
+    h.check(
+        "voice_text_shown_and_folded",
+        kept.is_ok() && offered.is_some() && shown && folded,
+        format!(
+            "kept {}, offered {}, shown {shown}, folded {folded}",
+            kept.is_ok(),
+            offered.is_some()
+        ),
+    );
+    column.remove(&with_text);
 
     // ---- a voice note through the composer protocol ----------------------------------------------------------
     let host = Rc::new(TestHost {

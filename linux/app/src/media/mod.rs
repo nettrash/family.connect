@@ -7,6 +7,7 @@
 //! | [`now_playing`] | one thing plays at a time; a recording quiets everything | `NowPlaying` (W.3) |
 //! | [`voice_bubble`], [`waves`] | the voice note in a bubble: waveform, seek, speed, dot | `ConversationSlots::voice` |
 //! | [`circle`] | a received video message in place, clipped round | `ConversationSlots::circle` |
+//! | [`transcript`], [`sound_tracks`] | "Show text" under a voice note and a circle; the sound a circle's text is asked with | the views of fc-logic's `TranscriptModel`; its `SoundTrackMaker` |
 //! | [`voice_recorder`] | the microphone into an M4A with a live meter; the sender's waveform | fc-logic's `VoiceRecorder`, `VoiceRecording`, `VoiceMeter`, `VoiceDecoder` |
 //! | [`recording`], `composer::recording_row` | recording inside P1's composer: the row, not-sent rows, parking | `ComposerSlots`, `ComposerRecording` (W.3) |
 //! | [`camera`] | the Camera portal + PipeWire, then PipeWire's devices, then `v4l2src` | `Camera` (W.3) — P6 opens it for calls too |
@@ -32,6 +33,8 @@ pub mod preparing;
 pub mod recorder_layer;
 pub mod recording;
 pub mod session_watch;
+pub mod sound_tracks;
+pub mod transcript;
 pub mod video_recorder;
 pub mod voice_bubble;
 pub mod voice_recorder;
@@ -41,6 +44,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use fc_core::protocol::{AttachmentDto, MessageDto};
+use gtk::prelude::*;
 
 use crate::seams::conversation::ConversationSlots;
 use crate::shell::Shell;
@@ -130,12 +134,35 @@ pub struct MediaSlots;
 
 impl ConversationSlots for MediaSlots {
     fn voice(&self, message: &MessageDto, attachment: &AttachmentDto, own: bool) -> gtk::Widget {
-        voice_bubble::widget(message, attachment, own)
+        with_text(
+            &voice_bubble::widget(message, attachment, own),
+            message,
+            attachment,
+            own,
+        )
     }
 
     fn circle(&self, message: &MessageDto, attachment: &AttachmentDto) -> gtk::Widget {
-        circle::widget(message, attachment)
+        with_text(
+            &circle::widget(message, attachment),
+            message,
+            attachment,
+            false,
+        )
     }
+}
+
+/// A recording's player with its text under it ([`transcript::section`]).
+fn with_text(
+    player: &gtk::Widget,
+    message: &MessageDto,
+    attachment: &AttachmentDto,
+    own: bool,
+) -> gtk::Widget {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    column.append(player);
+    column.append(&transcript::section(message, attachment, own));
+    column.upcast()
 }
 
 /// The media package's CSS (prefixed `fc-media-`). Words in a warning or an error take
@@ -145,6 +172,8 @@ impl ConversationSlots for MediaSlots {
 fn css(palette: &crate::theme::palette::Palette) -> String {
     let accent = palette.accent_bg.hex();
     let ink = palette.accent_fg.hex();
+    // Small accent words: the text tint (the accent lifted on the dark ground).
+    let link = palette.accent_text().hex();
     format!(
         "button.fc-media-play {{
   background-color: {accent};
@@ -169,6 +198,29 @@ button.fc-media-play.fc-media-on-accent {{
 button.fc-media-speed {{
   min-height: 20px;
   padding: 0 8px;
+}}
+button.fc-media-text-action {{
+  min-height: 24px;
+  padding: 0 8px;
+  color: {link};
+}}
+.fc-media-text-own button.fc-media-text-action {{
+  color: {ink};
+}}
+.fc-media-text-asking,
+.fc-media-text-note,
+.fc-media-text-words {{
+  margin: 0 8px;
+}}
+.fc-media-text-note {{
+  opacity: 0.8;
+}}
+.fc-media-text-silence {{
+  font-style: italic;
+}}
+.fc-media-text-own .fc-media-text-words selection {{
+  background-color: alpha({ink}, 0.3);
+  color: {ink};
 }}
 .fc-media-recording-dot {{
   background-color: #e01b24;
