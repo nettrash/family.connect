@@ -78,11 +78,13 @@ impl BubbleContext {
     }
 
     /// What, beyond the message itself and its place, a row is drawn from — the rest of its
-    /// `conversation_rows::signature`.
-    pub fn drawn_with(&self, bubble: &Bubble) -> String {
-        let message = &bubble.message;
+    /// `conversation_rows::signature`. The read tick counts only where the row draws its time
+    /// (Windows' rule): a peer reading a burst draws its last row again, not the burst.
+    pub fn drawn_with(&self, row: &TimelineRow) -> String {
+        let message = &row.bubble.message;
         let answers = &self.connection.answers;
-        let seen = bubble_rules::seen(message, self.me, self.shared, self.peer_read_up_to);
+        let seen =
+            timed(row) && bubble_rules::seen(message, self.me, self.shared, self.peer_read_up_to);
         let reply = (self.quote_revealed)(message.id, QuoteLevel::Reply);
         let parent = (self.quote_revealed)(message.id, QuoteLevel::Parent);
         format!(
@@ -132,8 +134,9 @@ fn sender_name(ctx: &BubbleContext, bubble: &Bubble) -> String {
     bubble_text::sender(bubble, &ctx.connection.chats, ctx.shell.say.as_ref()).unwrap_or_default()
 }
 
-/// The whole row for `row`.
-pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow) -> gtk::Widget {
+/// The whole row for `row`; `joined`: its balloon's (above, below) joins, from [`joins`] over the
+/// rows around it.
+pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow, joined: (bool, bool)) -> gtk::Widget {
     let say = &ctx.shell.say;
     let bubble = &row.bubble;
     let message = &bubble.message;
@@ -168,11 +171,21 @@ pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow) -> gtk::Widget {
             .ok()
             .flatten()
             .map_or(0, |chat| i64::from(chat.unread_count));
-        let divider = gtk::Label::builder()
-            .label(timeline::divider_text(unread.max(1), say.as_ref()))
-            .css_classes(["fc-chat-divider"])
-            .halign(gtk::Align::Center)
-            .build();
+        // "N new messages" between two hairlines, as the Mac draws it.
+        let divider = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        divider.add_css_class("fc-chat-divider");
+        let hairline = || {
+            gtk::Separator::builder()
+                .hexpand(true)
+                .valign(gtk::Align::Center)
+                .build()
+        };
+        divider.append(&hairline());
+        divider.append(&gtk::Label::new(Some(&timeline::divider_text(
+            unread.max(1),
+            say.as_ref(),
+        ))));
+        divider.append(&hairline());
         column.append(&divider);
     }
     let name = sender_name(ctx, bubble);
@@ -189,10 +202,26 @@ pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow) -> gtk::Widget {
         column.append(&line);
     }
     let (body, words) = bubble_body_widget(ctx, bubble);
+    let reactions = if bubble.reads() {
+        reactions_row(ctx, message, bubble.mine)
+    } else {
+        None
+    };
+    let timed = timed(row);
+    // A balloon's corners tighten on the sender's side where it meets a run mate ([`joins`]).
+    if joined.0 {
+        body.add_css_class("fc-chat-joined-above");
+    }
+    if joined.1 {
+        body.add_css_class("fc-chat-joined-below");
+    }
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    // The threshold AT the maximum: every width up to it goes to the balloon whole. Below its
+    // threshold a clamp "tightens" — gives its child less than it has and centres it — which drew
+    // a long balloon adrift from its sender's name.
     let clamp = adw::Clamp::builder()
         .maximum_size(fc_logic::composer_row::conversation_column::BUBBLE_MAX as i32)
-        .tightening_threshold(0)
+        .tightening_threshold(fc_logic::composer_row::conversation_column::BUBBLE_MAX as i32)
         .child(&body)
         .build();
     let spacer = fc_logic::composer_row::conversation_column::BUBBLE_SPACER as i32;
@@ -205,20 +234,139 @@ pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow) -> gtk::Widget {
     }
     line.append(&clamp);
     column.append(&line);
-    if bubble.reads()
-        && let Some(reactions) = reactions_row(ctx, message, bubble.mine)
-    {
+    if let Some(reactions) = reactions {
         column.append(&reactions);
+    }
+    let time = time_text(ctx, message);
+    // A balloon inside a run still tells its time to a pointer resting on it.
+    if timed {
+        column.append(&footer(ctx, message, bubble.mine));
+    } else {
+        body.set_tooltip_text(Some(&time));
+    }
+    if let Some(count) = thread_count(ctx, bubble) {
+        column.append(&thread_chip(ctx, message.id, count, bubble.mine));
     }
     // The row: focusable, a named group, with its menu and its heart.
     column.set_focusable(true);
-    let time = time_text(ctx, message);
     let excerpt: String = words.chars().take(240).collect();
     column.update_property(&[gtk::accessible::Property::Label(&format!(
         "{name}, {time}: {excerpt}"
     ))]);
     attach_gestures(ctx, &column, &body, message);
     column.upcast()
+}
+
+/// What a row draws, as far as its balloon's corners are concerned ([`joins`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowShape {
+    /// The first and the last of its sender's run (`TimelineRow`).
+    pub run_start: bool,
+    pub run_end: bool,
+    /// The unread divider stands above it.
+    pub divider_above: bool,
+    /// Drawn in a filled balloon: not a sticker or a circle, not a bare one.
+    pub balloon: bool,
+    /// Something stands under its balloon: chips, a time, a thread's chip.
+    pub under: bool,
+}
+
+/// Each row's (above, below) joins — `fc-chat-joined-above` / `-below`, the corners that tighten
+/// on the sender's side: inside a run, between two filled balloons, with nothing drawn between
+/// them — not the unread divider, nor chips, a time or a thread's chip under the one above. The
+/// two sides of one meeting always agree. Pure.
+pub fn joins(shapes: &[RowShape]) -> Vec<(bool, bool)> {
+    let meet = |upper: &RowShape, lower: &RowShape| {
+        upper.balloon
+            && lower.balloon
+            && !upper.run_end
+            && !lower.run_start
+            && !upper.under
+            && !lower.divider_above
+    };
+    (0..shapes.len())
+        .map(|at| {
+            let above = at > 0 && meet(&shapes[at - 1], &shapes[at]);
+            let below = shapes
+                .get(at + 1)
+                .is_some_and(|next| meet(&shapes[at], next));
+            (above, below)
+        })
+        .collect()
+}
+
+/// `row`'s shape for [`joins`] — what [`row_widget`] will draw for it.
+pub fn shape(ctx: &BubbleContext, row: &TimelineRow) -> RowShape {
+    let bubble = &row.bubble;
+    let message = &bubble.message;
+    let chips = bubble.reads() && message.reactions.as_deref().is_some_and(|r| !r.is_empty());
+    RowShape {
+        run_start: row.run_start,
+        run_end: row.run_end,
+        divider_above: row.unread_divider_above,
+        balloon: !bubble.reads() || matches!(stand(ctx, message), Stand::Balloon),
+        under: chips || timed(row) || thread_count(ctx, bubble).is_some(),
+    }
+}
+
+/// [`joins`] said as a signature suffix, so a row whose neighbours change is drawn again.
+pub fn joined_mark(joined: (bool, bool)) -> &'static str {
+    match joined {
+        (false, false) => "",
+        (true, false) => "|j-",
+        (false, true) => "|-j",
+        (true, true) => "|jj",
+    }
+}
+
+/// The time under the LAST balloon of a run (the Mac's and Windows' rule, and `TimelineRow`'s
+/// word for it) — and always under an edited row, which says so, and a hidden one, or three
+/// hidden messages in a row would be three stand-ins with nothing to tell them apart.
+fn timed(row: &TimelineRow) -> bool {
+    row.run_end || row.bubble.message.edited_at.is_some() || !row.bubble.reads()
+}
+
+/// How many replies a root's thread chip counts, when this surface draws one.
+fn thread_count(ctx: &BubbleContext, bubble: &Bubble) -> Option<i32> {
+    if !bubble.reads() || ctx.in_thread {
+        return None;
+    }
+    bubble.message.reply_count.filter(|count| *count > 0)
+}
+
+/// How a readable message stands.
+enum Stand {
+    /// In a filled balloon.
+    Balloon,
+    /// Nothing but photos and videos, and nothing above them, or one to four emoji (the class
+    /// they draw with): the pictures and the glyphs ARE the message and stand bare
+    /// (`fc-chat-bare`), as on the Mac and Windows.
+    Bare { emoji: Option<String> },
+    /// A sticker or a video message: no balloon at all (docs/protocol.md).
+    Alone,
+}
+
+fn stand(ctx: &BubbleContext, message: &MessageDto) -> Stand {
+    if message.sticker_picture().is_some() || message.round_video().is_some() {
+        return Stand::Alone;
+    }
+    let body = ctx.connection.answers.body_of(message);
+    let plain = message.reply_to.is_none() && message.poll.is_none() && message.call.is_none();
+    let media = message.media();
+    let pictures_only = plain
+        && body.is_empty()
+        && !media.is_empty()
+        && media
+            .iter()
+            .all(|attachment| fc_text::media::is_media(&attachment.kind));
+    let emoji = (plain && media.is_empty())
+        .then(|| super::style::emoji_class(&body))
+        .flatten();
+    if pictures_only || emoji.is_some() {
+        Stand::Bare { emoji }
+    } else {
+        Stand::Balloon
+    }
 }
 
 /// "Today" is the reader's local day now.
@@ -309,27 +457,36 @@ fn bubble_body_widget(ctx: &BubbleContext, bubble: &Bubble) -> (gtk::Widget, Str
     if let Some(sticker) = message.sticker_picture() {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
         if let Some(quote) = quote_widget(ctx, message) {
+            // With the picture it quotes over, not hanging off the balloon above.
+            quote.set_margin_top(6);
             column.append(&quote);
         }
         column.append(&slots.sticker(message, sticker));
-        column.append(&footer(ctx, message, own));
         return (column.upcast(), words);
     }
     if let Some(round) = message.round_video() {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
         if let Some(quote) = quote_widget(ctx, message) {
+            // With the picture it quotes over, not hanging off the balloon above.
+            quote.set_margin_top(6);
             column.append(&quote);
         }
         column.append(&slots.circle(message, round));
-        column.append(&footer(ctx, message, own));
         return (column.upcast(), words);
     }
+    let media = message.media();
+    let emoji = match stand(ctx, message) {
+        Stand::Bare { emoji } => {
+            balloon.add_css_class("fc-chat-bare");
+            emoji
+        }
+        Stand::Balloon | Stand::Alone => None,
+    };
 
     if let Some(quote) = quote_widget(ctx, message) {
         balloon.append(&quote);
     }
     // Attachments.
-    let media = message.media();
     if message_menu::recording(message) == Some(RecordingKind::Voice) {
         if let Some(voice) = media.first() {
             balloon.append(&slots.voice(message, voice, own));
@@ -396,27 +553,47 @@ fn bubble_body_widget(ctx: &BubbleContext, bubble: &Bubble) -> (gtk::Widget, Str
     } else if let Some(poll) = &message.poll {
         balloon.append(&super::polls::card(ctx, message, poll));
     } else {
-        append_body(ctx, &balloon, message, own);
-    }
-    balloon.append(&footer(ctx, message, own));
-    if !ctx.in_thread
-        && let Some(count) = message.reply_count.filter(|count| *count > 0)
-    {
-        let replies = gtk::Button::builder()
-            .label(say.plural("%lld replies", i64::from(count), &[&i64::from(count)]))
-            .css_classes(["flat", "caption"])
-            .halign(gtk::Align::Start)
-            .tooltip_text(say.get("Opens the thread"))
-            .build();
-        let (host, id) = (Rc::clone(&ctx.host), message.id);
-        replies.connect_clicked(move |_| host.open_thread(id));
-        balloon.append(&replies);
+        append_body(ctx, &balloon, message, own, emoji.as_deref());
     }
     (balloon.upcast(), words)
 }
 
+/// "%lld replies" under a root somebody answered, on the window's ground beside the balloon's
+/// edge: the Mac's thread chip — reply arrows, the count, a chevron — in the accent.
+fn thread_chip(ctx: &BubbleContext, message_id: i64, count: i32, own: bool) -> gtk::Widget {
+    let say = &ctx.shell.say;
+    let words = say.plural("%lld replies", i64::from(count), &[&i64::from(count)]);
+    let inside = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    inside.append(&gtk::Image::from_icon_name("mail-reply-all-symbolic"));
+    inside.append(&gtk::Label::new(Some(&words)));
+    let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+    chevron.add_css_class("fc-chat-chevron");
+    inside.append(&chevron);
+    let chip = gtk::Button::builder()
+        .child(&inside)
+        .css_classes(["flat", "fc-chat-thread-chip"])
+        .halign(if own {
+            gtk::Align::End
+        } else {
+            gtk::Align::Start
+        })
+        .tooltip_text(say.get("Opens the thread"))
+        .build();
+    chip.update_property(&[gtk::accessible::Property::Label(&words)]);
+    let host = Rc::clone(&ctx.host);
+    chip.connect_clicked(move |_| host.open_thread(message_id));
+    chip.upcast()
+}
+
 /// The words, as text blocks, tables and rich blocks — or the assistant's answer as it streams.
-fn append_body(ctx: &BubbleContext, balloon: &gtk::Box, message: &MessageDto, own: bool) {
+/// `emoji`: the class of a body that is one to four emoji and nothing else, drawn big.
+fn append_body(
+    ctx: &BubbleContext,
+    balloon: &gtk::Box,
+    message: &MessageDto,
+    own: bool,
+    emoji: Option<&str>,
+) {
     let say = &ctx.shell.say;
     let answers = &ctx.connection.answers;
     let body = answers.body_of(message);
@@ -457,7 +634,11 @@ fn append_body(ctx: &BubbleContext, balloon: &gtk::Box, message: &MessageDto, ow
                     if pieces.len() == 1
                         && let Piece::Words(words) = pieces[0]
                     {
-                        balloon.append(&text_label(ctx, &markup::runs(words)));
+                        let label = text_label(ctx, &markup::runs(words));
+                        if let Some(class) = emoji {
+                            label.add_css_class(class);
+                        }
+                        balloon.append(&label);
                         continue;
                     }
                     let flow = adw::WrapBox::builder()
@@ -482,8 +663,7 @@ fn append_body(ctx: &BubbleContext, balloon: &gtk::Box, message: &MessageDto, ow
         }
         // The card under the first web link (P2's), unless the assistant is still writing or
         // its answer ends with sources.
-        let emoji_only = false;
-        if let Some(url) = bubble_body::preview_link(&body, emoji_only)
+        if let Some(url) = bubble_body::preview_link(&body, emoji.is_some())
             && lookups::may_preview(
                 message,
                 &body,
@@ -632,16 +812,20 @@ fn quote_widget(ctx: &BubbleContext, message: &MessageDto) -> Option<gtk::Widget
                     .build(),
             );
         }
-        row.append(
-            &gtk::Label::builder()
-                .label(excerpt)
-                .css_classes(["fc-chat-quote-text"])
-                .xalign(0.0)
-                .lines(2)
-                .wrap(true)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build(),
-        );
+        // A quoted message with no words this device can tell (`quotes::shown`) is its name alone,
+        // not a name over an empty line.
+        if !excerpt.trim().is_empty() {
+            row.append(
+                &gtk::Label::builder()
+                    .label(excerpt)
+                    .css_classes(["fc-chat-quote-text"])
+                    .xalign(0.0)
+                    .lines(2)
+                    .wrap(true)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+            );
+        }
         row
     };
     column.append(&line(&quote.reply.name, &quote.reply.excerpt));
@@ -666,10 +850,12 @@ fn quote_widget(ctx: &BubbleContext, message: &MessageDto) -> Option<gtk::Widget
     Some(column.upcast())
 }
 
-/// The clock, "edited", and the reader's tick in a direct chat.
+/// The clock, "edited", and the reader's tick in a direct chat — under the balloon, on the
+/// window's ground; two ticks (seen) in the accent, as the Mac tints its double checkmark.
 fn footer(ctx: &BubbleContext, message: &MessageDto, own: bool) -> gtk::Widget {
     let say = &ctx.shell.say;
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    line.add_css_class("fc-chat-meta");
     line.set_halign(if own {
         gtk::Align::End
     } else {
@@ -687,6 +873,9 @@ fn footer(ctx: &BubbleContext, message: &MessageDto, own: bool) -> gtk::Widget {
             .label(if seen { "✓✓" } else { "✓" })
             .css_classes(["fc-chat-time"])
             .build();
+        if seen {
+            tick.add_css_class("fc-chat-seen");
+        }
         tick.update_property(&[gtk::accessible::Property::Label(if seen {
             say.get("Read")
         } else {
@@ -764,5 +953,97 @@ fn names_of(ctx: &BubbleContext, _reactions: &[Reaction]) -> impl Fn(i64) -> Str
             |id| members.iter().find(|member| member.id == id).cloned(),
             say.as_ref(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A filled balloon inside a run, with nothing under it.
+    fn mid() -> RowShape {
+        RowShape {
+            balloon: true,
+            ..RowShape::default()
+        }
+    }
+
+    /// A run of `n` filled balloons with nothing between them.
+    fn run(n: usize) -> Vec<RowShape> {
+        (0..n)
+            .map(|at| RowShape {
+                run_start: at == 0,
+                run_end: at + 1 == n,
+                under: at + 1 == n,
+                ..mid()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_run_joins_its_balloons_and_rounds_its_ends() {
+        assert_eq!(
+            joins(&run(3)),
+            vec![(false, true), (true, true), (true, false)]
+        );
+        assert_eq!(joins(&run(1)), vec![(false, false)]);
+        assert_eq!(joins(&[]), Vec::<(bool, bool)>::new());
+    }
+
+    #[test]
+    fn nothing_joins_across_what_is_drawn_between_two_balloons() {
+        // Chips, a time or a thread's chip under the first.
+        let mut rows = run(3);
+        rows[0].under = true;
+        assert_eq!(
+            joins(&rows),
+            vec![(false, false), (false, true), (true, false)]
+        );
+        // The unread divider over the second.
+        let mut rows = run(3);
+        rows[1].divider_above = true;
+        assert_eq!(
+            joins(&rows),
+            vec![(false, false), (false, true), (true, false)]
+        );
+    }
+
+    #[test]
+    fn a_bare_or_balloonless_neighbour_joins_nothing() {
+        let mut rows = run(3);
+        rows[1].balloon = false;
+        assert_eq!(
+            joins(&rows),
+            vec![(false, false), (false, false), (false, false)]
+        );
+    }
+
+    #[test]
+    fn two_runs_never_join_each_other() {
+        let mut rows = run(2);
+        rows.extend(run(2));
+        assert_eq!(
+            joins(&rows),
+            vec![(false, true), (true, false), (false, true), (true, false)]
+        );
+    }
+
+    #[test]
+    fn both_sides_of_a_meeting_agree() {
+        let mut rows = run(5);
+        rows[1].under = true;
+        rows[3].divider_above = true;
+        let joined = joins(&rows);
+        for at in 0..rows.len() - 1 {
+            assert_eq!(joined[at].1, joined[at + 1].0, "{at}");
+        }
+    }
+
+    #[test]
+    fn each_join_has_its_own_mark() {
+        let marks = [(false, false), (true, false), (false, true), (true, true)].map(joined_mark);
+        for (at, mark) in marks.iter().enumerate() {
+            assert!(!marks[at + 1..].contains(mark));
+        }
     }
 }

@@ -273,13 +273,20 @@ impl Layer {
                 .build()
         };
         let (slot_caption, left_caption, right_caption) = (caption(), caption(), caption());
+        // Every button in a well as tall as the slot: the discs on one centre line and the words
+        // on one baseline, whichever buttons the stage shows.
         let column = |button: &gtk::Button, label: &gtk::Label| {
+            button.set_valign(gtk::Align::Center);
+            let well = adw::Bin::builder()
+                .height_request(recorder_look::SLOT as i32)
+                .child(button)
+                .build();
             let column = gtk::Box::new(
                 gtk::Orientation::Vertical,
                 recorder_look::CAPTION_GAP as i32,
             );
             column.set_valign(gtk::Align::Center);
-            column.append(button);
+            column.append(&well);
             column.append(label);
             column
         };
@@ -289,15 +296,19 @@ impl Layer {
             .halign(gtk::Align::Fill)
             .css_classes(["fc-media-bar"])
             .build();
-        let controls = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(32)
+        // The slot on the circle's axis whatever the sides show: in a box, a hidden side's empty
+        // column still took the spacing and pushed the slot 22 px off.
+        let start = column(&left, &left_caption);
+        start.set_margin_end(32);
+        let end = column(&right, &right_caption);
+        end.set_margin_start(32);
+        let controls = gtk::CenterBox::builder()
             .halign(gtk::Align::Center)
             .hexpand(true)
+            .start_widget(&start)
+            .center_widget(&column(&slot, &slot_caption))
+            .end_widget(&end)
             .build();
-        controls.append(&column(&left, &left_caption));
-        controls.append(&column(&slot, &slot_caption));
-        controls.append(&column(&right, &right_caption));
         bar.append(&controls);
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)

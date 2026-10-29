@@ -144,7 +144,7 @@ impl PackDialog {
         self.footer.set_label(&footer.join("\n"));
         if items.is_empty() {
             let empty = adw::StatusPage::builder()
-                .icon_name("face-smile-symbolic")
+                .paintable(&crate::theme::glyphs::sticker())
                 .title(say.get("No stickers yet"))
                 .description(
                     say.get("Add a picture and everyone in the family can send it as a sticker."),

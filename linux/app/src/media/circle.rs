@@ -99,6 +99,17 @@ pub fn reach() -> f64 {
     round_inline::RING_REACH
 }
 
+/// How far in from the clip's top and trailing edges the expand control of `target` px stands in
+/// a circle of `side` px: on the circle's 45° line, wholly inside it and 8 px clear of the rim,
+/// so the round clip never cuts it. Pure.
+fn expand_inset(side: f64, target: f64) -> i32 {
+    const CLEARANCE: f64 = 8.0;
+    let (radius, half) = (side / 2.0, target / 2.0);
+    let inset = radius - (radius - half - CLEARANCE) / std::f64::consts::SQRT_2 - half;
+    // A small, non-negative number of pixels: the cast cannot truncate anything real.
+    inset.round().max(0.0) as i32
+}
+
 impl Circle {
     pub fn new(message: &MessageDto, attachment: &AttachmentDto) -> (Rc<Circle>, gtk::Box) {
         let shell = Shell::get();
@@ -164,14 +175,15 @@ impl Circle {
             .build();
         foot.append(&capsule);
         foot.append(&dot);
+        let inset = expand_inset(f64::from(side), round_inline::EXPAND_TARGET);
         let expand = gtk::Button::builder()
             .icon_name("view-fullscreen-symbolic")
             .width_request(round_inline::EXPAND_TARGET as i32)
             .height_request(round_inline::EXPAND_TARGET as i32)
             .halign(gtk::Align::End)
             .valign(gtk::Align::Start)
-            .margin_top(18)
-            .margin_end(18)
+            .margin_top(inset)
+            .margin_end(inset)
             .visible(false)
             .css_classes(["circular", "osd"])
             .tooltip_text(say.get("Open Full Screen"))
@@ -715,5 +727,25 @@ impl Circle {
     )]
     pub fn phase(&self) -> RoundPhase {
         self.machine.borrow().phase()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_expand_control_stands_wholly_inside_the_circle() {
+        let (side, target) = (round_look::DIAMETER, round_inline::EXPAND_TARGET);
+        let inset = f64::from(expand_inset(side, target));
+        let half = target / 2.0;
+        // Its centre, from the clip's top-left corner, then from the circle's middle.
+        let (x, y) = (side - inset - half, inset + half);
+        let from_middle = ((x - side / 2.0).powi(2) + (y - side / 2.0).powi(2)).sqrt();
+        assert!(
+            from_middle + half <= side / 2.0 - 7.0,
+            "{inset} {from_middle}"
+        );
+        assert_eq!(expand_inset(240.0, 44.0), 34);
     }
 }

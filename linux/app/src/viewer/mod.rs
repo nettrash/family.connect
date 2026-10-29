@@ -428,7 +428,13 @@ impl Viewer {
         };
         let quiet = album.is_animation();
         w.controls.set_visible(!quiet);
-        if album.is_round() {
+        // A circle held square, with air above it and the controls' room below; a film at its
+        // own ratio, as `Contain` letterboxes it.
+        let round = album.is_round();
+        w.video_aspect.set_obey_child(!round);
+        w.video_aspect.set_margin_top(if round { 24 } else { 0 });
+        w.video_aspect.set_margin_bottom(if round { 76 } else { 0 });
+        if round {
             w.video_frame.add_css_class("fc-round");
             w.video_frame.set_overflow(gtk::Overflow::Hidden);
             w.video.set_content_fit(gtk::ContentFit::Cover);

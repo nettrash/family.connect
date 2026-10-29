@@ -51,20 +51,14 @@ pub fn card(message: &MessageDto, attachment: &AttachmentDto, own: bool) -> gtk:
         })
         .unwrap_or_default();
 
-    let disc = gtk::Box::builder()
-        .width_request(36)
-        .height_request(36)
+    // The disc IS the image: an image centres its glyph in its CSS box. (A box around an
+    // expanding glyph took the expansion itself and grew into a 52-px pill.)
+    let disc = gtk::Image::builder()
+        .icon_name("mark-location-symbolic")
+        .pixel_size(16)
         .valign(gtk::Align::Center)
         .css_classes(["fc-attach-pin-disc"])
         .build();
-    let pin = gtk::Image::builder()
-        .icon_name("mark-location-symbolic")
-        .pixel_size(16)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .hexpand(true)
-        .build();
-    disc.append(&pin);
     let title = gtk::Label::builder()
         .label(&name)
         .xalign(0.0)
@@ -115,7 +109,12 @@ pub fn card(message: &MessageDto, attachment: &AttachmentDto, own: bool) -> gtk:
     if let Some((latitude, longitude)) = place
         && shell.settings.flag(keys::MAP_PREVIEWS)
     {
+        // An even mat around the map (`fc-attach-place-map`), not the file row's padding.
+        card.add_css_class("fc-attach-place-map");
         card.append(&map(latitude, longitude));
+    }
+    if place.is_some() {
+        card.add_css_class("fc-attach-place");
     }
     card.append(&row);
     card.set_accessible_role(gtk::AccessibleRole::Button);

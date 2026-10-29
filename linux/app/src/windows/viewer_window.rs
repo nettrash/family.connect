@@ -39,6 +39,9 @@ pub struct ViewerWindow {
     pub scrolled: gtk::ScrolledWindow,
     pub photo: gtk::Picture,
     pub video_frame: gtk::Box,
+    /// Holds a video message square — its `fc-round` clip a circle, not an ellipse — and any
+    /// other film at its own ratio (`viewer::show_video` says which).
+    pub video_aspect: gtk::AspectFrame,
     pub video: gtk::Picture,
     pub controls: gtk::Box,
     pub play: gtk::Button,
@@ -146,8 +149,15 @@ impl ViewerWindow {
         controls.append(&scrubber);
         controls.append(&time);
         controls.append(&mute);
+        let video_aspect = gtk::AspectFrame::builder()
+            .xalign(0.5)
+            .yalign(0.5)
+            .ratio(1.0)
+            .obey_child(true)
+            .child(&video_frame)
+            .build();
         let video_page = gtk::Overlay::new();
-        video_page.set_child(Some(&video_frame));
+        video_page.set_child(Some(&video_aspect));
         video_page.add_overlay(&controls);
 
         let spinner = adw::Spinner::builder()
@@ -175,6 +185,10 @@ impl ViewerWindow {
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stack));
         let toolbar = adw::ToolbarView::new();
+        // The stage's own dark over the header too, in both schemes — a photo viewer is a dark
+        // room — on the top bar itself, outside the part libadwaita fades when the window is not
+        // the active one.
+        toolbar.add_css_class("fc-viewer-toolbar");
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&toasts));
         window.set_content(Some(&toolbar));
@@ -194,6 +208,7 @@ impl ViewerWindow {
             scrolled,
             photo,
             video_frame,
+            video_aspect,
             video,
             controls,
             play,

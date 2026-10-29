@@ -193,6 +193,9 @@ impl MainWindow {
             let slot = adw::Bin::new();
             slot.set_child(Some(&placeholder(shell, page)));
             let header = adw::HeaderBar::new();
+            // The page under it carries the icon and the name; the toplevel's title stays for
+            // the dock and Alt+Tab.
+            header.set_show_title(false);
             header.pack_end(&primary_menu_button(shell, false));
             let view = adw::ToolbarView::new();
             view.add_top_bar(&header);
@@ -658,7 +661,8 @@ impl MainWindow {
         let say = &shell.say;
         let section = adw::ShortcutsSection::new(None);
         for (title, action) in [
-            (say.get("Settings…"), actions::SHOW_SETTINGS.detailed()),
+            // A shortcut's name, not a menu item: no ellipsis.
+            (say.get("Settings"), actions::SHOW_SETTINGS.detailed()),
             (say.get("Refresh"), actions::REFRESH.detailed()),
             (
                 say.get("Record Voice Message"),
@@ -808,7 +812,7 @@ fn placeholder(shell: &Rc<Shell>, page: GatePage) -> gtk::Widget {
 fn no_conversation(shell: &Shell) -> gtk::Widget {
     let say = &shell.say;
     adw::StatusPage::builder()
-        .icon_name("mail-message-new-symbolic")
+        .icon_name("chat-message-new-symbolic")
         .title(say.get("No conversation selected"))
         .description(say.get("Pick a chat from the sidebar."))
         .build()

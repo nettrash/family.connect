@@ -19,6 +19,19 @@ impl Rgb {
         format!("rgba({}, {}, {}, {alpha})", self.0, self.1, self.2)
     }
 
+    /// `self` moved `amount` (0 to 1) of the way towards `other`, channel by channel.
+    pub fn mix(self, other: Rgb, amount: f64) -> Rgb {
+        let amount = amount.clamp(0.0, 1.0);
+        // Both ends are bytes and the amount is clamped: the result is a byte.
+        let channel =
+            |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * amount).round() as u8;
+        Rgb(
+            channel(self.0, other.0),
+            channel(self.1, other.1),
+            channel(self.2, other.2),
+        )
+    }
+
     /// WCAG relative luminance.
     #[cfg(test)]
     pub fn luminance(self) -> f64 {
@@ -76,6 +89,19 @@ impl Palette {
             accent_fg: WHITE,
         }
     }
+
+    /// The accent for SMALL text — a sender's name, a link, the unread divider, a thread's chip:
+    /// the accent itself on light; on dark, lifted a little over half of the way to white, since
+    /// the Mac's `#4D7DFC` measures 4.28 on the window and less on a dialog or a balloon, under AA
+    /// for small text (the test below names each ground). Fills, outlines and large text keep
+    /// [`Palette::accent`].
+    pub fn accent_text(&self) -> Rgb {
+        if self.dark {
+            self.accent.mix(WHITE, 0.55)
+        } else {
+            self.accent
+        }
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +130,40 @@ mod tests {
         // the bubble's bold-weight UI (the Mac's choice, kept).
         assert!(WHITE.contrast(ACCENT_LIGHT) >= 4.5);
         assert!(WHITE.contrast(ACCENT_DARK) >= 3.0);
+    }
+
+    #[test]
+    fn small_accent_text_reads_on_its_ground_in_both_schemes() {
+        let light = Palette::for_dark(false).accent_text();
+        let dark = Palette::for_dark(true).accent_text();
+        assert_eq!(light, ACCENT_LIGHT);
+        assert_eq!(dark.hex(), "#afc5fe");
+        assert!(light.contrast(ADWAITA_LIGHT_BG) >= 4.5);
+        // Every dark ground small accent text sits on: Adwaita's and Yaru's window and dialog, and
+        // each of them under the other person's balloon (the ink at 10 %).
+        for ground in [
+            Rgb(0x22, 0x22, 0x26),
+            Rgb(0x2c, 0x2c, 0x2c),
+            Rgb(0x36, 0x36, 0x3a),
+            Rgb(0x3e, 0x3e, 0x3e),
+        ] {
+            let balloon = ground.mix(WHITE, 0.1);
+            assert!(dark.contrast(ground) >= 4.5, "{}", ground.hex());
+            assert!(dark.contrast(balloon) >= 4.5, "{}", balloon.hex());
+        }
+        assert!(
+            dark.contrast(ADWAITA_DARK_BG) >= 4.5,
+            "{}",
+            dark.contrast(ADWAITA_DARK_BG)
+        );
+    }
+
+    #[test]
+    fn a_mix_moves_each_channel_and_stays_in_range() {
+        assert_eq!(Rgb(0, 0, 0).mix(WHITE, 0.5), Rgb(128, 128, 128));
+        assert_eq!(ACCENT_DARK.mix(WHITE, 0.0), ACCENT_DARK);
+        assert_eq!(ACCENT_DARK.mix(WHITE, 1.0), WHITE);
+        assert_eq!(ACCENT_DARK.mix(WHITE, 7.0), WHITE);
     }
 
     #[test]

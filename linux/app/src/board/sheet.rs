@@ -184,8 +184,11 @@ fn open(
 
     // ---- the look -------------------------------------------------------------------------------
     let look = adw::PreferencesGroup::new();
+    // Colours the way GNOME's accent picker shows them: round dots, no trough, the chosen one
+    // ringed in the accent (`fc-note-colors`), not a pressed button.
     let colors = adw::ToggleGroup::builder()
         .valign(gtk::Align::Center)
+        .css_classes(["flat", "fc-note-colors"])
         .build();
     for name in COLORS {
         let swatch = gtk::Box::new(gtk::Orientation::Horizontal, 0);

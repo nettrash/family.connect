@@ -40,6 +40,9 @@ pub fn install(shell: &Rc<Shell>) {
     let renderer = RichRenderer::new(shell.paths.rich_dir(), shell.paths.rich_cache_dir());
     RENDERER.with(|held| *held.borrow_mut() = Some(Rc::clone(&renderer)));
     shell.add_window_part(Rc::new(RendererPart));
+    // A diagram's card, rounded inside its balloon (the drawing keeps fc-rich.js's 12-px padding,
+    // so the corners never touch what is drawn).
+    crate::theme::register(|_| ".fc-rich-card {\n  border-radius: 8px;\n}\n".to_string());
 }
 
 /// The process's renderer (after [`install`]).
@@ -75,10 +78,12 @@ impl WindowPart for RendererPart {
         renderer.set_host(window.overlay());
         let banner = sandbox_banner();
         // Under the conversation's header: the content pane's own toolbar view (libadwaita's place
-        // for a banner), where the blocks it is about are.
+        // for a banner), where the blocks it is about are. Its ANCESTOR, not its parent: a toolbar
+        // view keeps its top bars in a box of its own (measured: header < GtkBox < GtkWindowHandle
+        // < GtkRevealer < AdwToolbarView), so the parent was never one and the banner never shown.
         if let Some(view) = window
             .content_header()
-            .parent()
+            .ancestor(adw::ToolbarView::static_type())
             .and_downcast::<adw::ToolbarView>()
         {
             view.add_top_bar(&banner);

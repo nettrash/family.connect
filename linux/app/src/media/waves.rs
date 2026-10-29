@@ -123,10 +123,15 @@ fn draw(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: f64, height: f
     let step = voice_look::BAR_WIDTH + voice_look::BAR_GAP;
     let radius = voice_look::BAR_WIDTH / 2.0;
     for (index, level) in state.levels.iter().take(count).enumerate() {
-        let bar = voice_look::bar_height(*level, height).max(voice_look::BAR_WIDTH);
+        let raw = voice_look::bar_height(*level, height);
+        let bar = raw.max(voice_look::BAR_WIDTH);
         let x = index as f64 * step;
         let y = (height - bar) / 2.0;
-        if index < state.lit {
+        // A silent bar of the recording's live line is a quiet dot: only the voice shows in full
+        // red, and the pulsing dot stays the one solid red mark.
+        if matches!(state.ink, Ink::Recording) && raw <= voice_look::BAR_WIDTH {
+            cr.set_source_rgba(lit.0, lit.1, lit.2, 0.35);
+        } else if index < state.lit {
             cr.set_source_rgba(lit.0, lit.1, lit.2, 1.0);
         } else {
             cr.set_source_rgba(rest.0, rest.1, rest.2, rest_alpha);

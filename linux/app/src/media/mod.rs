@@ -138,7 +138,10 @@ impl ConversationSlots for MediaSlots {
     }
 }
 
-/// The media package's CSS (prefixed `fc-media-`).
+/// The media package's CSS (prefixed `fc-media-`). Words in a warning or an error take
+/// libadwaita's semantic text colours (clamped for each scheme and for high contrast); the red
+/// FILLS (the dot, the Record and Stop discs) keep the recording red the meter is drawn in. What
+/// lies over a picture speaks the tiles' language: a rimmed disc, pill-shaped chips.
 fn css(palette: &crate::theme::palette::Palette) -> String {
     let accent = palette.accent_bg.hex();
     let ink = palette.accent_fg.hex();
@@ -174,25 +177,36 @@ button.fc-media-speed {{
   min-height: 10px;
 }}
 .fc-media-warning {{
-  color: #c64600;
+  color: var(--warning-color);
 }}
 .fc-media-chip {{
   border-radius: 12px;
   padding: 6px 10px;
 }}
 .fc-media-circle-disc {{
-  background-color: rgba(0, 0, 0, 0.45);
+  background-color: rgba(0, 0, 0, 0.5);
   color: white;
   border-radius: 9999px;
   min-width: 48px;
   min-height: 48px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
 }}
 .fc-media-capsule {{
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: rgba(0, 0, 0, 0.55);
   color: white;
   border-radius: 9999px;
-  padding: 1px 8px;
+  padding: 1px 7px;
   font-feature-settings: \"tnum\";
+}}
+.fc-media-circle .fc-round {{
+  box-shadow: 0 0 0 1px alpha(currentColor, 0.08), 0 1px 3px rgba(0, 0, 0, 0.15);
+}}
+.fc-media-circle .fc-round:focus-visible {{
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 60%, transparent);
+  outline-offset: 1px;
+}}
+.fc-media-circle .fc-media-dot {{
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
 }}
 .fc-media-poster {{
   background-color: alpha(currentColor, 0.12);
@@ -206,11 +220,18 @@ button.fc-media-speed {{
   background-color: alpha(currentColor, 0.08);
 }}
 .fc-media-status.fc-media-red {{
-  color: #e01b24;
+  color: var(--error-color);
 }}
 .fc-media-bar {{
-  background-color: alpha(currentColor, 0.04);
+  background-color: var(--headerbar-bg-color);
+  box-shadow: 0 -1px color-mix(in srgb, var(--headerbar-shade-color) 50%, transparent),
+    0 -2px 4px color-mix(in srgb, var(--headerbar-shade-color) 50%, transparent);
   padding: 12px;
+}}
+@media (prefers-contrast: more) {{
+  .fc-media-bar {{
+    box-shadow: 0 -1px color-mix(in srgb, currentColor 50%, transparent);
+  }}
 }}
 button.fc-media-slot {{
   min-width: 64px;

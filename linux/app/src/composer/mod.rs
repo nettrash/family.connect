@@ -55,6 +55,7 @@ use crate::services::catalogue::Catalogue;
 use crate::services::log;
 use crate::shell::{Connection, Shell};
 use crate::text::{offsets, typing_hooks};
+use crate::theme;
 
 use keys::{EnterAction, EscapeAction};
 
@@ -139,8 +140,23 @@ fn now_ms() -> i64 {
 
 /// A 44-px flat circular button with a symbolic icon, named and tooltipped.
 fn glyph(icon: &str, name: &str) -> gtk::Button {
+    let button = target(name);
+    button.set_icon_name(icon);
+    button
+}
+
+/// [`glyph`] drawing a paintable instead of a theme's icon — a symbolic one in the button's ink.
+fn painted_glyph(paintable: &impl IsA<gtk::gdk::Paintable>, name: &str) -> gtk::Button {
+    let button = target(name);
+    button.set_child(Some(&gtk::Image::from_paintable(Some(paintable))));
+    // The icon buttons' padding, which `set_icon_name` would have given it.
+    button.add_css_class("image-button");
+    button
+}
+
+/// The 44-px flat circular target of [`glyph`], named and tooltipped, still empty.
+fn target(name: &str) -> gtk::Button {
     let button = gtk::Button::builder()
-        .icon_name(icon)
         .css_classes(["flat", "circular"])
         .tooltip_text(name)
         .valign(gtk::Align::End)
@@ -194,6 +210,7 @@ impl Composer {
         let banner_close = glyph("window-close-symbolic", say.get("Cancel reply"));
         let banner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         banner.add_css_class("fc-chat-banner");
+        banner.add_css_class("fc-chat-reply-banner");
         banner.append(&gtk::Image::from_icon_name("mail-reply-sender-symbolic"));
         banner.append(&banner_label);
         banner.append(&banner_close);
@@ -211,11 +228,13 @@ impl Composer {
         let not_sent = adw::Bin::new();
         root.append(&not_sent);
 
+        // One line stands as tall as the targets beside it (13 + an 18-px line + 13), centred on
+        // them, and the field fills the capsule as it grows.
         let field = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
-            .top_margin(11)
-            .bottom_margin(11)
+            .top_margin(13)
+            .bottom_margin(13)
             .left_margin(8)
             .right_margin(4)
             .css_classes(["fc-chat-field"])
@@ -232,14 +251,15 @@ impl Composer {
             .max_content_height(8 * 22 + 22)
             .child(&field)
             .hexpand(true)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
+        // At the field's own left margin, where the caret stands.
         let placeholder = gtk::Label::builder()
             .label(placeholder_text)
             .css_classes(["fc-chat-placeholder"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .margin_start(10)
+            .margin_start(8)
             .can_target(false)
             .build();
         let field_overlay = gtk::Overlay::new();
@@ -256,16 +276,23 @@ impl Composer {
         stack.add_named(&field_overlay, Some("field"));
         stack.add_named(&recording_bin, Some("recording"));
 
-        let emoji_button = glyph("face-smile-symbolic", say.get("Emoji"));
-        let sticker_button = glyph("face-smile-big-symbolic", say.get("Stickers"));
+        // GTK's own glyph for its emoji chooser (a face), and the app's own for the stickers (a
+        // face on a peeled square): icon themes draw every face alike (Yaru's emoji and smiley are
+        // one outline), so a second face could not tell the two apart.
+        let emoji_button = glyph("emoji-people-symbolic", say.get("Emoji"));
+        let sticker_button = painted_glyph(&theme::glyphs::sticker(), say.get("Stickers"));
         let picture_button = glyph(
             "applications-graphics-symbolic",
             say.get("Ask for a picture"),
         );
-        let video_button = glyph(
-            "camera-video-symbolic",
+        // A camera in a ring (the Mac's `video.circle`): the header's bare camera is Video Call.
+        let video_button = painted_glyph(
+            &theme::glyphs::video_circle(),
             &composer_button::door_tooltip(say.as_ref()),
         );
+        // In the accent, as the Mac draws its stickers and video glyphs beside the slot.
+        sticker_button.add_css_class("fc-chat-tinted");
+        video_button.add_css_class("fc-chat-tinted");
         let capsule = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         capsule.add_css_class("fc-chat-capsule");
         capsule.set_hexpand(true);
@@ -283,6 +310,9 @@ impl Composer {
             .width_request(composer_button::SLOT_VISUAL_PX as i32)
             .height_request(composer_button::SLOT_VISUAL_PX as i32)
             .build();
+        // Expanding, so the box gives it the whole disc to centre in: a box packs a child at its
+        // natural width from the start, and `halign` alone left the glyph off to one side.
+        slot_icon.set_hexpand(true);
         slot_icon.set_halign(gtk::Align::Center);
         slot_icon.set_valign(gtk::Align::Center);
         slot_disc.append(&slot_icon);

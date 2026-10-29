@@ -463,7 +463,7 @@ order: booting → needs server → needs auth → needs family → pending appr
 
 | Gate | Mac view | Windows view | Linux page |
 | --- | --- | --- | --- |
-| Booting | spinner | — | `adw::Spinner` in an `adw::StatusPage` |
+| Booting | spinner | — | the app's icon and an `adw::Spinner` in the gate's form (where the next page's icon stands) |
 | Needs server | `ServerSetupView` | `ServerView` | `adw::Clamp` (360) + `adw::PreferencesGroup` with an `adw::EntryRow` (server address; `fc_logic::doorway::ServerCheck`), the default server offered (`DefaultServer`) |
 | Needs auth | `AuthView` | `SignInView` | username `adw::EntryRow`, password `adw::PasswordEntryRow`, Sign In / Create Account (`SignInForm`); refusals from `DoorSentences` |
 | Needs family | `FamilyGateView` | `DoorView` | Create a family / Join with a code / invitations (`FamilyDoor`, `Families`) |
@@ -554,7 +554,10 @@ position never leaks into the next chat (the Mac's `.id(selectedChatID)`); the d
 | Part | Rule (fc-logic) | GTK |
 | --- | --- | --- |
 | Body | `BubbleBody` runs: text, links, mentions, markdown blocks, tables, rich blocks | a `gtk::Label` per text block with Pango markup built by the shell from the runs (`use_markup`, `selectable`, `wrap`, `WrapMode::WordChar`; links as `<a href>` handled by `activate-link` → `gtk::UriLauncher`; mentions as links to `fc-member:<id>` → the member card), a `gtk::Grid` for a table, a `gtk::Picture` for each rich block (§9) |
-| Own balloon | solid accent, white ink (Mac; `Palette.Ink` on Windows — the dark theme's pale accent paired with black ink was wrong) | CSS class `.own` with `--accent-bg-color` and white text in both themes |
+| Own balloon | solid accent, white ink (Mac; `Palette.Ink` on Windows — the dark theme's pale accent paired with black ink was wrong) | CSS class `fc-own-bubble` with `--accent-bg-color` and white text in both themes |
+| Others' balloon | the Mac's `appSecondaryFill`: a quiet neutral fill, the window's ink | `fc-bubble`: the ink at 8 % (light) / 10 % (dark) over the ground, outlined in high contrast |
+| Shape | `TimelineRow::run_start` / `run_end`: corners tighten where a balloon meets its run mates (the Mac's 14/4, Windows' `BalloonCorners`); one to four emoji (`fc_text::emoji`'s ladder) and a message of nothing but pictures stand bare; a sticker and a circle have no balloon at all | `bubble::joins` over the rows: `fc-chat-joined-above` / `-below` (16 px round, 5 px joined) only between two filled balloons of one run with nothing between them — no unread divider, chips, time or thread chip; `fc-chat-bare`; `fc-chat-emoji-1…4` sized from the ladder in proportion to the body |
+| Time and its place | under the LAST balloon of a run, and under an edited or a hidden row (the Mac's `showsTimestamp`, Windows' `RunEnd`); the thread's "%lld replies" chip under it | on the window's ground beside the balloon's edge; a balloon inside a run shows its time as a tooltip |
 | Reply quote | `Quotes` / `Excerpt` (per scalar); a reply to a blocked member "Replying to a hidden message" | a clickable box above the body that scrolls to the quoted row |
 | Reactions | `fc_text::reactions` chips; blocked members out of the names, not the count; the tap is decided here (held → DELETE, else PUT) | a `gtk::FlowBox` of chip buttons under the bubble; a chip's tooltip lists who; the reader's own chip's popover lists them with a remove control |
 | Heart | double click on a bubble | `gtk::GestureClick` with `n_press == 2` → ❤️ (Windows' rule: "a double click is the heart") |
@@ -604,7 +607,8 @@ card (`win/README.md`, "Looking things up").
 
 The approved row of `docs/composer-and-wide-layout-2026-10-20.md`: a capsule holding the paperclip
 (menu), the field, the glyphs inside it (sticker, emoji, `@ai` / 🎨 where `AttachMenu` offers them, the
-video button in an empty field when `RoundVideoRules::recording_enabled`), and beside it the **Send
+video button in an empty field when `RoundVideoRules::recording_enabled`; the sticker and video glyphs
+are the app's own, §25), and beside it the **Send
 slot** — one fixed 40-px accent disc in a 44-px target (`ComposerButton`: Send, Save, the microphone,
 or while recording the Send arrow / Stop), so the row never jumps. Stacked above it, in this order:
 notices (`mediaNotice`, picture notices), the reply / edit banner, staged attachments (chips with ✕),
@@ -1694,13 +1698,26 @@ control a name, a role and a keyboard way.
   variables (`--accent-bg-color`, `--accent-color`, `--accent-fg-color: white`) at
   `STYLE_PROVIDER_PRIORITY_APPLICATION`, overriding the system accent, so the reader's own balloon, the
   slot and badges are the same blue as on every other client. The own balloon's ink is white in both
-  schemes (Windows' `Palette.Ink` lesson).
+  schemes (Windows' `Palette.Ink` lesson). Small accent TEXT (a sender's name, a link, the unread
+  divider) uses `Palette::accent_text`: the accent on light, lifted about a third towards white on
+  dark, where `#4D7DFC` measures under 4.5:1. Links are coloured by the app's own rules for every
+  state: Ubuntu's libadwaita writes its link colours out (`#ac3911` / `#f08762`) instead of reading
+  the accent.
+- **High contrast and reduced motion**: GTK evaluates a provider's `@media (prefers-contrast: more)` /
+  `(prefers-reduced-motion: reduce)` against that provider's own properties, and only libadwaita sets
+  its own; `theme::install` sets the app provider's from `adw::StyleManager::is_high_contrast` and
+  `gtk-interface-reduced-motion`, and follows both.
 - **One CSS file**, generated from a palette (`theme::css(dark)`), loaded with
   `gtk::CssProvider::load_from_string` (md §10).
 - **HiDPI**: GTK draws vectors and text at the surface scale; the shell makes bitmaps — avatars, tiles,
   rich drawings, posters, map tiles — at `ceil(surface.scale())` × their logical size, and redraws on
   `notify::scale-factor` (integer) / the surface's `scale` (fractional, Wayland) change. Icons are
-  symbolic SVGs from the Adwaita/Yaru theme or the app's own `hicolor/scalable`.
+  symbolic SVGs from the Adwaita/Yaru theme or the app's own `hicolor/scalable`, except where a
+  theme draws two things alike or has nothing: `theme::glyphs` carries those (the sticker — a face
+  on a peeled square, as Yaru's emoji and smiley are one face — and the video message's camera in a
+  ring, the Mac's `video.circle`, as the header's Video Call is the bare camera), embedded and drawn
+  by `gtk::Svg` with `EXTENSIONS | TRADITIONAL_SYMBOLIC` so they take the widget's ink like a theme's
+  `-symbolic` icon (`TRADITIONAL_SYMBOLIC` alone drew them black, measured on GTK 4.22).
 - Fonts: the system UI font (Ubuntu Sans) everywhere; board hands per `note_look::font_family`.
 
 ---

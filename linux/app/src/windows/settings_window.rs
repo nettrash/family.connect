@@ -113,24 +113,35 @@ impl SettingsWindow {
             .default_height(DEFAULT_SIZE.1)
             .hide_on_close(true)
             .build();
+        // `fc-settings`: a disabled row's reason stays readable (`board::css`). Added, never set:
+        // the builder's list would replace the window's own `background`.
+        window.add_css_class("fc-settings");
         window.set_size_request(MINIMUM_SIZE.0, MINIMUM_SIZE.1);
         window.set_application(Some(&shell.app));
 
         // ---- who you are -------------------------------------------------------------------
-        let avatar = ui::avatar("?", 56);
-        let name = gtk::Label::builder().xalign(0.0).wrap(true).build();
-        name.add_css_class("title-3");
-        let username = gtk::Label::builder().xalign(0.0).build();
+        // A centred hero, GNOME's identity pattern (Settings ▸ Users, the About dialog): the face,
+        // the name under it, the username and the Owner pill below.
+        let avatar = ui::avatar("?", 80);
+        avatar.set_halign(gtk::Align::Center);
+        let name = gtk::Label::builder()
+            .xalign(0.5)
+            .justify(gtk::Justification::Center)
+            .wrap(true)
+            .build();
+        name.add_css_class("title-2");
+        let username = gtk::Label::builder().xalign(0.5).build();
         username.add_css_class("dim-label");
         let owner = ui::owner_pill(say.get("Owner"));
-        owner.set_halign(gtk::Align::Start);
+        owner.set_halign(gtk::Align::Center);
         let names = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        names.set_valign(gtk::Align::Center);
+        names.set_halign(gtk::Align::Center);
         names.append(&name);
         names.append(&username);
         names.append(&owner);
-        let identity = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        identity.append(&avatar);
+        let identity = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        identity.set_halign(gtk::Align::Center);
+        identity.append(&ui::hero_face(&avatar));
         identity.append(&names);
         let identity_group = adw::PreferencesGroup::new();
         identity_group.add(&identity);
@@ -144,10 +155,11 @@ impl SettingsWindow {
             .label(say.get("Add Photo"))
             .valign(gtk::Align::Center)
             .build();
+        // Red words without a fill: the secondary action beside Change Photo, not its rival.
         let remove_photo = gtk::Button::builder()
             .label(say.get("Remove Photo"))
             .valign(gtk::Align::Center)
-            .css_classes(["destructive-action"])
+            .css_classes(["destructive-action", "flat"])
             .visible(false)
             .build();
         photo_row.add_suffix(&remove_photo);
@@ -234,6 +246,11 @@ impl SettingsWindow {
             .visible(false)
             .build();
         hot_key.add_suffix(&hot_key_change);
+        // A switch row put its own switch in the suffixes first: Change… goes before it, so every
+        // switch of the group ends its row in one column.
+        if let Some(suffixes) = hot_key_change.parent().and_downcast::<gtk::Box>() {
+            suffixes.reorder_child_after(&hot_key_change, None::<&gtk::Widget>);
+        }
         {
             let window = window.clone();
             hot_key_change.connect_clicked(move |_| {
@@ -346,10 +363,12 @@ impl SettingsWindow {
         ] {
             page.add(group);
         }
+        // A sentence, so the page's body text rather than a headline; compact in a small window.
         let signed_out = adw::StatusPage::builder()
             .icon_name("avatar-default-symbolic")
-            .title(say.get("Sign in to see your settings."))
+            .description(say.get("Sign in to see your settings."))
             .build();
+        signed_out.add_css_class("compact");
         let stack = gtk::Stack::new();
         stack.add_named(&page, Some("settings"));
         stack.add_named(&signed_out, Some("signed-out"));

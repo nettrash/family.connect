@@ -9,7 +9,7 @@
 //!
 //! | Page | Mac | Windows | Here |
 //! | --- | --- | --- | --- |
-//! | Booting | spinner | — | `adw::Spinner` in an `adw::StatusPage` |
+//! | Booting | spinner | — | the app's icon (`hero`) and an `adw::Spinner` in the gate's form |
 //! | Server | `ServerSetupView` | `ServerView` | address row; `doorway::server_check` probes `GET /me` with no token before anything is saved |
 //! | SignIn | `AuthView` | `SignInView` | Log In / Register on one page (`adw::ToggleGroup`), `sign_in_form::may_submit`, refusals by `door_sentences::sign_in`; "Change server…" |
 //! | Offline | — | `OfflineView` | "a flaky network is not a sign-out": Try Again (`Shell::retry`), Change server… |
@@ -117,6 +117,49 @@ fn fill(shell: &Rc<Shell>, window: &Rc<MainWindow>, page: GatePage) {
     slot.set_child(Some(&widget));
 }
 
+/// The app's own icon: the product's face on the pages a person meets before any chat. Embedded,
+/// because a binary run from a checkout has no icon theme to find it in; the theme's copy (same
+/// name) is the fallback should the bytes ever not decode.
+const BRAND_ICON: &[u8] =
+    include_bytes!("../../../packaging/icons/hicolor/256x256/apps/me.nettrash.FamilyConnect.png");
+
+/// How big the icon stands over a doorway page's title.
+const BRAND_SIZE: i32 = 96;
+
+/// The icon, then `title` and the page's one-line `lede` under it: one centred group, the page's
+/// top. Without a title it is the icon alone (Booting's splash, where the next page's icon lands).
+fn hero(title: Option<&gtk::Label>, lede: Option<&str>) -> gtk::Box {
+    let texture = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_static(BRAND_ICON)).ok();
+    let builder = gtk::Image::builder()
+        .pixel_size(BRAND_SIZE)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .css_classes(["icon-dropshadow", "fc-chat-brand"]);
+    let mark = match texture {
+        Some(texture) => builder.paintable(&texture).build(),
+        None => builder.icon_name(crate::app::APP_ID).build(),
+    };
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    group.append(&mark);
+    if let Some(title) = title {
+        title.set_margin_top(6);
+        group.append(title);
+    }
+    if let Some(lede) = lede {
+        // At its natural width, so a long sentence wraps into balanced lines under the title.
+        group.append(
+            &gtk::Label::builder()
+                .label(lede)
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .halign(gtk::Align::Center)
+                .max_width_chars(40)
+                .build(),
+        );
+    }
+    group.set_margin_bottom(6);
+    group
+}
+
 /// A form in the middle of the page, at most 360 wide, scrolling when the window is short.
 fn form(content: &impl IsA<gtk::Widget>) -> gtk::Widget {
     let clamp = adw::Clamp::builder()
@@ -193,16 +236,19 @@ fn action_button(text: &str, suggested: bool) -> gtk::Button {
     button
 }
 
+/// The icon and a spinner, where the next page's icon will stand: a launch opens on the app's
+/// face, not on an empty window.
 fn booting_page() -> gtk::Widget {
-    adw::StatusPage::builder()
-        .child(
-            &adw::Spinner::builder()
-                .width_request(32)
-                .height_request(32)
-                .build(),
-        )
-        .build()
-        .upcast()
+    let content = column();
+    content.append(&hero(None, None));
+    content.append(
+        &adw::Spinner::builder()
+            .width_request(24)
+            .height_request(24)
+            .halign(gtk::Align::Center)
+            .build(),
+    );
+    form(&content)
 }
 
 /// The server form. `back`: what Cancel puts back in `slot` (the page "Change server…" was
@@ -211,10 +257,11 @@ fn server_page(shell: &Rc<Shell>, slot: &adw::Bin, back: Option<gtk::Widget>) ->
     let say = &shell.say;
     let content = column();
     // The product's name, not a sentence: the same in every language.
-    content.append(&heading(BRAND));
-    let group = adw::PreferencesGroup::builder()
-        .description(say.get("Ask the family member who runs the server for its address."))
-        .build();
+    content.append(&hero(
+        Some(&heading(BRAND)),
+        Some(say.get("Ask the family member who runs the server for its address.")),
+    ));
+    let group = adw::PreferencesGroup::new();
     let address = adw::EntryRow::builder()
         .title(say.get("Server address"))
         .input_purpose(gtk::InputPurpose::Url)
@@ -355,10 +402,9 @@ fn sign_in_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
     let say = &shell.say;
     let content = column();
     let title = heading(say.get("Welcome Back"));
-    content.append(&title);
-    let modes = adw::ToggleGroup::builder()
-        .halign(gtk::Align::Center)
-        .build();
+    content.append(&hero(Some(&title), None));
+    // The page's two doors, as wide as the form under them.
+    let modes = adw::ToggleGroup::builder().homogeneous(true).build();
     modes.add(
         adw::Toggle::builder()
             .name("log-in")
@@ -395,13 +441,17 @@ fn sign_in_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
     content.append(&error);
     let submit = action_button(say.get("Log In"), true);
     content.append(&submit);
+    // The server and the way to another one: one footer, apart from the form above.
+    let footer = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    footer.set_margin_top(12);
     if let Some(connection) = shell.connection() {
         let server = note(&say.format("Connected to %@", &[&connection.server.to_string()]));
         server.set_xalign(0.5);
         server.set_selectable(true);
-        content.append(&server);
+        footer.append(&server);
     }
-    content.append(&change_server_button(shell, slot));
+    footer.append(&change_server_button(shell, slot));
+    content.append(&footer);
 
     let working = Rc::new(Cell::new(false));
     let arrange = {
@@ -562,9 +612,11 @@ fn sign_in_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
 /// is not a sign-out (Windows' `OfflineView`).
 fn offline_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
     let say = &shell.say;
-    // One row, the primary action at the trailing end (GNOME's order for a pair of actions).
+    // One row of two pills, the primary action at the trailing end (GNOME's order for a pair of
+    // actions) — and last in the row, where the self-test looks for it.
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     buttons.set_halign(gtk::Align::Center);
+    buttons.add_css_class("fc-chat-gate-actions");
     let again = action_button(say.get("Try Again"), true);
     let weak = Rc::downgrade(shell);
     again.connect_clicked(move |_| {
@@ -572,7 +624,10 @@ fn offline_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
             shell.retry();
         }
     });
-    buttons.append(&change_server_button(shell, slot));
+    let change = change_server_button(shell, slot);
+    change.remove_css_class("flat");
+    change.add_css_class("pill");
+    buttons.append(&change);
     buttons.append(&again);
     adw::StatusPage::builder()
         .icon_name("network-offline-symbolic")
@@ -583,11 +638,12 @@ fn offline_page(shell: &Rc<Shell>, slot: &adw::Bin) -> gtk::Widget {
         .upcast()
 }
 
-/// "Log out" — the gate's way back to the sign-in form.
+/// "Log out" — the gate's way back to the sign-in form: quiet, like "Change server…", since
+/// nothing is lost by it and it is never the page's purpose.
 fn log_out_button(shell: &Rc<Shell>) -> gtk::Button {
     let button = gtk::Button::builder()
         .label(shell.say.get("Log out"))
-        .css_classes(["pill", "destructive-action"])
+        .css_classes(["flat"])
         .halign(gtk::Align::Center)
         .build();
     button.connect_clicked(|_| {
@@ -640,7 +696,8 @@ fn door_form(title: &str, description: &str, field: &str, button: &str) -> DoorF
 /// forms drawn there.
 pub fn family_forms(shell: &Rc<Shell>, which: FamilyForms, done: Rc<dyn Fn()>) -> gtk::Box {
     let say = &shell.say;
-    let content = column();
+    // GNOME's spacing between preference groups: two forms, not one list.
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     let Some(connection) = shell.connection() else {
         return content;
     };
@@ -736,6 +793,10 @@ pub fn family_forms(shell: &Rc<Shell>, which: FamilyForms, done: Rc<dyn Fn()>) -
                 say.get("Family name"),
                 say.get("Create Family"),
             );
+            // One suggested action per view: beside the join form, joining is it.
+            if which.join {
+                create.button.remove_css_class("suggested-action");
+            }
             create.button.set_sensitive(false);
             {
                 let button = create.button.clone();
@@ -824,7 +885,10 @@ fn family_page(shell: &Rc<Shell>) -> gtk::Widget {
     };
     let state = connection.session.state();
     if let Some(me) = state.me.as_ref() {
-        content.append(&heading(&say.format("Hi, %@", &[&me.display_name])));
+        content.append(&hero(
+            Some(&heading(&say.format("Hi, %@", &[&me.display_name]))),
+            None,
+        ));
     }
     if state.join_declined {
         let declined = gtk::Label::builder()
@@ -888,7 +952,8 @@ fn pending_page(shell: &Rc<Shell>) -> gtk::Widget {
     );
     content.append(&log_out_button(shell));
     adw::StatusPage::builder()
-        .icon_name("content-loading-symbolic")
+        // A speech bubble holding its breath: waiting for an answer, in the app's own language.
+        .icon_name("user-status-pending-symbolic")
         .title(say.get("Waiting for approval"))
         .child(&content)
         .build()

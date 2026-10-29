@@ -113,8 +113,10 @@ impl ThreadDialog {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.append(thread.timeline.widget());
         let composer_box = thread.composer.widget();
-        composer_box.set_margin_start(12);
-        composer_box.set_margin_end(12);
+        // The timeline's own inset, so the field lines up with the bubbles above it.
+        let inset = fc_logic::composer_row::conversation_column::PANE_INSET as i32;
+        composer_box.set_margin_start(inset);
+        composer_box.set_margin_end(inset);
         column.append(&composer_box);
         let view = adw::ToolbarView::new();
         view.add_top_bar(&adw::HeaderBar::new());
@@ -253,12 +255,18 @@ impl ThreadDialog {
             page.shell().zone.as_ref(),
         );
         let pending = self.model.pending().unwrap_or_default();
+        // Corners join across rows, so each row's signature carries its joins: a neighbour
+        // gaining chips or a time draws this row again.
+        let shapes: Vec<_> = rows.iter().map(|row| bubble::shape(&ctx, row)).collect();
+        let joins = bubble::joins(&shapes);
         let mut marks: Vec<RowMark> = rows
             .iter()
-            .map(|row| {
+            .zip(&joins)
+            .map(|(row, joined)| {
+                let drawn = format!("{}{}", ctx.drawn_with(row), bubble::joined_mark(*joined));
                 RowMark::new(
                     conversation_rows::message_key(row.bubble.message.id),
-                    conversation_rows::signature(row, &ctx.drawn_with(&row.bubble)),
+                    conversation_rows::signature(row, &drawn),
                 )
             })
             .collect();
@@ -272,7 +280,7 @@ impl ThreadDialog {
         let say = Rc::clone(&page.shell().say);
         self.timeline.update(marks, |index| {
             if index < message_rows {
-                bubble::row_widget(&ctx, &rows[index])
+                bubble::row_widget(&ctx, &rows[index], joins[index])
             } else {
                 let row = &pending[index - message_rows];
                 let label = gtk::Label::builder()

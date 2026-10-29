@@ -83,11 +83,14 @@ pub fn media_block(message: &MessageDto, own: bool) -> gtk::Widget {
         return column.upcast();
     }
     let looked = MediaAlbum::of(all);
+    // How wide the pictures stand: a file under them comes out exactly as wide, edges aligned.
+    let mut pictures_width = None;
     if looked.len() == 1 {
         let (width, height) = media::tile_size(
             looked[0].width.map(i64::from),
             looked[0].height.map(i64::from),
         );
+        pictures_width = Some(pictures::logical(width));
         let look = TileLook {
             width,
             height,
@@ -96,6 +99,7 @@ pub fn media_block(message: &MessageDto, own: bool) -> gtk::Widget {
         };
         column.append(&slots.tile(message, &looked[0], &look));
     } else if looked.len() > 1 {
+        pictures_width = Some(2 * pictures::logical(GRID_CELL) + GRID_SPACING);
         let grid = gtk::Grid::builder()
             .row_spacing(GRID_SPACING)
             .column_spacing(GRID_SPACING)
@@ -134,7 +138,19 @@ pub fn media_block(message: &MessageDto, own: bool) -> gtk::Widget {
                 },
             ),
         };
-        column.append(&row);
+        match pictures_width {
+            Some(width) if attachment.kind == "file" => {
+                row.set_halign(gtk::Align::Fill);
+                column.append(
+                    &adw::Clamp::builder()
+                        .maximum_size(width)
+                        .tightening_threshold(width)
+                        .child(&row)
+                        .build(),
+                );
+            }
+            _ => column.append(&row),
+        }
     }
     column.upcast()
 }
@@ -156,6 +172,10 @@ fn media_tile(message: &MessageDto, attachment: &AttachmentDto, look: &TileLook)
         .overflow(gtk::Overflow::Hidden)
         .css_classes(["fc-attach-tile"])
         .build();
+    // A film's dark screen until its poster lands, never a pale slab that reads as no picture.
+    if video {
+        frame.add_css_class("fc-attach-video");
+    }
     // The quiet stand-in until the picture lands: the kind's icon, dimmed.
     let stand_in = gtk::Image::builder()
         .icon_name(if video {

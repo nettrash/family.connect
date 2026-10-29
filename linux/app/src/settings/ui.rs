@@ -65,6 +65,17 @@ pub fn avatar(name: &str, size: i32) -> adw::Avatar {
     adw::Avatar::new(size, Some(name), true)
 }
 
+/// `face` in a round frame that carries a hero's shadow (`board::css`, `fc-hero-face`) — the face
+/// at the top of Settings and of the Family dialog: an avatar draws no box-shadow of its own.
+pub fn hero_face(face: &adw::Avatar) -> adw::Bin {
+    let frame = adw::Bin::builder()
+        .child(face)
+        .halign(gtk::Align::Center)
+        .build();
+    frame.add_css_class("fc-hero-face");
+    frame
+}
+
 /// A person's face: the initials of `name`, then `user_id`'s picture once it lands (P2's
 /// `attachments::avatars`, keyed by user and the roster's avatar version, §8.3).
 pub fn face(name: &str, user_id: i64, size: i32) -> adw::Avatar {

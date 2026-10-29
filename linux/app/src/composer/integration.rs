@@ -2,7 +2,7 @@
 //!
 //! | Function | Owner | What it does |
 //! | --- | --- | --- |
-//! | [`sticker_panel_offered`], [`open_sticker_panel`] | P2 | the family's sticker panel (§8.4) from the field's ☺ glyph, where the server has a pack |
+//! | [`sticker_panel_offered`], [`open_sticker_panel`] | P2 | the family's sticker panel (§8.4) from the field's sticker glyph, where the server has a pack |
 //! | [`location_offered`], [`find_location`] | P2 | the Location portal, once (§8.5): the paperclip's Location where it answers |
 //! | [`open_full_screen`] | P2 | the attachment viewer window (§8.2) |
 //! | [`offers_text`], [`show_text`] | P3 | a recording's text (`TranscriptModel`, through the consent question) — not drawn yet |
@@ -42,7 +42,7 @@ pub fn sticker_panel_offered() -> bool {
         .is_some_and(|connection| crate::attachments::pack::offered(&connection.stickers))
 }
 
-/// P2: the sticker panel over `anchor` (the ☺ glyph — never a text view, §6, P1's measured
+/// P2: the sticker panel over `anchor` (the sticker glyph — never a text view, §6, P1's measured
 /// warning); a pick closes it and goes to `on_pick`.
 pub fn open_sticker_panel(anchor: &gtk::Widget, on_pick: impl Fn(PackItemDto) + 'static) {
     let popover = crate::attachments::sticker_panel::popover(on_pick);

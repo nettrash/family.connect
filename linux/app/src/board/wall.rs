@@ -580,7 +580,10 @@ impl Wall {
             let zone = shell.zone.as_ref();
             let block = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             if let Some((day, month)) = event_text::date_block(starts, &shell.culture, zone) {
+                // A small calendar leaf: the day heavy over the month in calendar red.
                 let date = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                date.add_css_class("fc-note-date");
+                date.set_valign(gtk::Align::Start);
                 let day = gtk::Label::new(Some(&day));
                 day.add_css_class("fc-note-day");
                 let month = gtk::Label::new(Some(&month.to_uppercase()));
@@ -634,12 +637,35 @@ impl Wall {
         if !hidden && sticker.kind == Kind::Tasks {
             let items = note.task_list();
             let (shown, left) = wall_task_lines(items.len());
+            // Each line behind the theme's own checkbox, a done one struck through as well as
+            // dimmed (the card's spoken name is `wall_text`'s, not these widgets').
             for item in items.iter().take(shown) {
-                let mark = if item.done { "☑" } else { "☐" };
-                let row = line(&format!("{mark} {}", item.text));
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+                row.add_css_class("fc-note-task");
                 if item.done {
-                    row.add_css_class("dim-label");
+                    row.add_css_class("fc-note-task-done");
                 }
+                row.append(
+                    &gtk::Image::builder()
+                        .icon_name(if item.done {
+                            "checkbox-checked-symbolic"
+                        } else {
+                            "checkbox-symbolic"
+                        })
+                        .valign(gtk::Align::Center)
+                        .accessible_role(gtk::AccessibleRole::Presentation)
+                        .build(),
+                );
+                let text = line(&item.text);
+                text.set_hexpand(true);
+                // The box is a picture to a screen reader: the line says its state itself, as the
+                // ballot box did when it was a character.
+                let mark = if item.done { "☑" } else { "☐" };
+                text.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "{mark} {}",
+                    item.text
+                ))]);
+                row.append(&text);
                 card.append(&row);
             }
             if left > 0 {

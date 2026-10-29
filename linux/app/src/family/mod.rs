@@ -222,15 +222,19 @@ impl FamilyDialog {
         content.set_margin_start(12);
         content.set_margin_end(12);
 
-        // The family, named, with a count.
-        let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        head.append(&ui::avatar(&family_name, 44));
+        // The family, named, with a count: a centred hero, the Settings window's own pattern.
+        let head = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        head.set_halign(gtk::Align::Center);
+        let face = ui::avatar(&family_name, 64);
+        face.set_halign(gtk::Align::Center);
+        head.append(&ui::hero_face(&face));
         let names = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        names.set_valign(gtk::Align::Center);
+        names.set_halign(gtk::Align::Center);
         self.title.set_text(&family_name);
-        self.title.set_xalign(0.0);
+        self.title.set_xalign(0.5);
+        self.title.set_justify(gtk::Justification::Center);
         self.title.set_wrap(true);
-        self.title.add_css_class("title-3");
+        self.title.add_css_class("title-2");
         if let Some(parent) = self.title.parent().and_downcast::<gtk::Box>() {
             parent.remove(&self.title);
         }
@@ -239,7 +243,7 @@ impl FamilyDialog {
             i64::try_from(present.len()).unwrap_or(0),
             say.as_ref(),
         )));
-        count.set_xalign(0.0);
+        count.set_xalign(0.5);
         count.add_css_class("dim-label");
         names.append(&count);
         head.append(&names);
@@ -391,7 +395,8 @@ impl FamilyDialog {
         row.add_suffix(&copy);
         row.add_suffix(&rotate);
         group.add(&row);
-        group.add(&ui::footnote(
+        // Between the group's title and the code: it explains Rotate, not the Invite… row under it.
+        group.set_description(Some(
             say.get("Rotating invalidates the current code immediately."),
         ));
         if family_rules::offers_invite(state) {
@@ -415,13 +420,20 @@ impl FamilyDialog {
             .title(say.get("Pending Invitations"))
             .build();
         for invitation in invitations {
+            // A person row like every other in the dialog: the face, the name, the username.
             let row = adw::ActionRow::builder()
                 .title(&invitation.user.display_name)
+                .subtitle(format!("@{}", invitation.user.username))
                 .build();
+            row.add_prefix(&ui::face(
+                &invitation.user.display_name,
+                invitation.user.id,
+                32,
+            ));
             let withdraw = gtk::Button::builder()
                 .label(say.get("Withdraw Invitation"))
                 .valign(gtk::Align::Center)
-                .css_classes(["destructive-action"])
+                .css_classes(["destructive-action", "flat"])
                 .build();
             let (weak, connection, family, id) = (
                 Rc::downgrade(self),
@@ -467,8 +479,12 @@ impl FamilyDialog {
                     .label(label)
                     .valign(gtk::Align::Center)
                     .build();
-                if !approve {
+                // Approving is the console's primary act; declining, red words without a fill.
+                if approve {
+                    button.add_css_class("suggested-action");
+                } else {
                     button.add_css_class("destructive-action");
+                    button.add_css_class("flat");
                 }
                 let (weak, connection, id) =
                     (Rc::downgrade(self), Rc::clone(connection), request.id);

@@ -38,35 +38,119 @@ pub fn model(connection: &Connection) -> BoardModel {
 }
 
 /// The package's stylesheet part (registered once in `settings::install`): the wall's ground, the
-/// six pastels, the hands and sizes, the lifted card, the pill and the swatches.
+/// six pastels, the hands and sizes, the lifted card, the pill and the swatches — and the Settings
+/// window's and the Family dialog's few rules of their own (P4's three surfaces share one part).
 pub fn css(dark: bool) -> String {
     let ground = if dark { "#2b2925" } else { "#ece5d8" };
+    // Paper on the wall: a hairline contact edge, a short contact shadow and a soft ambient one,
+    // stronger on the dark wall (where the light wall's would vanish), and higher when lifted; a
+    // sheen of top light on the light wall, a 6 % veil over the pastels on the dark one.
+    let (sheen, rest, lifted) = if dark {
+        (
+            "image(rgba(0, 0, 0, 0.06))",
+            "0 0 0 1px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.35), \
+             0 8px 18px -4px rgba(0, 0, 0, 0.5)",
+            "0 0 0 1px rgba(0, 0, 0, 0.3), 0 10px 18px -4px rgba(0, 0, 0, 0.55), \
+             0 22px 44px -8px rgba(0, 0, 0, 0.6)",
+        )
+    } else {
+        (
+            "linear-gradient(to bottom, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 45%)",
+            "0 0 0 1px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1), \
+             0 4px 10px -2px rgba(0, 0, 0, 0.16)",
+            "0 0 0 1px rgba(0, 0, 0, 0.05), 0 8px 14px -4px rgba(0, 0, 0, 0.22), \
+             0 18px 36px -8px rgba(0, 0, 0, 0.26)",
+        )
+    };
+    // The Owner pill's word: the accent on light; on dark a light tint of it, readable on a card
+    // (the accent itself measured 2.2:1 there).
+    let (pill_ink, pill_ground) = if dark {
+        (
+            "color-mix(in srgb, var(--accent-bg-color) 40%, white)",
+            0.18,
+        )
+    } else {
+        ("var(--accent-color)", 0.15)
+    };
+    // The face at the top of Settings and of the Family dialog, lifted off the page.
+    let hero = if dark {
+        "0 0 0 1px rgba(255, 255, 255, 0.08), 0 3px 10px rgba(0, 0, 0, 0.45)"
+    } else {
+        "0 0 0 1px rgba(0, 0, 6, 0.06), 0 3px 10px rgba(0, 0, 6, 0.14)"
+    };
     let mut out = format!(
         ".fc-board-ground {{ background-color: {ground}; }}
 .fc-note {{
   border-radius: 8px;
   padding: 10px;
   color: rgba(0, 0, 0, 0.85);
-  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.12);
+  background-image: {sheen};
+  box-shadow: {rest};
+  transition: box-shadow 150ms ease-out;
 }}
-.fc-note.fc-note-bare {{ background-color: transparent; padding: 0; border-radius: 4px; }}
-.fc-note.fc-note-lifted {{ box-shadow: 0 6px 12px rgba(0, 0, 0, 0.28); }}
+.fc-note.fc-note-bare {{
+  background-color: transparent;
+  background-image: none;
+  padding: 0;
+  border-radius: 4px;
+}}
+.fc-note.fc-note-lifted {{ box-shadow: {lifted}; }}
 .fc-note:focus-visible {{ outline: 2px solid var(--accent-bg-color); outline-offset: 2px; }}
-.fc-note-author {{ font-size: 10px; color: rgba(0, 0, 0, 0.5); }}
+.fc-note-author {{ font-size: 10px; color: rgba(0, 0, 0, 0.62); }}
 .fc-note-hidden {{ font-style: italic; color: rgba(0, 0, 0, 0.45); }}
-.fc-note-day {{ font-size: 18px; font-weight: bold; }}
-.fc-note-month {{ font-size: 10px; font-weight: bold; }}
+.fc-note-date {{
+  background-color: rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+  padding: 2px 7px 4px 7px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+}}
+.fc-note-day {{ font-size: 18px; font-weight: 800; font-feature-settings: \"tnum\"; }}
+.fc-note-month {{ font-size: 10px; font-weight: 700; letter-spacing: 0.6px; color: var(--red-4); }}
 .fc-note-line {{ font-size: 11px; }}
+.fc-note-task image {{ -gtk-icon-size: 12px; color: rgba(0, 0, 0, 0.65); }}
+.fc-note-task-done {{ opacity: 0.55; }}
+.fc-note-task-done label {{ text-decoration-line: line-through; }}
 .fc-owner-pill {{
-  color: var(--accent-color);
-  background-color: alpha(var(--accent-bg-color), 0.15);
+  color: {pill_ink};
+  background-color: alpha(var(--accent-bg-color), {pill_ground});
   border-radius: 9999px;
   padding: 1px 7px;
   font-size: 10px;
   font-weight: 600;
 }}
-.fc-invite-code .title {{ font-family: monospace; font-size: 1.25em; }}
-.fc-swatch {{ min-width: 18px; min-height: 18px; border-radius: 9999px; border: 1px solid rgba(0, 0, 0, 0.2); }}
+.fc-invite-code .title {{
+  font-family: monospace;
+  font-size: 1.35em;
+  font-weight: 600;
+  letter-spacing: 2px;
+  font-feature-settings: \"tnum\", \"zero\";
+}}
+toggle-group.fc-note-colors > toggle {{
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 9999px;
+}}
+toggle-group.fc-note-colors > toggle:checked,
+toggle-group.fc-note-colors > toggle:checked:hover {{
+  background-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--accent-bg-color);
+}}
+.fc-swatch {{
+  min-width: 22px;
+  min-height: 22px;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+}}
+window.fc-settings row:disabled label.subtitle {{ filter: none; }}
+.fc-hero-face {{ border-radius: 9999px; box-shadow: {hero}; }}
+@media (prefers-reduced-motion: reduce) {{
+  .fc-note {{ transition: none; }}
+}}
+@media (prefers-contrast: more) {{
+  .fc-note {{ box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 2px 4px rgba(0, 0, 0, 0.25); }}
+  .fc-swatch {{ box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5); }}
+}}
 "
     );
     for name in COLORS {

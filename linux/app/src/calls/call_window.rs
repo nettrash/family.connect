@@ -48,6 +48,11 @@ const SELF_VIEW: (i32, i32) = (160, 120);
 pub fn css(palette: &Palette) -> String {
     let accent_bg = palette.accent_bg.hex();
     let accent_fg = palette.accent_fg.hex();
+    // The face's halo, and the ring that keeps leaving it while a call waits for an answer: the
+    // "calling" cue with no words (still under reduced motion).
+    let halo = palette.accent_bg.rgba(0.1);
+    let ring = palette.accent_bg.rgba(0.3);
+    let ring_gone = palette.accent_bg.rgba(0.0);
     format!(
         "window.fc-call-video,
 window.fc-call-video headerbar {{
@@ -87,7 +92,26 @@ button.fc-call-disc {{
   border-radius: 9999px;
 }}
 button.fc-call-disc image {{
-  -gtk-icon-size: 20px;
+  -gtk-icon-size: 24px;
+}}
+.fc-call-halo {{
+  border-radius: 9999px;
+  box-shadow: 0 0 0 8px {halo}, 0 10px 28px rgba(0, 0, 6, 0.16);
+}}
+window.fc-call-video .fc-call-halo {{
+  box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.08), 0 10px 28px rgba(0, 0, 0, 0.5);
+}}
+@keyframes fc-call-ring {{
+  from {{ box-shadow: 0 0 0 0 {ring}, 0 10px 28px rgba(0, 0, 6, 0.16); }}
+  to {{ box-shadow: 0 0 0 18px {ring_gone}, 0 10px 28px rgba(0, 0, 6, 0.16); }}
+}}
+window.fc-call-waiting .fc-call-halo {{
+  animation: fc-call-ring 1600ms cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+}}
+@media (prefers-reduced-motion: reduce) {{
+  window.fc-call-waiting .fc-call-halo {{
+    animation: none;
+  }}
 }}
 button.fc-call-toggle {{
   background-color: alpha(currentColor, 0.08);
@@ -200,9 +224,16 @@ impl CallWindow {
             .margin_start(32)
             .margin_end(32)
             .build();
-        avatar.set_margin_bottom(8);
         avatar.set_halign(gtk::Align::Center);
-        identity.append(&avatar);
+        // The face's halo is a round frame around it — an avatar draws no box-shadow of its own
+        // (measured) — with room for it above the name.
+        let halo = adw::Bin::builder()
+            .child(&avatar)
+            .halign(gtk::Align::Center)
+            .margin_bottom(16)
+            .build();
+        halo.add_css_class("fc-call-halo");
+        identity.append(&halo);
         identity.append(&name);
         identity.append(&status);
         identity.append(&note);
@@ -397,6 +428,17 @@ impl CallWindow {
 
         if self.rows.visible_child_name().as_deref() != Some(view.row.name()) {
             self.rows.set_visible_child_name(view.row.name());
+        }
+        // Waiting for an answer — calling, ringing, connecting: the halo's ring keeps leaving it.
+        if view.row != Row::Ended && !view.ticking && !view.picture {
+            self.window.add_css_class("fc-call-waiting");
+        } else {
+            self.window.remove_css_class("fc-call-waiting");
+        }
+        // An ended call's row shows no disc, so its columns are left as they were: hiding them
+        // emptied the homogeneous stack's pages and dropped the face and name 39 px.
+        if view.row == Row::Ended {
+            return;
         }
         for (role, widgets) in &self.discs {
             match view.discs.iter().find(|disc| disc.role == *role) {

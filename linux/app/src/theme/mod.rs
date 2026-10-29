@@ -5,14 +5,21 @@
 //! - **One provider** at `STYLE_PROVIDER_PRIORITY_APPLICATION` holding [`css::css`] for the current
 //!   scheme, reloaded when libadwaita's dark flag flips; then [`changed`] is raised for what CSS
 //!   cannot reach (a rich drawing's key, a `WebView`'s background).
+//! - **High contrast and reduced motion** reach the sheet's `@media (prefers-contrast: more)` and
+//!   `(prefers-reduced-motion: reduce)` through the provider's own properties: GTK asks each
+//!   provider, and only libadwaita sets its own (measured: under `ADW_DEBUG_HIGH_CONTRAST` the
+//!   app's `@media` rules stayed off until told).
 //! - **Packages add CSS** with [`register`] (call it from your `install`, before or after
 //!   [`install`] — the sheet is rebuilt either way). Prefix your classes with your package's area
 //!   (`fc-chat-…`, `fc-media-…`); the frozen classes are listed in [`css`].
 //! - **HiDPI**: GTK draws vectors and text at the surface's scale; a bitmap the app makes (avatars,
 //!   tiles, rich drawings, posters) is made at [`bitmap_scale`] × its logical size (a rich
 //!   drawing's key carries the integer scale).
+//! - **The app's own glyphs** ([`glyphs`]) where icon themes draw two things alike or have none:
+//!   symbolic paintables, recoloured like a theme's icons.
 
 pub mod css;
+pub mod glyphs;
 pub mod palette;
 
 use std::cell::RefCell;
@@ -64,11 +71,36 @@ pub fn install() {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     PROVIDER.with(|p| *p.borrow_mut() = Some(provider));
+    follow_preferences();
     reload_sheet();
-    adw::StyleManager::default().connect_dark_notify(|_| {
+    let manager = adw::StyleManager::default();
+    manager.connect_dark_notify(|_| {
         reload_sheet();
         changed().emit(&is_dark());
     });
+    manager.connect_high_contrast_notify(|_| {
+        follow_preferences();
+        reload_sheet();
+    });
+    gtk::Settings::for_display(&display).connect_gtk_interface_reduced_motion_notify(|_| {
+        follow_preferences();
+        reload_sheet();
+    });
+}
+
+/// Tells the provider what the desktop prefers (see the module's comment).
+fn follow_preferences() {
+    let Some(provider) = PROVIDER.with(|p| p.borrow().clone()) else {
+        return;
+    };
+    provider.set_prefers_contrast(if adw::StyleManager::default().is_high_contrast() {
+        gtk::InterfaceContrast::More
+    } else {
+        gtk::InterfaceContrast::NoPreference
+    });
+    if let Some(settings) = gtk::Settings::default() {
+        provider.set_prefers_reduced_motion(settings.gtk_interface_reduced_motion());
+    }
 }
 
 /// Adds a package's CSS to the sheet (rebuilt now if the provider exists).

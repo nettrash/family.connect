@@ -1,7 +1,8 @@
 //! A file in a bubble (shell-design §8.1): its name — a long one with its MIDDLE given up, so its
-//! start and its extension stay readable (`attachment_files::middle_truncate`) — its size in the
-//! reader's decimal format (`media_text::display_size`: "Zero KB" and "%lld bytes" are the
-//! catalogue's), and two buttons: Save… (where the person chooses) and Open (a copy handed to
+//! start and its extension stay readable (Pango's middle ellipsis at the width of `NAME_ROOM`
+//! characters, the room `attachment_files::middle_truncate` counts for the other clients) — its
+//! size in the reader's decimal format (`media_text::display_size`: "Zero KB" and "%lld bytes" are
+//! the catalogue's), and two buttons: Save… (where the person chooses) and Open (a copy handed to
 //! whatever opens that kind of file here). Inside the reader's own balloon the card goes
 //! translucent white (`fc-own-bubble .fc-attach-card`).
 
@@ -9,7 +10,6 @@ use adw::prelude::*;
 use fc_core::protocol::AttachmentDto;
 use fc_core::text::media_text;
 use fc_core::text::string_catalog::StringCatalog;
-use fc_logic::attachment_files;
 use fc_text::media;
 
 use super::saving::{self, Outcome};
@@ -26,19 +26,25 @@ pub fn row(attachment: &AttachmentDto, own: bool) -> gtk::Widget {
     let say = &shell.say;
     let _ = own;
     let name = media::display_name(&attachment.kind, attachment.name.as_deref()).into_owned();
+    // The kind's glyph on the location card's disc: one anatomy for every card in a bubble.
     let icon = gtk::Image::builder()
         .icon_name(if attachment.kind == "audio" {
             "audio-x-generic-symbolic"
         } else {
             "text-x-generic-symbolic"
         })
-        .pixel_size(24)
+        .pixel_size(16)
         .valign(gtk::Align::Center)
+        .css_classes(["fc-attach-file-disc"])
         .build();
+    // One cut, in the middle and only where the room runs out (beside an album the row is as
+    // wide as the pictures): Pango's, at the width `NAME_ROOM` characters ask for.
     let title = gtk::Label::builder()
-        .label(attachment_files::middle_truncate(&name, NAME_ROOM))
+        .label(&name)
         .xalign(0.0)
         .single_line_mode(true)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .max_width_chars(NAME_ROOM as i32)
         .build();
     let size = gtk::Label::builder()
         .label(media_text::display_size(

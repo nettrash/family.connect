@@ -762,24 +762,31 @@ impl ConversationPage {
             self.first_unread.get(),
             self.shell.zone.as_ref(),
         );
+        // Corners join across rows, so each row's signature carries its joins: a neighbour
+        // gaining chips or a time draws this row again.
+        let shapes: Vec<_> = rows.iter().map(|row| bubble::shape(&ctx, row)).collect();
+        let joins = bubble::joins(&shapes);
         let mut marks: Vec<RowMark> = rows
             .iter()
-            .map(|row| {
+            .zip(&joins)
+            .map(|(row, joined)| {
+                let drawn = format!("{}{}", ctx.drawn_with(row), bubble::joined_mark(*joined));
                 RowMark::new(
                     conversation_rows::message_key(row.bubble.message.id),
-                    conversation_rows::signature(row, &ctx.drawn_with(&row.bubble)),
+                    conversation_rows::signature(row, &drawn),
                 )
             })
             .collect();
-        for row in &pending {
+        for (at, row) in pending.iter().enumerate() {
             marks.push(RowMark::new(
                 conversation_rows::pending_key(&row.client_msg_id),
                 format!(
-                    "{}|{}|{}|{}",
+                    "{}|{}|{}|{}|{}",
                     row.body,
                     row.failed(),
                     row.pending_files.as_ref().map_or(0, Vec::len),
-                    row.failed_code.as_deref().unwrap_or_default()
+                    row.failed_code.as_deref().unwrap_or_default(),
+                    at == 0
                 ),
             ));
         }
@@ -793,9 +800,10 @@ impl ConversationPage {
                 return empty_row(&self.shell);
             }
             if index < message_rows {
-                bubble::row_widget(&ctx, &rows[index])
+                bubble::row_widget(&ctx, &rows[index], joins[index])
             } else {
-                self.pending_row(&pending[index - message_rows])
+                let at = index - message_rows;
+                self.pending_row(&pending[at], at == 0)
             }
         });
     }
@@ -803,11 +811,16 @@ impl ConversationPage {
     /// A send still on its way, under the newest message: "Sending…", or — refused — "Try
     /// Again · Delete" (the Mac's failed bubble; Delete gives up on a row that never reached the
     /// server, so nobody else has to know — it asks nothing, as the Mac's does not).
-    fn pending_row(&self, row: &OutboxRow) -> gtk::Widget {
+    /// `first`: the first of the sends on their way, which starts a group of its own: the newest
+    /// message's time stands above it, with that message, not as this one's caption.
+    fn pending_row(&self, row: &OutboxRow, first: bool) -> gtk::Widget {
         let say = &self.shell.say;
         let token = self.token_for(&row.client_msg_id);
         let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
         column.add_css_class("fc-chat-row");
+        if first {
+            column.add_css_class("fc-chat-turn");
+        }
         column.set_halign(gtk::Align::End);
         let balloon = gtk::Box::new(gtk::Orientation::Vertical, 4);
         balloon.add_css_class("fc-chat-bubble");
@@ -835,13 +848,23 @@ impl ConversationPage {
         }
         let clamp = adw::Clamp::builder()
             .maximum_size(fc_logic::composer_row::conversation_column::BUBBLE_MAX as i32)
+            .tightening_threshold(fc_logic::composer_row::conversation_column::BUBBLE_MAX as i32)
             .child(&balloon)
             .margin_start(fc_logic::composer_row::conversation_column::BUBBLE_SPACER as i32)
             .build();
         column.append(&clamp);
         let status = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         status.set_halign(gtk::Align::End);
+        status.add_css_class("fc-chat-pending-status");
         if row.failed() {
+            // Refused, not still on its way: the error's glyph before its two ways out (the Mac
+            // marks its failed bubble the same way); the words say it to a screen reader.
+            status.append(
+                &gtk::Image::builder()
+                    .icon_name("dialog-error-symbolic")
+                    .accessible_role(gtk::AccessibleRole::Presentation)
+                    .build(),
+            );
             let again = gtk::Button::builder()
                 .label(say.get("Try Again"))
                 .css_classes(["flat", "fc-chat-pending"])
@@ -1421,7 +1444,7 @@ impl MessageActions for ConversationPage {
 fn empty_row(shell: &Shell) -> gtk::Widget {
     let say = &shell.say;
     adw::StatusPage::builder()
-        .icon_name("mail-message-new-symbolic")
+        .icon_name("chat-message-new-symbolic")
         .title(say.get("No messages yet"))
         .description(say.get("Say something to get started."))
         .css_classes(["compact"])

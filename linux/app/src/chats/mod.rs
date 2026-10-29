@@ -549,7 +549,7 @@ fn no_conversation() -> gtk::Widget {
     let shell = Shell::get();
     let say = &shell.say;
     adw::StatusPage::builder()
-        .icon_name("mail-message-new-symbolic")
+        .icon_name("chat-message-new-symbolic")
         .title(say.get("No conversation selected"))
         .description(say.get("Pick a chat from the sidebar."))
         .build()

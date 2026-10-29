@@ -223,14 +223,16 @@ impl ChatList {
     fn build_row(&self, row: &ChatRow) -> RowParts {
         let face = avatar::avatar(&row.title, row.face(), row.chat.peer_user_id, 34);
         face.set_valign(gtk::Align::Center);
+        // On one baseline: the small time beside the title, not 3 px above it.
         let title = gtk::Label::builder()
             .xalign(0.0)
             .hexpand(true)
+            .valign(gtk::Align::BaselineFill)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let time = gtk::Label::builder()
             .css_classes(["fc-chat-list-time"])
-            .valign(gtk::Align::Start)
+            .valign(gtk::Align::BaselineFill)
             .build();
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         top.append(&title);
@@ -366,10 +368,13 @@ fn fill_row(parts: &RowParts, row: &ChatRow, time: &str, say: &dyn StringCatalog
     parts.title.set_lines(lines);
     parts.title.set_wrap(lines > 1);
     parts.title.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    // Unread: the title in the heading's weight and its time in the accent, the familiar "new".
     if row.unread > 0 {
         parts.title.add_css_class("heading");
+        parts.time.add_css_class("fc-chat-unread");
     } else {
         parts.title.remove_css_class("heading");
+        parts.time.remove_css_class("fc-chat-unread");
     }
     parts.time.set_label(time);
     parts.time.set_visible(!time.is_empty());

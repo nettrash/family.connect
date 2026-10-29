@@ -251,10 +251,11 @@ impl RichRenderer {
         let Some(key) = self.key_for(&job, self.scale()).filter(|_| !failed) else {
             return RichPicture::source(shown);
         };
+        let card = !job.is_formula();
         let kept = self.memory.borrow_mut().try_get(&key).cloned();
         match kept {
             Some(Drawing::Drawn(texture, result)) => {
-                return drawn_picture(shown, &texture, &result);
+                return drawn_picture(shown, &texture, &result, card);
             }
             Some(Drawing::Failed) => return RichPicture::source(shown),
             None => {}
@@ -263,9 +264,9 @@ impl RichRenderer {
             && let Ok(texture) = gdk::Texture::from_bytes(&glib::Bytes::from_owned(png))
         {
             self.keep(&key, Drawing::Drawn(texture.clone(), result.clone()));
-            return drawn_picture(shown, &texture, &result);
+            return drawn_picture(shown, &texture, &result, card);
         }
-        let (stack, picture) = pending_widget(shown);
+        let (stack, picture) = pending_widget(shown, card);
         let drawn = Rc::new(Cell::new(None));
         let waiter = Waiter {
             stack: stack.downgrade(),
@@ -672,8 +673,10 @@ pub fn shown_size(result: &RichResult) -> (f64, f64, f64) {
     (width, height, height - drop)
 }
 
-/// The waiting widget: the source in the monospaced face, and the empty picture it becomes.
-fn pending_widget(shown: &str) -> (gtk::Stack, gtk::Picture) {
+/// The waiting widget: the source in the monospaced face, and the empty picture it becomes. A
+/// `card` drawing (a diagram or a graph, photographed on the clients' shared card) is rounded,
+/// an inset panel in its balloon rather than a square slab; a formula, drawn on nothing, is not.
+fn pending_widget(shown: &str, card: bool) -> (gtk::Stack, gtk::Picture) {
     let source = gtk::Label::builder()
         .label(shown)
         .selectable(true)
@@ -688,6 +691,10 @@ fn pending_widget(shown: &str) -> (gtk::Stack, gtk::Picture) {
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Start)
         .build();
+    if card {
+        picture.set_overflow(gtk::Overflow::Hidden);
+        picture.add_css_class("fc-rich-card");
+    }
     let stack = gtk::Stack::builder()
         .hhomogeneous(false)
         .vhomogeneous(false)
@@ -700,8 +707,13 @@ fn pending_widget(shown: &str) -> (gtk::Stack, gtk::Picture) {
 }
 
 /// A drawing already kept: its picture at once, already landed.
-fn drawn_picture(shown: &str, texture: &gdk::Texture, result: &RichResult) -> RichPicture {
-    let (stack, picture) = pending_widget(shown);
+fn drawn_picture(
+    shown: &str,
+    texture: &gdk::Texture,
+    result: &RichResult,
+    card: bool,
+) -> RichPicture {
+    let (stack, picture) = pending_widget(shown, card);
     let (width, height, baseline) = shown_size(result);
     picture.set_paintable(Some(&crate::attachments::pictures::fit(
         texture, width, height,

@@ -59,8 +59,10 @@ pub fn new_group() {
             .title(&person.display_name)
             .activatable_widget(&check)
             .build();
+        // The check, then the face beside the name it belongs to, as every person list here (a
+        // prefix goes in front of those added before it: the face first, then the check).
+        row.add_prefix(&ui::face(&person.display_name, person.id, 28));
         row.add_prefix(&check);
-        row.add_suffix(&ui::face(&person.display_name, person.id, 28));
         members.add(&row);
         checks.push((person.id, check));
     }
@@ -390,6 +392,7 @@ fn add_members(connection: &Rc<Connection>, chat: &ChatDto, toasts: &adw::ToastO
             .title(&person.display_name)
             .activatable_widget(&check)
             .build();
+        row.add_prefix(&ui::face(&person.display_name, person.id, 28));
         row.add_prefix(&check);
         group.add(&row);
         checks.push((person.id, check));
