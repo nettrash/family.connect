@@ -108,8 +108,8 @@ Done in the core (w1 sync): `protocol::frame_router`, `protocol::send_pipeline`,
   message's frame rate is the camera's up to 30, **never raised** (§10.5's `framerate=30/1` would
   raise a 24 fps camera — the profile forbids it); the poster is taken at **0.5 s, else 0 s, else 2 s**
   (docs/protocol.md "Video messages"; §10.5 said "the first frame").
-- **`round_video_rules::RECORDING_ENABLED` is `false`** until §C's camera lines pass on a real desktop
-  (§10.5); turn it on there.
+- **`round_video_rules::RECORDING_ENABLED` is `true`** since 2026-10-29, ahead of §C 25 (§10.5), as
+  Windows' was ahead of its trials: the camera itself is still to be checked on a real desktop.
 - **HDR (§10.7 vs the port):** `MediaPreparing::encode`'s contract follows Windows — a `to_sdr` ask
   converts to BT.709 (highlights clip, no tone-mapper) and the read-back judges the result — where
   §10.7 says an HDR source goes as the original. Pick one.

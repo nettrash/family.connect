@@ -1055,7 +1055,7 @@ any window size or text scale). The circle is the same `RoundClip`. A take that 
 too long for the server, goes as the regular video the planner makes of it; a square over
 `max_round_video_bytes` as a 480 × 480 regular video ("Too big for a video message."). The poster: the
 first frame, `appsink` → a JPEG via gdk-pixbuf. `RoundVideoRules::recording_enabled` stays the
-switch; it is turned on for Linux only after §C's camera lines pass.
+switch; it is on for Linux since 2026-10-29, ahead of §C 25 (as Windows' was ahead of its trials).
 
 ### 10.6 The recorder layer and the window
 
@@ -1146,8 +1146,8 @@ Where the package had to differ from the text above; each is in P3's report.
    measured parts, recomputed every 100 ms while open; the column layout of a pane shorter than 480
    is not drawn (the controls stay along the bottom).
 5. **§10.6** — S0's close and quit (W.3) give the recorder no way to ask "Delete video message?" before
-   the window goes: a quit closes the camera and discards a take. A request to S0; harmless while
-   `RECORDING_ENABLED` is off.
+   the window goes: a quit closes the camera and discards a take. A request to S0, open now that
+   `RECORDING_ENABLED` is on.
 6. **§10.7** — an HDR source asked `to_sdr` is converted (`videoconvert gamma-mode=remap
    primaries-mode=full`, `colorimetry=bt709`) as fc-logic's `MediaPreparing::encode` contract says,
    and the read-back sends the original when the result still says HDR — fc-logic's answer to

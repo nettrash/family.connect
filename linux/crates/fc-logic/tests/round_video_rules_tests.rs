@@ -36,14 +36,14 @@ fn limits(max_ms: i64, max_bytes: i64) -> RoundVideoLimits {
 
 // ---- the switch (Blocked 1, Decision 40) ------------------------------------------------------
 
-/// The C#'s `RecordingIsSwitchedOn`, adapted: Windows switched it on (2026-10-21) ahead of its
-/// trials; Linux keeps it OFF until the real-desktop checklist's camera lines pass (shell-design
-/// §10.5, §C). Switching it on is a deliberate act, and this test is what says so — with it off no
-/// way in is drawn, whatever the server and the machine offer.
+/// The C#'s `RecordingIsSwitchedOn`: Windows switched it on (2026-10-21) ahead of its trials, and
+/// Linux on 2026-10-29 ahead of the real-desktop checklist's camera line (shell-design §10.5, §C 25).
+/// Switching it is a deliberate act, and this test is what says so — with it on, a server that names
+/// the limits and a machine with a camera are all a video message needs.
 #[test]
-fn recording_is_switched_off_until_the_camera_lines_pass() {
-    const { assert!(!rules::RECORDING_ENABLED) };
-    assert!(!rules::available(
+fn recording_is_switched_on() {
+    const { assert!(rules::RECORDING_ENABLED) };
+    assert!(rules::available(
         rules::RECORDING_ENABLED,
         Some(&LIMITS),
         true
@@ -61,8 +61,8 @@ fn a_video_message_is_available_only_with_all_three() {
 }
 
 /// With the switch on the video button is shown in an empty field; with it off it stays hidden
-/// (Decision 40). Adapted: the switch is passed in (`true`, then [`rules::RECORDING_ENABLED`] —
-/// off on Linux), since the constant itself is off.
+/// (Decision 40). Adapted: the switch is passed in (`true`, `false`, then
+/// [`rules::RECORDING_ENABLED`] — on on Linux).
 #[test]
 fn the_video_button_follows_the_switch() {
     let empty = SlotInputs {
@@ -94,7 +94,7 @@ fn the_video_button_follows_the_switch() {
         })
     );
     assert_eq!(
-        record::Door::Hidden,
+        record::Door::Shown,
         record::video_door(&DoorInputs {
             records_round_video: rules::RECORDING_ENABLED,
             ..on

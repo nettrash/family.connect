@@ -16,9 +16,9 @@
 //! makes of it ([`plan`]'s "Couldn't make it round.").
 //!
 //! What Linux does not take from Windows:
-//! - The switch is OFF ([`RECORDING_ENABLED`]): shell-design §10.5 turns it on only after the
-//!   real-desktop checklist's camera lines (§C) pass — a build that can only RECEIVE circles shows
-//!   no way of recording one (Decision 40).
+//! - The switch ([`RECORDING_ENABLED`]) was OFF until 2026-10-29 and is on ahead of the real-desktop
+//!   checklist's camera line (§C 25), as Windows' was ahead of its trials — a build with it off
+//!   shows no way of recording a circle (Decision 40).
 //! - No `PreviewClip`: WinUI's `MediaPlayerElement` would not clip video to a circle, and Windows'
 //!   trial T2 was to find which of three tricks did. GTK clips natively (`set_overflow(Hidden)` with
 //!   `border-radius`, measured in shell-design §1.5), so there is nothing to choose.
@@ -229,12 +229,12 @@ pub struct TakeReading {
     pub moov_first: bool,
 }
 
-/// THE SWITCH. OFF on Linux: shell-design §10.5 keeps `recording_enabled` the switch and turns it on
-/// only after the real-desktop checklist's camera lines (§C) pass — the portal's prompt, the
-/// mirrored preview, a 480 × 480 file that plays on the other clients. With it off the video button,
-/// the paperclip's and the microphone menu's "Record Video Message" are never drawn, and nothing
-/// here touches a camera. (Windows switched it on 2026-10-21, ahead of its own trials.)
-pub const RECORDING_ENABLED: bool = false;
+/// THE SWITCH. ON on Linux since 2026-10-29, ahead of the real-desktop checklist's camera line (§C
+/// 25: the portal's prompt, the mirrored preview, a 480 × 480 file that plays on the other clients),
+/// as Windows switched it on 2026-10-21 ahead of its own trials: the pipeline was measured with a
+/// test source only. With it off the video button, the paperclip's and the microphone menu's
+/// "Record Video Message" are never drawn, and nothing here touches a camera.
+pub const RECORDING_ENABLED: bool = true;
 
 /// Whether the desktop shows the microphone in use while the recorder only previews. It does not on
 /// Linux: the audio branch (`pulsesrc`) starts at Record (shell-design §10.5). When it does, PREVIEW
