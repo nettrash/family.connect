@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Family Connect
+GenericName=Family Chat
+Comment=Chat and call with your family on your own server
+Icon=me.nettrash.FamilyConnect
+Exec=family-connect %F
+TryExec=family-connect
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=family;chat;messages;calls;video;voice;board;
+StartupNotify=true
+DBusActivatable=true
+MimeType=image/jpeg;image/png;image/gif;image/webp;image/heic;image/heif;image/avif;image/tiff;image/bmp;video/mp4;video/quicktime;video/webm;video/x-matroska;video/x-msvideo;audio/mp4;audio/x-m4a;audio/mpeg;audio/wav;audio/x-wav;audio/ogg;audio/flac;audio/aac;application/pdf;
+StartupWMClass=me.nettrash.FamilyConnect
+X-GNOME-UsesNotifications=true

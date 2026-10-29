@@ -1,0 +1,79 @@
+Family Connect @VERSION@ for Linux — the portable archive
+=====================================================
+
+Family Connect is a chat for one household, or several, on a server the
+family runs itself. This archive holds the same files as the .deb and .rpm
+packages, in one folder:
+
+  bin/family-connect       the program
+  share/applications/      the desktop entry
+  share/dbus-1/services/   what starts the app from the desktop (a click on
+                           its icon or on a notification)
+  share/icons/             the icon, in 13 sizes, and the top-bar icon;
+                           bin/family-connect finds them here, wherever the
+                           folder is
+  share/metainfo/          the software-centre description
+  share/man/man1/          the manual page
+  share/doc/family-connect/  CHANGELOG, the licences (copyright) and an
+                           AppArmor profile (see below)
+
+Requirements
+------------
+
+The libraries of Ubuntu 26.04 or Fedora 44, or later: GTK 4.22, libadwaita
+1.9, WebKitGTK 6.0 2.52, GStreamer 1.28 and GLib 2.88 or newer, and
+GStreamer's plugins for calls and media. On those systems:
+
+  Ubuntu:  sudo apt install libgtk-4-1 libadwaita-1-0 libwebkitgtk-6.0-4 \
+               libgstreamer1.0-0 gstreamer1.0-plugins-base \
+               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+               gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+               gstreamer1.0-nice gstreamer1.0-pipewire gstreamer1.0-gtk4 \
+               glib-networking libsecret-1-0 libsqlite3-0
+  Fedora:  sudo dnf install gtk4 libadwaita webkitgtk6.0 gstreamer1 \
+               gstreamer1-plugins-base gstreamer1-plugins-good \
+               gstreamer1-plugins-bad-free gstreamer1-plugin-libav \
+               gstreamer1-plugin-openh264 gstreamer1-plugin-gtk4 \
+               libnice-gstreamer1 pipewire-gstreamer glib-networking \
+               libsecret sqlite-libs
+
+It keeps its sign-in in the Secret Service (GNOME Keyring) and reaches the
+camera and notifications through the desktop portals
+(xdg-desktop-portal-gnome), which Ubuntu Desktop and Fedora Workstation
+install.
+
+Where the .deb or .rpm fits, prefer it: the package manager brings all of
+this, and on Ubuntu the .deb also installs the AppArmor profile.
+
+Run it
+------
+
+  tar -xzf family-connect-@VERSION@-linux-*.tar.gz
+  family-connect-@VERSION@/bin/family-connect
+
+To install it for yourself, with Family Connect in the app grid:
+
+  cp -r family-connect-@VERSION@/bin family-connect-@VERSION@/share ~/.local/
+  sed -i "s|^Exec=/usr/bin/|Exec=$HOME/.local/bin/|" \
+      ~/.local/share/dbus-1/services/me.nettrash.FamilyConnect.service
+  update-desktop-database ~/.local/share/applications
+
+and make sure ~/.local/bin is on your PATH. To remove it, delete what was
+copied: ~/.local/bin/family-connect, ~/.local/share/doc/family-connect,
+~/.local/share/man/man1/family-connect.1.gz, and the files named
+me.nettrash.FamilyConnect* under ~/.local/share.
+
+Ubuntu 24.04 and later
+----------------------
+
+Family Connect draws parts of its window with WebKit, whose sandbox needs a
+user namespace, and Ubuntu lets a program create one only when an AppArmor
+profile allows it. The .deb installs that profile for
+/usr/bin/family-connect. For this archive, copy
+share/doc/family-connect/apparmor-profile to /etc/apparmor.d/family-connect,
+change /usr/bin/family-connect in it to the full path of bin/family-connect,
+and load it:
+
+  sudo apparmor_parser -r /etc/apparmor.d/family-connect
+
+https://nettrash.me/linux/familyconnect/support.html

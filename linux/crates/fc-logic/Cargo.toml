@@ -1,0 +1,25 @@
+[package]
+name = "fc-logic"
+description = "Family Connect for Linux: everything the window does, with no window — a port of win/src/FamilyConnect.App.Logic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+fc-core.workspace = true
+fc-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+futures-util.workspace = true
+futures-channel.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+
+[lints]
+workspace = true

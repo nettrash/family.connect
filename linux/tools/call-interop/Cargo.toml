@@ -1,0 +1,34 @@
+# The call interop harness (issue #112, package P6): the REAL `fc_logic::calls::CallEngine` driving
+# the app's `calls::GstCallMedia` (compiled from `app/src/calls/` as is), against another Linux
+# peer, Chromium or Firefox, over a relay that does what the server does with call frames. A
+# member of `linux/`'s workspace but not a default one, like the app: `scripts/dev.sh test` builds,
+# lints and tests it in the `fc-linux-dev` image; `run.sh` runs the matrix there.
+[package]
+name = "call-interop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fc-core.workspace = true
+fc-logic.workspace = true
+# The app crate's own versions and feature flags (app/Cargo.toml).
+gst = { package = "gstreamer", version = "0.25", features = ["v1_28"] }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25", features = ["v1_28"] }
+gst-sdp = { package = "gstreamer-sdp", version = "0.25", features = ["v1_28"] }
+gst-app = { package = "gstreamer-app", version = "0.25", features = ["v1_28"] }
+glib = { version = "0.22", features = ["v2_88"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
+futures-channel.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+time.workspace = true
+# The relay and the peers' signalling socket — the harness's alone (blocking, one thread per
+# connection); the app's socket is libsoup's.
+tungstenite = "0.30"
+
+[lints]
+workspace = true

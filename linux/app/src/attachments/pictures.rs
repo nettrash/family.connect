@@ -1,0 +1,279 @@
+//! Pictures from attachments (shell-design §8.1): bytes come ONCE through the connection's
+//! `AttachmentCache` (whole or not at all, into `$XDG_CACHE_HOME/family-connect/blobs`), are
+//! decoded near the size they are drawn at (`picture_memory::tile_width` → gdk-pixbuf's
+//! `from_stream_at_scale`), and are kept decoded in a bounded memory (`RecentPictures`, the least
+//! recently drawn going first) so a rebuilt conversation does not decode them again.
+//!
+//! **One fetch per picture however many ask**: two tiles of the same photo (a bubble and its
+//! thread) share one download and one decode — the asks in flight are joined.
+//!
+//! **Decoding** is gdk-pixbuf (glycin underneath on Ubuntu 26.04) on its own thread
+//! (`from_stream_*_future`), its EXIF turn applied, then copied into a `gdk::MemoryTexture`;
+//! anything gdk-pixbuf refuses is given to `gdk::Texture::from_bytes`, which reads what GTK reads
+//! itself. A picture nothing on this machine decodes stays a labelled tile.
+//!
+//! **Drawn at an exact logical size**: a texture's intrinsic size is its pixel size, so a 600-px
+//! preview in a 320-pt tile (or a 2× drawing) would ask for 600 pt. [`cover`] and [`fit`] render the
+//! texture into a paintable whose intrinsic size IS the tile's, cropped to fill or fitted whole —
+//! crisp at any scale, and a row never changes height when its picture lands.
+//!
+//! Logs carry ids and error codes only.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use adw::prelude::*;
+use fc_core::protocol::AttachmentDto;
+use fc_logic::attachment_cache::AttachmentCache;
+use fc_logic::picture_memory::RecentPictures;
+use futures_util::FutureExt;
+use futures_util::future::{LocalBoxFuture, Shared};
+use gtk::{gdk, gdk_pixbuf, graphene, gsk};
+
+use crate::shell::Shell;
+
+/// How many decoded pictures the process keeps (tiles, posters, viewer pictures).
+const KEPT: usize = 160;
+
+type Loading = Shared<LocalBoxFuture<'static, Option<gdk::Texture>>>;
+
+thread_local! {
+    static RECENT: RefCell<RecentPictures<gdk::Texture>> = RefCell::new(RecentPictures::new(KEPT));
+    static LOADING: RefCell<HashMap<String, Loading>> = RefCell::new(HashMap::new());
+}
+
+/// The decoded picture of `attachment`: its preview when `preview` and it has one, else its own
+/// bytes; decoded `decode_width` wide (aspect kept) when given, whole otherwise. `None` when there
+/// is no connection, the download failed (not cached: the next look asks again) or nothing here
+/// decodes it.
+pub async fn of_attachment(
+    attachment: &AttachmentDto,
+    preview: bool,
+    decode_width: Option<i32>,
+) -> Option<gdk::Texture> {
+    let small = preview && attachment.has_preview;
+    let key = format!(
+        "{}@{}",
+        AttachmentCache::key_for(attachment.id, small),
+        decode_width.unwrap_or(0)
+    );
+    if let Some(held) = RECENT.with(|recent| recent.borrow_mut().try_get(&key)) {
+        return Some(held);
+    }
+    let joined = LOADING.with(|loading| loading.borrow().get(&key).cloned());
+    let loading = match joined {
+        Some(loading) => loading,
+        None => {
+            let attachment = attachment.clone();
+            let (key_for_task, id) = (key.clone(), attachment.id);
+            let task: LocalBoxFuture<'static, Option<gdk::Texture>> = Box::pin(async move {
+                let connection = Shell::try_get()?.connection()?;
+                let bytes = match connection.attachments.bytes(&attachment, preview).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        crate::fc_info!("picture {id}: not fetched ({})", error.code);
+                        return None;
+                    }
+                };
+                let texture = decode(bytes, decode_width).await;
+                if texture.is_none() {
+                    crate::fc_info!("picture {id}: nothing here decodes it");
+                }
+                if let Some(texture) = &texture {
+                    RECENT
+                        .with(|recent| recent.borrow_mut().insert(&key_for_task, texture.clone()));
+                }
+                texture
+            });
+            let shared = task.shared();
+            LOADING.with(|loading| loading.borrow_mut().insert(key.clone(), shared.clone()));
+            shared
+        }
+    };
+    let texture = loading.await;
+    LOADING.with(|loading| loading.borrow_mut().remove(&key));
+    texture
+}
+
+/// Whether the decoded picture is already in memory (asking is not drawing).
+pub fn is_kept(attachment: &AttachmentDto, preview: bool, decode_width: Option<i32>) -> bool {
+    let small = preview && attachment.has_preview;
+    let key = format!(
+        "{}@{}",
+        AttachmentCache::key_for(attachment.id, small),
+        decode_width.unwrap_or(0)
+    );
+    RECENT.with(|recent| recent.borrow().contains_key(&key))
+}
+
+/// Decodes a still picture: `width` wide with its aspect kept when given, whole otherwise; its EXIF
+/// turn applied. `None` when nothing here reads it.
+pub async fn decode(bytes: Vec<u8>, width: Option<i32>) -> Option<gdk::Texture> {
+    let bytes = glib::Bytes::from_owned(bytes);
+    let stream = gio::MemoryInputStream::from_bytes(&bytes);
+    let decoded = match width.filter(|width| *width > 0) {
+        Some(width) => {
+            gdk_pixbuf::Pixbuf::from_stream_at_scale_future(&stream, width, -1, true).await
+        }
+        None => gdk_pixbuf::Pixbuf::from_stream_future(&stream).await,
+    };
+    match decoded {
+        Ok(pixbuf) => {
+            let turned = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
+            Some(texture_of(&turned))
+        }
+        // GTK's own loaders (and glycin through them) read a few things gdk-pixbuf's do not.
+        Err(_) => gdk::Texture::from_bytes(&bytes).ok(),
+    }
+}
+
+/// Decodes a still picture fitted within `edge` × `edge` (aspect kept, never scaled up past its
+/// own size by gdk-pixbuf's rule) — an avatar's face.
+pub async fn decode_square(bytes: Vec<u8>, edge: i32) -> Option<gdk::Texture> {
+    let bytes = glib::Bytes::from_owned(bytes);
+    let stream = gio::MemoryInputStream::from_bytes(&bytes);
+    match gdk_pixbuf::Pixbuf::from_stream_at_scale_future(&stream, edge, edge, true).await {
+        Ok(pixbuf) => {
+            let turned = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
+            Some(texture_of(&turned))
+        }
+        Err(_) => gdk::Texture::from_bytes(&bytes).ok(),
+    }
+}
+
+/// A pixbuf as a texture, without the deprecated `Texture::for_pixbuf`: its rows copied as they
+/// are (gdk-pixbuf's alpha is straight, as `R8g8b8a8` is).
+pub fn texture_of(pixbuf: &gdk_pixbuf::Pixbuf) -> gdk::Texture {
+    let format = if pixbuf.has_alpha() {
+        gdk::MemoryFormat::R8g8b8a8
+    } else {
+        gdk::MemoryFormat::R8g8b8
+    };
+    let stride = usize::try_from(pixbuf.rowstride()).unwrap_or(0);
+    gdk::MemoryTexture::new(
+        pixbuf.width(),
+        pixbuf.height(),
+        format,
+        &pixbuf.read_pixel_bytes(),
+        stride,
+    )
+    .upcast()
+}
+
+/// `texture` cropped to FILL a `width` × `height` logical box, centred, as a paintable whose
+/// intrinsic size is exactly the box (a tile's rule: it crops to fill).
+pub fn cover(texture: &gdk::Texture, width: f64, height: f64) -> gdk::Paintable {
+    let (tw, th) = (f64::from(texture.width()), f64::from(texture.height()));
+    let scale = if tw > 0.0 && th > 0.0 {
+        (width / tw).max(height / th)
+    } else {
+        1.0
+    };
+    let (dw, dh) = (tw * scale, th * scale);
+    let target = graphene::Rect::new(
+        ((width - dw) / 2.0) as f32,
+        ((height - dh) / 2.0) as f32,
+        dw as f32,
+        dh as f32,
+    );
+    painted(texture, width, height, &target, true)
+}
+
+/// `texture` fitted WHOLE into a `width` × `height` logical box (a sticker's, a drawing's), as a
+/// paintable whose intrinsic size is the box; the picture is centred in it.
+pub fn fit(texture: &gdk::Texture, width: f64, height: f64) -> gdk::Paintable {
+    let (tw, th) = (f64::from(texture.width()), f64::from(texture.height()));
+    let scale = if tw > 0.0 && th > 0.0 {
+        (width / tw).min(height / th)
+    } else {
+        1.0
+    };
+    let (dw, dh) = (tw * scale, th * scale);
+    let target = graphene::Rect::new(
+        ((width - dw) / 2.0) as f32,
+        ((height - dh) / 2.0) as f32,
+        dw as f32,
+        dh as f32,
+    );
+    painted(texture, width, height, &target, false)
+}
+
+/// The texture drawn at `target` inside a `width` × `height` box, clipped to it.
+fn painted(
+    texture: &gdk::Texture,
+    width: f64,
+    height: f64,
+    target: &graphene::Rect,
+    clip: bool,
+) -> gdk::Paintable {
+    let snapshot = gtk::Snapshot::new();
+    let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    if clip {
+        snapshot.push_clip(&bounds);
+    }
+    snapshot.append_scaled_texture(texture, gsk::ScalingFilter::Trilinear, target);
+    if clip {
+        snapshot.pop();
+    }
+    let size = graphene::Size::new(width as f32, height as f32);
+    snapshot
+        .to_paintable(Some(&size))
+        .unwrap_or_else(|| gdk::Paintable::new_empty(width as i32, height as i32))
+}
+
+/// The paintable of an empty box of that size (what a picture shows before anything lands).
+pub fn empty(width: f64, height: f64) -> gdk::Paintable {
+    gdk::Paintable::new_empty(logical(width), logical(height))
+}
+
+/// A logical size as GTK's integer request: rounded, at least 1, at most 10 000.
+pub fn logical(size: f64) -> i32 {
+    if size.is_finite() {
+        size.round().clamp(1.0, 10_000.0) as i32
+    } else {
+        1
+    }
+}
+
+/// The decode width a tile of this photo needs (`picture_memory::tile_width`), for a widget whose
+/// screen scale is `scale`: only a photo's OWN bytes are decoded small — a preview is small
+/// already, and a sticker's frames are its own business.
+pub fn tile_decode_width(attachment: &AttachmentDto, original: bool, scale: f64) -> Option<i32> {
+    if !original || attachment.kind != "photo" || attachment.sticker {
+        return None;
+    }
+    fc_logic::picture_memory::tile_width(
+        attachment.width,
+        attachment.height,
+        scale,
+        fc_logic::picture_memory::TILE_BOX,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_logical_size_is_a_sane_integer() {
+        assert_eq!(logical(320.0), 320);
+        assert_eq!(logical(155.6), 156);
+        assert_eq!(logical(0.2), 1);
+        assert_eq!(logical(f64::NAN), 1);
+        assert_eq!(logical(1e9), 10_000);
+    }
+
+    #[test]
+    fn only_a_photos_own_bytes_are_decoded_small() {
+        let mut photo = AttachmentDto::new(1, "photo");
+        photo.width = Some(4000);
+        photo.height = Some(3000);
+        assert!(tile_decode_width(&photo, true, 1.0).is_some());
+        assert_eq!(tile_decode_width(&photo, false, 1.0), None);
+        let mut sticker = photo.clone();
+        sticker.sticker = true;
+        assert_eq!(tile_decode_width(&sticker, true, 1.0), None);
+        let video = AttachmentDto::new(2, "video");
+        assert_eq!(tile_decode_width(&video, true, 1.0), None);
+    }
+}

@@ -1,0 +1,34 @@
+.TH FAMILY-CONNECT 1 "2026-10-28" "family-connect 1.3.0" "User Commands"
+.SH NAME
+family-connect \- family chat and calls on the family's own server
+.SH SYNOPSIS
+.B family-connect
+.br
+.B family-connect
+.B \-\-version
+.SH DESCRIPTION
+.B family-connect
+is the Linux client of Family Connect, a chat for one household, or several,
+on a server the family runs itself. Every family has one chat for all its
+members, and any two members can talk one to one: messages, photos, videos,
+voice notes, files, locations and polls, one-to-one voice and video calls, a
+family board and birthdays.
+.PP
+Family Connect runs as a single instance per session: a second
+.B family-connect
+brings the running one's window forward and exits.
+.SH OPTIONS
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print the options and exit.
+.SH FILES
+.TP
+.I /etc/apparmor.d/family-connect
+The AppArmor profile that lets WebKit's sandbox start on Ubuntu.
+.SH AUTHOR
+nettrash <nettrash@nettrash.me>
+.SH SEE ALSO
+https://nettrash.me/linux/familyconnect/support.html
