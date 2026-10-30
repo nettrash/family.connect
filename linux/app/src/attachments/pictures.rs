@@ -109,7 +109,7 @@ pub fn is_kept(attachment: &AttachmentDto, preview: bool, decode_width: Option<i
 /// Decodes a still picture: `width` wide with its aspect kept when given, whole otherwise; its EXIF
 /// turn applied. `None` when nothing here reads it.
 pub async fn decode(bytes: Vec<u8>, width: Option<i32>) -> Option<gdk::Texture> {
-    let bytes = glib::Bytes::from_owned(bytes);
+    let bytes = glib::Bytes::from_owned(recognisable(bytes));
     let stream = gio::MemoryInputStream::from_bytes(&bytes);
     let decoded = match width.filter(|width| *width > 0) {
         Some(width) => {
@@ -130,7 +130,7 @@ pub async fn decode(bytes: Vec<u8>, width: Option<i32>) -> Option<gdk::Texture> 
 /// Decodes a still picture fitted within `edge` × `edge` (aspect kept, never scaled up past its
 /// own size by gdk-pixbuf's rule) — an avatar's face.
 pub async fn decode_square(bytes: Vec<u8>, edge: i32) -> Option<gdk::Texture> {
-    let bytes = glib::Bytes::from_owned(bytes);
+    let bytes = glib::Bytes::from_owned(recognisable(bytes));
     let stream = gio::MemoryInputStream::from_bytes(&bytes);
     match gdk_pixbuf::Pixbuf::from_stream_at_scale_future(&stream, edge, edge, true).await {
         Ok(pixbuf) => {
@@ -138,6 +138,96 @@ pub async fn decode_square(bytes: Vec<u8>, edge: i32) -> Option<gdk::Texture> {
             Some(texture_of(&turned))
         }
         Err(_) => gdk::Texture::from_bytes(&bytes).ok(),
+    }
+}
+
+/// `bytes` as gdk-pixbuf will RECOGNISE them. It does not read its loaders' own signatures: GIO
+/// sniffs the first bytes against shared-mime-info, and a WebP's bytes 4–7 are its RIFF size — so a
+/// WebP whose size happens to spell another format's magic there is that format. Measured: a
+/// sticker frame rewrapped as a still of 27,458 bytes (`0x6B42`, "Bk\0\0") is WiiWare's
+/// `application/x-wii-wad`, "Unrecognized image file format", and the whole animation fell back to
+/// its first frame; 25,193 ("ib") and 29,513 ("Is") bytes are the same.
+///
+/// Such a WebP is given a size of its own: one unknown chunk at its end, which every WebP reader
+/// skips in the extended format — a simple file (a bare `VP8 ` or `VP8L`) is made extended first,
+/// with the `VP8X` its bitstream's own size calls for. Anything else, and a WebP GIO already reads
+/// as one, is returned as it is.
+pub fn recognisable(bytes: Vec<u8>) -> Vec<u8> {
+    let mut bytes = bytes;
+    for _ in 0..4 {
+        if !is_webp(&bytes) || sniffs_as_webp(&bytes) {
+            return bytes;
+        }
+        match padded(&bytes) {
+            Some(longer) => bytes = longer,
+            None => return bytes,
+        }
+    }
+    bytes
+}
+
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.len() >= 20 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+}
+
+/// What GIO makes of the first bytes, as gdk-pixbuf asks it.
+fn sniffs_as_webp(bytes: &[u8]) -> bool {
+    let (kind, _) = gio::content_type_guess(None::<&str>, &bytes[..bytes.len().min(4096)]);
+    gio::content_type_is_a(&kind, "image/webp")
+}
+
+/// The same picture, ten bytes longer: an empty unknown chunk (`FCPD`) appended — after a `VP8X`
+/// put in front of a simple file's bitstream. `None` for a simple file whose size cannot be read.
+fn padded(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut body = b"WEBP".to_vec();
+    if &bytes[12..16] == b"VP8X" {
+        body.extend_from_slice(&bytes[12..]);
+    } else {
+        let (width, height, alpha) = simple_size(bytes)?;
+        let mut extended = [0u8; 10];
+        extended[0] = if alpha { 0x10 } else { 0 };
+        extended[4..7].copy_from_slice(&(width - 1).to_le_bytes()[..3]);
+        extended[7..10].copy_from_slice(&(height - 1).to_le_bytes()[..3]);
+        body.extend_from_slice(b"VP8X");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        body.extend_from_slice(&extended);
+        body.extend_from_slice(&bytes[12..]);
+    }
+    if !body.len().is_multiple_of(2) {
+        body.push(0);
+    }
+    body.extend_from_slice(b"FCPD");
+    body.extend_from_slice(&2u32.to_le_bytes());
+    body.extend_from_slice(&[0, 0]);
+    let mut file = b"RIFF".to_vec();
+    file.extend_from_slice(&u32::try_from(body.len()).ok()?.to_le_bytes());
+    file.extend_from_slice(&body);
+    Some(file)
+}
+
+/// A simple WebP's size from its bitstream, and whether it may hold alpha (a `VP8L` may; a bare
+/// `VP8 ` never does).
+fn simple_size(bytes: &[u8]) -> Option<(u32, u32, bool)> {
+    let payload = bytes.get(20..)?;
+    match bytes.get(12..16)? {
+        b"VP8 " => {
+            // A key frame: three bytes of tag, the start code, then 14-bit width and height.
+            if payload.get(3..6)? != [0x9d, 0x01, 0x2a] {
+                return None;
+            }
+            let width = u32::from(u16::from_le_bytes([payload[6], payload[7]]) & 0x3fff);
+            let height =
+                u32::from(u16::from_le_bytes([*payload.get(8)?, *payload.get(9)?]) & 0x3fff);
+            (width > 0 && height > 0).then_some((width, height, false))
+        }
+        b"VP8L" => {
+            if *payload.first()? != 0x2f {
+                return None;
+            }
+            let bits = u32::from_le_bytes(payload.get(1..5)?.try_into().ok()?);
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1, true))
+        }
+        _ => None,
     }
 }
 
@@ -253,6 +343,77 @@ pub fn tile_decode_width(attachment: &AttachmentDto, original: bool, scale: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real WebP, as gdk-pixbuf writes one (lossless, simple: a bare `VP8L`), or `None` where no
+    /// WebP saver is installed.
+    fn a_webp() -> Option<Vec<u8>> {
+        let pixbuf = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 6, 4)?;
+        pixbuf.fill(0x3366_99ff);
+        pixbuf.save_to_bufferv("webp", &[]).ok()
+    }
+
+    fn riff_size(bytes: &[u8]) -> u32 {
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+    }
+
+    fn decodes(bytes: Vec<u8>) -> Option<(i32, i32)> {
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+        gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE)
+            .ok()
+            .map(|pixbuf| (pixbuf.width(), pixbuf.height()))
+    }
+
+    #[test]
+    fn a_simple_webp_s_size_is_read_from_its_bitstream() {
+        let Some(webp) = a_webp() else {
+            return;
+        };
+        assert_eq!(&webp[12..16], b"VP8L");
+        assert_eq!(simple_size(&webp), Some((6, 4, true)));
+        // Made extended and padded, it is still the same picture.
+        let longer = padded(&webp).expect("padded");
+        assert_eq!(&longer[12..16], b"VP8X");
+        assert_eq!(riff_size(&longer) as usize, longer.len() - 8);
+        assert_eq!(decodes(longer), Some((6, 4)));
+    }
+
+    /// THE STICKER THAT STOOD STILL: a WebP of exactly 27,458 bytes after `RIFF` and the size —
+    /// "Bk\0\0" at offset 4 — sniffs as WiiWare's bundle and gdk-pixbuf cannot recognise it;
+    /// `recognisable` gives it a size of its own and it decodes.
+    #[test]
+    fn a_webp_whose_size_spells_another_format_is_made_recognisable() {
+        let Some(webp) = a_webp() else {
+            return;
+        };
+        let extended = padded(&webp).expect("extended");
+        // An unknown chunk sized so that the RIFF size is 0x6B42.
+        let wanted = 0x6B42usize;
+        let filler = wanted - (extended.len() - 8) - 8;
+        let mut body = extended[8..].to_vec();
+        body.extend_from_slice(b"JUNK");
+        body.extend_from_slice(&u32::try_from(filler).unwrap().to_le_bytes());
+        body.extend(std::iter::repeat_n(0u8, filler));
+        let mut clash = b"RIFF".to_vec();
+        clash.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+        clash.extend_from_slice(&body);
+        assert_eq!(&clash[4..8], b"Bk\0\0");
+        if sniffs_as_webp(&clash) {
+            // This machine's MIME database knows no such bundle: nothing to show here.
+            return;
+        }
+        assert_eq!(
+            decodes(clash.clone()),
+            None,
+            "the clash itself is unreadable"
+        );
+        let fixed = recognisable(clash.clone());
+        assert!(sniffs_as_webp(&fixed));
+        assert_eq!(fixed.len(), clash.len() + 10);
+        assert_eq!(decodes(fixed), Some((6, 4)));
+        // A WebP GIO reads already, and anything that is not a WebP, are left alone.
+        assert_eq!(recognisable(webp.clone()), webp);
+        assert_eq!(recognisable(b"GIF89a....".to_vec()), b"GIF89a....".to_vec());
+    }
 
     #[test]
     fn a_logical_size_is_a_sane_integer() {

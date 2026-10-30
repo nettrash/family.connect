@@ -1246,7 +1246,9 @@ pub fn draw_card(
         let attachments = Rc::clone(&connection.attachments);
         ui::spawn(async move {
             if let Ok(bytes) = attachments.bytes(&attachment, true).await
-                && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
+                && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(
+                    crate::attachments::pictures::recognisable(bytes),
+                ))
             {
                 picture.set_paintable(Some(&texture));
             }
@@ -1438,7 +1440,9 @@ fn backdrop(
     let attachments = Rc::clone(attachments);
     ui::spawn(async move {
         if let Ok(bytes) = attachments.bytes(&attachment, true).await
-            && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
+            && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(
+                crate::attachments::pictures::recognisable(bytes),
+            ))
         {
             picture.set_paintable(Some(&texture));
             veil.set_visible(true);

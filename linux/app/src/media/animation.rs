@@ -44,8 +44,10 @@ impl StillDecoder for GdkStillDecoder {
 }
 
 fn decode(still: &[u8]) -> Option<DecodedStill> {
+    // A frame whose size reads as another format's magic is made one GIO reads as WebP.
+    let still = crate::attachments::pictures::recognisable(still.to_vec());
     let loader = gtk::gdk_pixbuf::PixbufLoader::new();
-    loader.write(still).ok()?;
+    loader.write(&still).ok()?;
     loader.close().ok()?;
     let pixbuf = loader.pixbuf()?;
     let width = pixbuf.width();

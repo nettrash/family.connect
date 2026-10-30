@@ -422,7 +422,8 @@ pub struct GdkStills;
 impl StillDecoder for GdkStills {
     fn decode_still(&self, still: Vec<u8>) -> LocalBoxFuture<'static, Option<DecodedStill>> {
         Box::pin(async move {
-            let bytes = glib::Bytes::from_owned(still);
+            // A frame whose size reads as another format's magic is made one GIO reads as WebP.
+            let bytes = glib::Bytes::from_owned(pictures::recognisable(still));
             let stream = gio::MemoryInputStream::from_bytes(&bytes);
             let pixbuf = gdk_pixbuf::Pixbuf::from_stream_future(&stream).await.ok()?;
             Some(straight_bgra(&pixbuf))

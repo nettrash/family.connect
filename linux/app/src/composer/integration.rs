@@ -200,7 +200,8 @@ pub fn prepare_bytes(bytes: Vec<u8>, mime: &str, name: &str) -> PrepOutcome {
 /// A still photo re-drawn as the apps send one: at most `PHOTO_EDGE` either way, JPEG at
 /// `PHOTO_QUALITY`, with a `PREVIEW_EDGE` preview — through gdk-pixbuf (glycin underneath).
 fn photo(bytes: &[u8]) -> Option<StagedMedia> {
-    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(bytes));
+    let readable = crate::attachments::pictures::recognisable(bytes.to_vec());
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(readable));
     let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE).ok()?;
     let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
     let (width, height) = (

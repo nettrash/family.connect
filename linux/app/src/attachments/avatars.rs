@@ -108,7 +108,7 @@ pub fn version_of(connection: &crate::shell::Connection, user_id: i64) -> i32 {
 /// for a picture nothing here reads. (P4's Settings row sends what this answers.)
 pub async fn prepare_upload(bytes: Vec<u8>) -> Option<(Vec<u8>, &'static str)> {
     use fc_logic::avatars::avatar_rules;
-    let bytes = glib::Bytes::from_owned(bytes);
+    let bytes = glib::Bytes::from_owned(super::pictures::recognisable(bytes));
     let stream = gio::MemoryInputStream::from_bytes(&bytes);
     let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream_future(&stream)
         .await

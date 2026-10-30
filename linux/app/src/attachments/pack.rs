@@ -388,7 +388,7 @@ async fn make_sticker(bytes: Vec<u8>, target: Option<(i32, i32)>) -> Result<Vec<
             "not a picture this machine reads",
         )
     };
-    let gbytes = glib::Bytes::from_owned(bytes);
+    let gbytes = glib::Bytes::from_owned(super::pictures::recognisable(bytes));
     let stream = gio::MemoryInputStream::from_bytes(&gbytes);
     let pixbuf = gdk_pixbuf::Pixbuf::from_stream_future(&stream)
         .await
