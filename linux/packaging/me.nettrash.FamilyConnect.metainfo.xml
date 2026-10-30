@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>me.nettrash.FamilyConnect</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Family Connect</name>
+  <summary>Chat and call with your family on your own server</summary>
+  <developer id="me.nettrash">
+    <name>nettrash</name>
+  </developer>
+  <description>
+    <p>Family Connect is a chat for one household, or several, on a server the family runs
+      itself. The messages live in that server's database, and the apps for iPhone, iPad, Mac,
+      Android, Windows, the web and Linux talk to it for every chat.</p>
+    <p>Every family has one chat for all its members, and any two members can talk one to one.</p>
+    <ul>
+      <li>Messages, photos, videos, voice notes, files, locations and polls</li>
+      <li>One-to-one voice and video calls</li>
+      <li>A family board, birthdays and a family sticker pack</li>
+      <li>The same family and the same history on every device</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">me.nettrash.FamilyConnect.desktop</launchable>
+  <icon type="stock">me.nettrash.FamilyConnect</icon>
+  <url type="homepage">https://nettrash.me/linux/familyconnect/support.html</url>
+  <url type="help">https://nettrash.me/linux/familyconnect/support.html</url>
+  <url type="vcs-browser">https://github.com/nettrash/family.connect</url>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+  <provides>
+    <binary>family-connect</binary>
+  </provides>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-location">intense</content_attribute>
+  </content_rating>
+  <branding>
+    <color type="primary" scheme_preference="light">#095CAF</color>
+    <color type="primary" scheme_preference="dark">#0B4F9C</color>
+  </branding>
+  <releases>
+    <release version="1.3.0" date="2026-10-28"/>
+  </releases>
+</component>

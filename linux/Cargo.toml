@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/fc-core", "crates/fc-logic", "app", "tools/call-interop"]
+# The GTK app (`app/`, the binary `family-connect`) and the calls' interop harness
+# (`tools/call-interop`, which compiles the app's `src/calls` as is) need GTK 4, libadwaita,
+# WebKitGTK and GStreamer headers, which only the Linux build image has; a plain `cargo test`
+# anywhere builds and tests the two libraries, and `scripts/dev.sh test` (`--workspace`) builds and
+# tests all four.
+default-members = ["crates/fc-core", "crates/fc-logic"]
+
+[workspace.package]
+version = "1.3.0"
+edition = "2024"
+# Ubuntu 26.04's own rustc, so the packages build natively on a plain Ubuntu as well as in Docker.
+# With resolver 3 cargo picks the newest dependency that still builds on it.
+rust-version = "1.93"
+authors = ["nettrash <nettrash@nettrash.me>"]
+license = "MIT"
+repository = "https://github.com/nettrash/family.connect"
+
+[workspace.dependencies]
+fc-core = { path = "crates/fc-core" }
+fc-logic = { path = "crates/fc-logic" }
+fc-text = { path = "../web/text" }
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: every double the wire and the cache read is the nearest one, not one ulp off
+# (measured by two ports — the default parser is not correctly rounded).
+serde_json = { version = "1", features = ["float_roundtrip"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+rusqlite = "0.37"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-channel = "0.3"
+futures = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Ported code keeps the shape of win/'s C# so the two can be read side by side.
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

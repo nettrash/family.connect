@@ -1,0 +1,77 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: family-connect
+Upstream-Contact: nettrash <nettrash@nettrash.me>
+Source: https://github.com/nettrash/family.connect
+
+Files: *
+Copyright: 2026 nettrash
+License: Expat
+Comment: Family Connect's own code, its desktop entry, AppStream data, manual
+ page and AppArmor profile, and its icon (drawn from the Mac's app icon).
+
+Files: usr/bin/family-connect
+Copyright: 2026 nettrash
+ the authors of each crate listed below
+ the Rust project developers
+License: Expat and Zlib
+Comment: Family Connect is written in Rust and its binary also contains these
+ crates from crates.io, compiled in: atomic_refcell, bitflags, cairo-rs,
+ cairo-sys-rs, cfg-if, deranged, either, fallible-iterator,
+ fallible-streaming-iterator, field-offset, futures-channel, futures-core,
+ futures-executor, futures-io, futures-sink, futures-task, futures-util,
+ gdk-pixbuf, gdk-pixbuf-sys, gdk4, gdk4-sys, gdk4-wayland, gdk4-wayland-sys,
+ gio, gio-sys, glib, glib-sys, gobject-sys, graphene-rs, graphene-sys, gsk4,
+ gsk4-sys, gstreamer, gstreamer-app, gstreamer-app-sys, gstreamer-audio,
+ gstreamer-audio-sys, gstreamer-base, gstreamer-base-sys, gstreamer-pbutils,
+ gstreamer-pbutils-sys, gstreamer-play, gstreamer-play-sys, gstreamer-sdp,
+ gstreamer-sdp-sys, gstreamer-sys, gstreamer-video, gstreamer-video-sys,
+ gstreamer-webrtc, gstreamer-webrtc-sys, gtk4, gtk4-sys, hashbrown, hashlink,
+ itertools, itoa, javascriptcore6, javascriptcore6-sys, kstring, libadwaita,
+ libadwaita-sys, libc, libsecret, libsecret-sys, libsqlite3-sys, memchr,
+ memoffset, muldiv, num-conv, num-integer, num-rational, num-traits,
+ option-operations, pango, pango-sys, pin-project-lite, powerfmt, rusqlite,
+ serde, serde_core, serde_json, slab, smallvec, soup3, soup3-sys,
+ static_assertions, thiserror, time, time-core, unicode-segmentation, webkit6,
+ webkit6-sys, zmij; and the Rust standard library. Each of them declares MIT,
+ or offers MIT as one of its choices (MIT OR Apache-2.0, Unlicense OR MIT), as
+ the standard library does; this package takes the MIT option. One more,
+ foldhash (the hash rusqlite's statement cache uses, through hashlink and
+ hashbrown), is under the Zlib licence below, which asks nothing of a binary.
+ scripts/package.sh refuses to build when the binary links a crate this list
+ does not name, or one that offers neither MIT nor, for foldhash alone, Zlib.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: Zlib
+ This software is provided 'as-is', without any express or implied
+ warranty. In no event will the authors be held liable for any damages
+ arising from the use of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
+ .
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.

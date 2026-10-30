@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The top-bar icon (shell-design §16.2): two speech bubbles, drawn for Family Connect for Linux.
+     A symbolic icon — one colour, recoloured by the desktop to match the top bar. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="#2e3436">
+    <path d="M3 1h5a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H5L2.5 9.5V6.85A2 2 0 0 1 1 5V3a2 2 0 0 1 2-2z"/>
+    <path d="M8 8h5a2 2 0 0 1 2 2v2a2 2 0 0 1-1.5 1.94v1.56L11 14H8a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2z"/>
+  </g>
+</svg>

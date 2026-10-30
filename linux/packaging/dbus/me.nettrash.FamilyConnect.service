@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=me.nettrash.FamilyConnect
+Exec=/usr/bin/family-connect --gapplication-service

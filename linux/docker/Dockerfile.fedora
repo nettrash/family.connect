@@ -1,0 +1,29 @@
+# Family Connect for Linux — the Fedora image the .rpm is built in (scripts/package-rpm.sh,
+# docs/packaging.md §12), adapted from md.linux's.
+#
+# Fedora 44, the oldest release that has every library the client is built against (GTK 4.22,
+# libadwaita 1.9, WebKitGTK 6.0 2.52, GStreamer 1.28, GLib 2.88); a package built here installs
+# on 44 and later. The -devel set is docker/Dockerfile's, in Fedora's names, so the client's
+# later linkage (GStreamer's base and bad libraries, libsecret, SQLite) needs no change here.
+# The base image is pinned by digest (the multi-arch index, as md.linux's); Fedora keeps no
+# archive snapshots, so the packages are the archive's current ones.
+FROM fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN dnf -y install --setopt=install_weak_deps=False \
+      gcc pkgconf-pkg-config binutils findutils gzip \
+      rust cargo \
+      gtk4-devel libadwaita-devel webkitgtk6.0-devel libsoup3-devel \
+      gstreamer1-devel gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel \
+      libsecret-devel sqlite-devel \
+      rpm-build rpmlint \
+ && dnf clean all
+
+ENV CARGO_HOME=/cargo \
+    CARGO_TARGET_DIR=/target
+
+RUN mkdir -p /cargo /target /src
+
+WORKDIR /src

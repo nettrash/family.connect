@@ -1,0 +1,177 @@
+name: Release (Linux)
+
+# The Linux client's release (issue #112; linux/docs/packaging.md §13), adapted from md.linux's.
+# On a pushed v* tag: the tag must name the Linux workspace's version, the workspace's tests run,
+# then the .deb, .rpm and .tar.gz are built for amd64 and arm64 — each installed and checked in a
+# fresh Ubuntu 26.04 or Fedora 44 by the script that built it — and the six packages and a
+# SHA256SUMS file are attached to that tag's GitHub Release. The Release is the family's, shared
+# with every other client: when it exists (nettrash created it, with its title and notes) the
+# files are added to it and nothing else of it is touched; when it does not, it is created.
+#
+# Every push to a branch builds the same packages in ci.yml's `linux` job, so a broken package
+# shows there before the tag. workflow_dispatch runs an existing tag again — to attach the
+# packages after a fix to this file, or after a failed run.
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and attach (it must already exist)"
+        required: true
+
+permissions:
+  contents: read
+
+# One run per tag at a time, and never cancelled: a half-attached release is worse than a late one.
+concurrency:
+  group: release-linux-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # The tag built and attached to: the dispatched one, else the pushed one.
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    name: The tag, and the tests
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` is mid-migration to 26.04
+    timeout-minutes: 60
+    outputs:
+      ready: ${{ steps.ready.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      # nettrash's decision (2026-10-29): until the Linux client is finished, a tag builds and
+      # attaches nothing. The switch is the file linux/packaging/release-ready, added in the commit
+      # that finishes the client. A held run stops here quietly — every later step and job is
+      # skipped, not failed, and nothing is annotated — so a v1.3 tag before then is safe. ci.yml
+      # still builds the packages as artifacts on every push.
+      - name: Is the Linux client marked ready for release?
+        id: ready
+        run: |
+          if [ -f linux/packaging/release-ready ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "linux/packaging/release-ready is present at $TAG: building and attaching"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "linux/packaging/release-ready is absent at $TAG: the Linux client is held back, nothing is built or attached"
+          fi
+
+      # The family tags releases `v<major>.<minor>` (v1.0 … v1.3) and the workspace says
+      # `<major>.<minor>.<patch>` (1.3.0), so the two must agree on major and minor. A tag for a
+      # family release the Linux client has not been moved to fails here, not after the build.
+      - name: The tag names the Linux workspace's version
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          [ -f linux/Cargo.toml ] || { echo "::error::$TAG has no linux/Cargo.toml -- it predates the Linux client"; exit 1; }
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' linux/Cargo.toml)"
+          echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::linux/Cargo.toml's [workspace.package] version is '$version'"; exit 1; }
+          echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            || { echo "::error::tag $TAG is not v<major>.<minor> or v<major>.<minor>.<patch>"; exit 1; }
+          tag_minor="$(echo "${TAG#v}" | cut -d. -f1,2)"
+          version_minor="$(echo "$version" | cut -d. -f1,2)"
+          [ "$tag_minor" = "$version_minor" ] \
+            || { echo "::error::tag $TAG is $tag_minor, but linux/Cargo.toml says $version"; exit 1; }
+          echo "tag $TAG is the Linux client's $version"
+
+      - name: The Ubuntu 26.04 image
+        if: steps.ready.outputs.ready == 'true'
+        run: linux/scripts/dev.sh image
+
+      - name: fmt, clippy and every test
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          set -o pipefail
+          linux/scripts/dev.sh test 2>&1 | tee "$RUNNER_TEMP/linux-tests.log"
+
+      # As ci.yml's `linux` job: an exit code is not a result.
+      - name: Assert the tests actually ran
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          log="$RUNNER_TEMP/linux-tests.log"
+          grep -q 'Running unittests src/main.rs (/target/debug/deps/family_connect-' "$log" \
+            || { echo "::error::the family-connect app's tests did not run"; exit 1; }
+          awk '
+            /^test result:/ {
+              for (i = 1; i <= NF; i++) {
+                if ($(i+1) ~ /^passed/) p += $i
+                if ($(i+1) ~ /^failed/) f += $i
+              }
+              n++
+            }
+            END {
+              printf "targets=%d passed=%d failed=%d\n", n, p, f
+              if (f > 0)  { print "::error::" f+0 " tests failed"; exit 1 }
+              if (p < 2200) { print "::error::only " p+0 " tests passed; expected 2353 or more"; exit 1 }
+            }
+          ' "$log"
+
+  package:
+    name: ${{ matrix.format }} ${{ matrix.arch }}
+    needs: test
+    if: needs.test.outputs.ready == 'true'
+    # Natively on both architectures: the repository is public, so GitHub's arm64 runners are free.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ amd64, arm64 ]
+        format: [ deb, rpm ]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: The .deb and the .tar.gz, installed and checked in a fresh Ubuntu 26.04
+        if: matrix.format == 'deb'
+        run: linux/scripts/package.sh ${{ matrix.arch }}
+
+      - name: The .rpm, installed and checked in a fresh Fedora 44
+        if: matrix.format == 'rpm'
+        run: linux/scripts/package-rpm.sh ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: family-connect-linux-${{ matrix.format }}-${{ matrix.arch }}
+          path: |
+            linux/dist/*.deb
+            linux/dist/*.rpm
+            linux/dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Attach to the release
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Six packages and their checksums
+        working-directory: dist
+        run: |
+          ls -la
+          count="$(find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' \) | wc -l)"
+          [ "$count" = 6 ] || { echo "::error::expected 6 packages, found $count"; exit 1; }
+          sha256sum -- *.deb *.rpm *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true

@@ -1,0 +1,263 @@
+{
+  "_comment": [
+    "The Linux client's OWN sentences: the ones neither the apps' Localizable.xcstrings nor the",
+    "Windows port's win/i18n/win.json holds (shell-design §23). The shape is win.json's. Every",
+    "sentence comes with its eight translations in the same change (W.1 'Strings'); an EMPTY object",
+    "would mean 'English for now' and must then also be on ENGLISH_FOR_NOW in",
+    "crates/fc-core/tests/text_catalogue.rs. 'Top bar' is GNOME's term for the bar at the top of the",
+    "screen (the Mac's menu bar). linux/i18n/generate.py turns this file, the xcstrings and win.json",
+    "into linux/data/i18n/*.json; its --check is the CI string gate."
+  ],
+  "strings": {
+    "About Family Connect": {
+      "de": "Über Family Connect",
+      "es": "Acerca de Family Connect",
+      "fr": "À propos de Family Connect",
+      "ja": "Family Connect について",
+      "ru": "О приложении Family Connect",
+      "sr": "О програму Family Connect",
+      "sr-Latn": "O programu Family Connect",
+      "zh-Hans": "关于 Family Connect"
+    },
+    "Automatic": {
+      "de": "Automatisch",
+      "es": "Automática",
+      "fr": "Automatique",
+      "ja": "自動",
+      "ru": "Автоматически",
+      "sr": "Аутоматски",
+      "sr-Latn": "Automatski",
+      "zh-Hans": "自动"
+    },
+    "Brings Family Connect forward from any app. Press it again to put it back in the top bar.": {
+      "de": "Holt Family Connect aus jeder App nach vorne. Drücke es erneut, um es wieder in die obere Leiste zu legen.",
+      "es": "Trae Family Connect al frente desde cualquier app. Púlsalo otra vez para devolverlo a la barra superior.",
+      "fr": "Ramène Family Connect au premier plan depuis n’importe quelle app. Appuyez de nouveau pour le remettre dans la barre supérieure.",
+      "ja": "どのアプリからでも Family Connect を前面に表示します。もう一度押すとトップバーに戻ります。",
+      "ru": "Выводит Family Connect на передний план из любого приложения. Нажмите ещё раз, чтобы вернуть его на верхнюю панель.",
+      "sr": "Доводи Family Connect у први план из било које апликације. Притисни поново да га вратиш у горњу траку.",
+      "sr-Latn": "Dovodi Family Connect u prvi plan iz bilo koje aplikacije. Pritisni ponovo da ga vratiš u gornju traku.",
+      "zh-Hans": "从任何应用将 Family Connect 调到前面。再按一次可将其放回顶栏。"
+    },
+    "Close Window": {
+      "de": "Fenster schließen",
+      "es": "Cerrar ventana",
+      "fr": "Fermer la fenêtre",
+      "ja": "ウインドウを閉じる",
+      "ru": "Закрыть окно",
+      "sr": "Затвори прозор",
+      "sr-Latn": "Zatvori prozor",
+      "zh-Hans": "关闭窗口"
+    },
+    "Family Connect for Linux %@": {
+      "de": "Family Connect für Linux %@",
+      "es": "Family Connect para Linux %@",
+      "fr": "Family Connect pour Linux %@",
+      "ja": "Family Connect for Linux %@",
+      "ru": "Family Connect для Linux %@",
+      "sr": "Family Connect за Linux %@",
+      "sr-Latn": "Family Connect za Linux %@",
+      "zh-Hans": "Family Connect Linux 版 %@"
+    },
+    "Family Connect opens in the top bar when you log in, so a message or a call reaches you without opening it first.": {
+      "de": "Family Connect öffnet sich beim Anmelden in der oberen Leiste, damit dich eine Nachricht oder ein Anruf erreicht, ohne dass du es erst öffnen musst.",
+      "es": "Family Connect se abre en la barra superior cuando inicias sesión, para que un mensaje o una llamada te lleguen sin tener que abrirlo antes.",
+      "fr": "Family Connect s’ouvre dans la barre supérieure quand vous vous connectez, pour qu’un message ou un appel vous parvienne sans avoir à l’ouvrir d’abord.",
+      "ja": "ログインすると Family Connect がトップバーで開くので、先に開かなくてもメッセージや通話が届きます。",
+      "ru": "Family Connect открывается на верхней панели при входе в систему, чтобы сообщение или звонок дошли до вас, даже если вы его ещё не открыли.",
+      "sr": "Family Connect се отвара у горњој траци када се пријавиш, па ти порука или позив стигну и пре него што га отвориш.",
+      "sr-Latn": "Family Connect se otvara u gornjoj traci kada se prijaviš, pa ti poruka ili poziv stignu i pre nego što ga otvoriš.",
+      "zh-Hans": "登录后，Family Connect 会在顶栏中打开，这样消息和来电不用先打开它就能找到你。"
+    },
+    "If no notifications appear, check Settings ▸ Notifications ▸ Family Connect.": {
+      "de": "Wenn keine Benachrichtigungen erscheinen, sieh unter Einstellungen ▸ Benachrichtigungen ▸ Family Connect nach.",
+      "es": "Si no aparece ninguna notificación, revisa Configuración ▸ Notificaciones ▸ Family Connect.",
+      "fr": "Si aucune notification n’apparaît, vérifiez Paramètres ▸ Notifications ▸ Family Connect.",
+      "ja": "通知が表示されない場合は、「設定 ▸ 通知 ▸ Family Connect」を確認してください。",
+      "ru": "Если уведомления не появляются, проверьте «Параметры ▸ Уведомления ▸ Family Connect».",
+      "sr": "Ако се обавештења не појављују, провери Подешавања ▸ Обавештења ▸ Family Connect.",
+      "sr-Latn": "Ako se obaveštenja ne pojavljuju, proveri Podešavanja ▸ Obaveštenja ▸ Family Connect.",
+      "zh-Hans": "如果没有出现通知，请检查“设置 ▸ 通知 ▸ Family Connect”。"
+    },
+    "Keep running in the top bar": {
+      "de": "In der oberen Leiste weiterlaufen",
+      "es": "Seguir en la barra superior",
+      "fr": "Rester dans la barre supérieure",
+      "ja": "トップバーで実行し続ける",
+      "ru": "Оставаться на верхней панели",
+      "sr": "Настави рад у горњој траци",
+      "sr-Latn": "Nastavi rad u gornjoj traci",
+      "zh-Hans": "在顶栏中保持运行"
+    },
+    "Keyboard Shortcuts": {
+      "de": "Tastenkürzel",
+      "es": "Atajos de teclado",
+      "fr": "Raccourcis clavier",
+      "ja": "キーボードショートカット",
+      "ru": "Комбинации клавиш",
+      "sr": "Пречице тастатуре",
+      "sr-Latn": "Prečice tastature",
+      "zh-Hans": "键盘快捷键"
+    },
+    "Main Menu": {
+      "de": "Hauptmenü",
+      "es": "Menú principal",
+      "fr": "Menu principal",
+      "ja": "メインメニュー",
+      "ru": "Главное меню",
+      "sr": "Главни мени",
+      "sr-Latn": "Glavni meni",
+      "zh-Hans": "主菜单"
+    },
+    "Set a shortcut in your desktop's keyboard settings to run family-connect --toggle.": {
+      "de": "Lege in den Tastatureinstellungen deiner Arbeitsumgebung ein Tastenkürzel an, das family-connect --toggle ausführt.",
+      "es": "Crea un atajo en los ajustes de teclado de tu escritorio que ejecute family-connect --toggle.",
+      "fr": "Créez un raccourci dans les réglages du clavier de votre bureau pour lancer family-connect --toggle.",
+      "ja": "デスクトップのキーボード設定で、family-connect --toggle を実行するショートカットを設定してください。",
+      "ru": "Назначьте в настройках клавиатуры вашего рабочего стола сочетание клавиш, которое запускает family-connect --toggle.",
+      "sr": "Подеси пречицу у подешавањима тастатуре своје радне површи која покреће family-connect --toggle.",
+      "sr-Latn": "Podesi prečicu u podešavanjima tastature svoje radne površi koja pokreće family-connect --toggle.",
+      "zh-Hans": "请在桌面的键盘设置中设置一个快捷键，用来运行 family-connect --toggle。"
+    },
+    "Show or hide Family Connect": {
+      "de": "Family Connect zeigen oder ausblenden",
+      "es": "Mostrar u ocultar Family Connect",
+      "fr": "Afficher ou masquer Family Connect",
+      "ja": "Family Connect を表示または非表示",
+      "ru": "Показать или скрыть Family Connect",
+      "sr": "Прикажи или сакриј Family Connect",
+      "sr-Latn": "Prikaži ili sakrij Family Connect",
+      "zh-Hans": "显示或隐藏 Family Connect"
+    },
+    "Start when I log in": {
+      "de": "Beim Anmelden starten",
+      "es": "Abrir al iniciar sesión",
+      "fr": "Démarrer à la connexion",
+      "ja": "ログイン時に起動",
+      "ru": "Запускать при входе в систему",
+      "sr": "Покрени при пријављивању",
+      "sr-Latn": "Pokreni pri prijavljivanju",
+      "zh-Hans": "登录时启动"
+    },
+    "Top Bar": {
+      "de": "Obere Leiste",
+      "es": "Barra superior",
+      "fr": "Barre supérieure",
+      "ja": "トップバー",
+      "ru": "Верхняя панель",
+      "sr": "Горња трака",
+      "sr-Latn": "Gornja traka",
+      "zh-Hans": "顶栏"
+    },
+    "Turned off in your desktop's startup settings.": {
+      "de": "In den Autostart-Einstellungen deiner Arbeitsumgebung ausgeschaltet.",
+      "es": "Desactivado en los ajustes de inicio de tu escritorio.",
+      "fr": "Désactivé dans les réglages de démarrage de votre bureau.",
+      "ja": "デスクトップの自動起動の設定でオフになっています。",
+      "ru": "Выключено в настройках автозапуска вашего рабочего стола.",
+      "sr": "Искључено у подешавањима покретања твоје радне површи.",
+      "sr-Latn": "Isključeno u podešavanjima pokretanja tvoje radne površi.",
+      "zh-Hans": "已在桌面的启动设置中关闭。"
+    },
+    "Voice and video": {
+      "de": "Sprache und Video",
+      "es": "Voz y vídeo",
+      "fr": "Voix et vidéo",
+      "ja": "音声とビデオ",
+      "ru": "Голос и видео",
+      "sr": "Глас и видео",
+      "sr-Latn": "Glas i video",
+      "zh-Hans": "语音和视频"
+    },
+    "When you close the window, Family Connect stays in the top bar, so messages and calls still reach you. Quit it from its icon there.": {
+      "de": "Wenn du das Fenster schließt, bleibt Family Connect in der oberen Leiste, damit dich Nachrichten und Anrufe weiter erreichen. Beende es über sein Symbol dort.",
+      "es": "Al cerrar la ventana, Family Connect se queda en la barra superior, así que los mensajes y las llamadas te siguen llegando. Sal de la app desde su icono allí.",
+      "fr": "Quand vous fermez la fenêtre, Family Connect reste dans la barre supérieure, pour que messages et appels vous parviennent toujours. Quittez-le depuis son icône.",
+      "ja": "ウインドウを閉じても Family Connect はトップバーに残るので、メッセージや通話は引き続き届きます。終了するにはそこにあるアイコンから操作します。",
+      "ru": "Когда вы закрываете окно, Family Connect остаётся на верхней панели, и сообщения и звонки по-прежнему до вас доходят. Завершить его можно через значок там.",
+      "sr": "Када затвориш прозор, Family Connect остаје у горњој траци, па те поруке и позиви и даље стижу. Затвори га преко његове иконице тамо.",
+      "sr-Latn": "Kada zatvoriš prozor, Family Connect ostaje u gornjoj traci, pa te poruke i pozivi i dalje stižu. Zatvori ga preko njegove ikonice tamo.",
+      "zh-Hans": "关闭窗口后，Family Connect 会留在顶栏中，消息和通话仍能送达。要退出，请使用那里的图标。"
+    },
+    "Your desktop didn't set this shortcut.": {
+      "de": "Deine Arbeitsumgebung hat dieses Tastenkürzel nicht eingerichtet.",
+      "es": "Tu escritorio no ha configurado este atajo.",
+      "fr": "Votre bureau n’a pas défini ce raccourci.",
+      "ja": "デスクトップはこのショートカットを設定しませんでした。",
+      "ru": "Ваш рабочий стол не назначил это сочетание клавиш.",
+      "sr": "Твоја радна површ није подесила ову пречицу.",
+      "sr-Latn": "Tvoja radna površ nije podesila ovu prečicu.",
+      "zh-Hans": "你的桌面没有设置这个快捷键。"
+    },
+    "Your desktop has no top-bar icons for apps, so closing the window quits Family Connect.": {
+      "de": "Dein Desktop zeigt keine App-Symbole in der oberen Leiste, deshalb beendet das Schließen des Fensters Family Connect.",
+      "es": "Tu escritorio no muestra iconos de apps en la barra superior, así que cerrar la ventana sale de Family Connect.",
+      "fr": "Votre bureau n’affiche pas d’icônes d’apps dans la barre supérieure : fermer la fenêtre quitte donc Family Connect.",
+      "ja": "このデスクトップにはトップバーのアプリアイコンがないため、ウインドウを閉じると Family Connect は終了します。",
+      "ru": "На вашем рабочем столе нет значков приложений на верхней панели, поэтому закрытие окна завершает Family Connect.",
+      "sr": "Твоја радна површина нема иконице апликација у горњој траци, па затварање прозора затвара Family Connect.",
+      "sr-Latn": "Tvoja radna površina nema ikonice aplikacija u gornjoj traci, pa zatvaranje prozora zatvara Family Connect.",
+      "zh-Hans": "你的桌面没有顶栏应用图标，因此关闭窗口会退出 Family Connect。"
+    },
+    "Your organisation decides whether Family Connect starts when you log in.": {
+      "de": "Deine Organisation entscheidet, ob Family Connect beim Anmelden startet.",
+      "es": "Tu organización decide si Family Connect se inicia al iniciar sesión.",
+      "fr": "Votre organisation décide si Family Connect démarre à la connexion.",
+      "ja": "ログイン時に Family Connect を起動するかどうかは、組織が決めています。",
+      "ru": "Ваша организация решает, запускать ли Family Connect при входе в систему.",
+      "sr": "Твоја организација одлучује да ли се Family Connect покреће при пријављивању.",
+      "sr-Latn": "Tvoja organizacija odlučuje da li se Family Connect pokreće pri prijavljivanju.",
+      "zh-Hans": "是否在登录时启动 Family Connect，由你的组织决定。"
+    },
+    "Your sign-in isn't remembered on this computer: no keyring is available.": {
+      "de": "Deine Anmeldung wird auf diesem Computer nicht gespeichert: Es ist kein Schlüsselbund verfügbar.",
+      "es": "Tu inicio de sesión no se recuerda en este ordenador: no hay ningún llavero disponible.",
+      "fr": "Votre connexion n’est pas mémorisée sur cet ordinateur : aucun trousseau n’est disponible.",
+      "ja": "このコンピュータではサインイン情報が保存されません。キーリングを利用できません。",
+      "ru": "Ваш вход не запоминается на этом компьютере: связка ключей недоступна.",
+      "sr": "Твоја пријава се не памти на овом рачунару: нема доступног привеска за кључеве.",
+      "sr-Latn": "Tvoja prijava se ne pamti na ovom računaru: nema dostupnog priveska za ključeve.",
+      "zh-Hans": "此电脑不会记住你的登录：没有可用的密钥环。"
+    },
+    "Formulas and diagrams are shown as text because this system won't start their sandbox. Family Connect's AppArmor profile (/etc/apparmor.d/family-connect) allows it.": {
+      "de": "Formeln und Diagramme werden als Text angezeigt, weil dieses System ihre Sandbox nicht startet. Das AppArmor-Profil von Family Connect (/etc/apparmor.d/family-connect) erlaubt sie.",
+      "es": "Las fórmulas y los diagramas se muestran como texto porque este sistema no inicia su entorno aislado. El perfil de AppArmor de Family Connect (/etc/apparmor.d/family-connect) lo permite.",
+      "fr": "Les formules et les diagrammes s’affichent en texte, car ce système ne démarre pas leur bac à sable. Le profil AppArmor de Family Connect (/etc/apparmor.d/family-connect) l’autorise.",
+      "ja": "このシステムではサンドボックスを起動できないため、数式と図はテキストで表示されます。Family Connect の AppArmor プロファイル（/etc/apparmor.d/family-connect）で許可できます。",
+      "ru": "Формулы и диаграммы показаны текстом: эта система не запускает их песочницу. Профиль AppArmor для Family Connect (/etc/apparmor.d/family-connect) это разрешает.",
+      "sr": "Формуле и дијаграми се приказују као текст јер овај систем не покреће њихов сандбокс. AppArmor профил апликације Family Connect (/etc/apparmor.d/family-connect) то дозвољава.",
+      "sr-Latn": "Formule i dijagrami se prikazuju kao tekst jer ovaj sistem ne pokreće njihov sandboks. AppArmor profil aplikacije Family Connect (/etc/apparmor.d/family-connect) to dozvoljava.",
+      "zh-Hans": "由于此系统无法启动其沙盒，公式和图表以文本显示。Family Connect 的 AppArmor 配置文件（/etc/apparmor.d/family-connect）可允许其运行。"
+    },
+    "Emoji": {
+      "de": "Emoji",
+      "es": "Emoji",
+      "fr": "Émoji",
+      "ja": "絵文字",
+      "ru": "Эмодзи",
+      "sr": "Емоџи",
+      "sr-Latn": "Emodži",
+      "zh-Hans": "表情符号"
+    },
+    "Change…": {
+      "de": "Ändern…",
+      "es": "Cambiar…",
+      "fr": "Changer…",
+      "ja": "変更…",
+      "ru": "Изменить…",
+      "sr": "Промени…",
+      "sr-Latn": "Promeni…",
+      "zh-Hans": "更改…"
+    },
+    "Full Screen": {
+      "de": "Vollbild",
+      "es": "Pantalla completa",
+      "fr": "Plein écran",
+      "ja": "フルスクリーン",
+      "ru": "Полноэкранный режим",
+      "sr": "Цео екран",
+      "sr-Latn": "Ceo ekran",
+      "zh-Hans": "全屏"
+    }
+  }
+}

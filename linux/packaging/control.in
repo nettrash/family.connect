@@ -1,0 +1,19 @@
+Package: family-connect
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: nettrash <nettrash@nettrash.me>
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DEPENDS@
+Recommends: gnome-keyring, xdg-desktop-portal-gnome
+Section: net
+Priority: optional
+Homepage: https://nettrash.me/linux/familyconnect/support.html
+Description: family chat and calls on the family's own server
+ Family Connect is a chat for one household, or several, on a server the
+ family runs itself. The messages live in that server's database, and the
+ apps for iPhone, iPad, Mac, Android, Windows, the web and Linux talk to it
+ for every chat.
+ .
+ Every family has one chat for all its members, and any two members can talk
+ one to one: messages, photos, videos, voice notes, files, locations and
+ polls, one-to-one voice and video calls, a family board and birthdays.

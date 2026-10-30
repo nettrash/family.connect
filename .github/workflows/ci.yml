@@ -80,6 +80,7 @@ jobs:
       android: ${{ steps.filter.outputs.android }}
       ios: ${{ steps.filter.outputs.ios }}
       win: ${{ steps.filter.outputs.win }}
+      linux: ${{ steps.filter.outputs.linux }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -89,14 +90,14 @@ jobs:
           base='${{ github.event.before }}'
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             echo "No usable diff base ($base) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\nlinux=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "$base" '${{ github.sha }}')
           echo "Changed files:"; echo "$files" | sed 's/^/  /'
           if echo "$files" | grep -q -E '^(docs/protocol\.md|\.github/)'; then
             echo "A shared path changed (the protocol contract or CI itself) -- running every job."
-            printf 'server=true\nandroid=true\nios=true\nwin=true\n' >> "$GITHUB_OUTPUT"
+            printf 'server=true\nandroid=true\nios=true\nwin=true\nlinux=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # The `@ai` and `/draw` vector tables live in THREE files and are
@@ -129,6 +130,14 @@ jobs:
             oracle_changed=true
           else
             oracle_changed=false
+          fi
+          # The Linux client (issue #112) builds the shared text crate by path (linux/Cargo.toml:
+          # `fc-text = { path = "../web/text" }`), so a change there is a change to what it compiles
+          # and packages. Its release workflow lives under .github/, which ran everything above.
+          if echo "$files" | grep -q -E '^(linux|web/text)/'; then
+            echo "linux=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "linux=false" >> "$GITHUB_OUTPUT"
           fi
           for stack in server android ios win; do
             if [ "$stack" = win ] && [ "$oracle_changed" = true ]; then
@@ -430,6 +439,10 @@ jobs:
       # words of a push"): every one in all nine, from the apps' catalogue and server/i18n/push.json.
       - name: Server push words
         run: python3 server/i18n/generate.py . --check
+      # The Linux tables (linux/data/i18n) match the catalogue, linux/i18n/linux.json and win.json;
+      # every sentence the Linux port draws is in all nine, and linux.json names nothing undrawn.
+      - name: Linux
+        run: python3 linux/i18n/generate.py . --check
 
   # The files that draw formulas, diagrams and graphs (issue #97, docs/protocol.md "Rich blocks"):
   # web/rich/ is the one set, and every native client ships a copy of it. A copy that drifted would
@@ -444,7 +457,7 @@ jobs:
       - name: Every copy equals web/rich
         run: |
           status=0
-          for copy in ios/FamilyConnect/Rich android/app/src/main/assets/rich win/src/FamilyConnect.App/Assets/Rich; do
+          for copy in ios/FamilyConnect/Rich android/app/src/main/assets/rich win/src/FamilyConnect.App/Assets/Rich linux/data/rich; do
             if ! diff -r web/rich "$copy"; then
               echo "::error::$copy differs from web/rich -- copy web/rich over it"
               status=1
@@ -1024,6 +1037,98 @@ jobs:
           name: familyconnect-${{ matrix.platform }}-msix
           path: AppPackages/**/*.msix
           retention-days: 14
+
+  # The Linux client (issue #112, linux/): the workspace's tests in the Ubuntu 26.04 image it is
+  # built in, then the three packages the release attaches — the .deb and the portable .tar.gz
+  # (linux/scripts/package.sh) and the .rpm (linux/scripts/package-rpm.sh) — each installed and
+  # checked in a fresh Ubuntu 26.04 or Fedora 44 by the script that built it, and uploaded. The
+  # tag's own run, which attaches them to the Release, is .github/workflows/release-linux.yml.
+  #
+  # Both architectures, natively: the repository is public, so GitHub's arm64 runners are free
+  # here and arm64 needs no QEMU. Each runner builds the images for its own architecture only,
+  # which also keeps clear of the classic image store's one-digest-one-platform limit
+  # (linux/scripts/package-lib.sh, base_image).
+  #
+  # Everything runs in Docker from images pinned by digest (and, for Ubuntu, by an archive
+  # snapshot), so the runner's own Ubuntu 24.04 lends nothing but Docker.
+  linux:
+    name: Linux client & packages (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04      # pinned: `ubuntu-latest` is mid-migration to 26.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The Ubuntu 26.04 image
+        run: linux/scripts/dev.sh image
+
+      # fmt --check, clippy -D warnings over the whole workspace (the GTK app included) and every
+      # test, on Ubuntu's own rustc 1.93 — the toolchain the packages are built with.
+      - name: fmt, clippy and every test
+        run: |
+          set -o pipefail
+          linux/scripts/dev.sh test 2>&1 | tee "$RUNNER_TEMP/linux-tests.log"
+
+      # This file's rule: an exit code is not a result. The floor is slack (2200 against 2353 on
+      # 2026-10-29: fc-core, fc-logic, the app with all eight packages integrated, and
+      # tools/call-interop) and is meant to be raised as tests land; the
+      # app's own target is named, so dropping it from the workspace fails here.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        run: |
+          log="$RUNNER_TEMP/linux-tests.log"
+          test -s "$log" || { echo "::error::no test log -- the test step did not get far enough to produce one"; exit 1; }
+          grep -q 'Running unittests src/main.rs (/target/debug/deps/family_connect-' "$log" \
+            || { echo "::error::the family-connect app's tests did not run"; exit 1; }
+          awk '
+            /^test result:/ {
+              for (i = 1; i <= NF; i++) {
+                if ($(i+1) ~ /^passed/) p += $i
+                if ($(i+1) ~ /^failed/) f += $i
+              }
+              n++
+            }
+            END {
+              printf "targets=%d passed=%d failed=%d\n", n, p, f
+              if (f > 0)  { print "::error::" f+0 " tests failed"; exit 1 }
+              if (p < 2200) { print "::error::only " p+0 " tests passed; expected 2353 or more"; exit 1 }
+            }
+          ' "$log"
+
+      - name: The .deb and the .tar.gz, installed and checked in a fresh Ubuntu 26.04
+        run: linux/scripts/package.sh ${{ matrix.arch }}
+
+      - name: The .rpm, installed and checked in a fresh Fedora 44
+        run: linux/scripts/package-rpm.sh ${{ matrix.arch }}
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: family-connect-linux-${{ matrix.arch }}
+          path: |
+            linux/dist/*.deb
+            linux/dist/*.rpm
+            linux/dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-test-log-${{ matrix.arch }}
+          path: ${{ runner.temp }}/linux-tests.log
+          if-no-files-found: ignore
+          retention-days: 7
 
 # Deliberately not here, and why:
 #

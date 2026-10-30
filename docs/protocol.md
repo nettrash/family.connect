@@ -163,9 +163,16 @@ The consequences worth stating rather than discovering:
   pack item ids and nothing else, in `localStorage` for the same reason the marks are, and — unlike
   the marks — removed at sign-out.
 
-Everything else in this document applies to a browser unchanged. Where a section says Windows and
-web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
-different protocol.
+Everything else in this document applies to a browser unchanged. Where a section says Windows,
+Linux and web are "not asked to draw" something yet, that is a statement about what has been BUILT,
+never a different protocol.
+
+**A desktop with no push service is in a browser's position for delivery** (Windows, issue #64; Linux,
+issue #112, 2026-10-28). Neither has an APNs or FCM token to give, so neither registers a device: each
+holds its socket while it runs, keeps running when its window is closed so that it still rings, and
+raises its own notifications from that socket under the desktop rule ("A Mac is pushed who, never
+what"). Unlike a browser, each is an app: the user enters a server URL, and the token is kept in the
+platform's credential store (Windows' Credential Locker, the Secret Service on Linux), not in a tab.
 
 ## Compatibility rules
 
@@ -6995,7 +7002,7 @@ text, or `"New message"` when the server's `[push] include_message_body = false`
 `include_message_body = false` would send WHATEVER the setting — `"New message"` for a message,
 `"New note"` for a board note — with the same title as everyone else. A desktop banner is read on a
 screen other people walk past and stays in Notification Center afterwards, and it is the rule every
-desktop client already applies to the notifications it raises itself: Windows and a browser (see "A
+desktop client already applies to the notifications it raises itself: Windows, Linux and a browser (see "A
 browser notifies ITSELF") and the Mac's own banners from its live socket. So a Mac says the same
 thing whether the app was running or quit. A phone (`ios`, `android`) is unchanged: its lock screen
 is the operator's call, through `include_message_body`.
@@ -7102,9 +7109,9 @@ Who is woken: the callee's devices that have no live socket of their own — the
 rule as everything above — that can present a call: an `ios` device with a `voip_token`, and an
 `android` device with a push token. An iOS device that never registered a VoIP token is not woken;
 a Mac is never woken, because a Mac that is not running is not a phone in a pocket — and neither is
-Windows, for the same reason and because it registers no device: a running window holds its socket
-and rings on it, and a closed one hears nothing. (Both keep running when their window is closed — Windows in the
-notification area, a Mac in the menu bar since 2026-10-07, issue #80 — and a client kept running that
+Windows or Linux, for the same reason and because neither registers a device: a running window holds its socket
+and rings on it, and a closed one hears nothing. (All three keep running when their window is closed — Windows in the
+notification area, Linux behind its icon in the top bar (issue #112), a Mac in the menu bar since 2026-10-07, issue #80 — and a client kept running that
 way holds its socket with no window at all, so it rings; only one that was really quit hears nothing.) A browser is
 never woken either, for that reason and one more: it registers no device to wake (see "A browser is
 a client too"), so a closed tab hears nothing and the call is missed. What a woken

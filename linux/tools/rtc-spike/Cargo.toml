@@ -1,0 +1,15 @@
+[package]
+name = "rtc-peer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+resolver = "3"
+publish = false
+
+[dependencies]
+gst = { package = "gstreamer", version = "*" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "*" }
+gst-sdp = { package = "gstreamer-sdp", version = "*" }
+tungstenite = "*"
+serde_json = "1"
+anyhow = "1"

@@ -1,0 +1,61 @@
+[package]
+name = "family-connect"
+description = "Family Connect for Linux: the GTK 4 / libadwaita / WebKitGTK 6.0 / GStreamer client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+fc-core.workspace = true
+fc-logic.workspace = true
+fc-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+futures-util.workspace = true
+futures-channel.workspace = true
+# Feature flags match Ubuntu 26.04's libraries (docs/linux-client-2026-10-28.md): GTK 4.22,
+# libadwaita 1.9, WebKitGTK 6.0 2.52, GLib 2.88, GStreamer 1.28, libsoup 3.6; Fedora 44, the
+# .rpm's target, has each of them too. A flag newer than the system library links but fails at run
+# time with an undefined symbol, so never raise one past what the target ships — and the packages'
+# Depends floors (scripts/package.sh) follow these flags.
+#
+# The whole set of shell-design Appendix B is here from the skeleton on (carry-forward, "Decided by
+# nettrash before wave 3", 5), so the parallel packages of §W never edit this file: GStreamer's
+# player, app, pbutils, WebRTC and SDP bindings (P3, P6), libsecret (P5), the Wayland toplevel
+# handle for portal parent windows (P5). An unused one costs a compile, not a link: Ubuntu's
+# linker drops a library nothing calls (`--as-needed`).
+gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
+webkit = { package = "webkit6", version = "0.6", features = ["v2_52"] }
+# The same crate webkit6 re-exports; named here for the 3.6 API the socket needs
+# (`keepalive-pong-timeout`, carry-forward "For the shell's libsoup seams").
+soup = { package = "soup3", version = "0.9", features = ["v3_6"] }
+glib = { version = "0.22", features = ["v2_88"] }
+gio = { version = "0.22", features = ["v2_88"] }
+gst = { package = "gstreamer", version = "0.25", features = ["v1_28"] }
+gst-play = { package = "gstreamer-play", version = "0.25", features = ["v1_28"] }
+gst-video = { package = "gstreamer-video", version = "0.25", features = ["v1_28"] }
+gst-audio = { package = "gstreamer-audio", version = "0.25", features = ["v1_28"] }
+gst-app = { package = "gstreamer-app", version = "0.25", features = ["v1_28"] }
+gst-pbutils = { package = "gstreamer-pbutils", version = "0.25", features = ["v1_28"] }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25", features = ["v1_28"] }
+gst-sdp = { package = "gstreamer-sdp", version = "0.25", features = ["v1_28"] }
+libsecret = "0.9"
+gdk-wayland = { package = "gdk4-wayland", version = "0.11", features = ["v4_20"] }
+
+[dev-dependencies]
+futures.workspace = true
+
+[features]
+# `family-connect --selftest OUT`: the in-app self-test of docs/shell-design.md §27 (runner,
+# report.json, xdotool input, screenshots, the fake server). `scripts/dev.sh selftest` builds with
+# it; the packages never do, so a shipped binary answers `--selftest` with GLib's "Unknown option".
+selftest = []
+
+[lints]
+workspace = true
