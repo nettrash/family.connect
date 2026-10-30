@@ -171,6 +171,10 @@ pub struct Layer {
     right: gtk::Button,
     right_caption: gtk::Label,
     bar: gtk::Box,
+    /// The reply the clip will carry, over the controls, with "Cancel reply" (the Mac's S3.3) —
+    /// the layer covers the composer's own banner.
+    reply: gtk::Box,
+    reply_title: gtk::Label,
     window: Weak<MainWindow>,
     pub(crate) recorder: Rc<GstVideoRecorder>,
     machine: RefCell<RoundRecorder>,
@@ -326,8 +330,35 @@ impl Layer {
         top.append(&status);
         top.append(&below);
         top.append(&voice_instead);
+        let reply_title = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["caption", "heading"])
+            .build();
+        let cancel_reply = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .css_classes(["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(shell.say.get("Cancel reply"))
+            .build();
+        cancel_reply.update_property(&[gtk::accessible::Property::Label(
+            shell.say.get("Cancel reply"),
+        )]);
+        let reply = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .width_request(320)
+            .css_classes(["fc-chat-banner", "fc-chat-reply-banner"])
+            .visible(false)
+            .build();
+        reply.append(&gtk::Image::from_icon_name("mail-reply-sender-symbolic"));
+        reply.append(&reply_title);
+        reply.append(&cancel_reply);
         root.append(&top);
         root.append(&frame_box);
+        root.append(&reply);
         root.append(&bar);
         let layer = Rc::new(Layer {
             root,
@@ -345,6 +376,8 @@ impl Layer {
             right,
             right_caption,
             bar,
+            reply,
+            reply_title,
             window: Rc::downgrade(window),
             recorder: GstVideoRecorder::new(),
             machine: RefCell::new(RoundRecorder::new(limits, shell.say.clone())),
@@ -360,6 +393,19 @@ impl Layer {
             diameter: Cell::new(side),
             first_time: Cell::new(true),
         });
+        {
+            // The clip goes as an answer to nothing: the composer lets go of the reply too.
+            let weak = Rc::downgrade(&layer);
+            cancel_reply.connect_clicked(move |_| {
+                if let Some(layer) = weak.upgrade() {
+                    let host = layer.host.borrow().clone();
+                    if let Some(host) = host {
+                        host.release_reply();
+                    }
+                    layer.reply.set_visible(false);
+                }
+            });
+        }
         layer.wire();
         layer
     }
@@ -464,6 +510,14 @@ impl Layer {
             .and_then(|connection| connection.session.state().round_video)
             .unwrap_or(DEFAULT_LIMITS);
         *self.machine.borrow_mut() = RoundRecorder::new(limits, shell.say.clone());
+        // The reply the clip will carry, said here since the layer hides the composer's banner.
+        match host.reply_to().and_then(|reply| host.reply_line(reply)) {
+            Some(line) => {
+                self.reply_title.set_text(&line);
+                self.reply.set_visible(true);
+            }
+            None => self.reply.set_visible(false),
+        }
         *self.host.borrow_mut() = Some(host);
         let camera = self.recorder.camera_access();
         let microphone = self.recorder.microphone_access();

@@ -48,7 +48,6 @@ impl Rig {
         )?;
         let rules = NotificationRules::new(chats.clone(), Rc::new(common::english()));
         rules.set_wanted(true);
-        rules.set_in_front(false);
         rules.set_family_name(Some("The Smiths"));
         rules.set_assistant_user_id(Some(ASSISTANT));
         Ok(Rig { chats, rules })
@@ -160,10 +159,14 @@ fn a_message_that_names_the_reader_says_so_in_the_title() -> StoreResult<()> {
 #[test]
 fn nothing_is_said_while_the_reader_is_looking_or_has_not_asked() -> StoreResult<()> {
     let rig = Rig::new()?;
-    rig.rules.set_in_front(true);
+    // Reading that very chat: nothing.
+    rig.rules.set_reading(Some(42));
     assert_eq!(None, rig.rules.for_message(&message(1338))?);
+    // Reading ANOTHER chat, the app in front: a message here is still news (the Mac's rule).
+    rig.rules.set_reading(Some(43));
+    assert!(rig.rules.for_message(&message(1338))?.is_some());
 
-    rig.rules.set_in_front(false);
+    rig.rules.set_reading(None);
     rig.rules.set_wanted(false);
     assert_eq!(None, rig.rules.for_message(&message(1338))?);
 
@@ -301,6 +304,10 @@ fn a_note_speaks_only_when_the_board_says_it_is_news() -> StoreResult<()> {
             true
         )?
     );
+    // The wall in front: the reader sees it land.
+    rig.rules.set_board_in_front(true);
+    assert_eq!(None, rig.rules.for_note(&note, true)?);
+    rig.rules.set_board_in_front(false);
     rig.chats.set_blocked(11, true)?;
     assert_eq!(None, rig.rules.for_note(&note, true)?);
     Ok(())

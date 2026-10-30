@@ -324,14 +324,28 @@ impl MainWindow {
             actions::NEW_GROUP,
             Box::new(|| Shell::get().family_routes.get().new_group()),
         );
-        add(
+        let voice = add(
             actions::RECORD_VOICE,
             Box::new(|| Shell::get().chat_routes.get().record_voice()),
         );
-        add(
+        voice.set_enabled(false);
+        let video = add(
             actions::RECORD_VIDEO,
             Box::new(|| Shell::get().chat_routes.get().record_video()),
         );
+        // Off until a conversation's composer says it can (`set_record_enabled`).
+        video.set_enabled(false);
+        {
+            let full = self.window.downgrade();
+            add(
+                actions::TOGGLE_FULLSCREEN,
+                Box::new(move || {
+                    if let Some(window) = full.upgrade() {
+                        window.set_fullscreened(!window.is_fullscreen());
+                    }
+                }),
+            );
+        }
         let paste = add(
             actions::PASTE_ATTACHMENT,
             Box::new(|| Shell::get().chat_routes.get().paste_attachment()),
@@ -525,6 +539,23 @@ impl MainWindow {
         self.recorder_open.get()
     }
 
+    /// `win.record-voice` / `win.record-video`, greyed where they would do nothing — no chat open,
+    /// the assistant's chat, an edit, a call (the Mac's `MacVoiceCommands`).
+    pub fn set_record_enabled(&self, voice: bool, video: bool) {
+        for (spec, enabled) in [
+            (actions::RECORD_VOICE, voice),
+            (actions::RECORD_VIDEO, video),
+        ] {
+            if let Some(action) = self
+                .window
+                .lookup_action(spec.name)
+                .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+    }
+
     /// P1: `win.paste-attachment` (Ctrl+V) only while a conversation is shown and its field is not
     /// focused (§6.3).
     pub fn set_paste_attachment_enabled(&self, enabled: bool) {
@@ -668,6 +699,10 @@ impl MainWindow {
                 say.get("Record Voice Message"),
                 actions::RECORD_VOICE.detailed(),
             ),
+            (
+                say.get("Full Screen"),
+                actions::TOGGLE_FULLSCREEN.detailed(),
+            ),
             (say.get("Close Window"), actions::WINDOW_CLOSE.to_string()),
             (say.get("Quit Family Connect"), actions::QUIT.detailed()),
             (say.get("Keyboard Shortcuts"), actions::SHORTCUTS.detailed()),
@@ -715,13 +750,14 @@ fn primary_menu_button(shell: &Shell, full: bool) -> gtk::MenuButton {
             Some(&actions::NEW_GROUP.detailed()),
         );
         menu.append_section(None, &record);
-        let app = gio::Menu::new();
-        app.append(
-            Some(say.get("Settings…")),
-            Some(&actions::SHOW_SETTINGS.detailed()),
-        );
-        menu.append_section(None, &app);
     }
+    // Settings… on every page, as the Mac's app menu always has it (Ctrl+, works everywhere).
+    let app = gio::Menu::new();
+    app.append(
+        Some(say.get("Settings…")),
+        Some(&actions::SHOW_SETTINGS.detailed()),
+    );
+    menu.append_section(None, &app);
     let help = gio::Menu::new();
     help.append(
         Some(say.get("Keyboard Shortcuts")),

@@ -554,12 +554,29 @@ impl Shell {
         }
         self.tray.get().set_unread(unread, &title);
         self.badge.get().set_count(unread);
+        if let Some(connection) = self.connection() {
+            self.withdraw_read(&connection);
+        }
     }
 
-    /// Whether the main window is the one the reader is looking at.
-    pub fn in_front(&self) -> bool {
-        self.main_window()
-            .is_some_and(|window| window.is_in_front())
+    /// Withdraws the notification of every chat that has been read since it was raised.
+    fn withdraw_read(&self, connection: &Connection) {
+        let read: Vec<i64> = connection
+            .raised_chats
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|chat_id| {
+                matches!(connection.chats.chat(*chat_id), Ok(Some(row)) if row.unread_count == 0)
+            })
+            .collect();
+        for chat_id in read {
+            connection.raised_chats.borrow_mut().remove(&chat_id);
+            self.notifier
+                .get()
+                .withdraw(&NotificationRules::chat_tag(chat_id));
+            crate::fc_debug!("notify: chat {chat_id} read, withdrawn");
+        }
     }
 
     /// Spawn the outbox's flush for `trigger`, when anybody is chatting.
@@ -721,6 +738,9 @@ pub struct Connection {
     pub transcripts: Rc<TranscriptModel>,
     pub typing: Rc<TypingRoster>,
     pub notifications: Rc<NotificationRules>,
+    /// The chats whose notification is up: each is withdrawn once the chat is read — here, in any
+    /// window, on another device, or by a resync (the Mac's `ChatNotifier.removeDelivered`).
+    raised_chats: RefCell<std::collections::HashSet<i64>>,
     undo: RefCell<Vec<Box<dyn Fn()>>>,
 }
 
@@ -915,6 +935,7 @@ impl Connection {
             transcripts,
             typing,
             notifications,
+            raised_chats: RefCell::default(),
             undo: RefCell::new(Vec::new()),
         });
         connection.wire(shell);
@@ -1124,7 +1145,11 @@ impl Attention {
         rules.set_family_name(state.family.as_ref().map(|family| family.name.as_str()));
         rules.set_families(state.all_families());
         rules.set_assistant_user_id(state.assistant.as_ref().map(|assistant| assistant.user_id));
-        rules.set_in_front(shell.in_front());
+        rules.set_reading(crate::conversation::page::being_read());
+        rules.set_board_in_front(
+            crate::windows::board_window::current()
+                .is_some_and(|board| board.window.is_visible() && board.window.is_active()),
+        );
         rules.set_wanted(shell.notifier.get().available() && shell.settings.flag(keys::NOTIFY));
     }
 
@@ -1138,6 +1163,7 @@ impl Attention {
             Ok(Some(toast)) => {
                 crate::fc_info!("notify: {} raised", toast.tag);
                 shell.notifier.get().show(&toast);
+                connection.raised_chats.borrow_mut().insert(message.chat_id);
             }
             Ok(None) => crate::fc_debug!("notify: message {} skipped", message.id),
             Err(error) => {

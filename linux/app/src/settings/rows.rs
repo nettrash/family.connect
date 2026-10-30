@@ -4,10 +4,14 @@
 //! (`windows::settings_window`) only copies a [`SwitchLook`] onto an `adw::SwitchRow`.
 
 use fc_core::text::string_catalog::StringCatalog;
-use fc_logic::app_version_text;
+use fc_logic::app_session::SessionState;
+use fc_logic::date_culture::{self, DateCulture, TimeZone};
 use fc_logic::global_hot_key_rules::{self, PortalState};
 use fc_logic::startup_setting::{self, StartupState};
 use fc_logic::voice_look::voice_speed;
+use fc_logic::{app_version_text, assistant_consent, lookups};
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::seams::media::CameraDevice;
 
@@ -85,6 +89,121 @@ pub fn notification_notes(say: &dyn StringCatalog) -> [String; 2] {
         say.get("If no notifications appear, check Settings ▸ Notifications ▸ Family Connect.")
             .to_string(),
     ]
+}
+
+/// One of the assistant's two groups (§13; the Mac's `assistantConsentSection` and
+/// `AssistantLookupConsentSection`, Windows' `DrawAssistantConsent` / `DrawLookups`): drawn at all,
+/// when the member agreed, the one action, and the footnote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentLook {
+    pub visible: bool,
+    /// When the yes was given, as the reader's clock writes it — `None` before one. An answer the
+    /// server dated in a way this client cannot read is `Some("")`: agreed, the date unsaid.
+    pub agreed: Option<String>,
+    pub action: String,
+    /// The action takes the answer back: red, one press, no question — what it cannot undo the
+    /// footnote already says.
+    pub withdraws: bool,
+    pub footnote: String,
+}
+
+impl ConsentLook {
+    fn hidden() -> ConsentLook {
+        ConsentLook {
+            visible: false,
+            agreed: None,
+            action: String::new(),
+            withdraws: false,
+            footnote: String::new(),
+        }
+    }
+}
+
+/// A server time (RFC 3339) as the reader's clock writes a date and a time — the culture's short
+/// date and short time ("10/30/2026 9:41 PM"); `None` for one this client cannot read.
+pub fn agreed_when(at: &str, culture: &DateCulture, zone: &dyn TimeZone) -> Option<String> {
+    let at = OffsetDateTime::parse(at.trim(), &Rfc3339).ok()?;
+    let local = date_culture::local(at, zone);
+    let wall = PrimitiveDateTime::new(local.date(), local.time());
+    Some(format!(
+        "{} {}",
+        culture.format(wall, "d"),
+        culture.format(wall, "t")
+    ))
+}
+
+/// When an answer was given, as `when` writes a server time; `None` for no answer.
+fn agreed_at(at: Option<&str>, when: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let at = at.map(str::trim).filter(|at| !at.is_empty())?;
+    Some(when(at).unwrap_or_default())
+}
+
+/// "Assistant": absent where the server names no processor — nothing to have agreed to. Before a
+/// yes, "Review and Agree…" (the whole question, lookups included); after it, the date and "Stop
+/// Sending My Messages", which the server takes the lookup consent back with.
+pub fn assistant_consent(
+    state: &SessionState,
+    when: &dyn Fn(&str) -> Option<String>,
+    say: &dyn StringCatalog,
+) -> ConsentLook {
+    let processor = state
+        .assistant
+        .as_ref()
+        .and_then(|assistant| assistant.processor.as_deref())
+        .filter(|processor| assistant_consent::is_available(Some(processor)));
+    let Some(processor) = processor else {
+        return ConsentLook::hidden();
+    };
+    let agreed = agreed_at(state.assistant_consent_at.as_deref(), when);
+    let withdraws = agreed.is_some();
+    ConsentLook {
+        visible: true,
+        agreed,
+        action: say
+            .get(if withdraws {
+                "Stop Sending My Messages"
+            } else {
+                "Review and Agree…"
+            })
+            .to_string(),
+        withdraws,
+        footnote: if withdraws {
+            say.format("What you write to the assistant is sent to %@. Stopping takes effect at once; what has already been sent cannot be taken back.", &[&processor])
+        } else {
+            say.format("Until you agree, nothing you write is sent to %@ and the assistant does not answer you.", &[&processor])
+        },
+    }
+}
+
+/// "Looking things up": only where `lookups::in_settings` — a server that names its providers and
+/// a member who agreed to the assistant, which the lookup consent stands on (before that, the
+/// assistant's own question asks both).
+pub fn lookup_consent(
+    state: &SessionState,
+    when: &dyn Fn(&str) -> Option<String>,
+    say: &dyn StringCatalog,
+) -> ConsentLook {
+    let names = lookups::providers(state.assistant.as_ref());
+    let Some(names) = names.filter(|_| lookups::in_settings(state)) else {
+        return ConsentLook::hidden();
+    };
+    let agreed = lookups::allowed(state)
+        .then(|| agreed_at(state.assistant_lookup_consent_at.as_deref(), when))
+        .flatten();
+    let withdraws = agreed.is_some();
+    ConsentLook {
+        visible: true,
+        agreed,
+        action: say
+            .get(if withdraws {
+                "Stop Lookups"
+            } else {
+                "Review and Allow Lookups…"
+            })
+            .to_string(),
+        withdraws,
+        footnote: lookups::settings_footnote(&names, withdraws, say),
+    }
 }
 
 /// The version line (§13): "Family Connect for Linux 1.3 (437)" — `AppVersionText`, the build
@@ -171,6 +290,97 @@ mod tests {
 
     fn say() -> EnglishCatalog {
         EnglishCatalog::new()
+    }
+
+    /// A member of a family on a server whose assistant is `processor`, naming `lookups`.
+    fn session(processor: Option<&str>, lookups: Option<&[&str]>) -> SessionState {
+        let mut state = SessionState::new(fc_logic::app_session::Gate::Member);
+        state.assistant = Some(fc_core::protocol::AssistantDto {
+            processor: processor.map(str::to_string),
+            lookups: lookups.map(|names| names.iter().map(|name| name.to_string()).collect()),
+            ..Default::default()
+        });
+        state
+    }
+
+    fn when(at: &str) -> Option<String> {
+        Some(format!("on {at}"))
+    }
+
+    #[test]
+    fn the_assistant_group_is_absent_without_a_named_processor() {
+        for state in [
+            SessionState::new(fc_logic::app_session::Gate::Member),
+            session(None, None),
+            session(Some("  "), None),
+        ] {
+            assert!(!assistant_consent(&state, &when, &say()).visible);
+        }
+    }
+
+    #[test]
+    fn the_assistant_group_asks_then_offers_the_way_out() {
+        let mut state = session(Some("Example AI"), None);
+        let asking = assistant_consent(&state, &when, &say());
+        assert!(asking.visible && !asking.withdraws && asking.agreed.is_none());
+        assert_eq!(asking.action, "Review and Agree…");
+        assert_eq!(
+            asking.footnote,
+            "Until you agree, nothing you write is sent to Example AI and the assistant does not answer you."
+        );
+        state.assistant_consent_at = Some("2026-10-30T09:15:00Z".into());
+        let agreed = assistant_consent(&state, &when, &say());
+        assert!(agreed.withdraws);
+        assert_eq!(agreed.agreed.as_deref(), Some("on 2026-10-30T09:15:00Z"));
+        assert_eq!(agreed.action, "Stop Sending My Messages");
+        assert!(
+            agreed
+                .footnote
+                .starts_with("What you write to the assistant is sent to Example AI.")
+        );
+        // A date this client cannot read is still a yes.
+        let unread = assistant_consent(&state, &|_| None, &say());
+        assert_eq!(unread.agreed.as_deref(), Some(""));
+        // A blank date is no answer, as `/me` means it.
+        state.assistant_consent_at = Some(" ".into());
+        assert!(!assistant_consent(&state, &when, &say()).withdraws);
+    }
+
+    #[test]
+    fn the_lookup_group_stands_on_the_assistant_yes() {
+        let mut state = session(Some("Example AI"), Some(&["Search", "Weather"]));
+        // Not agreed to the assistant: its own question asks both, so no lookup group.
+        assert!(!lookup_consent(&state, &when, &say()).visible);
+        state.assistant_consent_at = Some("2026-10-30T09:15:00Z".into());
+        let asking = lookup_consent(&state, &when, &say());
+        assert!(asking.visible && !asking.withdraws);
+        assert_eq!(asking.action, "Review and Allow Lookups…");
+        assert!(asking.footnote.contains("Search and Weather"));
+        state.assistant_lookup_consent_at = Some("2026-10-30T10:00:00Z".into());
+        let agreed = lookup_consent(&state, &when, &say());
+        assert!(agreed.withdraws);
+        assert_eq!(agreed.action, "Stop Lookups");
+        assert_eq!(agreed.agreed.as_deref(), Some("on 2026-10-30T10:00:00Z"));
+        // A server that names no provider has nothing to agree to.
+        let mut none = session(Some("Example AI"), None);
+        none.assistant_consent_at = state.assistant_consent_at.clone();
+        assert!(!lookup_consent(&none, &when, &say()).visible);
+    }
+
+    #[test]
+    fn agreed_when_writes_the_readers_date_and_clock() {
+        let culture = DateCulture::named("en-GB").expect("measured");
+        let utc = time::UtcOffset::UTC;
+        assert_eq!(
+            agreed_when("2026-10-30T09:15:00Z", &culture, &utc).as_deref(),
+            Some("30/10/2026 09:15")
+        );
+        let tokyo = time::UtcOffset::from_hms(9, 0, 0).expect("an offset");
+        assert_eq!(
+            agreed_when("2026-10-30T20:15:00Z", &culture, &tokyo).as_deref(),
+            Some("31/10/2026 05:15")
+        );
+        assert_eq!(agreed_when("yesterday", &culture, &utc), None);
     }
 
     #[test]

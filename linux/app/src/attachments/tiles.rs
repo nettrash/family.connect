@@ -98,6 +98,11 @@ pub fn media_block(message: &MessageDto, own: bool) -> gtk::Widget {
             more: 0,
         };
         column.append(&slots.tile(message, &looked[0], &look));
+        // A video's text sits under its tile, as a voice note's sits under its player (the Mac's
+        // `singleAttachment`).
+        if looked[0].kind == "video" {
+            column.append(&crate::media::transcript::section(message, &looked[0], own));
+        }
     } else if looked.len() > 1 {
         pictures_width = Some(2 * pictures::logical(GRID_CELL) + GRID_SPACING);
         let grid = gtk::Grid::builder()
@@ -122,6 +127,18 @@ pub fn media_block(message: &MessageDto, own: bool) -> gtk::Widget {
             grid.attach(&cell, (at % 2) as i32, (at / 2) as i32, 1, 1);
         }
         column.append(&grid);
+        // Each video of the pile gets its own "Show text" under it, numbered when there are
+        // several (the Mac's `TranscriptDoor.pileVideos`).
+        let videos: Vec<&AttachmentDto> = looked.iter().filter(|a| a.kind == "video").collect();
+        let numbered = videos.len() > 1;
+        for (at, video) in videos.iter().enumerate() {
+            column.append(&crate::media::transcript::numbered_section(
+                message,
+                video,
+                own,
+                numbered.then_some(at + 1),
+            ));
+        }
     }
     for attachment in all.iter().filter(|a| !media::is_media(&a.kind)) {
         let row = match attachment.kind.as_str() {

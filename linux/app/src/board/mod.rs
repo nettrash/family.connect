@@ -88,6 +88,15 @@ pub fn css(dark: bool) -> String {
   box-shadow: {rest};
   transition: box-shadow 150ms ease-out;
 }}
+.fc-note.fc-note-backdropped {{
+  padding: 0;
+}}
+.fc-note-backdrop-content {{
+  padding: 10px;
+}}
+.fc-note-backdrop-veil {{
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.78));
+}}
 .fc-note.fc-note-bare {{
   background-color: transparent;
   background-image: none;

@@ -26,6 +26,7 @@
 //! | `win.new-group` | — | — | [`FamilyRoutes::new_group`] | S0 → P4 |
 //! | `win.record-voice` | — | Ctrl+Shift+R | [`ChatRoutes::record_voice`] — never sends; during a recording it stops into review | S0 → P1 (+P3) |
 //! | `win.record-video` | — | none: no shortcut ever opens the camera | [`ChatRoutes::record_video`] | S0 → P1 (+P3) |
+//! | `win.toggle-fullscreen` | — | F11 | the window full screen and back (the Mac's View ▸ Enter Full Screen) | S0, P1 |
 //! | `win.paste-attachment` | — | Ctrl+V | [`ChatRoutes::paste_attachment`]. DISABLED by default: P1 enables it (`MainWindow::set_paste_attachment_enabled`) only while a conversation is shown and its field is NOT focused, so the field's own Ctrl+V pastes words | S0 → P1 |
 //! | `win.message-reply` | `x` message id | — | Reply | P1 |
 //! | `win.message-react` | `(xs)` message id, emoji | — | toggle that reaction (held → DELETE, else PUT) | P1 |
@@ -119,6 +120,7 @@ pub const NEW_GROUP: ActionSpec = win("new-group", None, &[]);
 pub const RECORD_VOICE: ActionSpec = win("record-voice", None, &["<Control><Shift>r"]);
 pub const RECORD_VIDEO: ActionSpec = win("record-video", None, &[]);
 pub const PASTE_ATTACHMENT: ActionSpec = win("paste-attachment", None, &["<Control>v"]);
+pub const TOGGLE_FULLSCREEN: ActionSpec = win("toggle-fullscreen", None, &["F11"]);
 
 pub const MESSAGE_REPLY: ActionSpec = win("message-reply", Some("x"), &[]);
 pub const MESSAGE_REACT: ActionSpec = win("message-react", Some("(xs)"), &[]);
@@ -132,6 +134,7 @@ pub const MESSAGE_EDIT: ActionSpec = win("message-edit", Some("x"), &[]);
 pub const MESSAGE_DELETE: ActionSpec = win("message-delete", Some("x"), &[]);
 pub const MESSAGE_REPORT: ActionSpec = win("message-report", Some("x"), &[]);
 pub const MESSAGE_BLOCK: ActionSpec = win("message-block", Some("x"), &[]);
+pub const MESSAGE_REACTORS: ActionSpec = win("message-reactors", Some("x"), &[]);
 
 /// GTK's own window action Ctrl+W is bound to.
 pub const WINDOW_CLOSE: &str = "window.close";
@@ -154,16 +157,17 @@ pub const APP_ACTIONS: [ActionSpec; 11] = [
 ];
 
 /// The main window's own actions (S0 registers them; P1 the same on a conversation window).
-pub const WINDOW_ACTIONS: [ActionSpec; 5] = [
+pub const WINDOW_ACTIONS: [ActionSpec; 6] = [
     REFRESH,
     NEW_GROUP,
     RECORD_VOICE,
     RECORD_VIDEO,
     PASTE_ATTACHMENT,
+    TOGGLE_FULLSCREEN,
 ];
 
 /// The message menu's actions (P1 registers them on every window that shows a conversation).
-pub const MESSAGE_ACTIONS: [ActionSpec; 12] = [
+pub const MESSAGE_ACTIONS: [ActionSpec; 13] = [
     MESSAGE_REPLY,
     MESSAGE_REACT,
     MESSAGE_SHOW_TEXT,
@@ -176,6 +180,7 @@ pub const MESSAGE_ACTIONS: [ActionSpec; 12] = [
     MESSAGE_DELETE,
     MESSAGE_REPORT,
     MESSAGE_BLOCK,
+    MESSAGE_REACTORS,
 ];
 
 const fn app(

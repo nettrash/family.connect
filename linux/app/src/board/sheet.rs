@@ -20,6 +20,7 @@ use time::OffsetDateTime;
 use crate::services::log;
 use crate::settings::ui;
 use crate::shell::Shell;
+use crate::text::typing_hooks;
 
 /// The sheet open now (the self-test drives it).
 #[cfg_attr(
@@ -93,6 +94,19 @@ fn open(
     let page = adw::PreferencesPage::new();
     let problem = ui::problem_label();
 
+    // Every control that changes what `problem` reads asks again; the judge itself is built once
+    // the Save button exists (below).
+    let judged: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let rejudge: Rc<dyn Fn()> = {
+        let judged = Rc::clone(&judged);
+        Rc::new(move || {
+            let judge = judged.borrow().clone();
+            if let Some(judge) = judge {
+                judge();
+            }
+        })
+    };
+
     // ---- the words ----------------------------------------------------------------------------
     let words = adw::PreferencesGroup::builder()
         .title(note_sheet_text::field_label(kind, say.as_ref()))
@@ -110,6 +124,10 @@ fn open(
     text.update_property(&[gtk::accessible::Property::Label(
         &note_sheet_text::field_label(kind, say.as_ref()),
     )]);
+    // The prose field's aids, as the composer's (§7; the Mac's `MacCapitalKeys` covers a note's
+    // words): capitals at a sentence's start, emoji as you type. A list's lines take emoji only.
+    let text_hooks = typing_hooks::attach_text_view(&text, true);
+    let line_hooks: LineHooks = Rc::default();
     let frame = gtk::Frame::new(None);
     frame.set_child(Some(&text));
     frame.add_css_class("view");
@@ -129,10 +147,16 @@ fn open(
         lines_box.set_selection_mode(gtk::SelectionMode::None);
         lines.add(&lines_box);
         let add = ui::button_row(say.get("Add a thing"), false, {
-            let (lines_box, draft) = (lines_box.clone(), Rc::clone(&draft));
+            let (lines_box, draft, rejudge, line_hooks) = (
+                lines_box.clone(),
+                Rc::clone(&draft),
+                Rc::clone(&rejudge),
+                Rc::clone(&line_hooks),
+            );
             move || {
                 draft.borrow_mut().lines.push(DraftLine::new(None, ""));
-                fill_lines(&lines_box, &draft);
+                fill_lines(&lines_box, &draft, &rejudge, &line_hooks);
+                rejudge();
             }
         });
         let adder = gtk::ListBox::new();
@@ -141,7 +165,7 @@ fn open(
         adder.set_margin_top(6);
         adder.append(&add);
         lines.add(&adder);
-        fill_lines(&lines_box, &draft);
+        fill_lines(&lines_box, &draft, &rejudge, &line_hooks);
         page.add(&lines);
     }
 
@@ -150,19 +174,30 @@ fn open(
         let when = adw::PreferencesGroup::builder()
             .title(say.get("When"))
             .build();
-        let starts = time_row(say.get("Starts"), Rc::clone(&draft), Moment::Starts);
+        let starts = time_row(
+            say.get("Starts"),
+            Rc::clone(&draft),
+            Moment::Starts,
+            Rc::clone(&rejudge),
+        );
         when.add(&starts);
         let has_end = adw::SwitchRow::builder()
             .title(say.get("Has an end"))
             .active(draft.borrow().has_end)
             .build();
-        let ends = time_row(say.get("Ends"), Rc::clone(&draft), Moment::Ends);
+        let ends = time_row(
+            say.get("Ends"),
+            Rc::clone(&draft),
+            Moment::Ends,
+            Rc::clone(&rejudge),
+        );
         ends.set_visible(draft.borrow().has_end);
         {
-            let (draft, ends) = (Rc::clone(&draft), ends.clone());
+            let (draft, ends, rejudge) = (Rc::clone(&draft), ends.clone(), Rc::clone(&rejudge));
             has_end.connect_active_notify(move |row| {
                 draft.borrow_mut().has_end = row.is_active();
                 ends.set_visible(row.is_active());
+                rejudge();
             });
         }
         when.add(&has_end);
@@ -292,6 +327,7 @@ fn open(
             judge();
         });
     }
+    *judged.borrow_mut() = Some(Rc::clone(&judge));
     judge();
 
     let sheet = Rc::new(Sheet {
@@ -300,7 +336,10 @@ fn open(
         colors,
     });
     OPEN.with(|open| *open.borrow_mut() = Some(Rc::clone(&sheet)));
-    dialog.connect_closed(|_| {
+    // The aids live as long as the sheet.
+    let keep = (text_hooks, line_hooks);
+    dialog.connect_closed(move |_| {
+        let _ = &keep;
         OPEN.with(|open| open.borrow_mut().take());
     });
     {
@@ -380,15 +419,27 @@ fn sheet_draft(draft: &Rc<RefCell<NoteDraft>>) -> NoteDraft {
 }
 
 /// A list's lines, drawn again: one entry per line, each with a remove button.
-fn fill_lines(list: &gtk::ListBox, draft: &Rc<RefCell<NoteDraft>>) {
+/// The typing aids of a list's lines, kept while they are drawn.
+type LineHooks = Rc<RefCell<Vec<Rc<typing_hooks::TypingHooks>>>>;
+
+fn fill_lines(
+    list: &gtk::ListBox,
+    draft: &Rc<RefCell<NoteDraft>>,
+    rejudge: &Rc<dyn Fn()>,
+    hooks: &LineHooks,
+) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
+    hooks.borrow_mut().clear();
     let shell = Shell::get();
     let count = draft.borrow().lines.len();
     for at in 0..count {
         let line = draft.borrow().lines[at].clone();
         let row = adw::EntryRow::builder().text(&line.text).build();
+        hooks
+            .borrow_mut()
+            .push(typing_hooks::attach_editable(&row, &row));
         row.clone()
             .upcast::<gtk::Widget>()
             .update_property(&[gtk::accessible::Property::Label(
@@ -410,12 +461,18 @@ fn fill_lines(list: &gtk::ListBox, draft: &Rc<RefCell<NoteDraft>>) {
             .build();
         remove.add_css_class("flat");
         {
-            let (list, draft) = (list.clone(), Rc::clone(draft));
+            let (list, draft, rejudge, hooks) = (
+                list.clone(),
+                Rc::clone(draft),
+                Rc::clone(rejudge),
+                Rc::clone(hooks),
+            );
             remove.connect_clicked(move |_| {
                 if at < draft.borrow().lines.len() {
                     draft.borrow_mut().lines.remove(at);
                 }
-                fill_lines(&list, &draft);
+                fill_lines(&list, &draft, &rejudge, &hooks);
+                rejudge();
             });
         }
         row.add_suffix(&remove);
@@ -431,7 +488,12 @@ enum Moment {
 }
 
 /// A row of a date (a calendar in a popover) and a time (hour and minute), in the reader's zone.
-fn time_row(title: &str, draft: Rc<RefCell<NoteDraft>>, moment: Moment) -> adw::ActionRow {
+fn time_row(
+    title: &str,
+    draft: Rc<RefCell<NoteDraft>>,
+    moment: Moment,
+    changed: Rc<dyn Fn()>,
+) -> adw::ActionRow {
     let shell = Shell::get();
     let row = adw::ActionRow::builder().title(title).build();
     let held = match moment {
@@ -487,11 +549,14 @@ fn time_row(title: &str, draft: Rc<RefCell<NoteDraft>>, moment: Moment) -> adw::
             };
             date.set_label(&date_text(&at, &Shell::get().culture));
             let instant = OffsetDateTime::from_unix_timestamp(at.to_unix()).ok();
-            let mut held = draft.borrow_mut();
-            match moment {
-                Moment::Starts => held.starts = instant,
-                Moment::Ends => held.ends = instant,
+            {
+                let mut held = draft.borrow_mut();
+                match moment {
+                    Moment::Starts => held.starts = instant,
+                    Moment::Ends => held.ends = instant,
+                }
             }
+            changed();
         })
     };
     {

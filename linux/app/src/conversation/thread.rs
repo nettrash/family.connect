@@ -166,6 +166,21 @@ impl ThreadDialog {
         }
         thread.redraw();
         thread.timeline.scroll_to_bottom();
+        // Nothing held yet (a root this device never saw): a spinner while it is read (the Mac's
+        // `ThreadView`), and if nothing arrives, a page that says so.
+        let held = thread
+            .model
+            .bubbles()
+            .is_ok_and(|bubbles| !bubbles.is_empty());
+        if !held {
+            let spinner = adw::Spinner::builder()
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .width_request(32)
+                .height_request(32)
+                .build();
+            thread.timeline.set_placeholder(Some(spinner.upcast_ref()));
+        }
         {
             let weak = Rc::downgrade(&thread);
             glib::spawn_future_local(async move {
@@ -176,7 +191,21 @@ impl ThreadDialog {
                 let Some(thread) = weak.upgrade() else {
                     return;
                 };
-                if let Ok(Some(error)) = failed {
+                thread.timeline.set_placeholder(None);
+                let empty = thread
+                    .model
+                    .bubbles()
+                    .is_ok_and(|bubbles| bubbles.is_empty());
+                if empty {
+                    let say = thread.composer.say();
+                    let page = adw::StatusPage::builder()
+                        .icon_name("dialog-warning-symbolic")
+                        .title(say.get("Couldn't load the thread"))
+                        .description(say.get("Try again in a moment."))
+                        .build();
+                    page.add_css_class("compact");
+                    thread.timeline.set_placeholder(Some(page.upcast_ref()));
+                } else if let Ok(Some(error)) = failed {
                     crate::fc_info!("thread: the read failed ({})", error.code);
                     thread
                         .composer
@@ -358,22 +387,31 @@ impl BubbleHost for ThreadHost {
             BubbleHostForwarder(&page).vote(message_id, option_id);
         }
     }
-    fn close_poll(&self, _message_id: i64) {}
+    fn close_poll(&self, message_id: i64) {
+        if let Some(thread) = self.0.upgrade()
+            && let Some(page) = thread.page.upgrade()
+        {
+            page.close_poll_over(message_id, thread.dialog.upcast_ref());
+        }
+    }
     fn open_member(&self, user_id: i64) {
         if let Some(page) = self.0.upgrade().and_then(|t| t.page.upgrade()) {
             page.open_member(user_id);
         }
     }
     fn menu(&self, message: &MessageDto, anchor: &gtk::Widget, x: f64, y: f64) {
-        if let Some(page) = self.0.upgrade().and_then(|t| t.page.upgrade()) {
-            let facts = page.thread_menu_facts(message);
+        if let Some(thread) = self.0.upgrade()
+            && let Some(page) = thread.page.upgrade()
+        {
+            let facts = page.thread_menu_facts(message, thread.model.revealed(message.id));
             menu::popup(&facts, "thread", anchor, x, y);
         }
     }
-    fn reactors(&self, message: &MessageDto, emoji: &str, _anchor: &gtk::Widget) {
-        // In the thread a chip the reader is part of takes their reaction off — the reactor list
-        // is the conversation's.
-        self.react(message.id, emoji);
+    fn reactors(&self, message: &MessageDto, emoji: &str, anchor: &gtk::Widget) {
+        // The conversation's list, as on the page: who reacted, the reader's own row the remove.
+        if let Some(page) = self.0.upgrade().and_then(|t| t.page.upgrade()) {
+            page.reactors(message, Some(emoji), anchor);
+        }
     }
 }
 
@@ -435,7 +473,7 @@ impl MessageActions for ThreadDialog {
     }
     fn report(&self, message_id: i64) {
         if let (Some(page), Some(message)) = (self.page.upgrade(), self.message(message_id)) {
-            let facts = page.thread_menu_facts(&message);
+            let facts = page.thread_menu_facts(&message, self.model.revealed(message_id));
             safety::report(
                 &self.dialog,
                 page.connection(),
@@ -447,6 +485,11 @@ impl MessageActions for ThreadDialog {
     fn block(&self, message_id: i64) {
         if let (Some(page), Some(message)) = (self.page.upgrade(), self.message(message_id)) {
             safety::block(&self.dialog, page.connection(), message.sender_id);
+        }
+    }
+    fn reactors(&self, message_id: i64) {
+        if let Some(page) = self.page.upgrade() {
+            page.all_reactors(message_id, &self.timeline);
         }
     }
 }

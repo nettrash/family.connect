@@ -3,7 +3,9 @@
 //! set, the reader's own reaction appended, "More reactions…" opening GTK's emoji chooser) — and
 //! whose items are the `win.message-*` actions with the message id as target (`seams::actions`), in
 //! `message_menu::actions`' order, then the Safety group (Report…, Block / Unblock; an assistant's
-//! reply: Report this reply…). The thread dialog uses the same menu under its own prefix
+//! reply: Report this reply…). A row hidden from a blocked member offers the Safety group and
+//! nothing else — Copy would put the words it hides on the clipboard (the Mac's `rowMenu`). The
+//! thread dialog uses the same menu under its own prefix
 //! (`thread.`), so its rows act on the thread.
 //!
 //! [`install`] registers the twelve `win.message-*` actions on a window (or the thread's action
@@ -35,6 +37,8 @@ pub trait MessageActions {
     fn delete(&self, token: i64);
     fn report(&self, message_id: i64);
     fn block(&self, message_id: i64);
+    /// "See who reacted": every emoji, who chose it, the reader's own the way to take it off.
+    fn reactors(&self, message_id: i64);
 }
 
 /// Registers `MESSAGE_ACTIONS` on `map`, each sent to `target()` at the time it is activated.
@@ -77,6 +81,7 @@ fn dispatch(spec: ActionSpec, surface: &dyn MessageActions, parameter: Option<&g
         n if n == actions::MESSAGE_DELETE.name => surface.delete(id),
         n if n == actions::MESSAGE_REPORT.name => surface.report(id),
         n if n == actions::MESSAGE_BLOCK.name => surface.block(id),
+        n if n == actions::MESSAGE_REACTORS.name => surface.reactors(id),
         _ => {}
     }
 }
@@ -99,6 +104,8 @@ pub struct MenuFacts {
     pub in_thread: bool,
     pub offers_text: bool,
     pub my_reaction: Option<String>,
+    /// Drawn as "Hidden — blocked member" (from a blocked sender, not revealed here): Safety only.
+    pub hidden: bool,
     pub safety: Safety,
 }
 
@@ -119,7 +126,11 @@ pub fn popup(facts: &MenuFacts, prefix: &str, anchor: &gtk::Widget, x: f64, y: f
     let id = message.id;
     let menu = gio::Menu::new();
     let numbered = id != 0;
-    let items = message_menu::actions(message, facts.may_edit, facts.in_thread, facts.offers_text);
+    let items = if facts.hidden {
+        Vec::new()
+    } else {
+        message_menu::actions(message, facts.may_edit, facts.in_thread, facts.offers_text)
+    };
     let reacts = numbered && items.contains(&MessageAction::React);
     if reacts {
         let section = gio::Menu::new();
@@ -129,6 +140,16 @@ pub fn popup(facts: &MenuFacts, prefix: &str, anchor: &gtk::Widget, x: f64, y: f
         menu.append_section(None, &section);
     }
     let main = gio::Menu::new();
+    // Right under the reactions, where the Mac lists it: who chose them.
+    let reacted = message.reactions.as_deref().is_some_and(|r| !r.is_empty());
+    if reacts && reacted {
+        main.append_item(&item(
+            say.get("See who reacted"),
+            prefix,
+            actions::MESSAGE_REACTORS,
+            id,
+        ));
+    }
     for action in items.iter().filter(|_| numbered) {
         let entry = match action {
             MessageAction::React => None,
@@ -176,7 +197,7 @@ pub fn popup(facts: &MenuFacts, prefix: &str, anchor: &gtk::Widget, x: f64, y: f
         }
     }
     // Copy is there for any words — a pending row too (no id).
-    if !numbered && !message.body.is_empty() {
+    if !numbered && !facts.hidden && !message.body.is_empty() {
         main.append_item(&item(say.get("Copy"), prefix, actions::MESSAGE_COPY, id));
     }
     menu.append_section(None, &main);

@@ -531,3 +531,73 @@ fn the_socket_is_a_live_socket_and_a_frame_sender() {
     assert_eq!(frames.get(), 1);
     assert!(!socket.is_connected());
 }
+
+/// A clock whose waits never end on their own — only a kick can cut one short.
+struct StuckClock {
+    waits: Rc<RefCell<Vec<Duration>>>,
+}
+
+impl Clock for StuckClock {
+    fn now(&self) -> OffsetDateTime {
+        datetime!(2026-09-12 10:00 UTC)
+    }
+
+    fn sleep(&self, duration: Duration) -> LocalBoxFuture<'static, ()> {
+        self.waits.borrow_mut().push(duration);
+        Box::pin(std::future::pending())
+    }
+}
+
+/// THE NETWORK CAME BACK: a kick dials at once instead of finishing a wait sized for a network
+/// that no longer exists, and the next wait starts from a fresh backoff (the Mac's
+/// `ChatSocket.kick`). A kick while nothing waits does nothing.
+#[test]
+fn a_kick_cuts_the_wait_short_and_starts_the_backoff_again() {
+    let connector = FakeConnector::new();
+    connector
+        .then(FakeWebSocket::new(&[ONE_MESSAGE]))
+        .then(FakeWebSocket::new(&[ONE_MESSAGE]))
+        .then(FakeWebSocket::new(&[]).held_open());
+    let waits = Rc::new(RefCell::new(Vec::new()));
+    let socket = ChatSocket::new(
+        Rc::new(connector),
+        || WHERE.to_string(),
+        Rc::new(MemoryTokenStore::new(Some("t0ken"))),
+        Rc::new(StuckClock {
+            waits: waits.clone(),
+        }),
+    )
+    .with_backoff(ceilings());
+    let log = Rc::new(RefCell::new(Log::default()));
+    listen(&socket, &log);
+    let connects = log.clone();
+    socket
+        .on_connected()
+        .subscribe(move |()| connects.borrow_mut().connects += 1);
+    // Nothing waits yet: nothing to wake.
+    socket.kick();
+    let looping = Box::pin(socket.run(Cancel::new()));
+    let watched = Box::pin(async {
+        for kicks in 1..=2 {
+            // The connection dropped and the loop waits, for good without a kick.
+            while waits.borrow().len() < kicks {
+                yield_once().await;
+            }
+            socket.kick();
+            while log.borrow().connects < kicks + 1 {
+                yield_once().await;
+            }
+        }
+        assert!(socket.is_connected());
+    });
+    match finish(select(looping, watched)) {
+        Either::Left(_) => panic!("the loop ended on its own"),
+        Either::Right(((), looping)) => drop(looping),
+    }
+    // Without the kick's reset the second wait would have been the doubled ceiling.
+    assert_eq!(
+        *waits.borrow(),
+        [Duration::from_secs(1), Duration::from_secs(1)]
+    );
+    assert_eq!(log.borrow().disconnects, 2);
+}

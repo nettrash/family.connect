@@ -1362,10 +1362,15 @@ and answers; Decline sends `call_end` `decline` without showing anything.
 
 ### 15.1 What raises one
 
-`fc_logic::notifications::NotificationRules` — unchanged from Windows: only **live** frames (a resync
-after a night asleep moves the badge, not a hundred banners); a message or a note that says something
-new while the window is not in front; nothing from a blocked member, and nothing for the assistant's
-answer to a blocked member's question; the "Tell me when a message arrives" switch.
+`fc_logic::notifications::NotificationRules`: only **live** frames (a resync after a night asleep
+moves the badge, not a hundred banners); a message unless its chat is being READ — shown in the
+window in front, at its newest (`conversation::page::being_read`, the Mac's `ChatPresence`) — so a
+message in another chat is announced with the app in front, as on the Mac (Windows muted everything
+while its window was in front; changed 2026-10-30); a note that says something new unless the
+board's window is in front; nothing from a blocked member, and nothing for the assistant's answer to
+a blocked member's question; the "Tell me when a message arrives" switch. A chat's notification is
+withdrawn once the chat is read — here, in any window, on another device, or by a resync
+(`Shell::refresh_attention`).
 
 ### 15.2 What it says — who, never what
 

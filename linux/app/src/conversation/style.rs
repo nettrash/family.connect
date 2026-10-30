@@ -87,6 +87,14 @@ pub fn css(palette: &Palette) -> String {
 .fc-chat-row:focus-visible .fc-chat-bubble.fc-chat-bare {{
   outline-offset: 2px;
 }}
+.fc-chat-row {{
+  border-radius: 12px;
+  transition: background-color 600ms ease-out;
+}}
+.fc-chat-row.fc-chat-jumped {{
+  background-color: {accent_soft};
+  transition: none;
+}}
 .fc-chat-bubble > button.flat {{
   padding-left: 8px;
   padding-right: 8px;
@@ -305,10 +313,32 @@ pub fn css(palette: &Palette) -> String {
 .fc-chat-notice {{
   font-size: smaller;
 }}
+.fc-chat-hints {{
+  margin: 0 8px;
+}}
+.fc-chat-hint image {{
+  opacity: 0.7;
+  margin-top: 1px;
+}}
+.fc-chat-hint button {{
+  min-height: 0;
+  padding: 0 6px;
+}}
 .fc-chat-chip {{
   padding: 2px 4px 2px 12px;
   border-radius: 9999px;
   background-color: alpha(currentColor, 0.08);
+}}
+.fc-chat-chip.fc-chat-chip-pictured {{
+  padding-left: 4px;
+  border-radius: 12px;
+}}
+.fc-chat-chip-thumb {{
+  border-radius: 8px;
+}}
+.fc-chat-chip-play {{
+  padding: 2px;
+  -gtk-icon-size: 12px;
 }}
 .fc-chat-drop {{
   border: 2px solid {accent};

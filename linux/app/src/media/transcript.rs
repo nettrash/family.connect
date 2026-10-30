@@ -150,6 +150,18 @@ pub fn ask(anchor: &impl IsA<gtk::Widget>, message: &MessageDto, attachment: &At
 /// The section under a voice note's player (`own`: in the reader's own balloon) or under a circle.
 /// Empty, and not drawn, where nothing is offered.
 pub fn section(message: &MessageDto, attachment: &AttachmentDto, own: bool) -> gtk::Widget {
+    numbered_section(message, attachment, own, None)
+}
+
+/// The section under a video's tile — and, under a pile of pictures, one for each of its videos,
+/// headed "Video 2" so each says which it is the text of (`number`, only where there are several;
+/// the Mac's `TranscriptDoor.pileVideos`).
+pub fn numbered_section(
+    message: &MessageDto,
+    attachment: &AttachmentDto,
+    own: bool,
+    number: Option<usize>,
+) -> gtk::Widget {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 2);
     root.add_css_class("fc-media-text");
     if own {
@@ -165,7 +177,7 @@ pub fn section(message: &MessageDto, attachment: &AttachmentDto, own: bool) -> g
             (Rc::clone(&connection), message.clone(), attachment.clone());
         Rc::new(move || {
             if let Some(root) = weak.upgrade() {
-                fill(&root, &connection, &message, &attachment);
+                fill(&root, &connection, &message, &attachment, number);
             }
         })
     };
@@ -197,6 +209,7 @@ fn fill(
     connection: &Connection,
     message: &MessageDto,
     attachment: &AttachmentDto,
+    number: Option<usize>,
 ) {
     while let Some(child) = root.first_child() {
         root.remove(&child);
@@ -257,6 +270,13 @@ fn fill(
                 root.append(&show());
             }
         }
+    }
+    // Which video of the pile, over whatever the section says.
+    if let Some(number) = number
+        && root.first_child().is_some()
+    {
+        let heading = note(&format!("{} {number}", say.get("Video")));
+        root.prepend(&heading);
     }
     root.set_visible(root.first_child().is_some());
 }

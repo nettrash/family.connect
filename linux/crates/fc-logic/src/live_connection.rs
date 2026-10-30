@@ -397,6 +397,12 @@ impl LiveConnection {
         self.inner.refresh();
     }
 
+    /// The network came back: the socket dials now instead of finishing its backoff (the Mac's
+    /// `networkRestored`). The outbox's own flush is [`flush`](Self::flush).
+    pub fn reconnect_now(&self) {
+        self.inner.socket.kick();
+    }
+
     /// Stop listening to the socket, the session and the router, and stop (`DisposeAsync`).
     pub async fn dispose(&self) {
         self.unsubscribe();

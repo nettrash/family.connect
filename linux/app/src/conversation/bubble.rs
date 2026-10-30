@@ -66,6 +66,8 @@ pub struct BubbleContext {
     pub members: Rc<[MemberDto]>,
     pub blocked: Rc<[i64]>,
     pub peer_read_up_to: i64,
+    /// The divider's "N new messages": the count when the chat was opened, not the live one.
+    pub unread_at_open: i32,
     pub in_thread: bool,
     pub host: Rc<dyn BubbleHost>,
     pub quote_revealed: Rc<dyn Fn(i64, QuoteLevel) -> bool>,
@@ -164,13 +166,7 @@ pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow, joined: (bool, bool)) 
         column.append(&pill);
     }
     if row.unread_divider_above {
-        let unread = ctx
-            .connection
-            .chats
-            .chat(ctx.chat.id)
-            .ok()
-            .flatten()
-            .map_or(0, |chat| i64::from(chat.unread_count));
+        let unread = i64::from(ctx.unread_at_open);
         // "N new messages" between two hairlines, as the Mac draws it.
         let divider = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         divider.add_css_class("fc-chat-divider");
@@ -253,7 +249,7 @@ pub fn row_widget(ctx: &BubbleContext, row: &TimelineRow, joined: (bool, bool)) 
     column.update_property(&[gtk::accessible::Property::Label(&format!(
         "{name}, {time}: {excerpt}"
     ))]);
-    attach_gestures(ctx, &column, &body, message);
+    attach_gestures(ctx, &column, &body, message, bubble.reads());
     column.upcast()
 }
 
@@ -375,8 +371,16 @@ fn timeline_today(ctx: &BubbleContext) -> time::Date {
     fc_logic::date_culture::local(now, ctx.shell.zone.as_ref()).date()
 }
 
-/// The menu (secondary click, long press, Shift+F10, Menu key) and the heart (a double click).
-fn attach_gestures(ctx: &BubbleContext, row: &gtk::Box, body: &gtk::Widget, message: &MessageDto) {
+/// The menu (secondary click, long press, Shift+F10, Menu key) and the heart (a double click) —
+/// not on a hidden row (`reads` false), whose words the reader has not seen (the Mac's
+/// `quickHeart`).
+fn attach_gestures(
+    ctx: &BubbleContext,
+    row: &gtk::Box,
+    body: &gtk::Widget,
+    message: &MessageDto,
+    reads: bool,
+) {
     let host = Rc::clone(&ctx.host);
     let secondary = gtk::GestureClick::builder().button(3).build();
     secondary.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -395,7 +399,7 @@ fn attach_gestures(ctx: &BubbleContext, row: &gtk::Box, body: &gtk::Widget, mess
         long.connect_pressed(move |_, x, y| host.menu(&message, &body, x, y));
     }
     body.add_controller(long);
-    if message.id != 0 {
+    if message.id != 0 && reads {
         let primary = gtk::GestureClick::builder().button(1).build();
         primary.set_propagation_phase(gtk::PropagationPhase::Capture);
         {
@@ -500,11 +504,12 @@ fn bubble_body_widget(ctx: &BubbleContext, bubble: &Bubble) -> (gtk::Widget, Str
     // A call record reads as a call.
     if let Some(call) = &message.call {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        line.append(&gtk::Image::from_icon_name(if call.video {
-            "camera-video-symbolic"
-        } else {
-            "call-start-symbolic"
-        }));
+        let glyph = gtk::Image::from_icon_name(call_glyph(&call.outcome, call.video, own));
+        // A call the reader missed is red (the Mac's `CallRecordView`).
+        if call.outcome == fc_text::call_record::outcome::MISSED && !own {
+            glyph.add_css_class("error");
+        }
+        line.append(&glyph);
         line.append(
             &gtk::Label::builder()
                 .label(fc_text::call_record::label(
@@ -953,6 +958,25 @@ fn names_of(ctx: &BubbleContext, _reactions: &[Reaction]) -> impl Fn(i64) -> Str
             |id| members.iter().find(|member| member.id == id).cloned(),
             say.as_ref(),
         )
+    }
+}
+
+/// A call record's glyph (the Mac's `CallRecordView.glyph`): a video call's camera, struck out when
+/// it never connected; a voice call's direction — out for the reader's own, in for the other's —
+/// and the hung-up phone for a declined one.
+fn call_glyph(outcome: &str, video: bool, own: bool) -> &'static str {
+    use fc_text::call_record::outcome;
+    if video {
+        return match outcome {
+            outcome::DECLINED | outcome::FAILED => "camera-disabled-symbolic",
+            _ => "camera-video-symbolic",
+        };
+    }
+    match outcome {
+        outcome::DECLINED => "call-stop-symbolic",
+        outcome::MISSED if !own => "call-missed-symbolic",
+        _ if own => "call-outgoing-symbolic",
+        _ => "call-incoming-symbolic",
     }
 }
 

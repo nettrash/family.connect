@@ -26,6 +26,7 @@ pub mod consent;
 pub mod drafts;
 pub mod integration;
 pub mod keys;
+pub mod notices;
 // P3's file in P1's folder (W.2): the row that takes the field's place while a voice note records.
 pub mod recording_row;
 
@@ -51,6 +52,7 @@ use fc_logic::pack::{pack_sending, pack_text};
 use fc_logic::quotes;
 
 use crate::seams::composer::{ComposerHost, ComposerRecording};
+use crate::seams::media::{MediaSource, NowPlaying, Player, PlayerState};
 use crate::services::catalogue::Catalogue;
 use crate::services::log;
 use crate::shell::{Connection, Shell};
@@ -83,6 +85,10 @@ pub struct Composer {
     cancel_preparing: gtk::Button,
     banner: gtk::Box,
     banner_label: gtk::Label,
+    banner_excerpt: gtk::Label,
+    /// The assistant's notices over the row (`notices::of`) and what they last said.
+    hints: gtk::Box,
+    hints_drawn: RefCell<notices::Notices>,
     banner_close: gtk::Button,
     strip: gtk::FlowBox,
     not_sent: adw::Bin,
@@ -119,8 +125,18 @@ pub struct Composer {
     /// The voice notes P3 put into the strip (row 3's Stop): a note in REVIEW, parked as "not sent"
     /// when the chat is left (`not_sent::parks_review`).
     reviewing: RefCell<Vec<Rc<StagedMedia>>>,
+    /// A staged voice note playing in its chip: the item (by address), its player, its claim.
+    strip_player: RefCell<Option<(usize, Rc<dyn Player>, u64)>>,
+    /// The thumbnails of staged pictures and videos, by item address — made once, not per redraw.
+    thumbnails: RefCell<std::collections::HashMap<usize, gtk::gdk::Texture>>,
+    /// What the strip last drew (the items' addresses and the one playing): it is rebuilt only
+    /// when that changes, not on every keystroke's redraw.
+    strip_drawn: RefCell<(Vec<usize>, Option<usize>)>,
     /// Told after every redraw (the page re-asks its call buttons: nothing recording?).
     on_refresh: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Whether the window's Record Voice Message and Record Video Message can act now
+    /// (`composer_button::records_voice` / `records_video`), as of the last redraw.
+    record_commands: Cell<(bool, bool)>,
     closed: Cell<bool>,
     drop_outline: RefCell<Option<gtk::Box>>,
     me: Weak<Composer>,
@@ -182,6 +198,12 @@ impl Composer {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("fc-chat-composer");
 
+        // The assistant's notices, first over the row (`notices`): drawn on every redraw.
+        let hints = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        hints.add_css_class("fc-chat-hints");
+        hints.set_visible(false);
+        root.append(&hints);
+
         let notice = gtk::Label::builder()
             .css_classes(["fc-chat-notice"])
             .wrap(true)
@@ -207,12 +229,25 @@ impl Composer {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
+        // The reply's words under its title (the Mac's `MacComposerBanner` text).
+        let banner_excerpt = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["caption", "dim-label"])
+            .visible(false)
+            .build();
+        let banner_words = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        banner_words.set_valign(gtk::Align::Center);
+        banner_words.set_hexpand(true);
+        banner_words.append(&banner_label);
+        banner_words.append(&banner_excerpt);
         let banner_close = glyph("window-close-symbolic", say.get("Cancel reply"));
         let banner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         banner.add_css_class("fc-chat-banner");
         banner.add_css_class("fc-chat-reply-banner");
         banner.append(&gtk::Image::from_icon_name("mail-reply-sender-symbolic"));
-        banner.append(&banner_label);
+        banner.append(&banner_words);
         banner.append(&banner_close);
         banner.set_visible(false);
         root.append(&banner);
@@ -378,6 +413,9 @@ impl Composer {
             cancel_preparing,
             banner,
             banner_label,
+            banner_excerpt,
+            hints,
+            hints_drawn: RefCell::new(notices::Notices::default()),
             banner_close,
             strip,
             not_sent,
@@ -410,7 +448,11 @@ impl Composer {
             sending_sticker: Cell::new(false),
             locating: Cell::new(false),
             reviewing: RefCell::new(Vec::new()),
+            strip_player: RefCell::new(None),
+            thumbnails: RefCell::default(),
+            strip_drawn: RefCell::default(),
             on_refresh: RefCell::new(None),
+            record_commands: Cell::new((false, false)),
             closed: Cell::new(false),
             drop_outline: RefCell::new(None),
             me: me.clone(),
@@ -530,6 +572,12 @@ impl Composer {
     }
 
     /// `then` runs after every redraw of the composer — a recording starting or ending among them.
+    /// Whether Record Voice Message and Record Video Message can act now (the Mac greys them out
+    /// where they would do nothing; `MacVoiceCommands`).
+    pub fn record_commands(&self) -> (bool, bool) {
+        self.record_commands.get()
+    }
+
     pub fn set_on_refresh(&self, then: Rc<dyn Fn()>) {
         *self.on_refresh.borrow_mut() = Some(then);
     }
@@ -918,6 +966,11 @@ impl Composer {
             encoder_probe_passes: true,
             records_round_video: recording.video_offered(),
         });
+        let main = self.kind.get() == ComposerKind::Main;
+        self.record_commands.set((
+            main && composer_button::records_voice(&inputs),
+            main && composer_button::records_video(&inputs, door != Door::Hidden),
+        ));
         let glyphs = match self.kind.get() {
             ComposerKind::Main => composer_row::in_field(
                 Some(&self.chat.kind),
@@ -944,23 +997,31 @@ impl Composer {
         if let Some((id, _)) = self.editing.borrow().as_ref() {
             let _ = id;
             self.banner_label.set_label(say.get("Editing message"));
+            self.banner_excerpt.set_visible(false);
             self.banner_close
                 .set_tooltip_text(Some(say.get("Cancel editing")));
             self.banner_close
                 .update_property(&[gtk::accessible::Property::Label(say.get("Cancel editing"))]);
             self.banner.set_visible(true);
         } else if let Some(reply) = self.reply.get() {
-            let text = self
-                .connection
-                .chats
-                .message(reply)
-                .ok()
-                .flatten()
+            let held = self.connection.chats.message(reply).ok().flatten();
+            let text = held
+                .as_ref()
                 .and_then(|message| {
-                    quotes::banner(&message, &self.connection.chats, say.as_ref()).ok()
+                    quotes::banner(message, &self.connection.chats, say.as_ref()).ok()
                 })
                 .unwrap_or_default();
             self.banner_label.set_label(&text);
+            let excerpt = held
+                .as_ref()
+                .and_then(|message| {
+                    quotes::banner_excerpt(message, &self.connection.chats, say.as_ref())
+                        .ok()
+                        .flatten()
+                })
+                .unwrap_or_default();
+            self.banner_excerpt.set_label(&excerpt);
+            self.banner_excerpt.set_visible(!excerpt.is_empty());
             self.banner_close
                 .set_tooltip_text(Some(say.get("Cancel reply")));
             self.banner_close
@@ -970,6 +1031,7 @@ impl Composer {
             self.banner.set_visible(false);
         }
         self.draw_strip();
+        self.draw_hints();
         self.cancel_preparing.set_visible(self.staging.preparing());
         if let Some(paperclip) = &self.paperclip {
             paperclip.set_sensitive(!records);
@@ -978,6 +1040,89 @@ impl Composer {
         if let Some(then) = then {
             then();
         }
+    }
+
+    /// The assistant's notices over the row (`notices::of`), redrawn only when what they say
+    /// changes — a redraw on every keystroke would move the focus out of a "Review…".
+    fn draw_hints(&self) {
+        let state = self.connection.session.state();
+        let draft = self.draft();
+        let staged = self.staging.items();
+        let quoted = self
+            .reply
+            .get()
+            .and_then(|reply| self.connection.chats.message(reply).ok().flatten());
+        let said = notices::of(
+            &notices::Draft {
+                chat_kind: &self.chat.kind,
+                words: &draft,
+                editing: self.editing.borrow().is_some(),
+                staged: &staged,
+                quoted: quoted.as_ref(),
+            },
+            &state,
+            self.shell.say.as_ref(),
+        );
+        if *self.hints_drawn.borrow() == said {
+            return;
+        }
+        while let Some(child) = self.hints.first_child() {
+            self.hints.remove(&child);
+        }
+        let line = |icon: &str, text: &str| {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            line.add_css_class("fc-chat-hint");
+            line.append(
+                &gtk::Image::builder()
+                    .icon_name(icon)
+                    .valign(gtk::Align::Start)
+                    .accessible_role(gtk::AccessibleRole::Presentation)
+                    .build(),
+            );
+            line.append(
+                &gtk::Label::builder()
+                    .label(text)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .css_classes(["caption", "dim-label"])
+                    .build(),
+            );
+            line
+        };
+        match &said.consent {
+            Some(notices::Consent::Ask(text)) => {
+                let ask = line("security-medium-symbolic", text);
+                let review = gtk::Button::builder()
+                    .label(self.shell.say.get("Review…"))
+                    .css_classes(["flat", "caption"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let weak = self.me.clone();
+                // Agreed: what was written goes, as the Send it stood in front of would have sent it.
+                review.connect_clicked(move |_| {
+                    if let Some(composer) = weak.upgrade() {
+                        composer.ask_consent(Rc::new(|composer: &Composer| composer.send()));
+                    }
+                });
+                ask.append(&review);
+                self.hints.append(&ask);
+            }
+            Some(notices::Consent::Unnamed(text)) => {
+                self.hints.append(&line("security-medium-symbolic", text));
+            }
+            None => {}
+        }
+        if let Some(text) = &said.picture {
+            self.hints.append(&line("view-reveal-symbolic", text));
+        }
+        if let Some(text) = &said.hint {
+            self.hints
+                .append(&line("applications-graphics-symbolic", text));
+        }
+        self.hints.set_visible(self.hints.first_child().is_some());
+        *self.hints_drawn.borrow_mut() = said;
     }
 
     /// The slot's activation as Enter or a click would make it (the guard aside).
@@ -1381,6 +1526,7 @@ impl Composer {
             self.ask_consent(Rc::new(|composer: &Composer| composer.send()));
             return;
         }
+        self.stop_strip_player();
         let staged = self.staging.take_all();
         let mut handles = Vec::new();
         for item in &staged {
@@ -1452,14 +1598,64 @@ impl Composer {
         self.refresh();
     }
 
-    /// A poll from the composer ("Poll" in the paperclip).
+    /// A poll from the composer ("Poll" in the paperclip; the Mac's `sendPoll`). Its QUESTION is
+    /// the body, so an `@ai` in it asks the assistant exactly as a typed message does — the consent
+    /// question first where it must be asked — and it carries the primed reply and the question's
+    /// mentions.
     pub fn send_poll(&self, question: String, options: Vec<String>) {
+        let state = self.connection.session.state();
+        let kind = self.chat.kind.as_str();
+        let processor = state.assistant.as_ref().and_then(|a| a.processor.clone());
+        if assistant_consent::is_withheld_from_an_unnamed_assistant(
+            Some(kind),
+            Some(&question),
+            state.assistant.is_some(),
+            processor.as_deref(),
+        ) {
+            self.notice(self.shell.say.get(
+                "This server hasn't said which service answers, so nothing can be sent to the assistant here.",
+            ));
+            return;
+        }
+        if assistant_consent::is_required(
+            Some(kind),
+            Some(&question),
+            processor.as_deref(),
+            state.assistant_consent_at.as_deref(),
+        ) {
+            self.ask_consent(Rc::new(move |composer: &Composer| {
+                composer.send_poll(question.clone(), options.clone());
+            }));
+            return;
+        }
+        let roster = self
+            .connection
+            .chats
+            .members()
+            .unwrap_or_else(|_| Rc::from(Vec::new()));
+        let candidates = composer_mentions::candidates(Some(&self.chat), &roster);
+        let mentions = composer_mentions::for_send(
+            &question,
+            &candidates,
+            composer_mentions::enabled(Some(kind)),
+        )
+        .unwrap_or_default();
+        let reply = match self.kind.get() {
+            ComposerKind::Main => self.reply.get(),
+            ComposerKind::Thread { root_id } => Some(self.reply.get().unwrap_or(root_id)),
+        };
         let queue = QueueOptions {
             poll_options: options,
+            reply_to_message_id: reply,
+            mentions,
             ..QueueOptions::default()
         };
         match self.model.send(&question, &queue) {
-            Ok(_) => self.flush(),
+            Ok(_) => {
+                self.reply.set(None);
+                self.flush();
+                self.refresh();
+            }
             Err(error) => {
                 crate::fc_warn!("poll: the cache refused ({})", log::store_error(&error));
                 self.notice(self.shell.say.get("Couldn't send that — try again."));
@@ -1468,13 +1664,17 @@ impl Composer {
     }
 
     /// Send staged media now — a voice note's Send, or P3's video message (`round`: the outbox row's
-    /// `round: true`) — the reply primed.
+    /// `round: true`) — the reply primed. A voice note that cannot be queued goes back into review
+    /// rather than away: it cannot be recorded again (the Mac's send of a stopped note).
     fn send_media(&self, media: StagedMedia, round: bool) {
         let handle = match self.connection.staging.stage(&media) {
             Ok(handle) => handle,
             Err(error) => {
                 crate::fc_warn!("staging: a file could not be written ({})", error.kind());
                 self.notice(self.shell.say.get("Couldn't send that — try again."));
+                if !round {
+                    self.review(media);
+                }
                 return;
             }
         };
@@ -1490,6 +1690,104 @@ impl Composer {
                 self.connection.staging.release(&[handle]);
                 self.reply.set(None);
                 self.flush();
+            }
+            Err(error) => {
+                crate::fc_warn!("send: the cache refused ({})", log::store_error(&error));
+                self.connection.staging.release(&[handle]);
+                self.notice(self.shell.say.get("Couldn't send that — try again."));
+                if !round {
+                    self.review(media);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    /// A finished voice note into the strip, in REVIEW until sent or removed (row 3's Stop, and a
+    /// send that could not be queued).
+    fn review(&self, note: StagedMedia) {
+        if self.staging.add(note) {
+            // The note just added is the strip's last.
+            if let Some(added) = self.staging.items().last() {
+                self.reviewing.borrow_mut().push(Rc::clone(added));
+            }
+        } else {
+            self.notice(&composer_staging::cap_sentence(self.shell.say.as_ref()));
+        }
+        self.refresh();
+    }
+
+    /// The "not sent" row's Send (the Mac's `sendParked`): the note with its own caption — the
+    /// words a consent question is about — and its own reply, the mentions read from the caption.
+    /// `sent` runs once, when it is queued.
+    fn send_parked(
+        &self,
+        media: Rc<StagedMedia>,
+        caption: Option<String>,
+        reply_to: Option<i64>,
+        sent: Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
+    ) {
+        let body = caption.clone().unwrap_or_default();
+        let state = self.connection.session.state();
+        let kind = self.chat.kind.as_str();
+        let processor = state.assistant.as_ref().and_then(|a| a.processor.clone());
+        if assistant_consent::is_withheld_from_an_unnamed_assistant(
+            Some(kind),
+            Some(&body),
+            state.assistant.is_some(),
+            processor.as_deref(),
+        ) {
+            self.notice(self.shell.say.get(
+                "This server hasn't said which service answers, so nothing can be sent to the assistant here.",
+            ));
+            return;
+        }
+        if assistant_consent::is_required(
+            Some(kind),
+            Some(&body),
+            processor.as_deref(),
+            state.assistant_consent_at.as_deref(),
+        ) {
+            self.ask_consent(Rc::new(move |composer: &Composer| {
+                composer.send_parked(
+                    Rc::clone(&media),
+                    caption.clone(),
+                    reply_to,
+                    Rc::clone(&sent),
+                );
+            }));
+            return;
+        }
+        let handle = match self.connection.staging.stage(&media) {
+            Ok(handle) => handle,
+            Err(error) => {
+                crate::fc_warn!("staging: a file could not be written ({})", error.kind());
+                self.notice(self.shell.say.get("Couldn't send that."));
+                return;
+            }
+        };
+        let roster = self
+            .connection
+            .chats
+            .members()
+            .unwrap_or_else(|_| Rc::from(Vec::new()));
+        let candidates = composer_mentions::candidates(Some(&self.chat), &roster);
+        let mentions =
+            composer_mentions::for_send(&body, &candidates, composer_mentions::enabled(Some(kind)))
+                .unwrap_or_default();
+        let options = QueueOptions {
+            reply_to_message_id: reply_to,
+            pending_files: vec![handle.clone()],
+            mentions,
+            ..QueueOptions::default()
+        };
+        match self.model.send(&body, &options) {
+            Ok(_) => {
+                self.connection.staging.release(&[handle]);
+                self.flush();
+                if let Some(sent) = sent.borrow_mut().take() {
+                    sent();
+                }
             }
             Err(error) => {
                 crate::fc_warn!("send: the cache refused ({})", log::store_error(&error));
@@ -1944,7 +2242,63 @@ impl Composer {
         }))
     }
 
-    /// One item from bytes (a pasted picture).
+    /// Pasted bytes, prepared exactly as a picked file is (`integration::prepare_file`): a video or
+    /// a sound brought to the profile, an animated picture made into the animation (the Mac's
+    /// paste goes through the same door as its picker). Written to a folder of their own under the
+    /// temporaries first — named as the paste names them — and gone once staged; where the disk
+    /// refuses, the bytes are staged as they are.
+    fn stage_pasted(&self, bytes: Vec<u8>, mime: &str) {
+        let name = fc_text::media::pasted_name(mime);
+        let folder =
+            self.shell
+                .paths
+                .tmp_dir()
+                .join(format!("paste-{}-{}", std::process::id(), now_ms()));
+        let path = folder.join(&name);
+        let written = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&path, &bytes));
+        if let Err(error) = written {
+            crate::fc_warn!("paste: a temporary could not be written ({})", error.kind());
+            let _ = std::fs::remove_dir_all(&folder);
+            self.stage_bytes(bytes, mime);
+            return;
+        }
+        match self.staging_of(vec![gio::File::for_path(&path)]) {
+            Some(staging) => {
+                glib::spawn_future_local(async move {
+                    staging.await;
+                    let _ = std::fs::remove_dir_all(&folder);
+                });
+            }
+            None => {
+                let _ = std::fs::remove_dir_all(&folder);
+            }
+        }
+    }
+
+    /// Words added at the end of the draft, within the body's ceiling — what a dropped link is
+    /// (`fc_text::composer::appending`; the ceiling's sentence when it bites). Nothing is sent.
+    fn append_words(&self, words: &str) {
+        let draft = self.draft();
+        let joined = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+            words.to_string()
+        } else {
+            format!(" {words}")
+        };
+        let outcome = fc_text::composer::appending(&joined, &draft);
+        if let Some(notice) = outcome.notice() {
+            self.notice(&notice.said());
+        }
+        match outcome {
+            fc_text::composer::Paste::Appended(text)
+            | fc_text::composer::Paste::Truncated(text) => {
+                self.set_text(&text);
+            }
+            fc_text::composer::Paste::Full => {}
+        }
+        self.focus();
+    }
+
+    /// One item from bytes (a pasted screenshot, or a paste the disk would not hold).
     fn stage_bytes(&self, bytes: Vec<u8>, mime: &str) {
         let name = fc_text::media::pasted_name(mime);
         let outcome = integration::prepare_bytes(bytes, mime, &name);
@@ -1966,39 +2320,294 @@ impl Composer {
     }
 
     fn draw_strip(&self) {
+        let items = self.staging.items();
+        let addresses: Vec<usize> = items.iter().map(|item| Rc::as_ptr(item) as usize).collect();
+        let playing = self.strip_player.borrow().as_ref().map(|(at, _, _)| *at);
+        let drawn = (addresses.clone(), playing);
+        if *self.strip_drawn.borrow() == drawn
+            && self.strip.first_child().is_some() == !items.is_empty()
+        {
+            return;
+        }
+        *self.strip_drawn.borrow_mut() = drawn;
+        self.thumbnails
+            .borrow_mut()
+            .retain(|at, _| addresses.contains(at));
         while let Some(child) = self.strip.first_child() {
             self.strip.remove(&child);
         }
-        let items = self.staging.items();
         self.strip.set_visible(!items.is_empty());
         let say = &self.shell.say;
         let separator = self.shell.numbers.decimal;
         for item in items {
-            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             chip.add_css_class("fc-chat-chip");
             chip.set_halign(gtk::Align::Start);
-            chip.append(&gtk::Label::new(Some(&composer_staging::label(
-                &item,
-                say.as_ref(),
-                separator,
-            ))));
+            let recorded = fc_logic::voice_notes::is_recorded(&item);
+            if recorded {
+                self.voice_chip(&chip, &item);
+            } else {
+                if let Some(thumbnail) = self.thumbnail(&item) {
+                    chip.add_css_class("fc-chat-chip-pictured");
+                    chip.append(&thumbnail);
+                }
+                chip.append(&gtk::Label::new(Some(&composer_staging::label(
+                    &item,
+                    say.as_ref(),
+                    separator,
+                ))));
+            }
             let remove = gtk::Button::builder()
                 .icon_name("window-close-symbolic")
                 .css_classes(["flat", "circular"])
-                .tooltip_text(say.get("Remove"))
+                .valign(gtk::Align::Center)
+                .tooltip_text(if recorded {
+                    say.get("Delete recording")
+                } else {
+                    say.get("Remove")
+                })
                 .build();
-            remove.update_property(&[gtk::accessible::Property::Label(say.get("Remove"))]);
+            remove.update_property(&[gtk::accessible::Property::Label(if recorded {
+                say.get("Delete recording")
+            } else {
+                say.get("Remove")
+            })]);
             let weak = self.me.clone();
-            remove.connect_clicked(move |_| {
+            remove.connect_clicked(move |button| {
                 if let Some(composer) = weak.upgrade() {
-                    composer.staging.remove(&item);
-                    composer.guard.borrow_mut().changed(false);
-                    composer.refresh();
+                    composer.unstage(&item, button);
                 }
             });
             chip.append(&remove);
             self.strip.append(&chip);
         }
+    }
+
+    /// A staged picture's or video's thumbnail (the Mac's `StagedAttachment`): its preview, or a
+    /// photo's own bytes, cropped to a square; a video carries a play mark. `None` for anything
+    /// else, or what cannot be read.
+    fn thumbnail(&self, item: &Rc<StagedMedia>) -> Option<gtk::Widget> {
+        if item.kind != "photo" && item.kind != "video" {
+            return None;
+        }
+        let at = Rc::as_ptr(item) as usize;
+        let held = self.thumbnails.borrow().get(&at).cloned();
+        let texture = match held {
+            Some(texture) => texture,
+            None => {
+                let bytes = item
+                    .preview
+                    .as_deref()
+                    .or((item.kind == "photo").then_some(item.bytes.as_slice()))?;
+                let texture = gtk::gdk::Texture::from_bytes(&glib::Bytes::from(bytes)).ok()?;
+                self.thumbnails.borrow_mut().insert(at, texture.clone());
+                texture
+            }
+        };
+        let picture = gtk::Picture::builder()
+            .paintable(&texture)
+            .content_fit(gtk::ContentFit::Cover)
+            .can_shrink(true)
+            .width_request(40)
+            .height_request(40)
+            .css_classes(["fc-chat-chip-thumb"])
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
+        picture.set_overflow(gtk::Overflow::Hidden);
+        if item.kind != "video" {
+            return Some(picture.upcast());
+        }
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&picture));
+        overlay.add_overlay(
+            &gtk::Image::builder()
+                .icon_name("media-playback-start-symbolic")
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .css_classes(["osd", "circular", "fc-chat-chip-play"])
+                .build(),
+        );
+        Some(overlay.upcast())
+    }
+
+    /// A recorded voice note in review: ▶ / ❚❚, its shape, its length.
+    fn voice_chip(&self, chip: &gtk::Box, item: &Rc<StagedMedia>) {
+        let say = &self.shell.say;
+        let at = Rc::as_ptr(item) as usize;
+        let playing = self
+            .strip_player
+            .borrow()
+            .as_ref()
+            .is_some_and(|(held, _, _)| *held == at);
+        let name = if playing {
+            say.get("Pause")
+        } else {
+            say.get("Play")
+        };
+        let play = gtk::Button::builder()
+            .icon_name(if playing {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            })
+            .css_classes(["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(name)
+            .build();
+        play.update_property(&[gtk::accessible::Property::Label(name)]);
+        {
+            let (weak, item) = (self.me.clone(), Rc::clone(item));
+            play.connect_clicked(move |_| {
+                if let Some(composer) = weak.upgrade() {
+                    composer.play_staged(&item);
+                }
+            });
+        }
+        chip.append(&play);
+        let width = 96.0;
+        let waves = crate::media::waves::Waves::new(
+            width,
+            fc_logic::voice_look::CHIP_WAVE_HEIGHT,
+            crate::media::waves::Ink::Accent,
+        );
+        waves.set_levels(fc_logic::voice_look::bars(
+            item.waveform.as_deref(),
+            fc_logic::voice_look::bar_count(width),
+        ));
+        waves.widget().set_valign(gtk::Align::Center);
+        chip.append(waves.widget());
+        let seconds = f64::from(item.duration_ms.unwrap_or(0)) / 1000.0;
+        chip.append(
+            &gtk::Label::builder()
+                .label(fc_text::media::time_label(seconds))
+                .css_classes(["numeric", "caption"])
+                .valign(gtk::Align::Center)
+                .build(),
+        );
+        chip.update_property(&[gtk::accessible::Property::Label(&format!(
+            "{} · {}",
+            say.get("Voice message"),
+            fc_text::media::time_label(seconds)
+        ))]);
+    }
+
+    /// A staged voice note's ▶: played on this device, one thing at a time (`now_playing`), never
+    /// while a recording runs.
+    fn play_staged(&self, item: &Rc<StagedMedia>) {
+        let at = Rc::as_ptr(item) as usize;
+        let was = self
+            .strip_player
+            .borrow()
+            .as_ref()
+            .map(|(held, _, _)| *held);
+        self.stop_strip_player();
+        if was == Some(at) {
+            self.draw_strip();
+            return;
+        }
+        let registry = crate::media::now_playing();
+        if registry.refuses() {
+            self.notice(self.shell.say.get("You can play this after recording."));
+            return;
+        }
+        let Ok(file) =
+            crate::media::gst_util::temp_file(&self.shell.paths.tmp_dir(), "review", "m4a")
+        else {
+            return;
+        };
+        if std::fs::write(&file, &item.bytes).is_err() {
+            crate::media::gst_util::remove_file(&file);
+            return;
+        }
+        let player = self.shell.players.get().create(false);
+        let weak = self.me.clone();
+        let claim = registry.claim(
+            fc_logic::round_look::Playing::VoiceNote,
+            Rc::new({
+                let weak = weak.clone();
+                move || {
+                    if let Some(composer) = weak.upgrade() {
+                        composer.stop_strip_player();
+                        composer.draw_strip();
+                    }
+                }
+            }),
+        );
+        player.on_state().subscribe(move |state| {
+            if matches!(state, PlayerState::Ended | PlayerState::Failed)
+                && let Some(composer) = weak.upgrade()
+            {
+                composer.stop_strip_player();
+                composer.draw_strip();
+            }
+        });
+        player.load(MediaSource::File(file.clone()));
+        player.set_rate(crate::media::voice_bubble::current_rate(&self.shell));
+        player.play();
+        *self.strip_player.borrow_mut() = Some((at, player, claim));
+        self.draw_strip();
+        // The temporary goes once the player has it open; the sweep at launch takes a leftover.
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            crate::media::gst_util::remove_file(&file)
+        });
+    }
+
+    fn stop_strip_player(&self) {
+        let playing = self.strip_player.borrow_mut().take();
+        if let Some((_, player, claim)) = playing {
+            player.stop();
+            crate::media::now_playing().release(claim);
+        }
+    }
+
+    /// A chip's ✕: a recorded voice note of ten seconds or more asks first — it cannot be made
+    /// again — and says "Recording deleted" (the Mac's `StagedAttachment`); anything else goes.
+    fn unstage(&self, item: &Rc<StagedMedia>, anchor: &gtk::Button) {
+        let recorded = fc_logic::voice_notes::is_recorded(item);
+        let gone = {
+            let (weak, item) = (self.me.clone(), Rc::clone(item));
+            move || {
+                let Some(composer) = weak.upgrade() else {
+                    return;
+                };
+                let at = Rc::as_ptr(&item) as usize;
+                if composer
+                    .strip_player
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(held, _, _)| *held == at)
+                {
+                    composer.stop_strip_player();
+                }
+                composer.staging.remove(&item);
+                composer
+                    .reviewing
+                    .borrow_mut()
+                    .retain(|note| !Rc::ptr_eq(note, &item));
+                composer.guard.borrow_mut().changed(false);
+                if recorded {
+                    let said = composer.shell.say.get("Recording deleted");
+                    composer
+                        .strip
+                        .announce(said, gtk::AccessibleAnnouncementPriority::Medium);
+                }
+                composer.refresh();
+            }
+        };
+        if !(recorded && fc_logic::voice_notes::asks_before_deleting(item.duration_ms.unwrap_or(0)))
+        {
+            gone();
+            return;
+        }
+        let say = &self.shell.say;
+        let dialog = adw::AlertDialog::new(Some(say.get("Delete this recording?")), None);
+        dialog.add_response("cancel", say.get("Cancel"));
+        dialog.add_response("delete", say.get("Delete"));
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        dialog.connect_response(Some("delete"), move |_, _| gone());
+        dialog.present(Some(anchor));
     }
 
     // ---- paste and drop ------------------------------------------------------------------------
@@ -2046,7 +2655,7 @@ impl Composer {
                 let bytes = read_all(&stream).await;
                 if let Some(composer) = weak.upgrade() {
                     match bytes {
-                        Some(bytes) => composer.stage_bytes(bytes, &mime),
+                        Some(bytes) => composer.stage_pasted(bytes, &mime),
                         None => composer.notice(composer.shell.say.get("Couldn't read that file.")),
                     }
                 }
@@ -2113,22 +2722,31 @@ impl Composer {
             let Ok(list) = value.get::<gtk::gdk::FileList>() else {
                 return false;
             };
-            let files: Vec<gio::File> = list
+            // A link off a web page arrives as a file with a web address: its bytes are on
+            // somebody else's server, so it belongs in the draft as words (the Mac's
+            // `DroppedAttachment`, `.link`) — files, when there are any, are what is attached.
+            let (links, files): (Vec<gio::File>, Vec<gio::File>) = list
                 .files()
+                .into_iter()
+                .partition(|file| matches!(file.uri_scheme().as_deref(), Some("http" | "https")));
+            let files: Vec<gio::File> = files
                 .into_iter()
                 .filter(|file| !integration::is_folder(file))
                 .collect();
-            // Only folders (or nothing): refused, and the drag springs back (the Mac's answer).
-            if files.is_empty() {
+            let Some(composer) = weak.upgrade() else {
                 return false;
+            };
+            if !files.is_empty() {
+                composer.stage_files(files);
+                return true;
             }
-            match weak.upgrade() {
-                Some(composer) => {
-                    composer.stage_files(files);
-                    true
-                }
-                None => false,
+            if !links.is_empty() {
+                let words: Vec<String> = links.iter().map(|file| file.uri().to_string()).collect();
+                composer.append_words(&words.join("\n"));
+                return true;
             }
+            // Only folders (or nothing): refused, and the drag springs back (the Mac's answer).
+            false
         });
         page.add_controller(target);
     }
@@ -2171,6 +2789,7 @@ impl Composer {
             };
             drafts::shared().borrow_mut().save(self.chat.id, &words);
         }
+        self.stop_strip_player();
         self.recording().interrupt(RecordingEnd::LeftChat);
         self.park_review(RecordingEnd::LeftChat);
         self.staging.cancel_preparing();
@@ -2338,15 +2957,7 @@ impl ComposerHost for Host {
 
     fn stage(&self, note: StagedMedia) {
         if let Some(composer) = self.0.upgrade() {
-            if composer.staging.add(note) {
-                // The note just added is the strip's last: in REVIEW until sent or removed.
-                if let Some(added) = composer.staging.items().last() {
-                    composer.reviewing.borrow_mut().push(Rc::clone(added));
-                }
-            } else {
-                composer.notice(&composer_staging::cap_sentence(composer.shell.say.as_ref()));
-            }
-            composer.refresh();
+            composer.review(note);
         }
     }
 
@@ -2360,6 +2971,30 @@ impl ComposerHost for Host {
         if let Some(composer) = self.0.upgrade() {
             composer.send_media(media, true);
         }
+    }
+
+    fn send_parked(
+        &self,
+        media: StagedMedia,
+        caption: Option<String>,
+        reply_to: Option<i64>,
+        sent: Box<dyn FnOnce()>,
+    ) {
+        if let Some(composer) = self.0.upgrade() {
+            let sent = Rc::new(RefCell::new(Some(sent)));
+            composer.send_parked(Rc::new(media), caption, reply_to, sent);
+        }
+    }
+
+    fn reply_line(&self, message_id: i64) -> Option<String> {
+        let composer = self.0.upgrade()?;
+        let message = composer.connection.chats.message(message_id).ok()??;
+        quotes::banner(
+            &message,
+            &composer.connection.chats,
+            composer.shell.say.as_ref(),
+        )
+        .ok()
     }
 
     fn changed(&self) {

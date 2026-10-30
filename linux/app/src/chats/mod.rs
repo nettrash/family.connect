@@ -367,6 +367,7 @@ impl Chats {
             }
             slot.set_child(Some(&no_conversation()));
             main.set_paste_attachment_enabled(false);
+            main.set_record_enabled(false, false);
         }
     }
 }
@@ -540,6 +541,12 @@ impl PageHost for MainHost {
     fn set_paste_enabled(&self, enabled: bool) {
         if let Some(main) = self.0.upgrade() {
             main.set_paste_attachment_enabled(enabled);
+        }
+    }
+
+    fn set_record_enabled(&self, voice: bool, video: bool) {
+        if let Some(main) = self.0.upgrade() {
+            main.set_record_enabled(voice, video);
         }
     }
 }

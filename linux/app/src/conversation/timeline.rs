@@ -22,6 +22,9 @@ use adw::prelude::*;
 use fc_logic::composer_row::conversation_column;
 use fc_logic::conversation_rows::{self, RowMark};
 
+/// How long a row a quote led to stays tinted (the Mac's 1.6 s fade).
+const JUMP_TINT: std::time::Duration = std::time::Duration::from_millis(1600);
+
 /// How close to the bottom (px) still counts as "at the newest".
 const BOTTOM_SLACK: f64 = 24.0;
 /// How close to the top (px) asks for an older page.
@@ -48,6 +51,10 @@ pub struct Timeline {
     pinned: Cell<bool>,
     keep: Cell<Keep>,
     jump: gtk::Button,
+    /// At the top while an older page is on its way (the Mac's small spinner over the history).
+    older: adw::Spinner,
+    /// What stands in the middle while there is nothing to draw (a thread loading, or failed).
+    placeholder: RefCell<Option<gtk::Widget>>,
     /// Called when the reader nears the top (page back) or reaches the bottom (read).
     on_top: RefCell<Option<Box<dyn Fn()>>>,
     on_bottom: RefCell<Option<Box<dyn Fn()>>>,
@@ -89,9 +96,19 @@ impl Timeline {
             .visible(false)
             .build();
         jump.update_property(&[gtk::accessible::Property::Label(jump_label)]);
+        let older = adw::Spinner::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(10)
+            .width_request(20)
+            .height_request(20)
+            .can_target(false)
+            .visible(false)
+            .build();
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&scroller));
         overlay.add_overlay(&jump);
+        overlay.add_overlay(&older);
         let timeline = Rc::new(Timeline {
             overlay,
             scroller,
@@ -101,6 +118,8 @@ impl Timeline {
             pinned: Cell::new(true),
             keep: Cell::new(Keep::Bottom),
             jump,
+            older,
+            placeholder: RefCell::new(None),
             on_top: RefCell::new(None),
             on_bottom: RefCell::new(None),
         });
@@ -327,9 +346,36 @@ impl Timeline {
         });
     }
 
+    /// The spinner at the top while an older page loads.
+    pub fn set_loading_older(&self, loading: bool) {
+        self.older.set_visible(loading);
+    }
+
+    /// `widget` in the middle of the view, over the (empty) rows — `None` takes it away.
+    pub fn set_placeholder(&self, widget: Option<&gtk::Widget>) {
+        if let Some(old) = self.placeholder.borrow_mut().take() {
+            self.overlay.remove_overlay(&old);
+        }
+        if let Some(widget) = widget {
+            self.overlay.add_overlay(widget);
+            *self.placeholder.borrow_mut() = Some(widget.clone());
+        }
+    }
+
+    /// The row drawn for `key`, if it is drawn.
+    pub fn row(&self, key: &str) -> Option<gtk::Widget> {
+        let index = self
+            .marks
+            .borrow()
+            .iter()
+            .position(|mark| mark.key == key)?;
+        self.shown.borrow().get(index).cloned()
+    }
+
     /// Brings the row with `key` to the top of the view (an opening anchor, a quote's message);
-    /// `focus`: the row takes the keyboard focus too (a quote followed — never an opening, which
-    /// must not take the focus from the chat list). False when no such row is drawn.
+    /// `focus`: the row takes the keyboard focus too, and is tinted for a moment so the eye finds
+    /// it (a quote followed — the Mac's fading highlight; never an opening, which must not take
+    /// the focus from the chat list). False when no such row is drawn.
     pub fn scroll_to(&self, key: &str, focus: bool) -> bool {
         let Some(index) = self.marks.borrow().iter().position(|mark| mark.key == key) else {
             return false;
@@ -349,6 +395,13 @@ impl Timeline {
             }
             if focus && widget.root().is_some() {
                 widget.grab_focus();
+                widget.add_css_class("fc-chat-jumped");
+                let tinted = widget.downgrade();
+                glib::timeout_add_local_once(JUMP_TINT, move || {
+                    if let Some(widget) = tinted.upgrade() {
+                        widget.remove_css_class("fc-chat-jumped");
+                    }
+                });
             }
         });
         true

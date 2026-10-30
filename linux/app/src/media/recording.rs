@@ -223,6 +223,10 @@ struct Running {
     beside_draft: bool,
     levels: LiveLevels,
     warned: bool,
+    /// A peak rose above the silence line (`fc_text::record::SILENCE_PEAK_DBFS`) — S2.9.
+    heard_sound: bool,
+    /// "We can't hear anything…" was said aloud once.
+    said_silence: bool,
     timer: Option<glib::SourceId>,
     /// The screen kept on while it records (§10.9, P5's hold; released when it stops).
     awake: Option<AwakeHold>,
@@ -470,6 +474,8 @@ impl ComposerVoice {
             beside_draft,
             levels,
             warned: false,
+            heard_sound: false,
+            said_silence: false,
             timer: Some(timer),
             awake: Some(keep_awake::hold(
                 &Shell::get().app,
@@ -487,25 +493,41 @@ impl ComposerVoice {
 
     /// The clock, the meter, the five-minute limit and the screen saver (S2.5, S4).
     fn tick(self: &Rc<Self>) -> glib::ControlFlow {
-        let (elapsed, warn_now) = {
+        let elapsed = {
             let mut running = self.running.borrow_mut();
             let Some(running) = running.as_mut() else {
                 return glib::ControlFlow::Break;
             };
             if let Some(peak) = running.recording.take_peak_dbfs() {
                 running.levels.push(peak);
+                running.heard_sound |= peak > fc_text::record::SILENCE_PEAK_DBFS;
             }
             let elapsed = running.recording.elapsed();
+            let silent = !running.heard_sound
+                && elapsed.as_millis() >= u128::from(fc_text::record::SILENCE_WARNING_AFTER_MS);
             let say = self.say();
-            self.row.tick(elapsed, &running.levels, say.as_ref());
+            self.row
+                .tick(elapsed, &running.levels, silent, say.as_ref());
             let warn_now = voice_notes::warns(elapsed) && !running.warned;
             if warn_now {
                 running.warned = true;
             }
-            (elapsed, warn_now)
+            let silence_now = silent && !running.said_silence;
+            if silence_now {
+                running.said_silence = true;
+            }
+            (elapsed, warn_now, silence_now)
         };
+        let (elapsed, warn_now, silence_now) = elapsed;
         if warn_now {
             self.say_aloud(self.say().get("30 seconds left"));
+        }
+        if silence_now {
+            crate::fc_info!("voice: nothing heard {} ms in", elapsed.as_millis());
+            self.say_aloud(
+                self.say()
+                    .get("We can't hear anything. Is the microphone muted?"),
+            );
         }
         if voice_notes::is_done(elapsed) {
             self.end(RecordingEnd::Capped);
@@ -779,6 +801,14 @@ impl ComposerVoice {
     ) -> gtk::Widget {
         let say = self.say();
         let line = not_sent::line(entry.duration_ms, say.as_ref());
+        // What it carries, on one line under it: the reply it was recorded under and its caption
+        // (the Mac's `NotSentVoiceRow`).
+        let carried: Vec<String> = entry
+            .reply_to_message_id
+            .and_then(|reply| self.host.reply_line(reply))
+            .into_iter()
+            .chain(entry.caption.clone())
+            .collect();
         let play = gtk::Button::builder()
             .icon_name("media-playback-start-symbolic")
             .valign(gtk::Align::Center)
@@ -792,10 +822,25 @@ impl ComposerVoice {
         let label = gtk::Label::builder()
             .label(&line)
             .xalign(0.0)
-            .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .css_classes(["caption", "fc-media-warning"])
             .build();
+        let words = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+        words.append(&label);
+        if !carried.is_empty() {
+            words.append(
+                &gtk::Label::builder()
+                    .label(carried.join(" · "))
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .css_classes(["caption", "dim-label"])
+                    .build(),
+            );
+        }
         let send = gtk::Button::builder()
             .icon_name(fc_logic::composer_button::SlotIcon::Send.icon_name())
             .valign(gtk::Align::Center)
@@ -820,10 +865,14 @@ impl ComposerVoice {
             .css_classes(["card", "fc-media-chip"])
             .accessible_role(gtk::AccessibleRole::Group)
             .build();
-        chip.update_property(&[gtk::accessible::Property::Label(&line)]);
+        let spoken = std::iter::once(line.clone())
+            .chain(carried.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        chip.update_property(&[gtk::accessible::Property::Label(&spoken)]);
         chip.append(&play);
         chip.append(waves.widget());
-        chip.append(&label);
+        chip.append(&words);
         chip.append(&send);
         chip.append(&remove);
         // Its shape: measured from its bytes once per run.
@@ -980,15 +1029,26 @@ impl ComposerVoice {
             let Some(composer) = weak.upgrade() else {
                 return;
             };
-            composer.host.send(note);
-            if !store.remove(&entry) {
-                crate::fc_warn!("not sent: a sent recording could not be taken out of the store");
-            }
-            let say = composer.say();
-            let (_, said) = not_sent::row_ended(true, entry.duration_ms, say.as_ref());
-            composer.say_aloud(&said);
-            composer.refresh_rows();
-            composer.host.changed();
+            let (caption, reply) = (entry.caption.clone(), entry.reply_to_message_id);
+            let sent = {
+                let weak = Rc::downgrade(&composer);
+                Box::new(move || {
+                    if !store.remove(&entry) {
+                        crate::fc_warn!(
+                            "not sent: a sent recording could not be taken out of the store"
+                        );
+                    }
+                    let Some(composer) = weak.upgrade() else {
+                        return;
+                    };
+                    let say = composer.say();
+                    let (_, said) = not_sent::row_ended(true, entry.duration_ms, say.as_ref());
+                    composer.say_aloud(&said);
+                    composer.refresh_rows();
+                    composer.host.changed();
+                })
+            };
+            composer.host.send_parked(note, caption, reply, sent);
         });
     }
 

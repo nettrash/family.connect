@@ -100,20 +100,44 @@ pub fn change_password(parent: &impl IsA<gtk::Widget>) {
     dialog.present(Some(parent));
 }
 
-/// Delete Account… (`DeleteAccountView`): what happens, the password as proof, and one more
-/// question — it is immediate and final.
+/// Delete Account… (`DeleteAccountView`): what happens — every consequence the server carries out,
+/// the owner's own among them — the password as proof, and one more question: it is immediate and
+/// final.
 pub fn delete_account(parent: &impl IsA<gtk::Widget>) {
     let shell = Shell::get();
     let say = Rc::clone(&shell.say);
-    let (dialog, view, _) = ui::dialog(say.get("Delete Account"), 440, 420);
+    let owner = shell
+        .connection()
+        .is_some_and(|connection| connection.session.state().is_owner());
+    let (dialog, view, _) = ui::dialog(
+        say.get("Delete Account"),
+        440,
+        if owner { 640 } else { 560 },
+    );
     let (header, delete) = ui::dialog_bar(&dialog, say.get("Cancel"), say.get("Delete"), true);
     view.add_top_bar(&header);
     let what = adw::PreferencesGroup::builder()
         .title(say.get("What happens"))
         .build();
-    what.add(&ui::footnote(say.get(
-        "Your account, password, profile picture and birthday are deleted, and every device you are signed in on is signed out.",
-    )));
+    // Literal keys, each its own `say.get`: the catalogue's generator collects only those.
+    let mut happens = vec![
+        ("avatar-default-symbolic", say.get("Your account, password, profile picture and birthday are deleted, and every device you are signed in on is signed out.")),
+        ("user-trash-symbolic", say.get("Your direct chats are deleted — for the other person too. So is your private chat with the assistant.")),
+        ("chat-message-new-symbolic", say.get("Your messages in the family chat, your board notes and your reactions stay. They are shown from then on as “Deleted account”.")),
+    ];
+    if owner {
+        happens.push(("go-home-symbolic", say.get("You own this family: ownership passes to the longest-standing remaining member. If you are its last member, the family is deleted with you — its chat, its board and its invite code.")));
+    }
+    for (icon, line) in happens {
+        let row = adw::ActionRow::builder()
+            .title(line)
+            .use_markup(false)
+            .title_lines(0)
+            .activatable(false)
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name(icon));
+        what.add(&row);
+    }
     what.add(&ui::footnote(say.get(
         "There is no grace period and no way to cancel afterwards.",
     )));
@@ -543,6 +567,13 @@ fn load_statistics(page: adw::PreferencesPage, waiting: adw::PreferencesGroup) {
                     &assistant,
                     say.get("Recordings as text"),
                     grouped(i64::from(ai.transcripts)),
+                );
+                // A speech model is paid by the length of the sound, so the time too (the Mac's
+                // StatisticsView); written as a clock, as Windows and the web write it.
+                row(
+                    &assistant,
+                    say.get("Recording time"),
+                    fc_text::call_record::duration((ai.transcript_duration_ms.max(0) + 500) / 1000),
                 );
             }
             if ai.searches > 0 {

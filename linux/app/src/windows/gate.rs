@@ -34,6 +34,9 @@ use crate::services::log;
 use crate::shell::{BRAND, DEFAULT_SERVER, Shell};
 use crate::windows::main_window::{GatePage, MainWindow};
 
+/// Where running a server of one's own is explained (the Mac's `AppVersion.repositoryURL`).
+const REPOSITORY_URL: &str = "https://github.com/nettrash/family.connect";
+
 /// How often the Pending page asks `GET /me` again (Windows' `PendingView`: an approval raises no
 /// frame this device can hear — it has no family socket yet).
 const PENDING_ASK_EVERY: Duration = Duration::from_secs(15);
@@ -862,6 +865,21 @@ pub fn family_forms(shell: &Rc<Shell>, which: FamilyForms, done: Rc<dyn Fn()>) -
                     "Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.",
                 ))
                 .build();
+            // And where to read how (the Mac's link to `AppVersion.repositoryURL`).
+            let how = adw::ActionRow::builder()
+                .title(say.get("How to run your own server"))
+                .activatable(true)
+                .build();
+            how.add_suffix(&gtk::Image::from_icon_name("adw-external-link-symbolic"));
+            how.connect_activated(|row| {
+                let window = row.root().and_downcast::<gtk::Window>();
+                gtk::UriLauncher::new(REPOSITORY_URL).launch(
+                    window.as_ref(),
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            });
+            closed.add(&how);
             content.append(&closed);
         }
     }

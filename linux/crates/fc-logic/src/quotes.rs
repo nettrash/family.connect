@@ -131,6 +131,24 @@ pub fn banner(
     })
 }
 
+/// The words under the composer's "Replying to …" (the Mac's `quoteWord`): the message's own
+/// excerpt as the server would cut it, "Video message" or "GIF" for one with no words, and nothing
+/// for a hidden message — whose words the banner must not show — or one with no words to say.
+pub fn banner_excerpt(
+    message: &MessageDto,
+    chats: &ChatStore,
+    say: &dyn StringCatalog,
+) -> StoreResult<Option<String>> {
+    if hides(message.sender_id, chats)? {
+        return Ok(None);
+    }
+    let excerpt = fc_text::excerpt::excerpt(message.body.trim());
+    let shown = shown(message.id, excerpt, chats, say)?;
+    // One line: a quote of several lines reads as the first of them and the rest run on.
+    let one_line = shown.split_whitespace().collect::<Vec<_>>().join(" ");
+    Ok((!one_line.is_empty()).then_some(one_line))
+}
+
 fn line(
     message_id: i64,
     sender_id: i64,

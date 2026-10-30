@@ -3,8 +3,9 @@
 //! (Ctrl+,, the primary menu, the tray menu) and raised when it is open already — a singleton, as
 //! the Mac's Settings scene is, so two copies can never show each other's switches stale.
 //!
-//! Who you are at the top, then: Profile, Family, Notifications, Top Bar, Privacy, Voice and video,
-//! Server, and the version line. Every switch is an `adw::SwitchRow` saved to `settings.conf` at
+//! Who you are at the top, then: Profile, Family, Assistant and Looking things up (where the server
+//! has an assistant to agree to), Notifications, Top Bar, Privacy, Voice and video, Server, and the
+//! version line. Every switch is an `adw::SwitchRow` saved to `settings.conf` at
 //! once; the device's rows (notifications, top bar, start at login, hot key, previews, speed,
 //! camera) survive a sign-out, the account's do not. Signed out, the window says so instead of
 //! drawing a panel of dashes with two destructive buttons under it (the Mac's rule).
@@ -21,6 +22,7 @@ use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::families::family_rules;
 use fc_logic::settings::birthday_rules;
 
+use crate::composer::consent;
 use crate::family::birthday::{self, Whose};
 use crate::seams::media::CameraDevice;
 use crate::services::settings_store::keys;
@@ -78,6 +80,9 @@ pub struct SettingsWindow {
     pub family_name: adw::ActionRow,
     pub new_family: adw::ButtonRow,
     pub join_another: adw::ButtonRow,
+    /// "Assistant" and "Looking things up" (`rows::assistant_consent`, `rows::lookup_consent`).
+    pub assistant: ConsentGroup,
+    pub lookups: ConsentGroup,
     pub notify: adw::SwitchRow,
     pub keep_running: adw::SwitchRow,
     /// What a close does while an icon holds the app — hidden with no icon, where the switch
@@ -221,6 +226,18 @@ impl SettingsWindow {
         family.add(&statistics);
         family.add(&leave);
 
+        // ---- Assistant, Looking things up ------------------------------------------------------
+        let assistant = ConsentGroup::new(say.get("Assistant"), || {
+            if let Some(open) = current() {
+                open.answer_assistant();
+            }
+        });
+        let lookups = ConsentGroup::new(say.get("Looking things up"), || {
+            if let Some(open) = current() {
+                open.answer_lookups();
+            }
+        });
+
         // ---- Notifications -------------------------------------------------------------------
         let notifications = adw::PreferencesGroup::builder()
             .title(say.get("Notifications"))
@@ -354,6 +371,8 @@ impl SettingsWindow {
             &identity_group,
             &profile,
             &family,
+            &assistant.group,
+            &lookups.group,
             &notifications,
             &top_bar,
             &privacy,
@@ -394,6 +413,8 @@ impl SettingsWindow {
             family_name,
             new_family,
             join_another,
+            assistant,
+            lookups,
             notify,
             keep_running,
             top_bar_note,
@@ -647,6 +668,11 @@ impl SettingsWindow {
                 .set_visible(family_rules::offers_new_family(state));
             self.join_another
                 .set_visible(family_rules::offers_join_another(state));
+            let when = |at: &str| rows::agreed_when(at, &shell.culture, shell.zone.as_ref());
+            self.assistant
+                .show(&rows::assistant_consent(state, &when, say), say);
+            self.lookups
+                .show(&rows::lookup_consent(state, &when, say), say);
             self.address
                 .set_subtitle(crate::seams::tokens::origin_of(&connection.server).as_str());
             let remembered = rows::remembered_line(connection.tokens.remembered(), say);
@@ -702,6 +728,64 @@ impl SettingsWindow {
         self.updating.set(false);
     }
 
+    /// The Assistant group's action (the Mac's `assistantConsentSection`): before a yes, the whole
+    /// question; after it, "Stop Sending My Messages" at once — one press, since stopping has
+    /// nothing to read first. The session is the state: the write is followed by `/me`, and the
+    /// rows redraw from what the server then says.
+    fn answer_assistant(&self) {
+        let Some(connection) = Shell::get().connection() else {
+            return;
+        };
+        let agreed = connection
+            .session
+            .state()
+            .assistant_consent_at
+            .is_some_and(|at| !at.trim().is_empty());
+        let window = self.window.clone();
+        let busy = self.assistant.action.clone();
+        ui::spawn(async move {
+            busy.set_sensitive(false);
+            let saved = if agreed {
+                let refused = connection
+                    .api
+                    .set_assistant_consent(false)
+                    .await
+                    .into_result();
+                withdrawn(&connection, refused.err()).await
+            } else {
+                consent::ask(&window, &connection).await != consent::Answer::NotSaved
+            };
+            busy.set_sensitive(true);
+            not_saved(saved);
+        });
+    }
+
+    /// The lookup group's action (`AssistantLookupConsentSection`): "Review and Allow Lookups…" asks
+    /// about lookups alone; "Stop Lookups" is one press.
+    fn answer_lookups(&self) {
+        let Some(connection) = Shell::get().connection() else {
+            return;
+        };
+        let allowed = fc_logic::lookups::allowed(&connection.session.state());
+        let window = self.window.clone();
+        let busy = self.lookups.action.clone();
+        ui::spawn(async move {
+            busy.set_sensitive(false);
+            let saved = if allowed {
+                let refused = connection
+                    .api
+                    .set_assistant_lookup_consent(false)
+                    .await
+                    .into_result();
+                withdrawn(&connection, refused.err()).await
+            } else {
+                consent::ask_lookups(&window, &connection).await != consent::Answer::NotSaved
+            };
+            busy.set_sensitive(true);
+            not_saved(saved);
+        });
+    }
+
     /// Log Out asks first (the Mac's question; what is unsent is lost — §13), then signs out: the
     /// gate goes to the sign-in page and this window says to sign in.
     pub fn ask_log_out(&self) {
@@ -742,6 +826,87 @@ pub fn sign_out() {
         }
         crate::fc_info!("signed out from Settings");
     });
+}
+
+/// One of the assistant's groups: when the member agreed, the action, the footnote.
+pub struct ConsentGroup {
+    pub group: adw::PreferencesGroup,
+    pub agreed: adw::ActionRow,
+    pub action: adw::ButtonRow,
+    footnote: gtk::Label,
+}
+
+impl ConsentGroup {
+    fn new(title: &str, run: impl Fn() + 'static) -> ConsentGroup {
+        let group = adw::PreferencesGroup::builder()
+            .title(title)
+            .visible(false)
+            .build();
+        let say = Shell::get().say.clone();
+        let agreed = ui::property_row(say.get("Agreed"), "");
+        let action = ui::button_row("", false, run);
+        let footnote = ui::footnote("");
+        group.add(&agreed);
+        group.add(&action);
+        group.add(&footnote);
+        ConsentGroup {
+            group,
+            agreed,
+            action,
+            footnote,
+        }
+    }
+
+    fn show(&self, look: &rows::ConsentLook, say: &dyn StringCatalog) {
+        self.group.set_visible(look.visible);
+        self.agreed.set_visible(look.agreed.is_some());
+        self.agreed.set_title(say.get("Agreed"));
+        self.agreed
+            .set_subtitle(look.agreed.as_deref().unwrap_or_default());
+        self.action.set_title(&look.action);
+        if look.withdraws {
+            self.action.add_css_class("destructive-action");
+        } else {
+            self.action.remove_css_class("destructive-action");
+        }
+        self.footnote.set_text(&look.footnote);
+    }
+}
+
+/// After a withdrawal was sent: `/me` again either way (a refusal may still have landed, and the
+/// rows follow the server), and whether it was taken.
+async fn withdrawn(
+    connection: &Rc<crate::shell::Connection>,
+    refused: Option<fc_core::protocol::ApiError>,
+) -> bool {
+    if let Some(error) = &refused {
+        crate::fc_info!("assistant consent: withdrawal refused ({})", error.code);
+    } else {
+        crate::fc_info!("assistant consent: withdrawn from Settings");
+    }
+    if let Err(error) = connection.session.refresh().await {
+        crate::fc_warn!(
+            "assistant consent: the cache refused ({})",
+            crate::services::log::store_error(&error)
+        );
+    }
+    refused.is_none()
+}
+
+/// A failure is SHOWN: somebody who pressed stop and saw nothing change would reasonably believe it
+/// had (the Mac's `AssistantLookupConsentSection`).
+fn not_saved(saved: bool) {
+    if !saved && let Some(open) = current() {
+        ui::toast(
+            &open.toasts,
+            Shell::get()
+                .say
+                .get("Couldn't save your answer. Try again."),
+        );
+    }
+    if let Some(open) = current() {
+        open.refresh();
+    }
 }
 
 fn apply(row: &adw::SwitchRow, look: &rows::SwitchLook) {

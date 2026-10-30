@@ -32,6 +32,40 @@ pub use fc_text::record::{
     round_warning_ms, video_door,
 };
 
+/// Whether "Record Voice Message" (Ctrl+Shift+R, the primary menu) can act now — the Mac's
+/// `MacVoiceCommands.isEnabled`: during a recording always (it stops it into review); never while
+/// the video recorder owns the window, in the assistant's chat, without a microphone or while an
+/// edit borrows the composer; otherwise wherever the microphone would not be dimmed (no call, no
+/// attachment guard, no voice message waiting). Beside words or staged items it is enabled: it
+/// records beside them.
+pub fn records_voice(inputs: &SlotInputs) -> bool {
+    if inputs.recorder_open {
+        return false;
+    }
+    if inputs.recording != Recording::None {
+        return true;
+    }
+    if inputs.assistant_chat || !inputs.can_record || inputs.editing {
+        return false;
+    }
+    !inputs.call && !inputs.busy && !inputs.not_sent
+}
+
+/// Whether "Record Video Message" can act now — the Mac's `videoIsEnabled`: only where the video
+/// door is offered at all (`offered`: [`video_door`] is not [`Door::Hidden`]); never while the
+/// recorder is open, a voice message records, an edit borrows the composer, in the assistant's
+/// chat, in a call or while an attachment is busy. A voice message waiting does not stop it, and
+/// neither do words or staged items: a video message travels alone.
+pub fn records_video(inputs: &SlotInputs, offered: bool) -> bool {
+    offered
+        && !inputs.recorder_open
+        && inputs.recording == Recording::None
+        && !inputs.assistant_chat
+        && !inputs.editing
+        && !inputs.call
+        && !inputs.busy
+}
+
 /// The slot's visual, inside its [`MIN_TARGET_WINDOWS_EPX`] target: a 40-px accent disc in a 44-px
 /// target (shell-design §6.1 — the desktop's unit is the logical pixel, Windows' the effective one;
 /// the target is the same 44).

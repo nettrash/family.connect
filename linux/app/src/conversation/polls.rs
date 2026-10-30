@@ -17,7 +17,8 @@ use fc_logic::poll_draft::PollDraft;
 use fc_logic::poll_text;
 use fc_logic::poll_voting;
 
-use super::bubble::BubbleContext;
+use super::bubble::{BubbleContext, BubbleHost};
+use super::page::ConversationPage;
 use crate::shell::Shell;
 use crate::text::typing_hooks;
 
@@ -78,16 +79,6 @@ pub fn card(ctx: &BubbleContext, message: &MessageDto, poll: &PollDto) -> gtk::W
             .build();
         line.append(&bar);
         let drawable = polls::drawable_voters(&option.votes, |id| blocked.contains(&id));
-        if !drawable.is_empty() {
-            line.append(
-                &gtk::Label::builder()
-                    .label(poll_text::voters(&drawable, &name, say.as_ref()))
-                    .css_classes(["fc-chat-time"])
-                    .xalign(0.0)
-                    .wrap(true)
-                    .build(),
-            );
-        }
         let button = gtk::Button::builder()
             .child(&line)
             .css_classes(["flat", "fc-chat-poll-option"])
@@ -104,6 +95,27 @@ pub fn card(ctx: &BubbleContext, message: &MessageDto, poll: &PollDto) -> gtk::W
         let (host, id, option_id) = (Rc::clone(&ctx.host), message.id, option.id);
         button.connect_clicked(move |_| host.vote(id, option_id));
         column.append(&button);
+        // Who chose it: the first names, and a click for every one of them — the half "+N" cannot
+        // show (the Mac's "See who voted").
+        if !drawable.is_empty() {
+            let voters = gtk::Button::builder()
+                .child(
+                    &gtk::Label::builder()
+                        .label(poll_text::voters(&drawable, &name, say.as_ref()))
+                        .css_classes(["fc-chat-time"])
+                        .xalign(0.0)
+                        .wrap(true)
+                        .build(),
+                )
+                .css_classes(["flat", "fc-chat-poll-voters"])
+                .halign(gtk::Align::Start)
+                .tooltip_text(say.get("See who voted"))
+                .build();
+            voters.update_property(&[gtk::accessible::Property::Label(say.get("See who voted"))]);
+            let (text, name) = (option.text.clone(), name.clone());
+            voters.connect_clicked(move |anchor| voter_list(anchor, &text, &drawable, &name));
+            column.append(&voters);
+        }
     }
     let count = poll_text::member_count(
         composer_mentions::candidates(Some(&ctx.chat), &ctx.members).iter(),
@@ -130,6 +142,43 @@ pub fn card(ctx: &BubbleContext, message: &MessageDto, poll: &PollDto) -> gtk::W
         column.append(&close);
     }
     column.upcast()
+}
+
+/// Every voter of one option beside `anchor`, faces and names in the order they voted.
+fn voter_list(anchor: &gtk::Button, option: &str, voters: &[i64], name: &dyn Fn(i64) -> String) {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    column.set_margin_top(8);
+    column.set_margin_bottom(8);
+    column.set_margin_start(8);
+    column.set_margin_end(8);
+    column.append(
+        &gtk::Label::builder()
+            .label(option)
+            .css_classes(["heading"])
+            .xalign(0.0)
+            .wrap(true)
+            .max_width_chars(32)
+            .build(),
+    );
+    for &voter in voters {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let shown = name(voter);
+        line.append(&crate::chats::avatar::avatar(
+            &shown,
+            fc_logic::groups::ChatFace::Initials,
+            Some(voter),
+            24,
+        ));
+        line.append(&gtk::Label::builder().label(&shown).xalign(0.0).build());
+        column.append(&line);
+    }
+    let popover = gtk::Popover::builder().child(&column).build();
+    popover.set_parent(anchor);
+    popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    popover.popup();
 }
 
 /// The poll composer ("New poll"): `send(question, options)` when Create is pressed on a draft
@@ -346,15 +395,17 @@ pub fn compose(parent: &impl IsA<gtk::Widget>, send: Rc<dyn Fn(String, Vec<Strin
     question.grab_focus();
 }
 
-/// "Open polls": the family chat's open polls, voted on in place.
-pub fn open_polls(parent: &impl IsA<gtk::Widget>, chat_id: i64) {
+/// "Open polls" (the Mac's `OpenPollsView`): every poll still open in the chat, oldest first, each
+/// drawn as its card in the conversation — the bars, who chose what, the footer, the author's
+/// "Close poll" — voted on in place. A spinner while the list is read, "Couldn't load the polls"
+/// when it could not be, "Nothing to decide" when everything is decided. It redraws with the page
+/// (`ConversationPage::set_polls_redraw`): a vote, a close, a new poll.
+pub fn open_polls(parent: &impl IsA<gtk::Widget>, page: &Rc<ConversationPage>) {
     let shell = Shell::get();
-    let Some(connection) = shell.connection() else {
-        return;
-    };
     let say = &shell.say;
+    let connection = Rc::clone(page.connection());
     let model = Rc::new(OpenPollsModel::new(
-        chat_id,
+        page.chat_id,
         Rc::clone(&connection.chats),
         Rc::clone(&connection.api),
     ));
@@ -378,150 +429,168 @@ pub fn open_polls(parent: &impl IsA<gtk::Widget>, chat_id: i64) {
             .build(),
     ));
     dialog.set_child(Some(&view));
-    type Draw = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
-    let draw: Draw = Rc::new(RefCell::new(None));
-    {
-        let (model, list, draw_ref) = (Rc::clone(&model), list.clone(), Rc::clone(&draw));
-        let connection = Rc::clone(&connection);
-        let fill: Rc<dyn Fn()> = Rc::new(move || {
-            let shell = Shell::get();
-            let say = &shell.say;
-            while let Some(child) = list.first_child() {
-                list.remove(&child);
-            }
-            let messages = model.messages().unwrap_or_default();
-            if model.loaded() && messages.is_empty() {
-                list.append(
-                    &adw::StatusPage::builder()
-                        .icon_name("view-list-bullet-symbolic")
-                        .title(say.get("Open polls"))
-                        .description(say.get(
-                            "Open polls stay here until they're closed. There are none right now.",
-                        ))
-                        .build(),
-                );
-            }
-            if let Some(error) = model.failure() {
-                crate::fc_info!("open polls: the read failed ({})", error.code);
-                list.append(
-                    &gtk::Label::builder()
-                        .label(say.get("Couldn't load the polls"))
-                        .css_classes(["error"])
-                        .build(),
-                );
-            }
-            let me = connection.chats.reader();
-            for message in messages {
-                let card_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-                card_box.add_css_class("card");
-                card_box.set_margin_bottom(6);
-                let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
-                inner.set_margin_top(10);
-                inner.set_margin_bottom(10);
-                inner.set_margin_start(12);
-                inner.set_margin_end(12);
-                card_box.append(&inner);
-                if model.is_hidden(&message).unwrap_or(false) {
-                    let reveal = gtk::Button::builder()
-                        .label(say.get("Hidden — blocked member"))
-                        .css_classes(["flat", "fc-chat-hidden"])
-                        .build();
-                    let (model, draw, id) = (Rc::clone(&model), Rc::clone(&draw_ref), message.id);
-                    reveal.connect_clicked(move |_| {
-                        model.reveal(id);
-                        if let Some(draw) = draw.borrow().as_ref() {
-                            draw();
-                        }
-                    });
-                    inner.append(&reveal);
-                    list.append(&card_box);
-                    continue;
+    let host: Rc<dyn BubbleHost> = Rc::new(DialogHost {
+        page: Rc::downgrade(page),
+        dialog: dialog.downgrade(),
+    });
+    // The redraw holds itself (a reveal redraws), until the dialog closes.
+    let me_fill: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let fill: Rc<dyn Fn()> = {
+        let (model, list, page, me_fill) = (
+            Rc::clone(&model),
+            list.clone(),
+            Rc::downgrade(page),
+            Rc::clone(&me_fill),
+        );
+        let fill: Rc<dyn Fn()> = Rc::new({
+            let me_fill = Rc::clone(&me_fill);
+            move || {
+                let Some(page) = page.upgrade() else {
+                    return;
+                };
+                let shell = Shell::get();
+                let say = &shell.say;
+                while let Some(child) = list.first_child() {
+                    list.remove(&child);
                 }
-                let sender = poll_text::name(
-                    message.sender_id,
-                    me,
-                    |id| connection.chats.member(id).ok().flatten(),
-                    say.as_ref(),
-                );
-                inner.append(
-                    &gtk::Label::builder()
-                        .label(&sender)
-                        .css_classes(["fc-chat-sender"])
-                        .xalign(0.0)
-                        .build(),
-                );
-                if let Some(poll) = &message.poll {
+                let messages = model.messages().unwrap_or_default();
+                let status = |icon: &str, title: &str, description: &str| {
+                    let status = adw::StatusPage::builder()
+                        .icon_name(icon)
+                        .title(title)
+                        .description(description)
+                        .vexpand(true)
+                        .build();
+                    status.add_css_class("compact");
+                    status
+                };
+                if messages.is_empty() {
+                    if let Some(error) = model.failure() {
+                        crate::fc_info!("open polls: the read failed ({})", error.code);
+                        list.append(&status(
+                            "dialog-warning-symbolic",
+                            say.get("Couldn't load the polls"),
+                            say.get("Try again in a moment."),
+                        ));
+                    } else if model.loaded() {
+                        // Not a failure, and said as such: everything is decided.
+                        list.append(&status(
+                            "object-select-symbolic",
+                            say.get("Nothing to decide"),
+                            say.get(
+                                "Open polls stay here until they're closed. There are none right now.",
+                            ),
+                        ));
+                    } else {
+                        list.append(
+                            &adw::Spinner::builder()
+                                .width_request(32)
+                                .height_request(32)
+                                .halign(gtk::Align::Center)
+                                .valign(gtk::Align::Center)
+                                .vexpand(true)
+                                .build(),
+                        );
+                    }
+                    return;
+                }
+                let Some(ctx) = page.polls_context(Rc::clone(&host)) else {
+                    return;
+                };
+                for message in messages {
+                    let card_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                    card_box.add_css_class("card");
+                    let inner = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                    inner.set_margin_top(10);
+                    inner.set_margin_bottom(10);
+                    inner.set_margin_start(12);
+                    inner.set_margin_end(12);
+                    card_box.append(&inner);
+                    if model.is_hidden(&message).unwrap_or(false) {
+                        let reveal = gtk::Button::builder()
+                            .label(say.get("Hidden — blocked member"))
+                            .css_classes(["flat", "fc-chat-hidden"])
+                            .build();
+                        let (model, me_fill, id) =
+                            (Rc::clone(&model), Rc::clone(&me_fill), message.id);
+                        reveal.connect_clicked(move |_| {
+                            model.reveal(id);
+                            let fill = me_fill.borrow().clone();
+                            if let Some(fill) = fill {
+                                fill();
+                            }
+                        });
+                        inner.append(&reveal);
+                        list.append(&card_box);
+                        continue;
+                    }
+                    let sender = poll_text::name(
+                        message.sender_id,
+                        ctx.me,
+                        |id| ctx.connection.chats.member(id).ok().flatten(),
+                        say.as_ref(),
+                    );
                     inner.append(
                         &gtk::Label::builder()
-                            .label(&message.body)
-                            .css_classes(["heading"])
-                            .wrap(true)
+                            .label(&sender)
+                            .css_classes(["fc-chat-sender"])
                             .xalign(0.0)
                             .build(),
                     );
-                    let mine = polls::my_option(poll, me);
-                    for option in &poll.options {
-                        let chosen = mine == Some(option.id);
-                        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                        if chosen {
-                            row.append(&gtk::Image::from_icon_name("object-select-symbolic"));
-                        }
-                        row.append(
-                            &gtk::Label::builder()
-                                .label(&option.text)
-                                .hexpand(true)
-                                .xalign(0.0)
-                                .wrap(true)
-                                .build(),
-                        );
-                        row.append(&gtk::Label::new(Some(&option.votes.len().to_string())));
-                        let button = gtk::Button::builder()
-                            .child(&row)
-                            .css_classes(["flat", "fc-chat-poll-option"])
-                            .build();
-                        if chosen {
-                            button.add_css_class("fc-chat-mine");
-                        }
-                        button.update_property(&[gtk::accessible::Property::Label(
-                            &poll_text::option_label(option, chosen, say.as_ref()),
-                        )]);
-                        let (model, draw, id, option_id) = (
-                            Rc::clone(&model),
-                            Rc::clone(&draw_ref),
-                            message.id,
-                            option.id,
-                        );
-                        button.connect_clicked(move |_| {
-                            let (model, draw) = (Rc::clone(&model), Rc::clone(&draw));
-                            glib::spawn_future_local(async move {
-                                if let Ok(Some(error)) = model.vote(id, option_id).await {
-                                    crate::fc_info!("open polls: vote refused ({})", error.code);
-                                }
-                                if let Some(draw) = draw.borrow().as_ref() {
-                                    draw();
-                                }
-                            });
-                        });
-                        inner.append(&button);
+                    if let Some(poll) = &message.poll {
+                        inner.append(&card(&ctx, &message, poll));
                     }
+                    list.append(&card_box);
                 }
-                list.append(&card_box);
             }
         });
-        *draw.borrow_mut() = Some(Rc::clone(&fill));
-    }
+        *me_fill.borrow_mut() = Some(Rc::clone(&fill));
+        fill
+    };
+    fill();
+    page.set_polls_redraw(Some(Rc::clone(&fill)));
     {
-        let (model, draw) = (Rc::clone(&model), Rc::clone(&draw));
+        let (model, fill) = (Rc::clone(&model), Rc::clone(&fill));
         glib::spawn_future_local(async move {
             let _ = model.load().await;
-            if let Some(draw) = draw.borrow().as_ref() {
-                draw();
+            fill();
+        });
+    }
+    {
+        let page = Rc::downgrade(page);
+        dialog.connect_closed(move |_| {
+            me_fill.borrow_mut().take();
+            if let Some(page) = page.upgrade() {
+                page.set_polls_redraw(None);
             }
         });
     }
-    let keep = Rc::clone(&draw);
-    dialog.connect_closed(move |_| {
-        keep.borrow_mut().take();
-    });
     dialog.present(Some(parent));
+}
+
+/// What a card in the Open polls dialog does: votes and closes through the page — whose redraw
+/// redraws the dialog — and the "Close poll" question over the dialog itself.
+struct DialogHost {
+    page: std::rc::Weak<ConversationPage>,
+    dialog: glib::WeakRef<adw::Dialog>,
+}
+
+impl BubbleHost for DialogHost {
+    fn react(&self, _message_id: i64, _emoji: &str) {}
+    fn reveal(&self, _message_id: i64) {}
+    fn quote_clicked(&self, _message_id: i64, _quote: &fc_logic::quotes::Quote) {}
+    fn open_thread(&self, _message_id: i64) {}
+    fn vote(&self, message_id: i64, option_id: i64) {
+        if let Some(page) = self.page.upgrade() {
+            page.vote(message_id, option_id);
+        }
+    }
+    fn close_poll(&self, message_id: i64) {
+        if let (Some(page), Some(dialog)) = (self.page.upgrade(), self.dialog.upgrade()) {
+            page.close_poll_over(message_id, dialog.upcast_ref());
+        }
+    }
+    fn open_member(&self, _user_id: i64) {}
+    fn menu(&self, _message: &MessageDto, _anchor: &gtk::Widget, _x: f64, _y: f64) {}
+    fn reactors(&self, _message: &MessageDto, _emoji: &str, _anchor: &gtk::Widget) {}
 }

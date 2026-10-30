@@ -355,13 +355,13 @@ self-test groups `settings`, `family`, `board` (32 checks, green). What a later 
 - (Done at integration: `Shell::numbers` — the decimal separator and digit grouping of `LC_NUMERIC`
   (`services::catalogue::Numbers`, unit-tested) — replaced the three copies of the language's
   separator in Statistics, P2's file rows and P1's chips; Statistics groups its counts.)
-- **Still open:** the Settings window's **Assistant** group (consent: Review and Agree… / Stop Sending
-  My Messages, Looking things up) — P1's consent question lives in `Composer::ask_consent` and is not
-  exposed as a free `show_consent(parent, lookups_only)` yet.
-- **Not done in P4 yet (its own, for a later pass):** the Family dialog's Assistant switches and the daily greeting's places
-  (`FamilyModel::may_turn_on`/`as_applied`, `greeting_weather`); the note sheet's live preview
-  (`note_preview::of`); an event's backdrop drawn on its card and "Draw a backdrop" (needs the consent
-  question first); Statistics' "Recording time" row.
+- (Done in the Mac-parity pass, 2026-10-30: Settings' **Assistant** and **Looking things up** groups
+  (`settings::rows::{assistant_consent, lookup_consent}`, `composer::consent::ask_lookups`); the
+  Family dialog's Assistant settings and the greeting's places (`family::assistant`); an event's
+  backdrop drawn on its card and "Draw a backdrop" (`board::wall`, `backdrop_consent::run`);
+  Statistics' "Recording time".)
+- **Not done yet:** the note sheet's live preview (`note_preview::of` — the card builder `Wall::card`
+  needs a connection and would have to be factored out first) and its `@` suggestion strip.
 - **The string gate and variables:** `family_text::REASONS` and `house_rules::POLICIES` are looked up by
   `say.get(variable)`, which `linux/i18n/generate.py` cannot collect — so they were English-only on Linux
   too (23(b) below). `family::words` says them as literals, pinned by a test to fc-logic's and fc-core's
@@ -536,6 +536,39 @@ Found in the other clients (for nettrash):
 1. **The Mac's (and iOS's) Pending page says "…or pull down to check right now"**
    (`PendingApprovalView`, shared with the Mac): a desktop has no pull to refresh. Linux shows the same
    translated sentence (it refreshes every 15 s, as Windows does); a desktop wording is the owner's call.
+
+## From the Mac-parity pass (2026-10-30)
+
+A review of the Linux client against the Mac (`ios/FamilyConnect/MacViews`, shared `Views`/`Core`)
+found and fixed, each verified in code and by the gates:
+
+- **Bugs:** a hidden (blocked) message's menu offered Copy/Reply/React (now Safety only, and no
+  double-click heart); "Close poll" did nothing in a thread; the unread divider re-read the live count
+  ("1 new messages" after reading); the Open polls badge never updated; a "not sent" voice note was
+  sent without its own reply and caption; a voice note whose send could not be queued was lost (it
+  goes back into review); the note sheet did not re-judge after a list or date change; pasted video,
+  sound and GIF skipped `prepare_picked` (now through a temporary file).
+- **Behaviour now the Mac's:** notifications muted only for the chat being read (§15.1) and withdrawn
+  once a chat is read anywhere; a returning network dials at once (`ChatSocket::kick`,
+  `LiveConnection::reconnect_now`) and retries the Offline page; Record Voice/Video Message greyed
+  where they would do nothing (`composer_button::{records_voice, records_video}`); Settings… on every
+  page's menu; F11 full screen (`win.toggle-fullscreen`, a Linux-only "Full Screen" string).
+- **Added from the Mac:** "See who reacted" and "See who voted"; a tint on the message a quote jumps
+  to; a spinner while older messages load; a thread's loading / "Couldn't load the thread" states; the
+  Open polls dialog drawn with the full poll card and "Nothing to decide"; the reply's excerpt in the
+  composer banner; the assistant's notices over the composer (consent line with Review…, picture
+  notices, the `/draw` hint — `composer::notices`); poll sending with consent, reply and mentions;
+  staged thumbnails and a voice-note review chip; "We can't hear anything…" while recording; "Show
+  text" under videos (numbered in a pile); call records' direction/outcome glyphs; Delete Account's
+  full consequences; "How to run your own server"; live pending invitations; note words fitted by
+  scaling the type (`fitted_scale`, floor 0.6).
+- **For nettrash (not changed):** Linux keeps Windows' rules where the Mac differs on (a) the top-bar
+  icon — always registered, and a login launch starts hidden whenever an icon exists, where the Mac
+  shows no icon and never starts hidden unless "Keep running" is on; (b) one main window (no File ▸
+  New Window). Still not done from the review: opening the cached chats offline at launch, "Add to
+  family stickers" from a sticker, dragging an attachment out, a diagram's zoom sheet, pausing on a
+  headphone unplug, `drawn_copies` (a voice note in the thread and the conversation at once), the
+  video recorder's reply banner, dropped web links, the note sheet's preview.
 
 ## From P6 (call media) — merged 2026-10-29
 

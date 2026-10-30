@@ -264,6 +264,11 @@ impl ThreadModel {
         self.revealed.borrow_mut().remove(&message_id);
     }
 
+    /// Whether the reader asked to see that hidden row here.
+    pub fn revealed(&self, message_id: i64) -> bool {
+        self.revealed.borrow().contains(&message_id)
+    }
+
     /// Show one hidden level of one quote, on this panel — its own reveal, exactly as its hidden
     /// bubbles are its own (docs/protocol.md, "Blocking a member").
     pub fn reveal_quote(&self, message_id: i64, level: QuoteLevel) {

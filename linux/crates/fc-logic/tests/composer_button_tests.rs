@@ -1070,3 +1070,114 @@ fn a_held_shortcut_acts_once() {
     assert!(!shortcut.key_down(3_000, false));
     assert!(shortcut.fresh(3_000));
 }
+
+// ---- the menu's two record commands (the Mac's `MacVoiceCommands`) -------------------------------
+
+/// An empty main composer in a family chat, with a microphone: the place both commands act.
+fn idle() -> SlotInputs {
+    SlotInputs {
+        recorder_open: false,
+        recording: Recording::None,
+        editing: false,
+        draft_blank: true,
+        staged: false,
+        assistant_chat: false,
+        can_record: true,
+        call: false,
+        busy: false,
+        not_sent: false,
+    }
+}
+
+#[test]
+fn record_voice_is_offered_wherever_the_microphone_is_not_dimmed() {
+    assert!(composer_button::records_voice(&idle()));
+    // Beside words or staged items it records beside them.
+    let words = SlotInputs {
+        draft_blank: false,
+        staged: true,
+        ..idle()
+    };
+    assert!(composer_button::records_voice(&words));
+    // During a recording it stops it — even in a call that began meanwhile.
+    let recording = SlotInputs {
+        recording: Recording::HandsFreeBesideDraft,
+        call: true,
+        ..idle()
+    };
+    assert!(composer_button::records_voice(&recording));
+    for off in [
+        SlotInputs {
+            recorder_open: true,
+            ..idle()
+        },
+        SlotInputs {
+            assistant_chat: true,
+            ..idle()
+        },
+        SlotInputs {
+            can_record: false,
+            ..idle()
+        },
+        SlotInputs {
+            editing: true,
+            ..idle()
+        },
+        SlotInputs {
+            call: true,
+            ..idle()
+        },
+        SlotInputs {
+            busy: true,
+            ..idle()
+        },
+        SlotInputs {
+            not_sent: true,
+            ..idle()
+        },
+    ] {
+        assert!(!composer_button::records_voice(&off), "{off:?}");
+    }
+}
+
+#[test]
+fn record_video_needs_the_door_and_a_free_composer() {
+    assert!(composer_button::records_video(&idle(), true));
+    assert!(!composer_button::records_video(&idle(), false));
+    // A voice message waiting, words, staged items: a video message travels alone.
+    let waiting = SlotInputs {
+        not_sent: true,
+        draft_blank: false,
+        staged: true,
+        ..idle()
+    };
+    assert!(composer_button::records_video(&waiting, true));
+    for off in [
+        SlotInputs {
+            recorder_open: true,
+            ..idle()
+        },
+        SlotInputs {
+            recording: Recording::HandsFree,
+            ..idle()
+        },
+        SlotInputs {
+            assistant_chat: true,
+            ..idle()
+        },
+        SlotInputs {
+            editing: true,
+            ..idle()
+        },
+        SlotInputs {
+            call: true,
+            ..idle()
+        },
+        SlotInputs {
+            busy: true,
+            ..idle()
+        },
+    ] {
+        assert!(!composer_button::records_video(&off, true), "{off:?}");
+    }
+}

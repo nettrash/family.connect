@@ -14,8 +14,12 @@
 //! no badge, and notifies nobody either — the badge and the notification answer the same question
 //! and must not disagree ([`toast_arguments::is_news`](crate::toast_arguments::is_news)).
 //!
-//! Nothing is raised while the window is in FRONT (the reader is looking at it) or while the reader
-//! has not asked for notifications at all.
+//! NOTHING IS SAID ABOUT WHAT THE READER IS LOOKING AT — and only that (the Mac's
+//! `DesktopNotificationRules`, #84): a message in the chat being READ (shown in the window in
+//! front, at its newest) raises nothing, while a message in any other chat does, the app in front
+//! or not; a note raises nothing while the board's window is in front. Nothing at all while the
+//! reader has not asked for notifications. (Windows muted everything while its window was in
+//! front, so a message in another chat went unannounced; Linux follows the Mac.)
 //!
 //! PLATFORM-FREE. The shell raises a `GNotification` from a [`Toast`]: `title` and `body` as given,
 //! [`Toast::tag`] as the notification's id (`Application::send_notification(Some(tag), …)`, so a
@@ -80,7 +84,8 @@ pub struct NotificationRules {
     chats: Rc<ChatStore>,
     say: Rc<dyn StringCatalog>,
     wanted: Cell<bool>,
-    in_front: Cell<bool>,
+    reading: Cell<Option<i64>>,
+    board_in_front: Cell<bool>,
     family_name: RefCell<Option<String>>,
     families: RefCell<Vec<FamilyDto>>,
     assistant_user_id: Cell<Option<i64>>,
@@ -91,21 +96,23 @@ impl std::fmt::Debug for NotificationRules {
         // No names: the family's logging rule.
         f.debug_struct("NotificationRules")
             .field("wanted", &self.wanted.get())
-            .field("in_front", &self.in_front.get())
+            .field("reading", &self.reading.get())
+            .field("board_in_front", &self.board_in_front.get())
             .field("families", &self.families.borrow().len())
             .finish_non_exhaustive()
     }
 }
 
 impl NotificationRules {
-    /// `new NotificationRules(chats, words)`: not wanted, not in front, no family named, until
-    /// told.
+    /// `new NotificationRules(chats, words)`: not wanted, nothing being read, no family named,
+    /// until told.
     pub fn new(chats: Rc<ChatStore>, say: Rc<dyn StringCatalog>) -> Self {
         NotificationRules {
             chats,
             say,
             wanted: Cell::new(false),
-            in_front: Cell::new(false),
+            reading: Cell::new(None),
+            board_in_front: Cell::new(false),
             family_name: RefCell::new(None),
             families: RefCell::new(Vec::new()),
             assistant_user_id: Cell::new(None),
@@ -121,13 +128,24 @@ impl NotificationRules {
         self.wanted.set(wanted);
     }
 
-    /// Whether the window is in front, in which case there is nothing to tell.
-    pub fn in_front(&self) -> bool {
-        self.in_front.get()
+    /// The chat the reader is reading now — shown in the window in front, at its newest (the Mac's
+    /// `ChatPresence.isReading`) — whose messages need no notification.
+    pub fn reading(&self) -> Option<i64> {
+        self.reading.get()
     }
 
-    pub fn set_in_front(&self, in_front: bool) {
-        self.in_front.set(in_front);
+    pub fn set_reading(&self, chat_id: Option<i64>) {
+        self.reading.set(chat_id);
+    }
+
+    /// Whether the board's window is the one in front: a note landing on the wall the reader is
+    /// looking at is not news to tell them about.
+    pub fn board_in_front(&self) -> bool {
+        self.board_in_front.get()
+    }
+
+    pub fn set_board_in_front(&self, in_front: bool) {
+        self.board_in_front.set(in_front);
     }
 
     /// The family's name, for the title of anything from the family chat or the wall — the SHOWN
@@ -177,6 +195,10 @@ impl NotificationRules {
         {
             return Ok(None);
         }
+        // Being read: the reader sees it arrive.
+        if self.reading.get() == Some(message.chat_id) {
+            return Ok(None);
+        }
         let Some(chat) = self.chats.chat(message.chat_id)? else {
             // A chat this device does not hold: the list read that names it has not landed, and a
             // notification that cannot be opened is worse than none.
@@ -208,6 +230,9 @@ impl NotificationRules {
             return Ok(None);
         }
         if note.author_id == self.chats.reader() || self.chats.is_blocked(note.author_id)? {
+            return Ok(None);
+        }
+        if self.board_in_front.get() {
             return Ok(None);
         }
         let family = {
@@ -258,7 +283,7 @@ impl NotificationRules {
 
     /// Whether anything is worth saying at all.
     fn speaking(&self) -> bool {
-        self.wanted.get() && !self.in_front.get()
+        self.wanted.get()
     }
 
     /// Whoever this is, as the roster names them — and "Someone" when it cannot, which happens and

@@ -16,12 +16,13 @@
 //! | [`member`] | a member row's menu: Message, Report…, Block, Birthday…, Reset Password…, Remove |
 //! | [`words`] | the sentences fc-logic looks up through a variable, said literally (pure, tested) |
 
+pub mod assistant;
 pub mod birthday;
 pub mod groups;
 pub mod member;
 pub mod words;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -88,6 +89,15 @@ pub struct FamilyDialog {
     /// The header's family name, as drawn.
     pub title: gtk::Label,
     cap_commit: RefCell<Option<glib::SourceId>>,
+    /// A change to the assistant's settings on its way (`assistant`): drawn as applied, the
+    /// controls held still until it is answered.
+    assistant_pending: RefCell<Option<FamilyPatch>>,
+    /// The greeting's places as they are being edited, kept across redraws.
+    places: RefCell<fc_logic::greeting_weather::PlacesDraft>,
+    saving_places: Cell<bool>,
+    /// Set while `rebuild` replaces the controls, so a field losing its focus to the redraw saves
+    /// nothing.
+    drawing: Cell<bool>,
 }
 
 impl std::fmt::Debug for FamilyDialog {
@@ -115,11 +125,24 @@ impl FamilyDialog {
             member_rows: RefCell::new(Vec::new()),
             title: gtk::Label::new(None),
             cap_commit: RefCell::new(None),
+            assistant_pending: RefCell::new(None),
+            places: RefCell::default(),
+            saving_places: Cell::new(false),
+            drawing: Cell::new(false),
         });
         family.follow(&shell);
-        family.dialog.connect_closed(|_| {
-            OPEN.with(|open| open.borrow_mut().take());
-        });
+        {
+            let weak = Rc::downgrade(&family);
+            family.dialog.connect_closed(move |_| {
+                // Places typed and not yet saved go now (the Mac saves them as its sheet closes).
+                if let (Some(family), Some(connection)) =
+                    (weak.upgrade(), Shell::get().connection())
+                {
+                    family.save_places(&connection);
+                }
+                OPEN.with(|open| open.borrow_mut().take());
+            });
+        }
         family
     }
 
@@ -147,6 +170,28 @@ impl FamilyDialog {
                     me.reload();
                 }
             });
+            // An invitation sent, answered or withdrawn — here or on another device — changes
+            // the owner's Pending Invitations: read them again (the Mac's
+            // `invitationsGeneration`).
+            let reread = {
+                let weak = Rc::downgrade(self);
+                move || {
+                    if let Some(me) = weak.upgrade()
+                        && current().is_some_and(|open| Rc::ptr_eq(&open, &me))
+                    {
+                        me.reload();
+                    }
+                }
+            };
+            let changed = reread.clone();
+            connection
+                .router
+                .on_invitation_changed()
+                .subscribe(move |_| changed());
+            connection
+                .router
+                .on_invitation_removed()
+                .subscribe(move |_| reread());
         }
         shell.on_connection_changed().subscribe(move |_| redraw());
     }
@@ -196,6 +241,14 @@ impl FamilyDialog {
 
     /// Draws the whole console from what is held now, keeping the scroll position.
     pub fn rebuild(self: &Rc<Self>) {
+        if self.drawing.replace(true) {
+            return;
+        }
+        self.draw();
+        self.drawing.set(false);
+    }
+
+    fn draw(self: &Rc<Self>) {
         let shell = Shell::get();
         let Some(connection) = shell.connection() else {
             return;
@@ -263,6 +316,9 @@ impl FamilyDialog {
             content.append(&self.policy_group(&connection, &state));
             if state.max_family_members > 0 {
                 content.append(&self.cap_group(&connection, &state, present.len()));
+            }
+            for group in assistant::groups(self, &connection, &state) {
+                content.append(&group);
             }
         }
 

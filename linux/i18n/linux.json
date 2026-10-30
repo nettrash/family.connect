@@ -248,6 +248,16 @@
       "sr": "Промени…",
       "sr-Latn": "Promeni…",
       "zh-Hans": "更改…"
+    },
+    "Full Screen": {
+      "de": "Vollbild",
+      "es": "Pantalla completa",
+      "fr": "Plein écran",
+      "ja": "フルスクリーン",
+      "ru": "Полноэкранный режим",
+      "sr": "Цео екран",
+      "sr-Latn": "Ceo ekran",
+      "zh-Hans": "全屏"
     }
   }
 }

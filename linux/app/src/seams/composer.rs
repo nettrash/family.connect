@@ -64,6 +64,30 @@ pub trait ComposerHost {
         self.send(media);
     }
 
+    /// The "not sent" row's Send (S2.8; the Mac's `sendParked`): THAT note with ITS `caption` and
+    /// ITS `reply_to`, and nothing the composer holds now — after the assistant's consent where
+    /// the caption needs it. `sent` runs once it is queued (the row then leaves the store); a
+    /// refusal or a "Not Now" leaves the note where it is. (Added in the parity pass; the default
+    /// sends it as [`send`](Self::send) would.)
+    fn send_parked(
+        &self,
+        media: StagedMedia,
+        caption: Option<String>,
+        reply_to: Option<i64>,
+        sent: Box<dyn FnOnce()>,
+    ) {
+        let _ = (caption, reply_to);
+        self.send(media);
+        sent();
+    }
+
+    /// The line a parked note shows for the reply it carries ("Replying to Anna"), from the
+    /// composer's roster. (Added in the parity pass; the default says nothing.)
+    fn reply_line(&self, message_id: i64) -> Option<String> {
+        let _ = message_id;
+        None
+    }
+
     /// The recording's state changed: redraw the slot, show or hide the row.
     fn changed(&self);
 

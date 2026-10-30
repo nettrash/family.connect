@@ -30,6 +30,7 @@ use std::pin::pin;
 use std::rc::Rc;
 use std::time::Duration;
 
+use futures_channel::oneshot;
 use futures_util::future::{Either, select};
 
 use super::api_result::TokenStore;
@@ -86,6 +87,10 @@ pub trait LiveSocket: FrameSender {
 
     /// Connect, read, reconnect — until `cancel` is raised or the session expires.
     fn run(&self, cancel: Cancel) -> LocalBoxFuture<'_, ()>;
+
+    /// The network came back: dial now rather than finish the wait ([`ChatSocket::kick`]). A
+    /// socket with no wait to cut short ignores it.
+    fn kick(&self) {}
 }
 
 /// The one implementation of [`LiveSocket`].
@@ -96,6 +101,8 @@ pub struct ChatSocket {
     clock: Rc<dyn Clock>,
     backoff: RefCell<ReconnectBackoff>,
     live: RefCell<Option<Rc<dyn WebSocket>>>,
+    /// Ends the wait before the next dial, while the loop is waiting ([`kick`](Self::kick)).
+    wake: RefCell<Option<oneshot::Sender<()>>>,
     frame: Event<ServerFrame>,
     connected: Event<()>,
     disconnected: Event<()>,
@@ -155,6 +162,7 @@ impl ChatSocket {
             clock,
             backoff: RefCell::new(ReconnectBackoff::default()),
             live: RefCell::new(None),
+            wake: RefCell::new(None),
             frame: Event::new(),
             connected: Event::new(),
             disconnected: Event::new(),
@@ -267,12 +275,33 @@ impl ChatSocket {
                 self.backoff.borrow_mut().reset();
             }
             let delay = self.backoff.borrow_mut().next_delay();
-            if unless_cancelled(self.clock.sleep(delay), &cancel)
-                .await
-                .is_none()
-            {
+            let (wake, woken) = oneshot::channel();
+            *self.wake.borrow_mut() = Some(wake);
+            let sleep = self.clock.sleep(delay);
+            let waited = unless_cancelled(
+                Box::pin(async move {
+                    // A dropped sender (the socket going) is no kick: wait the delay out.
+                    if let Either::Right((Err(_), sleep)) = select(sleep, woken).await {
+                        sleep.await;
+                    }
+                }),
+                &cancel,
+            )
+            .await;
+            self.wake.borrow_mut().take();
+            if waited.is_none() {
                 return;
             }
+        }
+    }
+
+    /// The network came back: dial NOW rather than finish a wait sized for a network that no longer
+    /// exists, from a fresh backoff (the Mac's `ChatSocket.kick`). A connection that is up, or one
+    /// being dialled, is left alone; a loop that is not running has nothing to wake.
+    pub fn kick(&self) {
+        if let Some(wake) = self.wake.borrow_mut().take() {
+            self.backoff.borrow_mut().reset();
+            let _ = wake.send(());
         }
     }
 
@@ -322,5 +351,9 @@ impl LiveSocket for ChatSocket {
 
     fn run(&self, cancel: Cancel) -> LocalBoxFuture<'_, ()> {
         Box::pin(ChatSocket::run(self, cancel))
+    }
+
+    fn kick(&self) {
+        ChatSocket::kick(self);
     }
 }

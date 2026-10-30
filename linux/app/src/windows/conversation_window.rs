@@ -160,6 +160,17 @@ fn add_actions(opened: &Rc<ConversationWindow>) {
         // Off while the field has focus (it opens focused): its own Ctrl+V pastes words.
         paste.set_enabled(false);
     }
+    {
+        let full = window.downgrade();
+        add(
+            actions::TOGGLE_FULLSCREEN,
+            Box::new(move || {
+                if let Some(window) = full.upgrade() {
+                    window.set_fullscreened(!window.is_fullscreen());
+                }
+            }),
+        );
+    }
     menu::install(
         window,
         Rc::new(move || page_of().map(|page| page as Rc<dyn MessageActions>)),
@@ -218,6 +229,24 @@ impl PageHost for WindowHost {
                 .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
         {
             action.set_enabled(enabled);
+        }
+    }
+
+    fn set_record_enabled(&self, voice: bool, video: bool) {
+        let Some(opened) = self.0.upgrade() else {
+            return;
+        };
+        for (spec, enabled) in [
+            (actions::RECORD_VOICE, voice),
+            (actions::RECORD_VIDEO, video),
+        ] {
+            if let Some(action) = opened
+                .window
+                .lookup_action(spec.name)
+                .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
         }
     }
 }

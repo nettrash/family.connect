@@ -52,6 +52,8 @@ pub struct RecordingRow {
     clock: gtk::Label,
     meter: Waves,
     warning: gtk::Label,
+    /// "We can't hear anything. Is the microphone muted?" — in the meter's place (S2.9).
+    silence: gtk::Label,
     stop: gtk::Button,
     pressed: Event<RowPress>,
     pulse: RefCell<Option<glib::SourceId>>,
@@ -97,6 +99,15 @@ impl RecordingRow {
             .xalign(0.0)
             .visible(false)
             .build();
+        let silence = gtk::Label::builder()
+            .label(say.get("We can't hear anything. Is the microphone muted?"))
+            .css_classes(["caption", "fc-media-warning"])
+            .hexpand(true)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(say.get("We can't hear anything. Is the microphone muted?"))
+            .visible(false)
+            .build();
         let stop = gtk::Button::builder()
             .label(say.get("Stop"))
             .valign(gtk::Align::Center)
@@ -115,6 +126,7 @@ impl RecordingRow {
         root.append(&clock);
         root.append(meter.widget());
         root.append(&warning);
+        root.append(&silence);
         root.append(&stop);
         root.update_property(&[gtk::accessible::Property::Label(say.get("Recording"))]);
         let row = Rc::new(RecordingRow {
@@ -124,6 +136,7 @@ impl RecordingRow {
             clock,
             meter,
             warning,
+            silence,
             stop,
             pressed: Event::new(),
             pulse: RefCell::new(None),
@@ -163,6 +176,7 @@ impl RecordingRow {
         self.still.set(still);
         self.stop.set_visible(!beside_draft);
         self.warning.set_visible(false);
+        self.silence.set_visible(false);
         self.clock.remove_css_class("fc-media-warning");
         self.clock.set_label(&voice_notes::clock(Duration::ZERO));
         self.meter.set_levels(if still {
@@ -184,10 +198,13 @@ impl RecordingRow {
     }
 
     /// One tick (an eighth of a second): the clock, the meter or the warning.
+    /// `silent`: nothing above the silence line yet, three seconds in — the warning takes the
+    /// meter's place until a sound arrives (the Mac's `showsSilenceWarning`).
     pub fn tick(
         &self,
         elapsed: Duration,
         levels: &voice_look::LiveLevels,
+        silent: bool,
         say: &dyn StringCatalog,
     ) {
         self.clock.set_label(&voice_notes::clock(elapsed));
@@ -195,6 +212,12 @@ impl RecordingRow {
         if voice_notes::warns(elapsed) {
             self.clock.add_css_class("fc-media-warning");
             self.warning.set_visible(true);
+            self.silence.set_visible(false);
+            self.meter.widget().set_visible(false);
+            return;
+        }
+        self.silence.set_visible(silent);
+        if silent {
             self.meter.widget().set_visible(false);
             return;
         }

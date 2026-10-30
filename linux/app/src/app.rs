@@ -399,6 +399,15 @@ fn keep_flushing(shell: &Rc<Shell>) {
     let weak = Rc::downgrade(shell);
     monitor.connect_network_changed(move |_, available| {
         if available && let Some(shell) = weak.upgrade() {
+            // The Mac's `networkRestored`: dial now, flush now — and an Offline page tries again
+            // by itself rather than waiting for its button.
+            if let Some(connection) = shell.connection() {
+                connection.live.reconnect_now();
+            }
+            if shell.gate_facts().offline {
+                crate::fc_info!("network: back, trying the server again");
+                shell.retry();
+            }
             shell.flush(FlushTrigger::ConnectivityRestored);
         }
     });

@@ -70,6 +70,9 @@ pub struct Wall {
     toasts: adw::ToastOverlay,
     /// Opens the author's sheet for a note.
     on_edit: RefCell<Option<Rc<dyn Fn(NoteDto)>>>,
+    /// Events whose backdrop is being drawn: one request at a time per note — each costs the
+    /// family a picture, and a second answer would only replace the first.
+    drawing: RefCell<HashSet<i64>>,
 }
 
 impl std::fmt::Debug for Wall {
@@ -113,6 +116,7 @@ impl Wall {
             placed: RefCell::new(Vec::new()),
             hands: RefCell::new(HashMap::new()),
             revealed: RefCell::new(HashSet::new()),
+            drawing: RefCell::new(HashSet::new()),
             size: Cell::new((0.0, 0.0)),
             in_hand: Cell::new(None),
             focused: Cell::new(None),
@@ -630,7 +634,7 @@ impl Wall {
                 text.add_css_class("fc-note-hidden");
             } else {
                 text.set_text(&caption);
-                text.set_lines(lines_for(sticker));
+                fit_text(&text, &caption, sticker);
             }
             card.append(&text);
         }
@@ -698,6 +702,12 @@ impl Wall {
         let label = wall_text::label(hidden, sticker.mine, &author, &what, say);
         card.update_property(&[gtk::accessible::Property::Label(&label)]);
         card.set_tooltip_text(Some(&label));
+        if !hidden
+            && sticker.kind == Kind::Event
+            && let Some(attachment) = note.attachment.clone()
+        {
+            backdrop(&card, attachment, &connection.attachments);
+        }
         self.keys(&card, note.id);
         card
     }
@@ -1004,6 +1014,44 @@ impl Wall {
                 }),
             );
             section.append(Some(say.get("Add to Calendar")), Some("note.calendar"));
+            // The picture behind it is the author's to ask for (the Mac's `BackdropDoor`), where
+            // the server draws and names who does.
+            let assistant = Shell::get()
+                .connection()
+                .and_then(|connection| connection.session.state().assistant);
+            if mine && fc_logic::picture_hint::offers_backdrop(true, assistant.as_ref()) {
+                let drawing = self.drawing.borrow().contains(&id);
+                let weak = Rc::downgrade(self);
+                add(
+                    "backdrop",
+                    Box::new(move || {
+                        if let Some(wall) = weak.upgrade() {
+                            wall.draw_backdrop(id);
+                        }
+                    }),
+                );
+                let label = if drawing {
+                    say.get("Drawing…")
+                } else if note.attachment.is_none() {
+                    say.get("Draw a backdrop")
+                } else {
+                    say.get("Draw another backdrop")
+                };
+                section.append(
+                    Some(label),
+                    Some(if drawing {
+                        "note.none"
+                    } else {
+                        "note.backdrop"
+                    }),
+                );
+                // Drawn from the TITLE, and the provider's filter refuses most real names and
+                // brands in it: the hint beside the control, as advice rather than an action.
+                section.append(
+                    Some(&fc_logic::picture_hint::sentence(say)),
+                    Some("note.none"),
+                );
+            }
             // ANSWERING IS NOT AUTHORSHIP: anyone may say whether they are coming.
             let mine_now = note
                 .my_answer(Shell::get().connection().map_or(0, |c| c.chats.reader()))
@@ -1115,6 +1163,83 @@ impl Wall {
         });
     }
 
+    /// "Draw a backdrop": nothing reaches the model unasked — an author who has not agreed is asked
+    /// first and it is drawn on a yes, and the server's own `assistant_consent_required` (a consent
+    /// withdrawn on another device) raises the same question once instead of a failure
+    /// (`backdrop_consent::run`). A refusal by the provider's filter says so; anything else is
+    /// "Couldn't draw that."
+    fn draw_backdrop(self: &Rc<Self>, id: i64) {
+        let Some(connection) = Shell::get().connection() else {
+            return;
+        };
+        if !self.drawing.borrow_mut().insert(id) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        ui::spawn(async move {
+            let session = Rc::clone(&connection.session);
+            let asks_first = || {
+                let state = session.state();
+                fc_logic::backdrop_consent::asks_first(
+                    state
+                        .assistant
+                        .as_ref()
+                        .and_then(|assistant| assistant.processor.as_deref()),
+                    state.assistant_consent_at.as_deref(),
+                )
+            };
+            let (asking, anchor) = (Rc::clone(&connection), weak.clone());
+            let ask = move || {
+                let (connection, anchor) = (Rc::clone(&asking), anchor.upgrade());
+                async move {
+                    match anchor {
+                        Some(wall) => {
+                            crate::composer::consent::ask(&wall.root, &connection).await
+                                == crate::composer::consent::Answer::Agreed
+                        }
+                        None => false,
+                    }
+                }
+            };
+            let drawing = Rc::clone(&connection);
+            let draw = move || {
+                let connection = Rc::clone(&drawing);
+                async move {
+                    match super::model(&connection).draw_backdrop(id).await {
+                        Ok(Ok(Some(drawn))) => Ok(drawn),
+                        Ok(Ok(None)) => Err(fc_core::protocol::ApiError::transport("no picture")),
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => {
+                            crate::fc_warn!(
+                                "board: the cache refused ({})",
+                                log::store_error(&error)
+                            );
+                            Err(fc_core::protocol::ApiError::transport("cache"))
+                        }
+                    }
+                }
+            };
+            let outcome = fc_logic::backdrop_consent::run(asks_first, ask, draw).await;
+            let Some(wall) = weak.upgrade() else {
+                return;
+            };
+            wall.drawing.borrow_mut().remove(&id);
+            match (&outcome.drawn, &outcome.error) {
+                (Some(_), _) => crate::fc_info!("board: backdrop drawn for note {id}"),
+                (None, Some(error)) => {
+                    crate::fc_info!("board: backdrop refused ({})", error.code);
+                    let say = Rc::clone(&Shell::get().say);
+                    ui::toast(
+                        &wall.toasts,
+                        &note_sheet_text::backdrop_failure(error, say.as_ref()),
+                    );
+                }
+                (None, None) => {}
+            }
+            wall.redraw();
+        });
+    }
+
     fn tick(self: &Rc<Self>, id: i64, item: i64, done: bool) {
         let Some(connection) = Shell::get().connection() else {
             return;
@@ -1189,7 +1314,45 @@ fn line(text: &str) -> gtk::Label {
 
 /// How many lines of words a card has room for (`fc_text::board::lines_that_fit`): the card's
 /// height under its padding, at the size's type and a line height of 1.25 of it.
-fn lines_for(sticker: &Sticker) -> i32 {
+/// The words FIT the note (docs/protocol.md, "Board"; the Mac's `minimumScaleFactor`, the web's
+/// `fitted_scale`): the largest type, from the note's own size down to `MIN_TEXT_SCALE`, at which
+/// they fit the room the card leaves them — measured with Pango in the note's own face. Past the
+/// floor they are cut, with an ellipsis, at the lines they hold there: the one case a reader has to
+/// hover or open the note for.
+fn fit_text(label: &gtk::Label, words: &str, sticker: &Sticker) {
+    use fc_text::board::{FIT_STEPS, MIN_TEXT_SCALE, fitted_scale, lines_that_fit};
+    let room = room_for(sticker);
+    let width = (sticker.width - 20.0).max(1.0);
+    let base = sticker.size.type_px();
+    let layout = label.create_pango_layout(Some(words));
+    layout.set_width((width * f64::from(gtk::pango::SCALE)) as i32);
+    layout.set_wrap(gtk::pango::WrapMode::WordChar);
+    let mut font = gtk::pango::FontDescription::new();
+    font.set_family(fc_core::board::note_look::font_family(sticker.font));
+    let fits = |scale: f64| {
+        font.set_absolute_size(base * scale * f64::from(gtk::pango::SCALE));
+        layout.set_font_description(Some(&font));
+        f64::from(layout.pixel_size().1) <= room
+    };
+    let (scale, lines) = match fitted_scale(fits, MIN_TEXT_SCALE, FIT_STEPS) {
+        // A backstop for one unbroken word, not a layout rule (the Mac's `fittedLineLimit`).
+        Some(scale) => (scale, 20),
+        None => (
+            MIN_TEXT_SCALE,
+            lines_that_fit(room, base * MIN_TEXT_SCALE * 1.25),
+        ),
+    };
+    if scale < 1.0 {
+        let attributes = gtk::pango::AttrList::new();
+        attributes.insert(gtk::pango::AttrFloat::new_scale(scale));
+        label.set_attributes(Some(&attributes));
+    }
+    label.set_lines(i32::try_from(lines.max(1)).unwrap_or(1));
+}
+
+/// The height the card leaves its words: less its padding and author line, and what an event's
+/// date, a list's lines or a photo take.
+fn room_for(sticker: &Sticker) -> f64 {
     let reserved = match sticker.kind {
         Kind::Event => 52.0,
         Kind::Tasks => {
@@ -1200,9 +1363,7 @@ fn lines_for(sticker: &Sticker) -> i32 {
         Kind::Photo => sticker.height * 0.6,
         Kind::Text => 0.0,
     };
-    let room = (sticker.height - 20.0 - 14.0 - reserved).max(0.0);
-    let lines = fc_text::board::lines_that_fit(room, sticker.size.type_px() * 1.25);
-    i32::try_from(lines.max(1)).unwrap_or(1)
+    (sticker.height - 20.0 - 14.0 - reserved).max(0.0)
 }
 
 /// A colour name the stylesheet knows (`fc_text::board::COLORS`); an unknown one draws yellow.
@@ -1222,4 +1383,50 @@ fn content_fit() -> gtk::ContentFit {
         "scale-down" => gtk::ContentFit::ScaleDown,
         _ => gtk::ContentFit::Contain,
     }
+}
+
+/// An EVENT's picture is its BACKDROP — the card's ground, not its content (docs/protocol.md,
+/// "Board"; the Mac's `NoteBackdrop`): drawn edge to edge under the words, filling the card, with
+/// a white veil lighter at the top and heavier under the title so the words stay readable; nothing
+/// while it loads (the card keeps its colour). The picture and the words are overlays that are not
+/// measured, so a picture never makes the card bigger than its size.
+fn backdrop(
+    card: &gtk::Box,
+    attachment: fc_core::protocol::AttachmentDto,
+    attachments: &Rc<fc_logic::attachment_cache::AttachmentCache>,
+) {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    content.add_css_class("fc-note-backdrop-content");
+    while let Some(child) = card.first_child() {
+        card.remove(&child);
+        content.append(&child);
+    }
+    let picture = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Cover)
+        .can_shrink(true)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let veil = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    veil.add_css_class("fc-note-backdrop-veil");
+    veil.set_visible(false);
+    let ground = gtk::Overlay::new();
+    let room = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    room.set_vexpand(true);
+    room.set_hexpand(true);
+    ground.set_child(Some(&room));
+    ground.add_overlay(&picture);
+    ground.add_overlay(&veil);
+    ground.add_overlay(&content);
+    ground.set_vexpand(true);
+    card.add_css_class("fc-note-backdropped");
+    card.append(&ground);
+    let attachments = Rc::clone(attachments);
+    ui::spawn(async move {
+        if let Ok(bytes) = attachments.bytes(&attachment, true).await
+            && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
+        {
+            picture.set_paintable(Some(&texture));
+            veil.set_visible(true);
+        }
+    });
 }
