@@ -472,7 +472,10 @@ order: booting → needs server → needs auth → needs family → pending appr
 | Active | `MacChatView` | `ChatsView` | the split view |
 
 A stored token is not a session: `GET /me` decides; an expired one lands where a REST 401 lands, once
-(`LiveConnection`). The socket runs only while signed in **and** in a family.
+(`LiveConnection`). The socket runs only while signed in **and** in a family. A launch that cannot
+reach the server but holds chats opens them from the last `/me` this account was answered (kept in
+its cache's `meta`, wiped with it) — the Mac's `openOffline`; the Offline page is for a launch with
+nothing held, and it tries again by itself when the network comes back (2026-10-30).
 
 ### 3.7 Start-up order
 
@@ -784,7 +787,9 @@ failure is not. Drawn with `adw::Avatar::set_custom_image` (initials otherwise).
   across (`StickerLook::PANEL_CELL`, `PANEL_COLUMNS` — fc-logic's numbers; P2); "recently
   used" (16, per device, wiped at sign-out) first; one click sends (`PackSending`); in the assistant's
   chat through the consent question (`ConsentedAsk`); not offered on a server with no `max_pack_items`.
-- Drawn with no balloon in one 160 box (`StickerLook::BOX`) fitted from metadata.
+- Drawn with no balloon in one 160 box (`StickerLook::BOX`) fitted from metadata. A click shows it
+  larger in a dialog of its own (not the photo viewer) with "Add to family stickers" where the pack
+  does not hold it (`attachments::stickers::show`, the Mac's `StickerViewer`).
 - **Animated where this machine can**: `gdk_pixbuf::PixbufAnimation` decodes animated GIF **and**
   animated WebP here (measured, §1.5 — Windows could only hope its WebP extension was installed). Its
   frames are advanced by one `glib::timeout_add_local` per view (the clock kept in

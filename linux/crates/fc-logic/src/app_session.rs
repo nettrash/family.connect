@@ -43,6 +43,9 @@ use fc_core::store::{Database, StoreResult};
 
 use crate::join_memory::{AwaitingJoin, MemoryAwaitingJoin};
 
+/// Where the last `/me` is kept in the account's cache (`meta`).
+const LAST_ME: &str = "session.last_me";
+
 /// Which screen the app is on, and there is exactly one answer at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Gate {
@@ -362,6 +365,7 @@ impl AppSession {
         match self.api.me().await.into_result() {
             Ok(me) => {
                 self.apply(&me, prefer)?;
+                self.remember(&me)?;
                 Ok(None)
             }
             Err(error) => {
@@ -370,12 +374,43 @@ impl AppSession {
                 // asking the same question in both places keeps one answer.
                 if error.session_gone() {
                     self.session_gone()?;
+                } else {
+                    // Anything else — a dead network, a proxy, a 500 — changes nothing about who
+                    // is signed in; a launch that has nothing open yet opens what it holds.
+                    self.open_offline(prefer)?;
                 }
-                // Anything else — a dead network, a proxy, a 500 — changes nothing about who is
-                // signed in.
                 Ok(Some(error))
             }
         }
+    }
+
+    /// The last `/me` this account was answered, kept in its cache (wiped with everything else at a
+    /// sign-out or when the session is gone): what an offline launch opens.
+    fn remember(&self, me: &MeResponse) -> StoreResult<()> {
+        match serde_json::to_string(me) {
+            Ok(json) => self.cache.set_meta_text(LAST_ME, &json),
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// A launch that cannot reach the server, with a token and chats in the cache: the chats open
+    /// from the last `/me` this account was answered, as it was then (the Mac's `openOffline`) — the
+    /// socket keeps trying, and the resync's own `/me` replaces it all once it is answered. Only
+    /// while nothing is open yet: a session already on screen stays exactly where it is. Whether it
+    /// opened.
+    fn open_offline(&self, prefer: Option<i64>) -> StoreResult<bool> {
+        if self.state.borrow().gate != Gate::SignedOut || !self.cache.holds_chats()? {
+            return Ok(false);
+        }
+        let Some(me) = self
+            .cache
+            .meta_text(LAST_ME)?
+            .and_then(|json| serde_json::from_str::<MeResponse>(&json).ok())
+        else {
+            return Ok(false);
+        };
+        self.apply(&me, prefer)?;
+        Ok(self.state.borrow().gate != Gate::SignedOut)
     }
 
     /// What a `GET /me` answered, applied: which families there are, which one is shown, and the

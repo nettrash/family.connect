@@ -94,7 +94,8 @@ thread_local! {
 }
 
 /// A sticker of `message` in a bubble (`ConversationSlots::sticker`): no balloon, fitted from
-/// metadata; a click shows it larger in the viewer, a double click is the bubble's heart.
+/// metadata; a click shows it larger, with the offer to keep it ([`show`]); a double click is the
+/// bubble's heart.
 pub fn sticker(message: &MessageDto, attachment: &AttachmentDto) -> gtk::Widget {
     let (width, height) = StickerLook::fit(attachment.width, attachment.height);
     let widget = picture(attachment, width, height);
@@ -102,11 +103,134 @@ pub fn sticker(message: &MessageDto, attachment: &AttachmentDto) -> gtk::Widget 
     widget.set_accessible_role(gtk::AccessibleRole::Button);
     widget.update_property(&[gtk::accessible::Property::Label(say.get("Sticker"))]);
     widget.set_focusable(true);
-    let (message, attachment) = (message.clone(), attachment.clone());
+    let attachment = attachment.clone();
+    let _ = message;
+    let anchor = widget.downgrade();
     super::on_click(&widget, move || {
-        crate::viewer::open(vec![attachment.clone()], 0, false, (message.id, 0));
+        if let Some(anchor) = anchor.upgrade() {
+            show(&anchor, &attachment);
+        }
     });
     widget
+}
+
+/// A sticker from a chat, shown larger — and, where the family's pack does not hold it, "Add to
+/// family stickers" (the Mac's `StickerViewer`; docs/protocol.md, "Tapping one shows it larger").
+/// Not the photo viewer, which pages and zooms: a sticker is a small picture with one thing to do
+/// about it. Whether the pack holds it is decided from the bytes this device has
+/// (`PackModel::holds`); a wrong guess costs nothing — the server answers an add of bytes it
+/// already holds with the item that was there.
+pub fn show(anchor: &impl IsA<gtk::Widget>, attachment: &AttachmentDto) {
+    let shell = Shell::get();
+    let say = Rc::clone(&shell.say);
+    let dialog = adw::Dialog::builder()
+        .title(say.get("Sticker"))
+        .content_width(420)
+        .content_height(460)
+        .build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 20);
+    column.set_margin_top(24);
+    column.set_margin_bottom(24);
+    column.set_margin_start(24);
+    column.set_margin_end(24);
+    let (width, height) = StickerLook::fit(attachment.width, attachment.height);
+    let scale = (320.0 / width.max(height).max(1.0)).min(2.5);
+    let big = picture(attachment, width * scale, height * scale);
+    big.set_halign(gtk::Align::Center);
+    big.update_property(&[gtk::accessible::Property::Label(say.get("Sticker"))]);
+    column.append(&big);
+    let footer = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    footer.set_halign(gtk::Align::Center);
+    column.append(&footer);
+    view.set_content(Some(&column));
+    dialog.set_child(Some(&view));
+    dialog.present(Some(anchor));
+
+    let Some(connection) = shell.connection() else {
+        return;
+    };
+    let model = Rc::clone(&connection.stickers);
+    // A server with no packs has nowhere to add to.
+    if !super::pack::offered(&model) {
+        return;
+    }
+    let (attachment, footer) = (attachment.clone(), footer.clone());
+    glib::spawn_future_local(async move {
+        if model.holds(&attachment).await.unwrap_or(true) {
+            return;
+        }
+        offer(&footer, &model, &attachment);
+    });
+}
+
+/// The footer's "Add to family stickers", and what became of it.
+fn offer(footer: &gtk::Box, model: &Rc<fc_logic::pack::PackModel>, attachment: &AttachmentDto) {
+    let say = Rc::clone(&Shell::get().say);
+    while let Some(child) = footer.first_child() {
+        footer.remove(&child);
+    }
+    let add = gtk::Button::builder()
+        .label(say.get("Add to family stickers"))
+        .css_classes(["pill", "suggested-action"])
+        .build();
+    footer.append(&add);
+    let (footer, model, attachment) = (footer.clone(), Rc::clone(model), attachment.clone());
+    add.connect_clicked(move |_| {
+        while let Some(child) = footer.first_child() {
+            footer.remove(&child);
+        }
+        footer.append(&adw::Spinner::new());
+        let (footer, model, attachment, say) = (
+            footer.clone(),
+            Rc::clone(&model),
+            attachment.clone(),
+            Rc::clone(&say),
+        );
+        glib::spawn_future_local(async move {
+            // The message's own bytes, uploaded again as they are: they already ARE a sticker.
+            let answer = model.add_from_message(&attachment, None).await;
+            let failure = match answer {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => {
+                    crate::fc_info!("pack: adding a sent sticker refused ({})", error.code);
+                    Some(fc_logic::pack::pack_text::sentence(&error, say.as_ref()))
+                }
+                Err(error) => {
+                    crate::fc_warn!(
+                        "pack: the cache refused ({})",
+                        crate::services::log::store_error(&error)
+                    );
+                    Some(say.get("Couldn't save that. Try again.").to_string())
+                }
+            };
+            match failure {
+                None => {
+                    while let Some(child) = footer.first_child() {
+                        footer.remove(&child);
+                    }
+                    let done = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                    done.append(&gtk::Image::from_icon_name("object-select-symbolic"));
+                    done.append(&gtk::Label::new(Some(say.get("Added to family stickers"))));
+                    done.add_css_class("dim-label");
+                    footer.append(&done);
+                }
+                Some(sentence) => {
+                    offer(&footer, &model, &attachment);
+                    footer.prepend(
+                        &gtk::Label::builder()
+                            .label(&sentence)
+                            .wrap(true)
+                            .justify(gtk::Justification::Center)
+                            .max_width_chars(36)
+                            .css_classes(["error"])
+                            .build(),
+                    );
+                }
+            }
+        });
+    });
 }
 
 /// A sticker's picture at `width` × `height` logical pixels — a bubble's, a panel cell's, a pack

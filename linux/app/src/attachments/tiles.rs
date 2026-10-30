@@ -43,7 +43,11 @@ const FILE_ROW: (f64, f64) = (260.0, 56.0);
 pub fn tile(message: &MessageDto, attachment: &AttachmentDto, look: &TileLook) -> gtk::Widget {
     match attachment.kind.as_str() {
         "location" => super::location::card(message, attachment, look.own),
-        "file" | "audio" => super::file_row::row(attachment, look.own),
+        "file" | "audio" => {
+            let row = super::file_row::row(attachment, look.own);
+            super::drag_out::attach(&row, attachment);
+            row
+        }
         _ => media_tile(message, attachment, look),
     }
 }
@@ -296,6 +300,8 @@ fn media_tile(message: &MessageDto, attachment: &AttachmentDto, look: &TileLook)
     let index = MediaAlbum::of_message(message)
         .iter()
         .position(|item| item.id == attachment.id);
+    // Dragged out to the file manager: the original (`drag_out`).
+    super::drag_out::attach(&frame, attachment);
     let (message_held, attachment_held) = (message.clone(), attachment.clone());
     super::on_click(&frame, move || match index {
         Some(index) => crate::viewer::open_message(&message_held, index),

@@ -102,7 +102,8 @@ pub struct MenuFacts {
     pub message: MessageDto,
     pub may_edit: bool,
     pub in_thread: bool,
-    pub offers_text: bool,
+    /// "Show text", "Hide text" or neither, for a recording.
+    pub text_item: message_menu::TextItem,
     pub my_reaction: Option<String>,
     /// Drawn as "Hidden — blocked member" (from a blocked sender, not revealed here): Safety only.
     pub hidden: bool,
@@ -129,7 +130,12 @@ pub fn popup(facts: &MenuFacts, prefix: &str, anchor: &gtk::Widget, x: f64, y: f
     let items = if facts.hidden {
         Vec::new()
     } else {
-        message_menu::actions(message, facts.may_edit, facts.in_thread, facts.offers_text)
+        message_menu::actions(
+            message,
+            facts.may_edit,
+            facts.in_thread,
+            facts.text_item != message_menu::TextItem::None,
+        )
     };
     let reacts = numbered && items.contains(&MessageAction::React);
     if reacts {
@@ -157,7 +163,11 @@ pub fn popup(facts: &MenuFacts, prefix: &str, anchor: &gtk::Widget, x: f64, y: f
                 Some(item(say.get("Reply"), prefix, actions::MESSAGE_REPLY, id))
             }
             MessageAction::ShowText => Some(item(
-                say.get("Show text"),
+                if facts.text_item == message_menu::TextItem::Hide {
+                    say.get("Hide text")
+                } else {
+                    say.get("Show text")
+                },
                 prefix,
                 actions::MESSAGE_SHOW_TEXT,
                 id,

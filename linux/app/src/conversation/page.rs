@@ -1104,7 +1104,7 @@ impl ConversationPage {
             message: message.clone(),
             may_edit: ConversationModel::may_edit(&bubble),
             in_thread,
-            offers_text: crate::composer::integration::offers_text(message),
+            text_item: crate::composer::integration::text_item(message),
             my_reaction: my_reaction(&reactions, me).map(str::to_string),
             hidden: blocked && !revealed,
             safety,

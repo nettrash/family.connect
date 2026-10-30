@@ -24,12 +24,12 @@ pub mod words;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
 use adw::prelude::*;
 use fc_core::protocol::{FamilyPatch, InvitationDto, JoinRequestDto, MemberDto, ReportDto};
 use fc_core::text::house_rules;
 use fc_core::text::string_catalog::StringCatalog;
+use fc_logic::cap_draft::CapDraft;
 use fc_logic::families::{InviteModel, family_rules, family_sentences};
 use fc_logic::family::FamilyModel;
 use fc_logic::family_console::family_text;
@@ -41,10 +41,6 @@ use crate::shell::{Connection, Shell};
 
 /// The dialog's content size (the Mac's sheet).
 pub const SIZE: (i32, i32) = (520, 520);
-/// How long the member limit waits after the last step before it is sent (the Mac's 600 ms: one
-/// PATCH at the end of a run of clicks, not one per click).
-const CAP_SETTLE: Duration = Duration::from_millis(600);
-
 thread_local! {
     static OPEN: RefCell<Option<Rc<FamilyDialog>>> = const { RefCell::new(None) };
 }
@@ -88,7 +84,8 @@ pub struct FamilyDialog {
     pub member_rows: RefCell<Vec<(i64, adw::ActionRow)>>,
     /// The header's family name, as drawn.
     pub title: gtk::Label,
-    cap_commit: RefCell<Option<glib::SourceId>>,
+    /// The member limit's pending change, for the connection it writes through.
+    cap: RefCell<Option<(Rc<Connection>, Rc<CapDraft>)>>,
     /// A change to the assistant's settings on its way (`assistant`): drawn as applied, the
     /// controls held still until it is answered.
     assistant_pending: RefCell<Option<FamilyPatch>>,
@@ -124,7 +121,7 @@ impl FamilyDialog {
             loaded: RefCell::new(Loaded::default()),
             member_rows: RefCell::new(Vec::new()),
             title: gtk::Label::new(None),
-            cap_commit: RefCell::new(None),
+            cap: RefCell::new(None),
             assistant_pending: RefCell::new(None),
             places: RefCell::default(),
             saving_places: Cell::new(false),
@@ -718,82 +715,150 @@ impl FamilyDialog {
         let group = adw::PreferencesGroup::builder()
             .title(say.get("Member limit"))
             .build();
-        let ceiling = i64::from(state.max_family_members);
-        let count = i64::try_from(members).unwrap_or(i64::MAX);
-        let cap = state
-            .family
-            .as_ref()
-            .and_then(|family| family.max_members)
-            .map(i64::from);
+        let ceiling = state.max_family_members;
+        let count = i32::try_from(members).unwrap_or(i32::MAX);
+        let held = state.family.as_ref().and_then(|family| family.max_members);
+        let draft = self.cap_draft(connection);
+        // What is drawn is the change on its way, when there is one (`CapDraft::drawn`) — the
+        // footer and the stepper follow it, not the server's value it is about to replace.
+        let drawn = draft.drawn(held);
         let limit = adw::SwitchRow::builder()
             .title(say.get("Limit members"))
-            .active(cap.is_some())
+            .active(drawn.is_some())
             .build();
-        let most = adw::SpinRow::with_range(1.0, ceiling.max(1) as f64, 1.0);
+        let most = adw::SpinRow::with_range(1.0, f64::from(ceiling.max(1)), 1.0);
         most.set_title(say.get("Most members"));
-        most.set_value(cap.unwrap_or_else(|| fc_text::account::seed_cap(count, ceiling)) as f64);
-        most.set_visible(cap.is_some());
+        most.set_value(f64::from(drawn.unwrap_or_else(|| {
+            i32::try_from(fc_text::account::seed_cap(
+                i64::from(count),
+                i64::from(ceiling),
+            ))
+            .unwrap_or(1)
+        })));
+        most.set_visible(drawn.is_some());
+        let footer = ui::footnote(&fc_text::account::cap_footer(fc_text::account::cap_state(
+            drawn.map(i64::from),
+            i64::from(count),
+            i64::from(ceiling),
+        )));
+        let problem = ui::problem_label();
+        if draft.failed() {
+            ui::show_problem(
+                &problem,
+                say.get("Couldn't change the member limit. Try again."),
+            );
+        }
         {
-            let (weak, connection, most) =
-                (Rc::downgrade(self), Rc::clone(connection), most.clone());
+            // On freezes the family where it stands; off clears the cap. One write per run.
+            let (draft, most) = (Rc::clone(&draft), most.clone());
             limit.connect_active_notify(move |limit| {
-                // On freezes the family where it stands (a cap at or below its size is a freeze,
-                // not a refusal); off clears the cap.
-                let seed = fc_text::account::seed_cap(count, ceiling);
                 most.set_visible(limit.is_active());
-                most.set_value(seed as f64);
-                if let Some(me) = weak.upgrade() {
-                    me.commit_cap(&connection, limit.is_active().then_some(seed));
-                }
+                draft.toggle(limit.is_active(), count, ceiling);
             });
         }
         {
-            let (weak, connection) = (Rc::downgrade(self), Rc::clone(connection));
+            let draft = Rc::clone(&draft);
             most.connect_value_notify(move |most| {
                 if !most.is_visible() {
                     return;
                 }
-                let value = fc_text::account::clamp_cap(most.value().round() as i64, ceiling);
-                if Some(value) == cap {
+                let value = most.value().round() as i32;
+                if Some(value) != draft.drawn(held) {
+                    draft.typed(value, ceiling);
+                }
+            });
+        }
+        {
+            // The footer and the refusal follow the draft in place: a redraw of the whole group
+            // mid-run would take the stepper from under the pointer.
+            let (weak_draft, footer, problem, say) = (
+                Rc::downgrade(&draft),
+                footer.clone(),
+                problem.clone(),
+                Rc::clone(&say),
+            );
+            let subscription = draft.changed().subscribe(move |_| {
+                let Some(draft) = weak_draft.upgrade() else {
                     return;
+                };
+                let held = Shell::get()
+                    .connection()
+                    .and_then(|connection| connection.session.state().family)
+                    .and_then(|family| family.max_members);
+                footer.set_text(&fc_text::account::cap_footer(fc_text::account::cap_state(
+                    draft.drawn(held).map(i64::from),
+                    i64::from(count),
+                    i64::from(ceiling),
+                )));
+                if draft.failed() {
+                    ui::show_problem(
+                        &problem,
+                        say.get("Couldn't change the member limit. Try again."),
+                    );
+                } else {
+                    ui::show_problem(&problem, "");
                 }
-                if let Some(me) = weak.upgrade() {
-                    me.commit_cap(&connection, Some(value));
-                }
+            });
+            let draft = Rc::clone(&draft);
+            group.connect_destroy(move |_| {
+                draft.changed().unsubscribe(subscription);
             });
         }
         group.add(&limit);
         group.add(&most);
-        group.add(&ui::footnote(&fc_text::account::cap_footer(
-            fc_text::account::cap_state(cap, count, ceiling),
-        )));
+        group.add(&footer);
+        group.add(&problem);
         group
     }
 
-    /// One PATCH at the end of a run of steps (the Mac's debounced commit).
-    fn commit_cap(self: &Rc<Self>, connection: &Rc<Connection>, cap: Option<i64>) {
-        if let Some(pending) = self.cap_commit.borrow_mut().take() {
-            pending.remove();
+    /// The member limit's pending change (`CapDraft`): one write at the end of a run of steps,
+    /// sent as a family change and the family read back; made once per dialog and connection.
+    fn cap_draft(self: &Rc<Self>, connection: &Rc<Connection>) -> Rc<CapDraft> {
+        if let Some((held, draft)) = self.cap.borrow().as_ref()
+            && Rc::ptr_eq(held, connection)
+        {
+            return Rc::clone(draft);
         }
-        let (weak, connection) = (Rc::downgrade(self), Rc::clone(connection));
-        let source = glib::timeout_add_local_once(CAP_SETTLE, move || {
-            let Some(me) = weak.upgrade() else {
-                return;
-            };
-            me.cap_commit.borrow_mut().take();
-            let patch = match cap {
-                Some(cap) => FamilyPatch {
-                    max_members: i32::try_from(cap).ok(),
-                    ..FamilyPatch::default()
-                },
-                None => FamilyPatch {
-                    clears_cap: true,
-                    ..FamilyPatch::default()
-                },
-            };
-            me.change_family(&connection, patch);
+        let send: fc_logic::cap_draft::CapSend = {
+            let connection = Rc::downgrade(connection);
+            Rc::new(move |cap: Option<i32>| {
+                let connection = connection.upgrade();
+                Box::pin(async move {
+                    let connection = connection?;
+                    let family = connection.session.state().family?;
+                    let patch = match cap {
+                        Some(cap) => FamilyPatch {
+                            max_members: Some(cap),
+                            ..FamilyPatch::default()
+                        },
+                        None => FamilyPatch {
+                            clears_cap: true,
+                            ..FamilyPatch::default()
+                        },
+                    };
+                    let refused = family_model(&connection)
+                        .change(&family, &patch)
+                        .await
+                        .err();
+                    if let Some(error) = &refused {
+                        crate::fc_info!("family: member limit refused ({})", error.code);
+                    }
+                    if let Err(error) = connection.session.refresh_family().await {
+                        crate::fc_warn!("family: the cache refused ({})", log::store_error(&error));
+                    }
+                    refused
+                })
+            })
+        };
+        let clock = Shell::get().clock.clone();
+        let wait: fc_logic::cap_draft::Pause =
+            Rc::new(move |duration| fc_core::rt::Clock::sleep(clock.as_ref(), duration));
+        let spawn: fc_logic::calls::Spawn = Rc::new(|future| {
+            glib::spawn_future_local(future);
         });
-        *self.cap_commit.borrow_mut() = Some(source);
+        let draft = CapDraft::new(send, wait, spawn);
+        *self.cap.borrow_mut() = Some((Rc::clone(connection), Rc::clone(&draft)));
+        draft
     }
 
     /// Sends a change of the family (`FamilyModel::change`, which never sends a combination the

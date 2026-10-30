@@ -132,6 +132,28 @@ fn open(
     frame.set_child(Some(&text));
     frame.add_css_class("view");
     words.add(&frame);
+    // The names a half-typed `@` could mean, under the words (the Mac's strip; docs/protocol.md,
+    // "Board"): a click writes the name in.
+    let suggestions = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .max_children_per_line(4)
+        .column_spacing(6)
+        .row_spacing(6)
+        .margin_top(6)
+        .visible(false)
+        .build();
+    words.add(&suggestions);
+    {
+        let (field, strip) = (text.clone(), suggestions.clone());
+        text.buffer()
+            .connect_changed(move |_| suggest(&field, &strip));
+        let (field, strip) = (text.clone(), suggestions.clone());
+        text.buffer().connect_mark_set(move |buffer, _, mark| {
+            if mark == &buffer.get_insert() {
+                suggest(&field, &strip);
+            }
+        });
+    }
     let counter = ui::footnote("");
     counter.set_visible(false);
     words.add(&counter);
@@ -207,10 +229,11 @@ fn open(
             .text(&draft.borrow().place)
             .build();
         {
-            let draft = Rc::clone(&draft);
+            let (draft, rejudge) = (Rc::clone(&draft), Rc::clone(&rejudge));
             place.connect_changed(move |row| {
                 draft.borrow_mut().place =
                     capped(&row.text(), fc_text::board::MAX_PLACE_CHARS).to_string();
+                rejudge();
             });
         }
         when.add(&place);
@@ -236,10 +259,12 @@ fn open(
     colors.set_active_name(Some(&draft.borrow().color));
     {
         let draft = Rc::clone(&draft);
+        let rejudge = Rc::clone(&rejudge);
         colors.connect_active_name_notify(move |group| {
             if let Some(name) = group.active_name() {
                 draft.borrow_mut().color = name.to_string();
             }
+            rejudge();
         });
     }
     let color_row = adw::ActionRow::builder().title(say.get("Colour")).build();
@@ -259,8 +284,10 @@ fn open(
     sizes.set_active_name(Some(draft.borrow().size.name()));
     {
         let draft = Rc::clone(&draft);
+        let rejudge = Rc::clone(&rejudge);
         sizes.connect_active_name_notify(move |group| {
             draft.borrow_mut().size = Size::from_name(group.active_name().as_deref());
+            rejudge();
         });
     }
     let size_row = adw::ActionRow::builder().title(say.get("Size")).build();
@@ -280,8 +307,10 @@ fn open(
     fonts.set_active_name(Some(draft.borrow().font.name()));
     {
         let draft = Rc::clone(&draft);
+        let rejudge = Rc::clone(&rejudge);
         fonts.connect_active_name_notify(move |group| {
             draft.borrow_mut().font = Font::from_name(group.active_name().as_deref());
+            rejudge();
         });
     }
     let font_row = adw::ActionRow::builder().title(say.get("Font")).build();
@@ -289,12 +318,56 @@ fn open(
     look.add(&font_row);
     look.add(&problem);
     page.add(&look);
+
+    // ---- the note as the wall will draw it (`note_preview::of`) -------------------------------
+    // Drawn by the wall's own code, so a size or a face is a choice with its result in front of the
+    // author (the Mac's sheet preview) — redrawn with every change the judge hears of.
+    let preview = adw::PreferencesGroup::new();
+    let stage = gtk::Box::builder()
+        .halign(gtk::Align::Center)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+    preview.add(&stage);
+    page.add(&preview);
+    let repaint: Rc<dyn Fn()> = {
+        let (draft, current, stage) = (Rc::clone(&draft), current.clone(), stage.clone());
+        Rc::new(move || {
+            let shell = Shell::get();
+            let Some(connection) = shell.connection() else {
+                return;
+            };
+            while let Some(child) = stage.first_child() {
+                stage.remove(&child);
+            }
+            let reader = connection.chats.reader();
+            let sticker = fc_logic::note_preview::of(
+                &draft.borrow(),
+                kind,
+                current.as_ref(),
+                reader,
+                false,
+                shell.say.as_ref(),
+            );
+            let card = super::wall::draw_card(&connection, &sticker, false, reader);
+            card.set_focusable(false);
+            card.set_can_target(false);
+            card.set_accessible_role(gtk::AccessibleRole::Presentation);
+            stage.append(&card);
+        })
+    };
     view.set_content(Some(&page));
 
     // ---- what the words allow ---------------------------------------------------------------------
     let judge: Rc<dyn Fn()> = {
-        let (draft, save, problem) = (Rc::clone(&draft), save.clone(), problem.clone());
+        let (draft, save, problem, repaint) = (
+            Rc::clone(&draft),
+            save.clone(),
+            problem.clone(),
+            Rc::clone(&repaint),
+        );
         Rc::new(move || {
+            repaint();
             let shell = Shell::get();
             match draft.borrow().problem(kind, shell.say.as_ref()) {
                 None => {
@@ -419,6 +492,71 @@ fn sheet_draft(draft: &Rc<RefCell<NoteDraft>>) -> NoteDraft {
 }
 
 /// A list's lines, drawn again: one entry per line, each with a remove button.
+/// The `@` strip under a note's words: the family's members a half-typed name could mean
+/// (`composer_mentions::offered` — never the reader, never somebody they blocked).
+fn suggest(field: &gtk::TextView, strip: &gtk::FlowBox) {
+    while let Some(child) = strip.first_child() {
+        strip.remove(&child);
+    }
+    let Some(connection) = Shell::get().connection() else {
+        strip.set_visible(false);
+        return;
+    };
+    let buffer = field.buffer();
+    let before = buffer
+        .text(
+            &buffer.start_iter(),
+            &buffer.iter_at_mark(&buffer.get_insert()),
+            false,
+        )
+        .to_string();
+    let chats = &connection.chats;
+    let roster = chats.members().unwrap_or_else(|_| Rc::from(Vec::new()));
+    let blocked = chats.blocked().unwrap_or_else(|_| Rc::from(Vec::new()));
+    let offered = fc_logic::composer_mentions::offered(
+        &before,
+        &roster,
+        chats.reader(),
+        &|id| blocked.contains(&id),
+        field.has_focus(),
+        false,
+    );
+    for member in offered.into_iter().take(8) {
+        let face = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        face.append(&crate::chats::avatar::avatar(
+            &member.display_name,
+            fc_logic::groups::ChatFace::Initials,
+            Some(member.id),
+            20,
+        ));
+        face.append(&gtk::Label::new(Some(&member.display_name)));
+        let pick = gtk::Button::builder()
+            .child(&face)
+            .css_classes(["flat", "pill"])
+            .build();
+        let (field, name) = (field.downgrade(), member.display_name.clone());
+        pick.connect_clicked(move |_| {
+            let Some(field) = field.upgrade() else {
+                return;
+            };
+            let buffer = field.buffer();
+            let mut end = buffer.iter_at_mark(&buffer.get_insert());
+            let before = buffer.text(&buffer.start_iter(), &end, false).to_string();
+            let accepted = fc_text::mentions::accept(&before, &name);
+            // Only the text before the caret changes, as one user action.
+            buffer.begin_user_action();
+            let mut start = buffer.start_iter();
+            buffer.delete(&mut start, &mut end);
+            let mut at = buffer.start_iter();
+            buffer.insert(&mut at, &accepted);
+            buffer.end_user_action();
+            field.grab_focus();
+        });
+        strip.append(&pick);
+    }
+    strip.set_visible(strip.first_child().is_some());
+}
+
 /// The typing aids of a list's lines, kept while they are drawn.
 type LineHooks = Rc<RefCell<Vec<Rc<typing_hooks::TypingHooks>>>>;
 
@@ -446,12 +584,13 @@ fn fill_lines(
                 shell.say.get("Things to do"),
             )]);
         {
-            let draft = Rc::clone(draft);
+            let (draft, rejudge) = (Rc::clone(draft), Rc::clone(rejudge));
             row.connect_changed(move |row| {
                 if let Some(line) = draft.borrow_mut().lines.get_mut(at) {
                     line.text =
                         capped(&row.text(), fc_text::board::MAX_TASK_ITEM_CHARS).to_string();
                 }
+                rejudge();
             });
         }
         let remove = gtk::Button::builder()

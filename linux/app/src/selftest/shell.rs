@@ -370,8 +370,38 @@ pub async fn run(h: &Harness) {
     );
     shell.chat_routes.install(found_routes);
 
-    // ---- offline at launch: not a sign-out --------------------------------------------------------
+    // ---- offline at launch, with chats held: they open (the Mac's `openOffline`) ----------------
+    // The fake family has none of its own: one is put in the cache, as a family chat read earlier.
+    if let Some(connection) = shell.connection()
+        && let Err(error) =
+            connection
+                .chats
+                .upsert(&fc_core::protocol::ChatDto::new(42, "family", "The Smiths"))
+    {
+        crate::fc_warn!(
+            "selftest: the cache refused ({})",
+            crate::services::log::store_error(&error)
+        );
+    }
     fake.set_down(true);
+    shell.open_server(server.clone());
+    let left = h.wait_until(WAIT, || main.page() != GatePage::Chats).await;
+    let reopened = h.wait_until(WAIT, || main.page() == GatePage::Chats).await;
+    h.check(
+        "offline_launch_opens_the_cached_chats",
+        left && reopened,
+        format!("left {left}, page {:?}", main.page()),
+    );
+
+    // ---- offline at launch with nothing held: not a sign-out ----------------------------------------
+    if let Some(connection) = shell.connection()
+        && let Err(error) = connection.cache.wipe_all()
+    {
+        crate::fc_warn!(
+            "selftest: the cache refused ({})",
+            crate::services::log::store_error(&error)
+        );
+    }
     shell.open_server(server.clone());
     let offline = h
         .wait_until(WAIT, || main.page() == GatePage::Offline)

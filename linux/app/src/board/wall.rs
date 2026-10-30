@@ -529,7 +529,7 @@ impl Wall {
         }
     }
 
-    /// One card: its look, its words, its keys.
+    /// One card: its look, its words ([`draw_card`]), and its keys.
     fn card(
         self: &Rc<Self>,
         connection: &Rc<crate::shell::Connection>,
@@ -537,195 +537,9 @@ impl Wall {
         hidden: bool,
         me: i64,
     ) -> gtk::Box {
-        let shell = Shell::get();
-        let say: &dyn StringCatalog = shell.say.as_ref();
-        let note = &sticker.note;
-        let caption = wall_text::caption_of(note);
-        let bare = !hidden && sticker.kind == Kind::Photo && caption.is_empty();
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        card.set_widget_name(&format!("note-{}", note.id));
-        card.add_css_class("fc-note");
-        card.add_css_class(&format!("fc-note-size-{}", sticker.size.name()));
-        card.add_css_class(&format!("fc-note-font-{}", sticker.font.name()));
-        if bare {
-            card.add_css_class("fc-note-bare");
-        } else {
-            card.add_css_class(&format!("fc-note-{}", color_class(&sticker.color)));
-        }
-        card.set_size_request(sticker.width as i32, sticker.height as i32);
-        card.set_overflow(gtk::Overflow::Hidden);
-        card.set_focusable(true);
-        card.set_accessible_role(gtk::AccessibleRole::Button);
-
-        if !hidden
-            && sticker.kind == Kind::Photo
-            && let Some(attachment) = note.attachment.clone()
-        {
-            let picture = gtk::Picture::new();
-            picture.set_content_fit(content_fit());
-            picture.set_vexpand(true);
-            card.append(&picture);
-            let attachments = Rc::clone(&connection.attachments);
-            ui::spawn(async move {
-                if let Ok(bytes) = attachments.bytes(&attachment, true).await
-                    && let Ok(texture) =
-                        gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
-                {
-                    picture.set_paintable(Some(&texture));
-                }
-            });
-        }
-        let mut when = None;
-        let mut going = None;
-        if !hidden
-            && sticker.kind == Kind::Event
-            && let Some(starts) = note.starts_at.as_deref()
-        {
-            let zone = shell.zone.as_ref();
-            let block = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            if let Some((day, month)) = event_text::date_block(starts, &shell.culture, zone) {
-                // A small calendar leaf: the day heavy over the month in calendar red.
-                let date = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                date.add_css_class("fc-note-date");
-                date.set_valign(gtk::Align::Start);
-                let day = gtk::Label::new(Some(&day));
-                day.add_css_class("fc-note-day");
-                let month = gtk::Label::new(Some(&month.to_uppercase()));
-                month.add_css_class("fc-note-month");
-                date.append(&day);
-                date.append(&month);
-                block.append(&date);
-            }
-            let facts = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            facts.set_hexpand(true);
-            let clock = event_text::clock(starts, note.ends_at.as_deref(), &shell.culture, zone);
-            facts.append(&line(&clock));
-            if let Some(place) = note.place.as_deref().filter(|p| !p.trim().is_empty()) {
-                facts.append(&line(place.trim()));
-            }
-            going = going_line(
-                note.count(Answer::Going.name()),
-                note.count(Answer::Maybe.name()),
-            );
-            if let Some(going) = &going {
-                facts.append(&line(going));
-            }
-            block.append(&facts);
-            card.append(&block);
-            when = Some(event_text::when(
-                starts,
-                note.ends_at.as_deref(),
-                &shell.culture,
-                zone,
-            ));
-        }
-        if !bare {
-            let text = gtk::Label::new(None);
-            text.set_wrap(true);
-            text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-            text.set_xalign(0.0);
-            text.set_yalign(0.0);
-            text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            // A small natural width: the card's own width decides, never the words (a label's
-            // natural width would otherwise widen the card past its size).
-            text.set_max_width_chars(1);
-            if hidden {
-                text.set_text(say.get("Hidden — blocked member"));
-                text.add_css_class("fc-note-hidden");
-            } else {
-                text.set_text(&caption);
-                fit_text(&text, &caption, sticker);
-            }
-            card.append(&text);
-        }
-        if !hidden && sticker.kind == Kind::Tasks {
-            let items = note.task_list();
-            let (shown, left) = wall_task_lines(items.len());
-            // Each line behind the theme's own checkbox, a done one struck through as well as
-            // dimmed (the card's spoken name is `wall_text`'s, not these widgets').
-            for item in items.iter().take(shown) {
-                let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-                row.add_css_class("fc-note-task");
-                if item.done {
-                    row.add_css_class("fc-note-task-done");
-                }
-                row.append(
-                    &gtk::Image::builder()
-                        .icon_name(if item.done {
-                            "checkbox-checked-symbolic"
-                        } else {
-                            "checkbox-symbolic"
-                        })
-                        .valign(gtk::Align::Center)
-                        .accessible_role(gtk::AccessibleRole::Presentation)
-                        .build(),
-                );
-                let text = line(&item.text);
-                text.set_hexpand(true);
-                // The box is a picture to a screen reader: the line says its state itself, as the
-                // ballot box did when it was a character.
-                let mark = if item.done { "☑" } else { "☐" };
-                text.update_property(&[gtk::accessible::Property::Label(&format!(
-                    "{mark} {}",
-                    item.text
-                ))]);
-                row.append(&text);
-                card.append(&row);
-            }
-            if left > 0 {
-                card.append(&line(&wall_text::more_line(
-                    i64::try_from(left).unwrap_or(0),
-                    say,
-                )));
-            }
-        }
-        let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        spacer.set_vexpand(true);
-        card.append(&spacer);
-        let author = self.author_name(connection, note, me);
-        if wall_text::shows_author(sticker.kind, &caption, hidden) {
-            let by = gtk::Label::new(Some(&author));
-            by.set_xalign(0.0);
-            by.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            by.set_max_width_chars(1);
-            by.add_css_class("fc-note-author");
-            card.append(&by);
-        }
-        let what = wall_text::what(
-            sticker.kind,
-            &caption,
-            when.as_deref(),
-            note.place.as_deref(),
-            going.as_deref(),
-            say,
-        );
-        let label = wall_text::label(hidden, sticker.mine, &author, &what, say);
-        card.update_property(&[gtk::accessible::Property::Label(&label)]);
-        card.set_tooltip_text(Some(&label));
-        if !hidden
-            && sticker.kind == Kind::Event
-            && let Some(attachment) = note.attachment.clone()
-        {
-            backdrop(&card, attachment, &connection.attachments);
-        }
-        self.keys(&card, note.id);
+        let card = draw_card(connection, sticker, hidden, me);
+        self.keys(&card, sticker.note.id);
         card
-    }
-
-    fn author_name(
-        &self,
-        connection: &crate::shell::Connection,
-        note: &NoteDto,
-        me: i64,
-    ) -> String {
-        let shell = Shell::get();
-        let chats = Rc::clone(&connection.chats);
-        wall_text::author_name(
-            note,
-            me,
-            move |id| chats.member(id).ok().flatten().map(|m| m.display_name),
-            shell.say.as_ref(),
-        )
     }
 
     /// The card's keys: arrows move it a step (Shift: five), Enter or Space opens it, the Menu key
@@ -1383,6 +1197,199 @@ fn content_fit() -> gtk::ContentFit {
         "scale-down" => gtk::ContentFit::ScaleDown,
         _ => gtk::ContentFit::Contain,
     }
+}
+
+/// One card as the wall draws it — its look and its words, no keys: the wall's own cards, and the
+/// note sheet's preview of the draft (`note_preview::of`), which must be the wall's own drawing.
+pub fn draw_card(
+    connection: &Rc<crate::shell::Connection>,
+    sticker: &Sticker,
+    hidden: bool,
+    me: i64,
+) -> gtk::Box {
+    let shell = Shell::get();
+    let say: &dyn StringCatalog = shell.say.as_ref();
+    let note = &sticker.note;
+    let caption = wall_text::caption_of(note);
+    let bare = !hidden && sticker.kind == Kind::Photo && caption.is_empty();
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    card.set_widget_name(&format!("note-{}", note.id));
+    card.add_css_class("fc-note");
+    card.add_css_class(&format!("fc-note-size-{}", sticker.size.name()));
+    card.add_css_class(&format!("fc-note-font-{}", sticker.font.name()));
+    if bare {
+        card.add_css_class("fc-note-bare");
+    } else {
+        card.add_css_class(&format!("fc-note-{}", color_class(&sticker.color)));
+    }
+    card.set_size_request(sticker.width as i32, sticker.height as i32);
+    card.set_overflow(gtk::Overflow::Hidden);
+    card.set_focusable(true);
+    card.set_accessible_role(gtk::AccessibleRole::Button);
+
+    if !hidden
+        && sticker.kind == Kind::Photo
+        && let Some(attachment) = note.attachment.clone()
+    {
+        let picture = gtk::Picture::new();
+        picture.set_content_fit(content_fit());
+        picture.set_vexpand(true);
+        card.append(&picture);
+        let attachments = Rc::clone(&connection.attachments);
+        ui::spawn(async move {
+            if let Ok(bytes) = attachments.bytes(&attachment, true).await
+                && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes))
+            {
+                picture.set_paintable(Some(&texture));
+            }
+        });
+    }
+    let mut when = None;
+    let mut going = None;
+    if !hidden
+        && sticker.kind == Kind::Event
+        && let Some(starts) = note.starts_at.as_deref()
+    {
+        let zone = shell.zone.as_ref();
+        let block = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        if let Some((day, month)) = event_text::date_block(starts, &shell.culture, zone) {
+            // A small calendar leaf: the day heavy over the month in calendar red.
+            let date = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            date.add_css_class("fc-note-date");
+            date.set_valign(gtk::Align::Start);
+            let day = gtk::Label::new(Some(&day));
+            day.add_css_class("fc-note-day");
+            let month = gtk::Label::new(Some(&month.to_uppercase()));
+            month.add_css_class("fc-note-month");
+            date.append(&day);
+            date.append(&month);
+            block.append(&date);
+        }
+        let facts = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        facts.set_hexpand(true);
+        let clock = event_text::clock(starts, note.ends_at.as_deref(), &shell.culture, zone);
+        facts.append(&line(&clock));
+        if let Some(place) = note.place.as_deref().filter(|p| !p.trim().is_empty()) {
+            facts.append(&line(place.trim()));
+        }
+        going = going_line(
+            note.count(Answer::Going.name()),
+            note.count(Answer::Maybe.name()),
+        );
+        if let Some(going) = &going {
+            facts.append(&line(going));
+        }
+        block.append(&facts);
+        card.append(&block);
+        when = Some(event_text::when(
+            starts,
+            note.ends_at.as_deref(),
+            &shell.culture,
+            zone,
+        ));
+    }
+    if !bare {
+        let text = gtk::Label::new(None);
+        text.set_wrap(true);
+        text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        text.set_xalign(0.0);
+        text.set_yalign(0.0);
+        text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // A small natural width: the card's own width decides, never the words (a label's
+        // natural width would otherwise widen the card past its size).
+        text.set_max_width_chars(1);
+        if hidden {
+            text.set_text(say.get("Hidden — blocked member"));
+            text.add_css_class("fc-note-hidden");
+        } else {
+            text.set_text(&caption);
+            fit_text(&text, &caption, sticker);
+        }
+        card.append(&text);
+    }
+    if !hidden && sticker.kind == Kind::Tasks {
+        let items = note.task_list();
+        let (shown, left) = wall_task_lines(items.len());
+        // Each line behind the theme's own checkbox, a done one struck through as well as
+        // dimmed (the card's spoken name is `wall_text`'s, not these widgets').
+        for item in items.iter().take(shown) {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+            row.add_css_class("fc-note-task");
+            if item.done {
+                row.add_css_class("fc-note-task-done");
+            }
+            row.append(
+                &gtk::Image::builder()
+                    .icon_name(if item.done {
+                        "checkbox-checked-symbolic"
+                    } else {
+                        "checkbox-symbolic"
+                    })
+                    .valign(gtk::Align::Center)
+                    .accessible_role(gtk::AccessibleRole::Presentation)
+                    .build(),
+            );
+            let text = line(&item.text);
+            text.set_hexpand(true);
+            // The box is a picture to a screen reader: the line says its state itself, as the
+            // ballot box did when it was a character.
+            let mark = if item.done { "☑" } else { "☐" };
+            text.update_property(&[gtk::accessible::Property::Label(&format!(
+                "{mark} {}",
+                item.text
+            ))]);
+            row.append(&text);
+            card.append(&row);
+        }
+        if left > 0 {
+            card.append(&line(&wall_text::more_line(
+                i64::try_from(left).unwrap_or(0),
+                say,
+            )));
+        }
+    }
+    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    spacer.set_vexpand(true);
+    card.append(&spacer);
+    let author = author_name(connection, note, me);
+    if wall_text::shows_author(sticker.kind, &caption, hidden) {
+        let by = gtk::Label::new(Some(&author));
+        by.set_xalign(0.0);
+        by.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        by.set_max_width_chars(1);
+        by.add_css_class("fc-note-author");
+        card.append(&by);
+    }
+    let what = wall_text::what(
+        sticker.kind,
+        &caption,
+        when.as_deref(),
+        note.place.as_deref(),
+        going.as_deref(),
+        say,
+    );
+    let label = wall_text::label(hidden, sticker.mine, &author, &what, say);
+    card.update_property(&[gtk::accessible::Property::Label(&label)]);
+    card.set_tooltip_text(Some(&label));
+    if !hidden
+        && sticker.kind == Kind::Event
+        && let Some(attachment) = note.attachment.clone()
+    {
+        backdrop(&card, attachment, &connection.attachments);
+    }
+    card
+}
+
+/// Who wrote a note, as the roster names them ("You" for the reader).
+fn author_name(connection: &crate::shell::Connection, note: &NoteDto, me: i64) -> String {
+    let shell = Shell::get();
+    let chats = Rc::clone(&connection.chats);
+    wall_text::author_name(
+        note,
+        me,
+        move |id| chats.member(id).ok().flatten().map(|m| m.display_name),
+        shell.say.as_ref(),
+    )
 }
 
 /// An EVENT's picture is its BACKDROP — the card's ground, not its content (docs/protocol.md,

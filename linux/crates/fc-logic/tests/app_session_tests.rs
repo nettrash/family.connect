@@ -790,3 +790,38 @@ fn the_familys_own_document_fills_in_the_assistant_and_the_roster() -> StoreResu
     assert_eq!(Gate::Owner, state.gate);
     Ok(())
 }
+
+/// AN OFFLINE LAUNCH OPENS WHAT IT HOLDS (the Mac's `openOffline`): a token, chats in the cache and
+/// the last `/me` this account was answered — the chats open from it, as they were, and the error
+/// is still answered so the shell knows it is offline. Without chats there is nothing to open, and
+/// the offline page stands; a session already on screen is left exactly where it is.
+#[test]
+fn an_offline_launch_opens_the_cached_chats_from_the_last_me() -> StoreResult<()> {
+    let online = Server::new();
+    online.on("/me", &me(IN_FAMILY));
+    let cache = Database::open_in_memory()?;
+    let first = build_over(&online, Some("t0ken"), &cache);
+    first.refresh()?;
+    assert_eq!(Gate::Owner, first.session.state().gate);
+
+    // The next launch, with no network — and no chats yet: nothing to open.
+    let offline = Server::new();
+    offline.on_status("/me", 502, Some("<html>502</html>"));
+    let empty = build_over(&offline, Some("t0ken"), &cache);
+    assert!(empty.refresh()?.is_some());
+    assert_eq!(Gate::SignedOut, empty.session.state().gate);
+
+    // With the family's chat held, it opens — as the last answer had it.
+    ChatStore::new(&cache).replace(
+        &[ChatRowDto::new(ChatDto::new(42, "family", "The Smiths"))],
+        None,
+    )?;
+    let relaunched = build_over(&offline, Some("t0ken"), &cache);
+    let failed = relaunched.refresh()?.expect("still offline");
+    assert!(failed.transient());
+    let state = relaunched.session.state();
+    assert_eq!(Gate::Owner, state.gate);
+    assert_eq!(Some(7), state.me.map(|me| me.id));
+    assert_eq!(Some("t0ken".to_string()), relaunched.token());
+    Ok(())
+}

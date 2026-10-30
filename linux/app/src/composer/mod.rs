@@ -101,6 +101,9 @@ pub struct Composer {
     sticker_button: gtk::Button,
     picture_button: gtk::Button,
     video_button: gtk::Button,
+    /// When the video button last appeared (ms): a click within the activation guard of that is
+    /// one aimed at what stood there before, and opens no camera (the Mac's `videoDoorShownAtMS`).
+    video_shown_at: Cell<i64>,
     slot: gtk::Button,
     slot_icon: gtk::Image,
     slot_disc: gtk::Box,
@@ -428,6 +431,7 @@ impl Composer {
             sticker_button,
             picture_button,
             video_button,
+            video_shown_at: Cell::new(0),
             slot,
             slot_icon,
             slot_disc,
@@ -877,6 +881,10 @@ impl Composer {
             let weak = weak.clone();
             self.video_button.connect_clicked(move |_| {
                 if let Some(composer) = weak.upgrade() {
+                    let guard = i64::try_from(composer_button::ACTIVATION_GUARD_MS).unwrap_or(600);
+                    if now_ms() < composer.video_shown_at.get() + guard {
+                        return;
+                    }
                     composer.record_video();
                 }
             });
@@ -987,8 +995,11 @@ impl Composer {
             .set_visible(glyphs.contains(&FieldGlyph::Sticker));
         self.picture_button
             .set_visible(glyphs.contains(&FieldGlyph::Picture));
-        self.video_button
-            .set_visible(glyphs.contains(&FieldGlyph::VideoDoor));
+        let door_shown = glyphs.contains(&FieldGlyph::VideoDoor);
+        if door_shown && !self.video_button.is_visible() {
+            self.video_shown_at.set(now_ms());
+        }
+        self.video_button.set_visible(door_shown);
         if let Some(label) = composer_button::door_label(door, say.as_ref()) {
             self.video_button
                 .update_property(&[gtk::accessible::Property::Label(&label)]);
@@ -2220,13 +2231,14 @@ impl Composer {
         let staging = Rc::clone(&self.staging);
         let weak = self.me.clone();
         let say = Rc::clone(&self.shell.say);
+        let animates = self.chat.kind != chat_kinds::ASSISTANT;
         self.refresh();
         Some(Box::pin(async move {
             let still = weak.clone();
             let said = staging
                 .ingest(
                     files,
-                    integration::prepare_file,
+                    move |file, cancel| integration::prepare_file(file, cancel, animates),
                     move || still.upgrade().is_some_and(|c| !c.closed.get()),
                     say.as_ref(),
                 )

@@ -415,6 +415,7 @@ impl RichRenderer {
                             crate::attachments::pictures::logical(width),
                             crate::attachments::pictures::logical(height),
                         );
+                        zoomable(&picture, texture);
                         stack.set_visible_child_name("drawing");
                     }
                     RichDrawn::Drawn {
@@ -722,6 +723,7 @@ fn drawn_picture(
         crate::attachments::pictures::logical(width),
         crate::attachments::pictures::logical(height),
     );
+    zoomable(&picture, texture);
     stack.set_visible_child_name("drawing");
     RichPicture {
         widget: stack.upcast(),
@@ -731,6 +733,121 @@ fn drawn_picture(
             baseline,
         }))),
     }
+}
+
+/// A diagram or a graph (a `card`) opens larger on a click (the Mac's `RichDrawingViewer`): the
+/// drawing at its full resolution, fitted to the dialog, zoomed with a pinch, Ctrl and the wheel, or
+/// Ctrl+plus / minus / 0 — up to four times. A formula is read in its line and opens nothing.
+fn zoomable(picture: &gtk::Picture, texture: &gdk::Texture) {
+    if !picture.has_css_class("fc-rich-card") || picture.has_css_class("fc-rich-zoomable") {
+        return;
+    }
+    picture.add_css_class("fc-rich-zoomable");
+    let (texture, anchor) = (texture.clone(), picture.downgrade());
+    // A single click, told apart from the bubble's double-click heart (the tiles' rule).
+    crate::attachments::on_click(picture, move || {
+        if let Some(anchor) = anchor.upgrade() {
+            zoom_dialog(anchor.upcast_ref(), &texture);
+        }
+    });
+    picture.set_cursor_from_name(Some("zoom-in"));
+}
+
+/// The most a drawing is enlarged past its full size.
+const MOST_ZOOM: f64 = 4.0;
+
+fn zoom_dialog(anchor: &gtk::Widget, texture: &gdk::Texture) {
+    let scale = f64::from(anchor.scale_factor().max(1));
+    let (width, height) = (
+        f64::from(texture.width()) / scale,
+        f64::from(texture.height()) / scale,
+    );
+    let (room_width, room_height) = (900.0_f64.min(width + 48.0), 700.0_f64.min(height + 96.0));
+    let dialog = adw::Dialog::builder()
+        .content_width(room_width.max(320.0) as i32)
+        .content_height(room_height.max(240.0) as i32)
+        .build();
+    let picture = gtk::Picture::builder()
+        .paintable(texture)
+        .content_fit(gtk::ContentFit::Contain)
+        .can_shrink(true)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .child(&picture)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    // Full size — or the whole of it, when full size is bigger than the room; zoom goes on from
+    // there.
+    let fit = ((room_width - 24.0) / width).min((room_height - 72.0) / height);
+    // A drawing with no size has nothing to fit: full size.
+    let fit = if fit.is_finite() {
+        fit.clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
+    let zoom = Rc::new(Cell::new(fit));
+    let apply: Rc<dyn Fn(f64)> = {
+        let (zoom, picture) = (Rc::clone(&zoom), picture.downgrade());
+        Rc::new(move |wanted: f64| {
+            let to = wanted.clamp(fit, MOST_ZOOM);
+            zoom.set(to);
+            if let Some(picture) = picture.upgrade() {
+                picture.set_size_request((width * to) as i32, (height * to) as i32);
+            }
+        })
+    };
+    apply(fit);
+    {
+        let pinch = gtk::GestureZoom::new();
+        let (apply, zoom, start) = (Rc::clone(&apply), Rc::clone(&zoom), Rc::new(Cell::new(fit)));
+        {
+            let (zoom, start) = (Rc::clone(&zoom), Rc::clone(&start));
+            pinch.connect_begin(move |_, _| start.set(zoom.get()));
+        }
+        pinch.connect_scale_changed(move |_, factor| apply(start.get() * factor));
+        scroller.add_controller(pinch);
+    }
+    {
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let (apply, zoom) = (Rc::clone(&apply), Rc::clone(&zoom));
+        wheel.connect_scroll(move |controller, _, dy| {
+            if !controller
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                return glib::Propagation::Proceed;
+            }
+            apply(zoom.get() * if dy < 0.0 { 1.15 } else { 1.0 / 1.15 });
+            glib::Propagation::Stop
+        });
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        scroller.add_controller(wheel);
+    }
+    {
+        let keys = gtk::EventControllerKey::new();
+        let (apply, zoom) = (Rc::clone(&apply), Rc::clone(&zoom));
+        keys.connect_key_pressed(move |_, key, _, state| {
+            if !state.contains(gdk::ModifierType::CONTROL_MASK) {
+                return glib::Propagation::Proceed;
+            }
+            match key {
+                gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => apply(zoom.get() * 1.25),
+                gdk::Key::minus | gdk::Key::KP_Subtract => apply(zoom.get() / 1.25),
+                gdk::Key::_0 | gdk::Key::KP_0 => apply(fit),
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        });
+        dialog.add_controller(keys);
+    }
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&scroller));
+    dialog.set_child(Some(&view));
+    dialog.present(Some(anchor));
 }
 
 /// `width` × `height` from the top left of `texture`, as a new memory texture.

@@ -5,6 +5,7 @@
 //! | --- | --- | --- |
 //! | [`player`] | `gst_play` + `gtk4paintablesink`, authorised streams, rate with pitch | `Players`/`Player` (W.3), fc-logic's `RoundPlayers` |
 //! | [`now_playing`] | one thing plays at a time; a recording quiets everything | `NowPlaying` (W.3) |
+//! | [`output_watch`] | the default output device changing (headphones going) pauses what plays | `PlaybackEvent::OutputChanged` |
 //! | [`voice_bubble`], [`waves`] | the voice note in a bubble: waveform, seek, speed, dot | `ConversationSlots::voice` |
 //! | [`circle`] | a received video message in place, clipped round | `ConversationSlots::circle` |
 //! | [`transcript`], [`sound_tracks`] | "Show text" under a voice note and a circle; the sound a circle's text is asked with | the views of fc-logic's `TranscriptModel`; its `SoundTrackMaker` |
@@ -27,6 +28,7 @@ pub mod camera;
 pub mod circle;
 pub mod gst_util;
 pub mod now_playing;
+pub mod output_watch;
 pub mod pipelines;
 pub mod player;
 pub mod preparing;
@@ -112,8 +114,11 @@ pub fn install(shell: &Rc<Shell>) {
             if let Some(camera) = camera.upgrade() {
                 camera.stop_monitor();
             }
+            output_watch::stop();
         });
     }
+    // Headphones going pause what plays (S4).
+    output_watch::start();
     shell.camera.install(camera);
     let slots = recording::MediaComposerSlots::new(shell);
     shell.composer_slots.install(slots.clone());

@@ -173,6 +173,31 @@ impl Database {
         &self.connection
     }
 
+    /// One text kept in `meta` under `key`, or `None` — wiped with everything else at a sign-out.
+    pub fn meta_text(&self, key: &str) -> StoreResult<Option<String>> {
+        board_store::meta(self, key)
+    }
+
+    /// Keeps `value` in `meta` under `key`, replacing what was there.
+    pub fn set_meta_text(&self, key: &str, value: &str) -> StoreResult<()> {
+        let _held = self.hold();
+        self.connection
+            .prepare_cached(
+                "INSERT INTO meta (key, value) VALUES ($key, $value) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )?
+            .execute(named_params! { "$key": key, "$value": value })?;
+        Ok(())
+    }
+
+    /// Whether the cache holds any chat — what an offline launch can open.
+    pub fn holds_chats(&self) -> StoreResult<bool> {
+        let _held = self.hold();
+        Ok(self
+            .connection
+            .prepare_cached("SELECT EXISTS (SELECT 1 FROM chats)")?
+            .query_row([], |row| row.get::<_, bool>(0))?)
+    }
+
     /// Hold the cache for ONE WHOLE OPERATION: every store method takes this first.
     ///
     /// IN THE C# THIS IS A LOCK, because there the socket applies frames on its own thread, the

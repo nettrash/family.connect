@@ -57,17 +57,34 @@ fn offered(connection: &Connection, message: &MessageDto, attachment: &Attachmen
     )
 }
 
-/// The message menu's "Show text": offered exactly where the words under the recording offer it.
-pub fn menu_offers(message: &MessageDto) -> bool {
+/// The message menu's text item: "Show text" exactly where the words under the recording offer it,
+/// "Hide text" while the text is open (`message_menu::text_item_for`), nothing while it is asked for.
+pub fn menu_item(message: &MessageDto) -> TextItem {
     let Some(connection) = Shell::try_get().and_then(|shell| shell.connection()) else {
-        return false;
+        return TextItem::None;
     };
     let Some(attachment) = recording(message) else {
-        return false;
+        return TextItem::None;
     };
-    offered(&connection, message, attachment)
-        && message_menu::text_item_for(&connection.transcripts.look(attachment.id))
-            == TextItem::Show
+    if !offered(&connection, message, attachment) {
+        return TextItem::None;
+    }
+    message_menu::text_item_for(&connection.transcripts.look(attachment.id))
+}
+
+/// The menu's text item chosen: the text folded away when it is open, asked for otherwise.
+pub fn toggle(anchor: &impl IsA<gtk::Widget>, message: &MessageDto) {
+    let Some(connection) = Shell::try_get().and_then(|shell| shell.connection()) else {
+        return;
+    };
+    let Some(attachment) = recording(message) else {
+        return;
+    };
+    if message_menu::text_item_for(&connection.transcripts.look(attachment.id)) == TextItem::Hide {
+        connection.transcripts.hide(attachment.id);
+    } else {
+        ask(anchor, message, attachment);
+    }
 }
 
 /// "Show text" for `attachment` of `message`; the consent question, when it is asked, over

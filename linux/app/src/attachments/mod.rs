@@ -24,6 +24,7 @@
 //! when unmapped, and never logs a name, a file name or words — ids, counts and codes only.
 
 pub mod avatars;
+pub mod drag_out;
 pub mod file_row;
 pub mod inbox;
 pub mod link_card;

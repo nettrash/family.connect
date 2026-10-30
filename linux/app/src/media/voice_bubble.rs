@@ -17,6 +17,7 @@ use fc_core::protocol::{AttachmentDto, MessageDto};
 use fc_core::store::PlayedVoiceStore;
 use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::attachment_cache::AttachmentCache;
+use fc_logic::drawn_copies::DrawnCopies;
 use fc_logic::round_look::Playing;
 use fc_logic::voice_look::{self, voice_speed};
 use fc_logic::voice_notes;
@@ -62,15 +63,25 @@ impl std::fmt::Debug for VoiceBubble {
     }
 }
 
+thread_local! {
+    /// Every copy of a voice note drawn now, by attachment (`DrawnCopies`): the conversation and an
+    /// open thread can both show one, and playing it — its progress, its button, its "Played" —
+    /// must reach both, not whichever was drawn last.
+    static COPIES: RefCell<DrawnCopies<i64, VoiceBubble>> = RefCell::new(DrawnCopies::new());
+}
+
 /// `ConversationSlots::voice`: the widget, its final size already.
 pub fn widget(message: &MessageDto, attachment: &AttachmentDto, own: bool) -> gtk::Widget {
     let (bubble, root) = VoiceBubble::new(message, attachment, own);
     let root: gtk::Widget = root.upcast();
+    let id = attachment.id;
+    COPIES.with(|copies| copies.borrow_mut().add(id, Rc::clone(&bubble)));
     // The widget keeps its bubble alive; the bubble's handlers hold it weakly.
     let keep = RefCell::new(Some(bubble));
     root.connect_destroy(move |_| {
         if let Some(bubble) = keep.borrow_mut().take() {
             bubble.stop();
+            COPIES.with(|copies| copies.borrow_mut().remove(&id, &bubble));
         }
     });
     root
@@ -276,8 +287,35 @@ impl VoiceBubble {
         }
     }
 
+    /// The other copies of this note drawn now.
+    fn siblings(&self) -> Vec<Rc<VoiceBubble>> {
+        COPIES
+            .with(|copies| copies.borrow().of(&self.attachment.id))
+            .into_iter()
+            .filter(|copy| !std::ptr::eq(copy.as_ref(), self))
+            .collect()
+    }
+
+    /// Whether this copy holds the playback (a player, or one on its way).
+    fn owns(&self) -> bool {
+        self.loading.get() || self.player.borrow().is_some()
+    }
+
+    /// The copy that plays this note now, when it is another one: a click here steers it rather
+    /// than starting the note a second time.
+    fn holder(&self) -> Option<Rc<VoiceBubble>> {
+        if self.owns() {
+            return None;
+        }
+        self.siblings().into_iter().find(|copy| copy.owns())
+    }
+
     /// The play button.
     fn toggle(self: &Rc<Self>) {
+        if let Some(holder) = self.holder() {
+            holder.toggle();
+            return;
+        }
         let playing = self
             .player
             .borrow()
@@ -422,8 +460,9 @@ impl VoiceBubble {
         self.draw_button();
     }
 
-    /// Unmapped or destroyed: let go of the player.
+    /// Unmapped or destroyed: let go of the player — and the other copies stop showing it.
     fn stop(&self) {
+        let held = self.owns();
         self.loading.set(false);
         self.release();
         let player = self.player.borrow_mut().take();
@@ -434,6 +473,12 @@ impl VoiceBubble {
         self.seeked.set(None);
         self.draw_position(0.0);
         self.draw_button();
+        if held {
+            for copy in self.siblings() {
+                copy.paint_position(0.0, false);
+                copy.paint_button(false, false);
+            }
+        }
     }
 
     fn release(&self) {
@@ -443,6 +488,10 @@ impl VoiceBubble {
     }
 
     fn seek_fraction(&self, fraction: f64) {
+        if let Some(holder) = self.holder() {
+            holder.seek_fraction(fraction);
+            return;
+        }
         let at = (fraction.clamp(0.0, 1.0) * self.total).max(0.0);
         match self.player.borrow().as_ref() {
             Some(player) if self.active.get() => player.seek(at),
@@ -452,6 +501,10 @@ impl VoiceBubble {
     }
 
     fn next_speed(&self) {
+        if let Some(holder) = self.holder() {
+            holder.next_speed();
+            return;
+        }
         let shell = Shell::get();
         let rate = voice_speed::next(current_rate(&shell));
         shell
@@ -461,17 +514,23 @@ impl VoiceBubble {
             player.set_rate(rate);
         }
         let say = &shell.say;
-        self.speed
-            .set_label(&voice_speed::label(rate, say.as_ref()));
         let name = voice_speed::name(rate, say.as_ref());
-        self.speed.set_tooltip_text(Some(&name));
-        self.speed
-            .update_property(&[gtk::accessible::Property::Label(&name)]);
+        let label = voice_speed::label(rate, say.as_ref());
+        for copy in std::iter::once(self).chain(self.siblings().iter().map(Rc::as_ref)) {
+            copy.speed.set_label(&label);
+            copy.speed.set_tooltip_text(Some(&name));
+            copy.speed
+                .update_property(&[gtk::accessible::Property::Label(&name)]);
+        }
     }
 
     fn mark_played(&self) {
         if self.mine || self.played.replace(true) {
             return;
+        }
+        for copy in self.siblings() {
+            copy.played.set(true);
+            copy.dot.set_visible(false);
         }
         if let Some(connection) = Shell::get().connection()
             && let Err(error) =
@@ -494,6 +553,15 @@ impl VoiceBubble {
 
     fn draw_position(&self, position: f64) {
         let active = self.active.get() || self.seeked.get().is_some();
+        self.paint_position(position, active);
+        if self.owns() {
+            for copy in self.siblings() {
+                copy.paint_position(position, active);
+            }
+        }
+    }
+
+    fn paint_position(&self, position: f64, active: bool) {
         self.waves
             .set_lit(voice_look::played_bars(position, self.total, self.bars));
         self.time
@@ -501,13 +569,22 @@ impl VoiceBubble {
     }
 
     fn draw_button(&self) {
-        let say = &Shell::get().say;
         let playing = self.loading.get()
             || self
                 .player
                 .borrow()
                 .as_ref()
                 .is_some_and(|player| player.state() == PlayerState::Playing);
+        self.paint_button(playing, self.active.get());
+        if self.owns() {
+            for copy in self.siblings() {
+                copy.paint_button(playing, self.active.get());
+            }
+        }
+    }
+
+    fn paint_button(&self, playing: bool, active: bool) {
+        let say = &Shell::get().say;
         let (icon, word) = if playing {
             ("media-playback-pause-symbolic", say.get("Pause"))
         } else {
@@ -517,8 +594,7 @@ impl VoiceBubble {
         self.button.set_tooltip_text(Some(word));
         self.button
             .update_property(&[gtk::accessible::Property::Label(word)]);
-        self.speed
-            .set_visible(voice_look::shows_speed(self.active.get()));
+        self.speed.set_visible(voice_look::shows_speed(active));
     }
 }
 

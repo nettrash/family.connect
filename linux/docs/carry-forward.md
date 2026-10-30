@@ -565,10 +565,19 @@ found and fixed, each verified in code and by the gates:
 - **For nettrash (not changed):** Linux keeps Windows' rules where the Mac differs on (a) the top-bar
   icon — always registered, and a login launch starts hidden whenever an icon exists, where the Mac
   shows no icon and never starts hidden unless "Keep running" is on; (b) one main window (no File ▸
-  New Window). Still not done from the review: opening the cached chats offline at launch, "Add to
-  family stickers" from a sticker, dragging an attachment out, a diagram's zoom sheet, pausing on a
-  headphone unplug, `drawn_copies` (a voice note in the thread and the conversation at once), the
-  video recorder's reply banner, dropped web links, the note sheet's preview.
+  New Window).
+- **Second round (same day):** offline launch opens the cached chats from the last `/me`
+  (`AppSession::open_offline`, `Database::{meta_text, holds_chats}`); "Add to family stickers" from a
+  received sticker; dragging an attachment out (`attachments::drag_out`, a `gdk::ContentProvider`
+  that fetches the ORIGINAL when the drop asks — never a preview); diagrams and graphs open in a
+  zoomable dialog; the default output changing pauses what plays (`media::output_watch`); a voice note
+  drawn twice plays as one (`DrawnCopies`); the video recorder's reply; dropped web links typed into
+  the draft; the note editor's live preview (`board::wall::draw_card`) and its `@` strip; the member
+  limit through `CapDraft`; "Hide text" in the message menu; animated pictures stay pictures in the
+  assistant's chat. **For the real desktop:** dragging out to Files, the headphone pause (whether
+  PipeWire marks a jack's switch as a new default), and the offline launch.
+- **Not taken:** "Open Settings" after a microphone or camera refusal — a host app's microphone is
+  not behind a portal on Linux, and the sentence already says where the switch is.
 
 ## From P6 (call media) — merged 2026-10-29
 

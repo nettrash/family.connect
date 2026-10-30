@@ -5,7 +5,7 @@
 //! | [`sticker_panel_offered`], [`open_sticker_panel`] | P2 | the family's sticker panel (§8.4) from the field's sticker glyph, where the server has a pack |
 //! | [`location_offered`], [`find_location`] | P2 | the Location portal, once (§8.5): the paperclip's Location where it answers |
 //! | [`open_full_screen`] | P2 | the attachment viewer window (§8.2) |
-//! | [`offers_text`], [`show_text`] | P3 | a recording's text (`TranscriptModel`, through the consent question; `media::transcript`) |
+//! | [`text_item`], [`show_text`] | P3 | a recording's text (`TranscriptModel`, through the consent question; `media::transcript`) |
 //! | [`prepare_file`] | P3 | `MediaPreparing` for a video, a sound or an animated picture (§10.7: transcode, poster, read-back, cancel); a still photo re-drawn as JPEG with a preview (gdk-pixbuf) and a file sent as it is |
 //!
 //! [`next_voice_speed`] is the `voice-speed` setting P3's player applies.
@@ -82,21 +82,19 @@ pub fn open_full_screen(message: &MessageDto, index: usize) {
     crate::viewer::open_message(message, index);
 }
 
-/// P3: whether "Show text" may be offered for `message` — exactly where the words under its
-/// recording offer it (`message_menu::actions`' `offers_text`).
-pub fn offers_text(message: &MessageDto) -> bool {
-    crate::media::transcript::menu_offers(message)
+/// P3: the menu's text item for `message` — "Show text" exactly where the words under its recording
+/// offer it, "Hide text" while the text is open (`message_menu::text_item_for`).
+pub fn text_item(message: &MessageDto) -> fc_logic::message_menu::TextItem {
+    crate::media::transcript::menu_item(message)
 }
 
-/// P3: a recording's text, asked for as the words under it ask (the consent question over the
-/// page's window).
+/// P3: a recording's text — folded away when it is open, else asked for as the words under it ask
+/// (the consent question over the page's window).
 pub fn show_text(page: &ConversationPage, message_id: i64) {
     let Ok(Some(message)) = page.connection().chats.message(message_id) else {
         return;
     };
-    if let Some(attachment) = crate::media::transcript::recording(&message) {
-        crate::media::transcript::ask(&page.widget(), &message, attachment);
-    }
+    crate::media::transcript::toggle(&page.widget(), &message);
 }
 
 /// The voice speed's next step (1× → 1.5× → 2× → 1×), kept in `settings.conf` for P3's player.
@@ -112,14 +110,21 @@ pub fn next_voice_speed(shell: &Rc<Shell>) {
 /// `prepare_picked` first — a video or a sound brought to the profile with its poster, an animated
 /// picture made into the animation, a refusal said — and P1's own path for what is not P3's (a
 /// still photo, any other file) and for an animated picture P3 could not make into one (it goes as
-/// it did before #96). `Err` is the person's cancel, or a file that could not be read.
-pub async fn prepare_file(file: gio::File, cancel: Cancel) -> Result<PrepOutcome, String> {
+/// it did before #96). `animates`: false in the assistant's chat, whose model is shown a
+/// photograph — an animated picture there goes as one (the Mac's `MediaPrep.prepare(animates:)`).
+/// `Err` is the person's cancel, or a file that could not be read.
+pub async fn prepare_file(
+    file: gio::File,
+    cancel: Cancel,
+    animates: bool,
+) -> Result<PrepOutcome, String> {
     let name = file
         .basename()
         .and_then(|name| name.to_str().map(str::to_string))
         .unwrap_or_default();
     let mime = mime_of(&file).await;
-    if let Some(path) = file.path() {
+    let still = !animates && mime.starts_with("image/");
+    if let Some(path) = file.path().filter(|_| !still) {
         match crate::media::preparing::prepare_picked(&path, &mime, Some(&name), &cancel).await {
             Err(_) => return Err("cancelled".to_string()),
             Ok(Picked::Staged(media)) => return Ok(PrepOutcome::staged(*media)),
