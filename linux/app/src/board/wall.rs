@@ -215,6 +215,9 @@ impl Wall {
                     .move_to(MOUSE, (x + dx, y + dy));
                 if moved {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(card) = wall.card_of(id) {
+                        card.set_cursor_from_name(Some("grabbing"));
+                    }
                     wall.follow_hand(id, true);
                 }
             });
@@ -228,6 +231,9 @@ impl Wall {
                 let Some(id) = wall.in_hand.take() else {
                     return;
                 };
+                if let Some(card) = wall.card_of(id) {
+                    card.set_cursor_from_name(Some("grab"));
+                }
                 let Some((fraction, card)) = wall.geometry(id) else {
                     return;
                 };
@@ -538,6 +544,8 @@ impl Wall {
         me: i64,
     ) -> gtk::Box {
         let card = draw_card(connection, sticker, hidden, me);
+        // Anyone may move a note: the hand says so (the Mac's open-hand cursor).
+        card.set_cursor_from_name(Some("grab"));
         self.keys(&card, sticker.note.id);
         card
     }

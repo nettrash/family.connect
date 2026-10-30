@@ -576,6 +576,13 @@ found and fixed, each verified in code and by the gates:
   limit through `CapDraft`; "Hide text" in the message menu; animated pictures stay pictures in the
   assistant's chat. **For the real desktop:** dragging out to Files, the headphone pause (whether
   PipeWire marks a jack's switch as a new default), and the offline launch.
+- **Third round (a sweep of every label, tooltip and shortcut the Mac draws against the Linux
+  sources):** the keyboard's focus follows a voice recording (to the slot while it runs, back to the
+  field after — the Mac's `slotFocusRequest`); the video button ignores a click in the 600 ms after
+  it appears; a staged file says "Add a message, or send it on its own."; the sticker panel's empty
+  state says where stickers are added; the Mac's more specific names ("Members, invites and direct
+  chats", "Scroll to newest", "Remove attachment", "Save a copy"); board notes show the grab cursor.
+  What the sweep found otherwise is iOS-only or one of D1–D22.
 - **Not taken:** "Open Settings" after a microphone or camera refusal — a host app's microphone is
   not behind a portal on Linux, and the sentence already says where the switch is.
 

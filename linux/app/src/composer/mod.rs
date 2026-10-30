@@ -104,6 +104,9 @@ pub struct Composer {
     /// When the video button last appeared (ms): a click within the activation guard of that is
     /// one aimed at what stood there before, and opens no camera (the Mac's `videoDoorShownAtMS`).
     video_shown_at: Cell<i64>,
+    /// Whether a voice recording showed at the last redraw: the keyboard's focus follows the row
+    /// (the Mac's `slotFocusRequest`, S2.4).
+    was_recording: Cell<bool>,
     slot: gtk::Button,
     slot_icon: gtk::Image,
     slot_disc: gtk::Box,
@@ -432,6 +435,7 @@ impl Composer {
             picture_button,
             video_button,
             video_shown_at: Cell::new(0),
+            was_recording: Cell::new(false),
             slot,
             slot_icon,
             slot_disc,
@@ -960,6 +964,23 @@ impl Composer {
         let records = recording.recording() != Recording::None;
         self.stack
             .set_visible_child_name(if records { "recording" } else { "field" });
+        // The field goes away under a recording, and the focus with it: to the slot (Stop or the
+        // Send arrow) while it runs, and back to the field once it ends — where the focus was in
+        // this composer, never taken from somewhere else.
+        if self.was_recording.replace(records) != records {
+            let window = self.root.root().and_downcast::<gtk::Window>();
+            let focus = window.as_ref().and_then(gtk::prelude::GtkWindowExt::focus);
+            let here = focus.as_ref().is_none_or(|focus| {
+                focus.is_ancestor(&self.root) || focus == self.root.upcast_ref::<gtk::Widget>()
+            });
+            if here {
+                if records {
+                    self.slot.grab_focus();
+                } else {
+                    self.field.grab_focus();
+                }
+            }
+        }
         self.not_sent.set_child(recording.not_sent_rows().as_ref());
         // The glyphs inside the field.
         let state = self.connection.session.state();
@@ -2359,15 +2380,34 @@ impl Composer {
             if recorded {
                 self.voice_chip(&chip, &item);
             } else {
+                let label = composer_staging::label(&item, say.as_ref(), separator);
                 if let Some(thumbnail) = self.thumbnail(&item) {
                     chip.add_css_class("fc-chat-chip-pictured");
                     chip.append(&thumbnail);
+                    chip.append(&gtk::Label::new(Some(&label)));
+                } else if item.kind == "file" {
+                    // A file: its name, and what may go with it (the Mac's `fileChip`).
+                    let words = gtk::Box::new(gtk::Orientation::Vertical, 1);
+                    words.set_valign(gtk::Align::Center);
+                    words.append(
+                        &gtk::Label::builder()
+                            .label(&label)
+                            .xalign(0.0)
+                            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                            .max_width_chars(28)
+                            .build(),
+                    );
+                    words.append(
+                        &gtk::Label::builder()
+                            .label(say.get("Add a message, or send it on its own."))
+                            .xalign(0.0)
+                            .css_classes(["caption", "dim-label"])
+                            .build(),
+                    );
+                    chip.append(&words);
+                } else {
+                    chip.append(&gtk::Label::new(Some(&label)));
                 }
-                chip.append(&gtk::Label::new(Some(&composer_staging::label(
-                    &item,
-                    say.as_ref(),
-                    separator,
-                ))));
             }
             let remove = gtk::Button::builder()
                 .icon_name("window-close-symbolic")
@@ -2382,7 +2422,7 @@ impl Composer {
             remove.update_property(&[gtk::accessible::Property::Label(if recorded {
                 say.get("Delete recording")
             } else {
-                say.get("Remove")
+                say.get("Remove attachment")
             })]);
             let weak = self.me.clone();
             remove.connect_clicked(move |button| {

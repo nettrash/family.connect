@@ -78,9 +78,10 @@ impl WindowPart for HeaderButtons {
         let say = &shell.say;
         let header = window.content_header();
 
+        // Named for what it holds (the Mac's toolbar help), spoken as "Family".
         let family = gtk::Button::builder()
             .icon_name("system-users-symbolic")
-            .tooltip_text(say.get("Family"))
+            .tooltip_text(say.get("Members, invites and direct chats"))
             .action_name(crate::seams::actions::OPEN_FAMILY.detailed())
             .build();
         family.update_property(&[gtk::accessible::Property::Label(say.get("Family"))]);

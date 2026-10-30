@@ -70,7 +70,7 @@ impl ThreadDialog {
             .follows_content_size(false)
             .build();
         let thread = Rc::new_cyclic(|me: &Weak<ThreadDialog>| {
-            let timeline = Timeline::new(say.get("Jump to the newest message"));
+            let timeline = Timeline::new(say.get("Scroll to newest"));
             let on_sent = {
                 let me = me.clone();
                 Rc::new(move || {

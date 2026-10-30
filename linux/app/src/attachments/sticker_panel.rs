@@ -65,8 +65,10 @@ pub fn panel(on_pick: Rc<dyn Fn(PackItemDto)>) -> gtk::Widget {
         let empty = adw::StatusPage::builder()
             .paintable(&crate::theme::glyphs::sticker())
             .title(say.get("No stickers yet"))
+            // An empty pack is not a broken panel, and the way out of it is on another screen —
+            // so say which (the Mac's panel).
             .description(
-                say.get("Add a picture and everyone in the family can send it as a sticker."),
+                say.get("Add some on the Family screen. Everyone in the family can send them."),
             )
             .css_classes(["compact"])
             .build();

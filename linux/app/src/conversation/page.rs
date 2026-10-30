@@ -160,7 +160,7 @@ impl ConversationPage {
             )
         };
         let page = Rc::new_cyclic(|me: &Weak<ConversationPage>| {
-            let timeline = Timeline::new(shell.say.get("Jump to the newest message"));
+            let timeline = Timeline::new(shell.say.get("Scroll to newest"));
             let on_sent = {
                 let me = me.clone();
                 Rc::new(move || {
