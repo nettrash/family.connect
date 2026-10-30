@@ -2358,7 +2358,7 @@ impl Composer {
         let playing = self.strip_player.borrow().as_ref().map(|(at, _, _)| *at);
         let drawn = (addresses.clone(), playing);
         if *self.strip_drawn.borrow() == drawn
-            && self.strip.first_child().is_some() == !items.is_empty()
+            && self.strip.first_child().is_some() != items.is_empty()
         {
             return;
         }
