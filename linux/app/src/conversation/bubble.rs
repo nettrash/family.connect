@@ -905,11 +905,14 @@ fn reactions_row(ctx: &BubbleContext, message: &MessageDto, own: bool) -> Option
     if reactions.is_empty() {
         return None;
     }
-    let flow = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .max_children_per_line(12)
-        .column_spacing(4)
-        .row_spacing(4)
+    // libadwaita's wrapping box, not a `GtkFlowBox`: a flow box asked for its height at a width
+    // under its widest chip — every new conversation pane, measured at width 0 before it is laid
+    // out — warns once per chip ("Trying to measure GtkFlowBoxChild … for width of 0", 66 lines a
+    // launch in the journal), and a wrap box has no such floor.
+    let flow = adw::WrapBox::builder()
+        .child_spacing(4)
+        .line_spacing(4)
+        .align(if own { 1.0 } else { 0.0 })
         .halign(if own {
             gtk::Align::End
         } else {

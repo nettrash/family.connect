@@ -158,6 +158,10 @@ fn handle_local_options(
     let background = options.contains("background");
     let toggle = options.contains("toggle");
     if background || toggle {
+        // Set BEFORE registering: `register` runs `startup` at once in the primary instance, and
+        // `startup` copies this into the shell — set after, a login launch read `false` and came up
+        // with its window, opening (and reading) the first chat (measured, 2026-10-30).
+        LAUNCHED_AT_LOGIN.with(|flag| flag.set(background));
         // Registering tells us whether another instance owns the name. Without a session bus
         // every launch is its own primary (Docker only).
         if let Err(error) = app.register(None::<&gio::Cancellable>) {
@@ -173,7 +177,6 @@ fn handle_local_options(
             // A second `--background` (a login while running) has nothing to do.
             return ControlFlow::Break(glib::ExitCode::SUCCESS);
         }
-        LAUNCHED_AT_LOGIN.with(|flag| flag.set(background));
     }
     ControlFlow::Continue(())
 }
