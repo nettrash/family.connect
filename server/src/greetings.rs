@@ -382,6 +382,19 @@ async fn greet(
     else {
         return Ok(false);
     };
+    // A PAID family past this month's tokens is skipped in silence: nobody
+    // asked for a greeting, so nobody is told it did not come (protocol.md,
+    // "Paid families"). Silent in the log as well — this runs every tick
+    // until the day's greeting is posted, exactly like the skip above.
+    if !crate::subscriptions::may_spend(
+        state,
+        candidate.family_id,
+        crate::subscriptions::Spend::Tokens,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
 
     let signs = signs_in_family(state, candidate.family_id).await?;
     // Signs only — no names, no birth dates, no roster. What travels is at

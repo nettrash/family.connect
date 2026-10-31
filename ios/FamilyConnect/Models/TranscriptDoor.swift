@@ -219,6 +219,10 @@ nonisolated enum TranscriptFailure: Equatable, Sendable {
     /// This device could not take the sound out of the file: no sound
     /// track, or a format this OS cannot open. Terminal on this device.
     case unreadable
+    /// `ai_allowance_used`: a paid family past this month's transcript
+    /// minutes (docs/protocol.md, "Paid families"). Terminal until the
+    /// allowance renews on `renewsAt`, the 1st of the next UTC month.
+    case allowanceUsed(renewsAt: Date)
 
     /// The sentence the row draws.
     var message: String {
@@ -228,6 +232,7 @@ nonisolated enum TranscriptFailure: Equatable, Sendable {
         case .notAvailable: String(localized: "Not available for this message.")
         case .tooLong: String(localized: "This recording is too long to turn into text.")
         case .unreadable: String(localized: "Couldn't read the sound in this file.")
+        case .allowanceUsed(let renewsAt): PaidFamilies.assistantAllowanceUsed(renewsAt: renewsAt)
         }
     }
 
@@ -248,7 +253,7 @@ nonisolated enum TranscriptOutcome: Equatable, Sendable {
     /// Sorted from what the request threw. Only the protocol's codes decide
     /// a refusal; anything the server did not answer on purpose is worth
     /// asking again.
-    init(error: Error) {
+    init(error: Error, now: Date = .now) {
         switch error {
         // What this device found when it tried to make the sound itself.
         case TranscriptSound.Failure.tooLong:
@@ -262,6 +267,10 @@ nonisolated enum TranscriptOutcome: Equatable, Sendable {
             self = .failed(.tooLong)
         case APIError.forbidden(let code) where code == "assistant_consent_required":
             self = .consentRequired
+        // Before the catch-all 403 below: this refusal renews on a day the
+        // row can name, where the others never change by waiting.
+        case APIError.forbidden(let code) where code == "ai_allowance_used":
+            self = .failed(.allowanceUsed(renewsAt: PaidFamilies.nextMonthStartUTC(after: now)))
         case APIError.conflict(let code, _) where code == "transcript_refused":
             self = .failed(.refused)
         case APIError.conflict(let code, _)

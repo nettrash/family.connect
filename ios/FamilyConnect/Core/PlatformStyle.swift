@@ -284,6 +284,12 @@ enum MacSheetSize {
     /// conversation's own window; its list scrolls when that is short.
     static let groupInfo = CGSize(width: 440, height: 520)
 
+    /// The subscription screen (docs/protocol.md, "Paid families") — Apple's
+    /// store view over what a family gets. Opened from Settings ▸ Renew as
+    /// well as from the main window, so it is held to the Settings window's
+    /// ceiling like its neighbours, and scrolls.
+    static let subscription = CGSize(width: 440, height: 415)
+
     /// What each sheet's parent offers at its SMALLEST, which is the size the
     /// sheet actually has to fit: Settings is resizable down to its minimum,
     /// and the roster sheet is not resizable at all.

@@ -226,11 +226,36 @@ pub mod error_codes {
     /// or never there. A 409, added 2026-10-22.
     pub const INVITATION_NOT_PENDING: &str = "invitation_not_pending";
 
+    /// A new family on a server that charges for one, from an account without an active App Store
+    /// subscription (docs/protocol.md, "Paid families"): a 403, added 2026-10-30, checked after
+    /// every other refusal `POST /families` can give. Terminal.
+    pub const SUBSCRIPTION_REQUIRED: &str = "subscription_required";
+
+    /// `PUT /me/subscription`: what Apple signed did not verify, or is for another app or product —
+    /// a 400, added 2026-10-30. Only Apple's apps send one.
+    pub const SUBSCRIPTION_INVALID: &str = "subscription_invalid";
+
+    /// `PUT /me/subscription`: the subscription belongs to another account — a 409, added
+    /// 2026-10-30.
+    pub const SUBSCRIPTION_TAKEN: &str = "subscription_taken";
+
+    /// `PUT /me/subscription` on a server whose subscriptions are off — a 403, added 2026-10-30.
+    pub const SUBSCRIPTIONS_DISABLED: &str = "subscriptions_disabled";
+
+    /// An upload for a PAID family that has used its storage allowance (docs/protocol.md, "Paid
+    /// families"): a 403, added 2026-10-30, decided before the body is read. TERMINAL — not the
+    /// server's disk (`storage_full`, 507), the family's allowance.
+    pub const STORAGE_ALLOWANCE_USED: &str = "storage_allowance_used";
+
+    /// A transcript or a board backdrop for a PAID family past this month's minutes or pictures: a
+    /// 403, added 2026-10-30. The allowance starts again on the 1st of the next month, UTC.
+    pub const AI_ALLOWANCE_USED: &str = "ai_allowance_used";
+
     pub const TOO_MANY_REQUESTS: &str = "too_many_requests";
     pub const INTERNAL: &str = "internal";
 
     /// Every code this document names, for the test that holds the list to it.
-    pub const ALL: [&str; 79] = [
+    pub const ALL: [&str; 85] = [
         UNAUTHORIZED,
         INVALID_CREDENTIALS,
         USERNAME_TAKEN,
@@ -308,6 +333,12 @@ pub mod error_codes {
         MEMBER_FAMILIES_DISABLED,
         MEMBER_IN_OTHER_FAMILIES,
         INVITATION_NOT_PENDING,
+        SUBSCRIPTION_REQUIRED,
+        SUBSCRIPTION_INVALID,
+        SUBSCRIPTION_TAKEN,
+        SUBSCRIPTIONS_DISABLED,
+        STORAGE_ALLOWANCE_USED,
+        AI_ALLOWANCE_USED,
         TOO_MANY_REQUESTS,
         INTERNAL,
     ];

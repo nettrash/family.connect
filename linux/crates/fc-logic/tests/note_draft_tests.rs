@@ -315,31 +315,36 @@ fn a_refused_backdrop_says_the_provider_refused_it() {
     assert!(!refused.transient());
     assert_eq!(
         "The assistant's provider refused that. Try putting it another way.",
-        note_sheet_text::backdrop_failure(&refused, &say)
+        note_sheet_text::backdrop_failure(&refused, &say, &common::days())
     );
     assert_eq!(
         "Couldn't draw that.",
-        note_sheet_text::backdrop_failure(&ApiError::new(error_codes::INTERNAL, "x", 500), &say)
+        note_sheet_text::backdrop_failure(
+            &ApiError::new(error_codes::INTERNAL, "x", 500),
+            &say,
+            &common::days()
+        )
     );
     assert_eq!(
         "Couldn't draw that.",
         note_sheet_text::backdrop_failure(
             &ApiError::new(error_codes::PICTURES_UNAVAILABLE, "x", 409),
-            &say
+            &say,
+            &common::days()
         )
     );
     assert_eq!(
         "Couldn't draw that.",
-        note_sheet_text::backdrop_failure(&ApiError::transport("x"), &say)
+        note_sheet_text::backdrop_failure(&ApiError::transport("x"), &say, &common::days())
     );
     // Translated with everything else, not left in English.
     let german = common::catalogues().for_language("de");
     assert_eq!(
         german.get("The assistant's provider refused that. Try putting it another way."),
-        note_sheet_text::backdrop_failure(&refused, &german)
+        note_sheet_text::backdrop_failure(&refused, &german, &common::days())
     );
     assert_ne!(
         "The assistant's provider refused that. Try putting it another way.",
-        note_sheet_text::backdrop_failure(&refused, &german)
+        note_sheet_text::backdrop_failure(&refused, &german, &common::days())
     );
 }

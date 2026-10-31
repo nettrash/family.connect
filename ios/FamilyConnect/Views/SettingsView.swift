@@ -78,12 +78,18 @@ struct SettingsView: View {
     /// families") — for an account in one family, the only ones there are.
     @State private var showsNewFamily = false
     @State private var showsJoinAnother = false
+    /// Paid families (docs/protocol.md, "Paid families"): Manage
+    /// Subscription, and the subscription screen for an owner who renews.
+    @State private var managingSubscription = false
+    @State private var renewingSubscription = false
 
     var body: some View {
         NavigationStack {
             Form {
                 profileSection
                 familySection
+                SubscriptionSettingsSection(
+                    managing: $managingSubscription, renewing: $renewingSubscription)
                 assistantConsentSection
                 AssistantLookupConsentSection { reviewingAssistant = true }
                 privacySection
@@ -131,14 +137,28 @@ struct SettingsView: View {
                 await model.load(api: coordinator.api, familyID: session.apiFamilyID)
             }
             .familyDoorSheets(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
+            .manageSubscriptions(isPresented: $managingSubscription)
+            .sheet(isPresented: $renewingSubscription) {
+                SubscriptionSheet()
+            }
             .confirmationDialog(
                 Text(leaveTitle),
                 isPresented: Bindable(model).confirmLeave,
                 titleVisibility: .visible
             ) {
                 Button("Leave Family", role: .destructive) { leave() }
+                // Leaving a paid family hands it on and cancels nothing at
+                // Apple (docs/protocol.md, "Paid families").
+                if keepsRenewingOnLeave {
+                    Button("Manage Subscription") { managingSubscription = true }
+                }
             } message: {
-                Text(leaveMessage)
+                if keepsRenewingOnLeave {
+                    Text(leaveMessage) + Text(verbatim: "\n\n")
+                        + Text("Your App Store subscription keeps renewing after you leave. Cancel it in the App Store if you no longer need it.")
+                } else {
+                    Text(leaveMessage)
+                }
             }
             // A leave dialog open when ownership changes is stale in both
             // halves: who inherits, and what leaving costs. Take it down,
@@ -558,6 +578,14 @@ struct SettingsView: View {
                 model.errorText = String(localized: "Couldn't leave right now. Try again.")
             }
         }
+    }
+
+    /// The owner of a paid family, whose subscription is still active, is
+    /// told it goes on renewing after they leave.
+    private var keepsRenewingOnLeave: Bool {
+        PaidFamilies.keepsRenewingOnLeave(
+            subscriptionsEnabled: session.subscriptionsEnabled, subscription: session.subscription,
+            isOwner: session.isOwner, family: model.family ?? session.family)
     }
 
     /// The leave dialog's title: today's with one family, and the family's

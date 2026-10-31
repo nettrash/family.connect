@@ -232,22 +232,27 @@ pub fn install(fake: &Rc<FakeServer>) {
                     .collect();
                 FakeResponse::json(
                     200,
-                    &MeResponse {
-                        user: user_dto(&state, &world, user),
-                        family: families.first().cloned(),
-                        role: families.first().and_then(|f| f.role.clone()),
-                        blocked_user_ids: Some(Vec::new()),
-                        families: Some(families),
-                        pending_join_requests: Some(Vec::new()),
-                        invitations: Some(invitations),
-                        member_families_enabled: world.member_families,
-                        max_families_per_account: world.max_families,
-                        max_family_members: 12,
-                        // The run's one truth for calls (S0's `FakeState`), whoever answers `/me`.
-                        calls_enabled: state.calls,
-                        video_calls_enabled: state.video_calls,
-                        ..MeResponse::default()
-                    },
+                    // And for paid families: S0's `FakeState` says what a charging server adds.
+                    &state.paying(
+                        user,
+                        MeResponse {
+                            user: user_dto(&state, &world, user),
+                            family: families.first().cloned(),
+                            role: families.first().and_then(|f| f.role.clone()),
+                            blocked_user_ids: Some(Vec::new()),
+                            families: Some(families),
+                            pending_join_requests: Some(Vec::new()),
+                            invitations: Some(invitations),
+                            member_families_enabled: world.member_families,
+                            max_families_per_account: world.max_families,
+                            max_family_members: 12,
+                            // The run's one truth for calls (S0's `FakeState`), whoever answers
+                            // `/me`.
+                            calls_enabled: state.calls,
+                            video_calls_enabled: state.video_calls,
+                            ..MeResponse::default()
+                        },
+                    ),
                 )
             }),
         );
@@ -711,15 +716,17 @@ pub fn install(fake: &Rc<FakeServer>) {
                 .filter(|u| u.families.iter().any(|(f, _)| *f == family))
                 .map(|u| serde_json::json!({"user_id": u.id, "display_name": u.display_name, "messages": 3}))
                 .collect();
-            FakeResponse::json(
-                200,
-                &serde_json::json!({
-                    "totals": {"members": members.len(), "messages": 3 * members.len(), "board_notes": 2,
-                               "attachments": {"count": 4, "photo": 3, "video": 1, "audio": 0, "file": 0,
-                                               "location": 0, "bytes": 2_500_000, "stored_bytes": 1_500_000}},
-                    "members": members
-                }),
-            )
+            let mut stats = serde_json::json!({
+                "totals": {"members": members.len(), "messages": 3 * members.len(), "board_notes": 2,
+                           "attachments": {"count": 4, "photo": 3, "video": 1, "audio": 0, "file": 0,
+                                           "location": 0, "bytes": 2_500_000, "stored_bytes": 1_500_000}},
+                "members": members
+            });
+            // A paid family's allowance (docs/protocol.md, "Family statistics", 2026-10-30).
+            if let Some(allowance) = state.allowances.get(&family).filter(|_| state.subscriptions) {
+                stats["allowance"] = serde_json::to_value(allowance).unwrap_or_default();
+            }
+            FakeResponse::json(200, &stats)
         }),
     );
     install_board(fake, &world);

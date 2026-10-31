@@ -48,6 +48,7 @@ pub mod transcript_rules {
     use fc_core::text::string_catalog::StringCatalog;
 
     use crate::assistant_consent;
+    use crate::paid_families::{self, Days};
     use crate::transcript_sound::{self, TranscriptForm};
 
     /// The provider's ceiling, the server's default, and never more (25 MiB).
@@ -166,10 +167,14 @@ pub mod transcript_rules {
     }
 
     /// What a failed ask says under the player. The provider's refusal says so, and is final; a
-    /// refusal of THIS recording or THIS member is "not available", and is final too; anything
-    /// that says nothing about the request — no connection, the deadline, the provider's own
-    /// failure — asks to try again.
-    pub fn failure_sentence(error: &ApiError, say: &dyn StringCatalog) -> String {
+    /// paid family past this month's transcript minutes says when they renew (docs/protocol.md,
+    /// "Paid families"), and is final until then; a refusal of THIS recording or THIS member is
+    /// "not available", and is final too; anything that says nothing about the request — no
+    /// connection, the deadline, the provider's own failure — asks to try again.
+    pub fn failure_sentence(error: &ApiError, say: &dyn StringCatalog, days: &Days<'_>) -> String {
+        if error.code == error_codes::AI_ALLOWANCE_USED {
+            return paid_families::assistant_allowance_used(Some(days.next_month()), say, days);
+        }
         let sentence = if may_retry(error) {
             say.get("Couldn't get the text. Try again.")
         } else {

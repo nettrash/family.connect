@@ -26,7 +26,7 @@ use yew::prelude::*;
 use crate::actions::{Action, LeaveContext};
 use crate::api::ApiError;
 use crate::live::Panel;
-use crate::model::{Assistant, Family, Me, MemberStats, Stats};
+use crate::model::{Allowance, Assistant, Family, Me, MemberStats, Stats};
 use crate::notify;
 use crate::prep;
 use crate::time;
@@ -922,6 +922,7 @@ fn statistics(stats: &Stats) -> Html {
                     }
                 </section>
             }
+            { stats.allowance.as_ref().map(allowance).unwrap_or_default() }
             <section class="group">
                 <h3>{ t("Who sends what") }</h3>
                 { for stats.members.iter().map(|member| html! {
@@ -935,6 +936,27 @@ fn statistics(stats: &Stats) -> Html {
                 }) }
             </section>
         </>
+    }
+}
+
+/// A paid family's allowance: a row for each limit the operator has on, and
+/// when the monthly ones start again (docs/protocol.md, "Family
+/// statistics"). The month is a UTC month, and its first day is shown as
+/// that UTC calendar day — the 1st — in the reader's language.
+fn allowance(allowance: &Allowance) -> Html {
+    let renews = allowance
+        .renews_at
+        .as_deref()
+        .map(|at| crate::time::utc_day_in_sentence(at, js_sys::Date::now()))
+        .filter(|day| !day.is_empty());
+    html! {
+        <section class="group allowance">
+            <h3>{ fc_text::paid::allowance_title() }</h3>
+            { for allowance.limits().rows().into_iter().map(|(label, value)| number_row(label, value)) }
+            if let Some(day) = renews {
+                <p class="footnote">{ fc_text::paid::renews_on(&day) }</p>
+            }
+        </section>
     }
 }
 
@@ -1273,6 +1295,7 @@ mod tests {
                     ..Default::default()
                 },
                 members: Vec::new(),
+                allowance: None,
             };
             let root = document.create_element("div").unwrap();
             document.body().unwrap().append_child(&root).unwrap();
@@ -1298,6 +1321,96 @@ mod tests {
             .text_content()
             .unwrap_or_default()
             .contains("Web searches"));
+        root.remove();
+    }
+
+    /// A PAID family's statistics end their numbers with the allowance — a
+    /// row for each limit the server sent, and the day it renews — and a
+    /// free family's have no such section (docs/protocol.md, "Family
+    /// statistics").
+    #[wasm_bindgen_test]
+    async fn a_paid_familys_statistics_show_its_allowance() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let draw = |json: &str| {
+            let stats: Stats = serde_json::from_str(json).expect("reads");
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            #[derive(Properties, PartialEq)]
+            struct Shown {
+                stats: Stats,
+            }
+            #[function_component(Show)]
+            fn show(props: &Shown) -> Html {
+                statistics(&props.stats)
+            }
+            yew::Renderer::<Show>::with_root_and_props(root.clone(), Shown { stats }).render();
+            root
+        };
+        let root = draw(
+            r#"{"totals": {"members": 3}, "members": [],
+                "allowance": {"renews_at": "2026-12-01T00:00:00Z",
+                              "storage_bytes": {"used": 3221225472, "limit": 10737418240},
+                              "ai_tokens": {"used": 812345, "limit": 2000000},
+                              "images": {"used": 4, "limit": 30},
+                              "transcript_ms": {"used": 600000, "limit": 7200000}}}"#,
+        );
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let section = root
+            .query_selector(".allowance")
+            .unwrap()
+            .expect("the allowance");
+        let heading = section.query_selector("h3").unwrap().expect("its title");
+        assert_eq!(
+            heading.text_content().as_deref(),
+            Some("This Month’s Allowance")
+        );
+        let rows = section.query_selector_all(".setting-row").unwrap();
+        let said: Vec<String> = (0..rows.length())
+            .map(|at| rows.item(at).unwrap().text_content().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                "Storage3.22 GB of 10.74 GB",
+                "Assistant40% used",
+                "Pictures4 of 30",
+                "Transcripts10 of 120 min",
+            ]
+        );
+        let day = crate::time::utc_day_in_sentence("2026-12-01T00:00:00Z", js_sys::Date::now());
+        assert!(
+            day.contains('1') && !day.contains("30"),
+            "the UTC 1st: {day}"
+        );
+        let footnote = section
+            .query_selector(".footnote")
+            .unwrap()
+            .expect("when it renews");
+        assert_eq!(footnote.text_content(), Some(format!("Renews on {day}")));
+        root.remove();
+
+        // Only the limits that are on.
+        let root = draw(
+            r#"{"totals": {}, "allowance": {"renews_at": "2026-12-01T00:00:00Z",
+                                            "images": {"used": 0, "limit": 30}}}"#,
+        );
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        let rows = root.query_selector_all(".allowance .setting-row").unwrap();
+        assert_eq!(rows.length(), 1);
+        assert_eq!(
+            rows.item(0).unwrap().text_content().as_deref(),
+            Some("Pictures0 of 30")
+        );
+        root.remove();
+
+        // A free family, or a server that does not charge: no section.
+        let root = draw(r#"{"totals": {"members": 3}, "members": []}"#);
+        gloo_timers::future::TimeoutFuture::new(30).await;
+        assert!(root.query_selector(".allowance").unwrap().is_none());
+        assert!(!root
+            .text_content()
+            .unwrap_or_default()
+            .contains("Allowance"));
         root.remove();
     }
 }

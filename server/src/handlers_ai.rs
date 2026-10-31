@@ -69,6 +69,7 @@ use crate::keyring::{KeyError, Owner, SealedRow};
 use crate::lookups::{self, Ledger, LookupLanguage, LookupPlan, LookupResult, LookupTool};
 use crate::models::{Attachment, Message};
 use crate::state::AppState;
+use crate::subscriptions::{self, Spend};
 use crate::ws::{AiErrorReason, ServerFrame};
 
 /// The reserved account the assistant sends under (migration 0015). Looked
@@ -3712,6 +3713,14 @@ async fn store_picture(
     Ok(())
 }
 
+/// A paid family's allowance check (`subscriptions::may_spend`), in this
+/// module's error type.
+pub(crate) async fn may_spend(state: &AppState, family_id: i64, spend: Spend) -> Result<bool> {
+    subscriptions::may_spend(state, family_id, spend)
+        .await
+        .map_err(|error| anyhow::anyhow!("reading the family's allowance: {error:?}"))
+}
+
 /// Tell the audience the reply stopped early, and — when the server knows
 /// one worth a different sentence — why (protocol.md, "The assistant").
 async fn fan_out_ai_error(
@@ -3730,6 +3739,11 @@ async fn fan_out_ai_error(
                 chat_id,
                 message_id,
                 reason,
+                // A used-up allowance says when it comes back (protocol.md,
+                // "Paid families").
+                renews_at: (reason == Some(AiErrorReason::AllowanceUsed)).then(|| {
+                    crate::subscriptions::next_month_start(time::OffsetDateTime::now_utc())
+                }),
             },
             None,
             &hidden,
@@ -3744,7 +3758,7 @@ async fn answer(
     chat_id: i64,
     user_id: i64,
     assistant_id: i64,
-    prompt: Prompt,
+    mut prompt: Prompt,
     language: Option<&str>,
 ) -> Result<()> {
     // The empty row the reply will fill. Created BEFORE the call, so the
@@ -3792,6 +3806,42 @@ async fn answer(
         "ai_placeholder",
         events::deliver_message_without_push(state, &placeholder, None).await,
     );
+
+    // A PAID family past this month's allowance gets no call at all
+    // (protocol.md, "Paid families"): words need tokens, a picture needs
+    // pictures. Checked BEFORE the call, so an answer may overshoot by its
+    // own size and none is cut off halfway. A question that might DRAW keeps
+    // its words and loses the tool once the pictures are used — the model is
+    // simply not offered `draw_picture`, as a server that cannot draw never
+    // offers it.
+    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM chats WHERE id = $1")
+        .bind(chat_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if let Some(family_id) = family_id {
+        let spend = match &prompt.ask {
+            Ask::Words { .. } => Spend::Tokens,
+            Ask::Picture { .. } => Spend::Images,
+        };
+        if !may_spend(state, family_id, spend).await? {
+            info!(%chat_id, "assistant allowance used");
+            fan_out_ai_error(
+                state,
+                &prompt.audience,
+                chat_id,
+                message_id,
+                Some(AiErrorReason::AllowanceUsed),
+            )
+            .await;
+            return Ok(());
+        }
+        if let Ask::Words { draw, .. } = &mut prompt.ask
+            && draw.is_some()
+            && !may_spend(state, family_id, Spend::Images).await?
+        {
+            *draw = None;
+        }
+    }
 
     // From here the two kinds of answer part company: words are streamed
     // into the row, a picture is fetched whole and attached to it. Both come

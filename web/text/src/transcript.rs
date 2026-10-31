@@ -190,7 +190,7 @@ impl Transcript {
 }
 
 /// Why there is no text to show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// `internal`, a timeout, no connection, or anything this client has
     /// not learned: transient, and offered again.
@@ -207,31 +207,42 @@ pub enum Failure {
     /// it is in a format this device cannot read, or it needed re-encoding
     /// and this device has no AAC encoder. Never sent.
     Unreadable,
+    /// `ai_allowance_used`: a paid family has used this month's transcript
+    /// minutes (docs/protocol.md, "Paid families"). Terminal until the
+    /// allowance renews on `renews_on` — the UTC calendar day, the 1st,
+    /// already written in the reader's language, because only the client
+    /// can write one.
+    AllowanceUsed { renews_on: String },
 }
 
 impl Failure {
-    pub fn sentence(self) -> &'static str {
+    pub fn sentence(&self) -> String {
         match self {
-            Failure::TryAgain => t("Couldn't get the text. Try again."),
-            Failure::Refused => t("The assistant's provider refused this recording."),
-            Failure::NotAvailable => t("Not available for this message."),
-            Failure::TooLong => t("This recording is too long to turn into text."),
-            Failure::Unreadable => t("Couldn't read the sound in this file."),
+            Failure::TryAgain => t("Couldn't get the text. Try again.").to_string(),
+            Failure::Refused => t("The assistant's provider refused this recording.").to_string(),
+            Failure::NotAvailable => t("Not available for this message.").to_string(),
+            Failure::TooLong => t("This recording is too long to turn into text.").to_string(),
+            Failure::Unreadable => t("Couldn't read the sound in this file.").to_string(),
+            Failure::AllowanceUsed { renews_on } => crate::paid::ai_allowance_used(renews_on),
         }
     }
 
     /// Whether asking again could change the answer.
-    pub fn may_retry(self) -> bool {
-        self == Failure::TryAgain
+    pub fn may_retry(&self) -> bool {
+        *self == Failure::TryAgain
     }
 }
 
 /// What a refusal leads to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
     /// `assistant_consent_required`: nothing was sent, and the answer is
     /// the consent screen — after which the member asks again.
     AskConsent,
+    /// `ai_allowance_used`: the month's minutes are used. The line under
+    /// the player names the day they renew, which the client writes and
+    /// fails the row with as [`Failure::AllowanceUsed`].
+    AllowanceUsed,
     /// A line under the player.
     Fail(Failure),
 }
@@ -242,6 +253,7 @@ pub enum Next {
 pub fn after_refusal(code: Option<&str>) -> Next {
     match code {
         Some("assistant_consent_required") => Next::AskConsent,
+        Some("ai_allowance_used") => Next::AllowanceUsed,
         Some("transcript_refused") => Next::Fail(Failure::Refused),
         Some("not_transcribable" | "transcript_not_allowed" | "transcripts_unavailable") => {
             Next::Fail(Failure::NotAvailable)
@@ -700,6 +712,11 @@ mod tests {
             after_refusal(Some("transcript_refused")),
             Next::Fail(Failure::Refused)
         );
+        assert_eq!(
+            after_refusal(Some("ai_allowance_used")),
+            Next::AllowanceUsed,
+            "a paid family's month is used up"
+        );
         for code in [
             "not_transcribable",
             "transcript_not_allowed",
@@ -725,6 +742,9 @@ mod tests {
             Failure::NotAvailable,
             Failure::TooLong,
             Failure::Unreadable,
+            Failure::AllowanceUsed {
+                renews_on: "1 December".into(),
+            },
         ] {
             assert!(!terminal.may_retry(), "{terminal:?}");
         }
@@ -751,6 +771,13 @@ mod tests {
         assert_eq!(
             Failure::Unreadable.sentence(),
             "Couldn't read the sound in this file."
+        );
+        assert_eq!(
+            Failure::AllowanceUsed {
+                renews_on: "1 December".into()
+            }
+            .sentence(),
+            "This family has used this month’s assistant allowance. It renews on 1 December."
         );
     }
 

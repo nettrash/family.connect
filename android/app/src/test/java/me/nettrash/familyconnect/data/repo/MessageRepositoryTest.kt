@@ -1166,7 +1166,7 @@ class MessageRepositoryTest {
         advanceUntilIdle()
 
         assertThat(repository.failedAssistantAnswers.value)
-            .containsExactly(100L, AssistantFailure.STOPPED)
+            .containsExactly(100L, AssistantFailure.Stopped)
         // The row keeps whatever it has, which here is nothing at all.
         assertThat(messageDao.findByServerId(100)!!.body).isEmpty()
         assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
@@ -1188,7 +1188,7 @@ class MessageRepositoryTest {
         advanceUntilIdle()
 
         assertThat(repository.failedAssistantAnswers.value)
-            .containsExactly(100L, AssistantFailure.REFUSED)
+            .containsExactly(100L, AssistantFailure.Refused)
         assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
     }
 
@@ -1208,7 +1208,35 @@ class MessageRepositoryTest {
         advanceUntilIdle()
 
         assertThat(repository.failedAssistantAnswers.value)
-            .containsExactly(100L, AssistantFailure.STOPPED)
+            .containsExactly(100L, AssistantFailure.Stopped)
+    }
+
+    /**
+     * A paid family's month is used up (docs/protocol.md, "Paid families"):
+     * remembered as such, with the day it starts again, the way a refusal
+     * is remembered — and without a readable `renews_at`, the 1st of the
+     * next UTC month, which is what the server would have sent.
+     */
+    @Test
+    fun anAllowanceUsedAiErrorIsRememberedWithTheDayItRenews() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        socket.emit(
+            ServerFrame.AiError(chatId = CHAT, messageId = 100, reason = "allowance_used", renewsAt = "2026-12-01T00:00:00Z"),
+        )
+        socket.emit(ServerFrame.Message(messageDto(id = 101, chatId = CHAT, body = "")))
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 101, reason = "allowance_used"))
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantAnswers.value).containsExactly(
+            100L, AssistantFailure.AllowanceUsed(java.time.Instant.parse("2026-12-01T00:00:00Z").toEpochMilli()),
+            // NOW is in January 1970.
+            101L, AssistantFailure.AllowanceUsed(java.time.Instant.parse("1970-02-01T00:00:00Z").toEpochMilli()),
+        )
+        assertThat(repository.streamingMessageIds.value).containsNoneOf(100L, 101L)
     }
 
     /**
@@ -1327,7 +1355,7 @@ class MessageRepositoryTest {
         socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
         advanceUntilIdle()
         assertThat(repository.failedAssistantAnswers.value)
-            .containsExactly(100L, AssistantFailure.STOPPED)
+            .containsExactly(100L, AssistantFailure.Stopped)
 
         socket.emit(
             ServerFrame.MessageEdited(

@@ -22,6 +22,7 @@ use fc_logic::doorway::bubble_text;
 use fc_logic::groups::{ChatFace, chat_kinds};
 use fc_logic::lookups;
 use fc_logic::message_menu::{self, RecordingKind};
+use fc_logic::paid_families::Days;
 use fc_logic::poll_text;
 use fc_logic::quotes::{self, Quote, QuoteLevel};
 use fc_logic::rich_drawing::RichLook;
@@ -682,7 +683,12 @@ fn append_body(
             balloon.append(&card);
         }
     }
-    if let Some(failed) = answers.failure_sentence(message, say.as_ref()) {
+    let days = Days::new(
+        &ctx.shell.culture,
+        ctx.shell.zone.as_ref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    if let Some(failed) = answers.failure_sentence(message, say.as_ref(), &days) {
         balloon.append(
             &gtk::Label::builder()
                 .label(&failed)

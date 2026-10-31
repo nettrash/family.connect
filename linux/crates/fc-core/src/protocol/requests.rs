@@ -441,6 +441,23 @@ pub struct MeResponse {
     /// ([`family_cap`](Self::family_cap)).
     #[serde(default)]
     pub max_families_per_account: i32,
+    /// Whether this server charges for a NEW family (docs/protocol.md, "Paid families",
+    /// 2026-10-30): `[subscriptions] enabled`. ALWAYS present on a server that knows paid families;
+    /// absent is `false`, every server from before — and with it false nothing below applies.
+    #[serde(default)]
+    pub subscriptions_enabled: bool,
+    /// The caller's own App Store subscription — their active one, or else the one that ended last
+    /// — or `None`: none ever, or a server with subscriptions off. Only `active` decides anything
+    /// here: a client that cannot sell offers "Create a family" only while it is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<SubscriptionDto>,
+    /// What a paid family gets, each limit present only while it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_family_limits: Option<PaidFamilyLimitsDto>,
+    /// How many days an unpaid family is kept before it is deleted (14 by default); absent with
+    /// subscriptions off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpaid_days: Option<i32>,
 }
 
 impl Default for MeResponse {
@@ -465,6 +482,10 @@ impl Default for MeResponse {
             invitations: None,
             member_families_enabled: false,
             max_families_per_account: 0,
+            subscriptions_enabled: false,
+            subscription: None,
+            paid_family_limits: None,
+            unpaid_days: None,
         }
     }
 }
@@ -515,6 +536,46 @@ impl MeResponse {
     pub fn family_cap(&self) -> i32 {
         self.max_families_per_account.max(1)
     }
+
+    /// Whether the caller holds an ACTIVE subscription (docs/protocol.md, "Paid families"): not
+    /// revoked, and its expiry — or Apple's grace end — still ahead, as the server judged it.
+    pub fn subscription_active(&self) -> bool {
+        self.subscription.as_ref().is_some_and(|held| held.active)
+    }
+}
+
+/// An account's App Store subscription as the server holds it (docs/protocol.md, "Paid families"):
+/// `expires_at` is when it stops covering anything — the expiry, or Apple's grace end when later —
+/// and `renews` is present only when the server knows. Sold and sent by Apple's apps alone; this
+/// client only reads `active`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SubscriptionDto {
+    #[serde(default, deserialize_with = "wire::text")]
+    pub product_id: String,
+    #[serde(default, deserialize_with = "wire::text")]
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renews: Option<bool>,
+}
+
+/// `GET /me`'s `paid_family_limits`: what a paid family gets. Each key is present only while that
+/// limit is on (`0` in the operator's file turns one off).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PaidFamilyLimitsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_ms: Option<i64>,
 }
 
 /// An owner's invitation into their family (docs/protocol.md, "Several families"): pending until
@@ -617,6 +678,20 @@ pub struct FamilyDto {
     /// `families` (docs/protocol.md, "Several families"); absent on every other read of a family.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The most members this family may have whatever its owner sets — the operator's
+    /// `max_family_members` or, for a paid family, the lower paid limit (docs/protocol.md, "Paid
+    /// families", 2026-10-30). The owner's cap picker draws its range from it; absent on a server
+    /// that predates it, where `GET /me`'s `max_family_members` is the range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_ceiling: Option<i32>,
+    /// `"free"` or `"paid"`, present only while the server's subscriptions are on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// When the server will DELETE this family because its owner's subscription has ended —
+    /// present only while a paid family is unpaid. Every member's app says so in a banner; its
+    /// absence is the family being covered (again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_at: Option<String>,
 }
 
 impl Default for FamilyDto {
@@ -638,6 +713,9 @@ impl Default for FamilyDto {
             ai_lookups: false,
             greeting_places: None,
             role: None,
+            member_ceiling: None,
+            plan: None,
+            delete_at: None,
         }
     }
 }
@@ -1066,6 +1144,37 @@ pub struct StatsResponse {
     pub totals: StatsTotalsDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<StatsMemberDto>>,
+    /// What a PAID family has used of its limits (docs/protocol.md, "Family statistics", amended
+    /// 2026-10-30): absent for a free family and on a server with subscriptions off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance: Option<AllowanceDto>,
+}
+
+/// A paid family's allowance: each limit present only while the operator has it on, and the
+/// moment the MONTHLY ones start again (the 1st of the next month, UTC). `storage_bytes` counts
+/// everything the family keeps on the disk, so it can differ from the statistics' `stored_bytes`
+/// and neither is wrong.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AllowanceDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renews_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_bytes: Option<AllowanceUseDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_tokens: Option<AllowanceUseDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<AllowanceUseDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_ms: Option<AllowanceUseDto>,
+}
+
+/// One limit of an [`AllowanceDto`]: what is used of it, and the limit itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AllowanceUseDto {
+    #[serde(default)]
+    pub used: i64,
+    #[serde(default)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

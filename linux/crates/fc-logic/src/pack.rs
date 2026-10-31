@@ -772,6 +772,10 @@ pub mod pack_text {
             error_codes::NOT_PACK_ITEM_AUTHOR => say
                 .get("Only whoever added a sticker, or the family owner, can remove it.")
                 .to_string(),
+            // A sticker is an upload like any other (docs/protocol.md, "Paid families").
+            error_codes::STORAGE_ALLOWANCE_USED => {
+                crate::paid_families::upload_refusal(&error.code, say).unwrap_or_default()
+            }
             _ if error.transient() => say
                 .get("The sticker didn't reach the server. Check your connection and try again.")
                 .to_string(),

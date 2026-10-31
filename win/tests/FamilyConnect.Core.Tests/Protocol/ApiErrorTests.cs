@@ -89,7 +89,7 @@ public class ApiErrorTests
     [Fact]
     public void TheCanonicalCodesAreAllHereAndAllDistinct()
     {
-        Assert.Equal(79, ErrorCodes.All.Length);
+        Assert.Equal(85, ErrorCodes.All.Length);
         // Several families' six (docs/protocol.md, "Several families", 2026-10-22), every one a refusal.
         foreach (var (code, wire, status) in new[]
                  {

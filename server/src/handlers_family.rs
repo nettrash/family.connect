@@ -28,6 +28,7 @@ use sqlx::{PgConnection, Row};
 use time::OffsetDateTime;
 
 use crate::auth::AuthUser;
+use crate::config::Config;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::keyring::{KeyError, Keyring, Owner, SealedRow};
@@ -257,6 +258,8 @@ struct FamilyRecord {
     greeting_places: Vec<String>,
     owner_user_id: i64,
     created_at: OffsetDateTime,
+    plan: String,
+    unpaid_since: Option<OffsetDateTime>,
 }
 
 impl FamilyRecord {
@@ -280,11 +283,14 @@ impl FamilyRecord {
             greeting_places: row.json(keys, "greeting_places")?,
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
+            plan: row.get("plan"),
+            unpaid_since: row.get("unpaid_since"),
         })
     }
 
     /// Project to the API object; the invite code is owner-only.
-    fn to_api(&self, caller_is_owner: bool) -> Family {
+    fn to_api(&self, cfg: &Config, caller_is_owner: bool) -> Family {
+        let paid = crate::subscriptions::plan_view(cfg, &self.plan, self.unpaid_since);
         Family {
             id: self.id,
             name: self.name.clone(),
@@ -338,6 +344,12 @@ impl FamilyRecord {
             // sends to the weather provider. Every member gets to know what
             // leaves; only the owner can change it.
             greeting_places: self.greeting_places.clone(),
+            // Not owner-gated either: every member sees the deadline, and
+            // the ceiling bounds what the family is (protocol.md, "Paid
+            // families").
+            member_ceiling: paid.member_ceiling,
+            plan: paid.plan,
+            delete_at: paid.delete_at,
         }
     }
 }
@@ -345,7 +357,7 @@ impl FamilyRecord {
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
                              ai_history, ai_vision, ai_history_photos, ai_greeting, ai_faces,
                              ai_transcripts, ai_lookups, greeting_places, owner_user_id,
-                             created_at
+                             created_at, plan, unpaid_since
                              FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
@@ -366,7 +378,7 @@ pub(crate) async fn family_api(
 ) -> Result<Family, ApiError> {
     let family = fetch_family(state, family_id).await?;
     let is_owner = family.owner_user_id == caller;
-    Ok(family.to_api(is_owner))
+    Ok(family.to_api(&state.cfg, is_owner))
 }
 
 /// The id of the family the caller owns, or `not_family_owner`.
@@ -498,16 +510,19 @@ async fn next_owner_user_id(
 async fn family_is_full(
     conn: &mut PgConnection,
     family_id: i64,
-    ceiling: i64,
+    cfg: &Config,
 ) -> Result<Option<bool>, ApiError> {
-    let cap: Option<Option<i32>> =
-        sqlx::query_scalar("SELECT max_members FROM families WHERE id = $1")
+    let row: Option<(Option<i32>, String)> =
+        sqlx::query_as("SELECT max_members, plan FROM families WHERE id = $1")
             .bind(family_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some(cap) = cap else {
+    let Some((cap, plan)) = row else {
         return Ok(None);
     };
+    // The operator's ceiling, or a paid family's lower one (protocol.md,
+    // "Paid families") — the same number `Family.member_ceiling` shows.
+    let ceiling = crate::subscriptions::member_ceiling(cfg, &plan);
     let cap = i64::from(cap.unwrap_or(i32::MAX)).min(ceiling);
     let head_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM family_members WHERE family_id = $1")
@@ -535,7 +550,7 @@ pub(crate) async fn grant_membership(
     tx: &mut PgConnection,
     family_id: i64,
     user_id: i64,
-    ceiling: i64,
+    cfg: &Config,
     max_families: i64,
 ) -> Result<Granted, ApiError> {
     // Serialize on the family row BEFORE counting. Without this the count
@@ -565,7 +580,7 @@ pub(crate) async fn grant_membership(
     // as a 500: the caller is not getting in either way, and the only
     // other answer this helper could give is a `RowNotFound` the error
     // layer maps to Internal.
-    match family_is_full(&mut *tx, family_id, ceiling).await? {
+    match family_is_full(&mut *tx, family_id, cfg).await? {
         Some(false) => {}
         Some(true) | None => return Ok(Granted::FamilyFull),
     }
@@ -799,6 +814,25 @@ pub async fn create_family(
                 "you are already in as many families as an account may be",
             ));
         }
+        // A server that charges needs the creator's subscription, at either
+        // door — checked LAST, so nobody is sent to buy one for a family
+        // they could not have started anyway (protocol.md, "Paid families").
+        // Read in this transaction, under the account's lock taken above.
+        if state.cfg.subscriptions.enabled {
+            let active: bool = sqlx::query_scalar(&format!(
+                "SELECT {}",
+                crate::subscriptions::active_sql(&state.cfg, "$1")
+            ))
+            .bind(auth.user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !active {
+                return Err(ApiError::forbidden(
+                    codes::SUBSCRIPTION_REQUIRED,
+                    "a new family on this server needs a subscription",
+                ));
+            }
+        }
 
         // The family's key is made with it (#59): its name, its chat, its
         // board and its pack are sealed under it, and it goes with the family.
@@ -806,11 +840,12 @@ pub async fn create_family(
         let no_places: [&str; 0] = [];
         let inserted = sqlx::query(
             "INSERT INTO families (name, invite_code, invite_code_key, greeting_places,
-                                   owner_user_id, key_id)
-             VALUES ($1, $2, $3, $4, $5, $6)
+                                   owner_user_id, key_id, plan)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                        ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                       ai_lookups, greeting_places, owner_user_id, created_at",
+                       ai_lookups, greeting_places, owner_user_id, created_at, plan,
+                       unpaid_since",
         )
         .bind(key.seal_str(&name))
         .bind(key.seal_str(&invite_code))
@@ -818,6 +853,9 @@ pub async fn create_family(
         .bind(key.seal_json(&no_places))
         .bind(auth.user_id)
         .bind(key.id())
+        // Paid while the server charges, free otherwise (protocol.md,
+        // "Paid families").
+        .bind(crate::subscriptions::plan_for_new_family(&state.cfg))
         .fetch_one(&mut *tx)
         .await;
 
@@ -843,15 +881,7 @@ pub async fn create_family(
         // first member and the cap is at least one — so `FamilyFull` here
         // would be a bug rather than a state, and it is reported as the
         // conflict it is rather than silently mapped onto something else.
-        match grant_membership(
-            &mut tx,
-            family.id,
-            auth.user_id,
-            state.cfg.limits.max_family_members,
-            max_families,
-        )
-        .await?
-        {
+        match grant_membership(&mut tx, family.id, auth.user_id, &state.cfg, max_families).await? {
             Granted::Yes(_) => {}
             // A family one statement old holds nobody, so "already a
             // member" can only mean the account was scrubbed in between.
@@ -896,7 +926,7 @@ pub async fn create_family(
 
         return Ok((
             StatusCode::CREATED,
-            Json(json!({"family": family.to_api(true)})),
+            Json(json!({"family": family.to_api(&state.cfg, true)})),
         )
             .into_response());
     }
@@ -975,38 +1005,33 @@ pub async fn join_family(
 
     if family.join_policy == "open" {
         let mut tx = state.pool.begin().await?;
-        let lapsed = match grant_membership(
-            &mut tx,
-            family.id,
-            auth.user_id,
-            state.cfg.limits.max_family_members,
-            max_families,
-        )
-        .await?
-        {
-            Granted::Yes(lapsed) => lapsed,
-            Granted::AlreadyInAFamily => {
-                tx.rollback().await?;
-                return Err(ApiError::conflict(
-                    codes::ALREADY_IN_FAMILY,
-                    "you already belong to this family",
-                ));
-            }
-            Granted::FamilyFull => {
-                tx.rollback().await?;
-                return Err(ApiError::conflict(
-                    codes::FAMILY_FULL,
-                    "this family is full",
-                ));
-            }
-            Granted::TooManyFamilies => {
-                tx.rollback().await?;
-                return Err(ApiError::conflict(
-                    codes::TOO_MANY_FAMILIES,
-                    "you are already in as many families as an account may be",
-                ));
-            }
-        };
+        let lapsed =
+            match grant_membership(&mut tx, family.id, auth.user_id, &state.cfg, max_families)
+                .await?
+            {
+                Granted::Yes(lapsed) => lapsed,
+                Granted::AlreadyInAFamily => {
+                    tx.rollback().await?;
+                    return Err(ApiError::conflict(
+                        codes::ALREADY_IN_FAMILY,
+                        "you already belong to this family",
+                    ));
+                }
+                Granted::FamilyFull => {
+                    tx.rollback().await?;
+                    return Err(ApiError::conflict(
+                        codes::FAMILY_FULL,
+                        "this family is full",
+                    ));
+                }
+                Granted::TooManyFamilies => {
+                    tx.rollback().await?;
+                    return Err(ApiError::conflict(
+                        codes::TOO_MANY_FAMILIES,
+                        "you are already in as many families as an account may be",
+                    ));
+                }
+            };
         tx.commit().await?;
 
         announce_lapsed(&state, lapsed.as_slice()).await;
@@ -1077,7 +1102,7 @@ pub async fn join_family(
         }
         Err(err) => return Err(err.into()),
     }
-    match family_is_full(&mut tx, family.id, state.cfg.limits.max_family_members).await? {
+    match family_is_full(&mut tx, family.id, &state.cfg).await? {
         Some(false) => {}
         Some(true) => {
             tx.rollback().await?;
@@ -1198,7 +1223,7 @@ pub async fn my_family(
             .bind(family.id)
             .fetch_one(&state.pool)
             .await?;
-    let mut body = json!({"family": family.to_api(is_owner), "members": members});
+    let mut body = json!({"family": family.to_api(&state.cfg, is_owner), "members": members});
     // Absent rather than `[]` for a family nobody has left, the wire rule
     // every optional key here follows.
     if !former_members.is_empty() {
@@ -1388,7 +1413,21 @@ pub async fn patch_family(
     // refused: an owner who inherits a large family must still be able to
     // shut the door, and the cap is read AT the door and never enforced
     // over the room.
-    let ceiling = state.cfg.limits.max_family_members;
+    // The family's own ceiling: a paid family's is the lower paid one
+    // (protocol.md, "Paid families"), the number `member_ceiling` shows.
+    let plan: Option<String> = match auth.family_id {
+        Some(family_id) => {
+            sqlx::query_scalar("SELECT plan FROM families WHERE id = $1")
+                .bind(family_id)
+                .fetch_optional(&state.pool)
+                .await?
+        }
+        None => None,
+    };
+    let ceiling = crate::subscriptions::member_ceiling(
+        &state.cfg,
+        plan.as_deref().unwrap_or(crate::subscriptions::FREE),
+    );
     let max_members = match &req.max_members {
         None => None,
         Some(None) => Some(None),
@@ -1483,7 +1522,8 @@ pub async fn patch_family(
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
                    ai_vision, ai_history_photos, ai_greeting, ai_faces, ai_transcripts,
-                   ai_lookups, greeting_places, owner_user_id, created_at",
+                   ai_lookups, greeting_places, owner_user_id, created_at, plan,
+                   unpaid_since",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -1502,7 +1542,11 @@ pub async fn patch_family(
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row, &state.keys)?;
-    Ok((StatusCode::OK, Json(json!({"family": family.to_api(true)}))).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(json!({"family": family.to_api(&state.cfg, true)})),
+    )
+        .into_response())
 }
 
 /// `GET /families/join-requests` (owner) — pending only.
@@ -1612,7 +1656,7 @@ pub async fn approve_join_request(
         &mut tx,
         family.id,
         applicant_id,
-        state.cfg.limits.max_family_members,
+        &state.cfg,
         state.cfg.families.max_families_per_account,
     )
     .await?
@@ -2483,6 +2527,139 @@ pub(crate) async fn delete_family_in_tx(
             })
             .collect(),
     })
+}
+
+/// Delete a PAID family whose deadline has passed (docs/protocol.md, "Paid
+/// families"): as though every member had been removed and the last one had
+/// left. `false` when it is not due after all — re-read under the family's
+/// lock, so a renewal that landed after the sweep's read wins.
+///
+/// Every member but the owner goes through `remove_membership`, exactly as
+/// an owner removing them would; the owner goes last, through the sole
+/// member's ending — the familyless clock, their held direct chats, then
+/// `delete_family_in_tx` — so the family is never ownerless for a moment and
+/// the cascade takes no conversation a pair can still see. After the commit
+/// each member's devices get what a removal sends them, `chat_updated` for
+/// their direct chats and then a `member_left` naming them, and every member
+/// a push. The name is read BEFORE the delete: it is sealed under the
+/// family's key, which goes with the family.
+pub(crate) async fn delete_unpaid_family(
+    state: &AppState,
+    family_id: i64,
+) -> Result<bool, ApiError> {
+    let days = state.cfg.subscriptions.unpaid_days as i32;
+    let mut tx = state.pool.begin().await?;
+    let due = sqlx::query(
+        "SELECT name, owner_user_id,
+                (plan = 'paid' AND unpaid_since IS NOT NULL
+                 AND unpaid_since + make_interval(days => $2) <= now()) AS due
+           FROM families WHERE id = $1 FOR NO KEY UPDATE",
+    )
+    .bind(family_id)
+    .bind(days)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(due) = due else {
+        return Ok(false);
+    };
+    if !due.get::<bool, _>("due") {
+        return Ok(false);
+    }
+    let family_name = due.text(&state.keys, "name")?;
+    let owner_user_id: i64 = due.get("owner_user_id");
+    let members: Vec<i64> = sqlx::query_scalar(
+        "SELECT user_id FROM family_members WHERE family_id = $1 ORDER BY user_id",
+    )
+    .bind(family_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    // Each member's home family, read under the lock before any write moves
+    // it — what `deliver_member_left` tells an older app by.
+    let mut was_home = Vec::with_capacity(members.len());
+    for &member in &members {
+        let home = crate::families::family_ids_of(&mut *tx, member)
+            .await?
+            .first()
+            .copied();
+        was_home.push((member, home == Some(family_id)));
+    }
+    let mut departures = Vec::new();
+    let mut ended = Vec::new();
+    for &(member, home) in &was_home {
+        if member == owner_user_id {
+            continue;
+        }
+        let departure = remove_membership(&mut tx, family_id, member).await?;
+        ended.extend(end_legacy_sessions_if_home_moved(&mut tx, member, home).await?);
+        departures.push((member, home, departure));
+    }
+
+    // The owner last, by the sole member's ending (see `leave_family`).
+    let owner_home = was_home
+        .iter()
+        .find(|(member, _)| *member == owner_user_id)
+        .is_some_and(|(_, home)| *home);
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+        .bind(family_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE users SET familyless_since = now()
+          WHERE id = $1
+            AND NOT EXISTS (SELECT 1 FROM family_members
+                             WHERE user_id = $1 AND family_id <> $2)",
+    )
+    .bind(owner_user_id)
+    .bind(family_id)
+    .execute(&mut *tx)
+    .await?;
+    let held = held_closed_chats(&mut tx, family_id, owner_user_id).await?;
+    lock_chats(&mut tx, &held).await?;
+    let mut held = settle_held_closed_chats(&mut tx, family_id, owner_user_id, &held).await?;
+    let deleted = delete_family_in_tx(&mut tx, family_id).await?;
+    ended.extend(end_legacy_sessions_if_home_moved(&mut tx, owner_user_id, owner_home).await?);
+    tx.commit().await?;
+
+    for (member, home, departure) in departures {
+        announce_departure(state, family_id, member, departure, home).await;
+        events::log_fanout_error(
+            "member_left",
+            events::deliver_member_left(state, family_id, member, home).await,
+        );
+    }
+    refresh_home(state, owner_user_id).await;
+    announce_deleted_family_invitations(state, &deleted.invitations).await;
+    match repair_held_chats(state, owner_user_id).await {
+        Ok(repaired) => held.extend(repaired),
+        Err(error) => tracing::warn!(?error, "could not repair held direct chats"),
+    }
+    held.sort_unstable();
+    held.dedup();
+    announce_direct_chats(state, &held).await;
+    events::log_fanout_error(
+        "member_left",
+        events::deliver_member_left(state, family_id, owner_user_id, owner_home).await,
+    );
+    close_ended_sessions(state, &ended).await;
+    events::log_fanout_error(
+        "family_plan push",
+        events::push_family_plan_to(
+            state,
+            family_id,
+            &family_name,
+            owner_user_id,
+            &members,
+            crate::push_payload::PlanStage::Deleted,
+        )
+        .await,
+    );
+    if let Err(err) =
+        crate::handlers_attachment::remove_all_if_unreferenced(state, &deleted.storage_keys).await
+    {
+        tracing::warn!(error = ?err, "sweeping a deleted family's attachments failed");
+    }
+    Ok(true)
 }
 
 /// What deleting a family left for after the commit.

@@ -122,7 +122,7 @@ pub enum ClientFrame {
 }
 
 /// Why an assistant reply failed, on the `ai_error` frame (protocol.md,
-/// "The assistant"). One value today; a client reads any value it does not
+/// "The assistant"). Two values today; a client reads any value it does not
 /// know as the field being absent, so adding one later breaks nobody.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +131,10 @@ pub enum AiErrorReason {
     /// the answer, or a picture's description. Asking again in the same
     /// words gets the same answer, so the member is told to rephrase.
     Refused,
+    /// A PAID family has used this month's assistant allowance, and the
+    /// provider was not called at all (protocol.md, "Paid families"). The
+    /// frame then carries `renews_at`, the start of the next UTC month.
+    AllowanceUsed,
 }
 
 /// Server -> client frames (protocol.md "Server → client").
@@ -201,6 +205,20 @@ pub enum ServerFrame {
     FamilyOwner {
         family_id: i64,
         user_id: i64,
+    },
+    /// A paid family's deadline appeared or went (protocol.md, "Paid
+    /// families"), to every member: `delete_at` is when the server will
+    /// delete it, and its ABSENCE clears the banner — so a client applies the
+    /// frame as a state-set, the idiom `MemberBlocked` uses.
+    FamilyPlan {
+        family_id: i64,
+        plan: String,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            with = "time::serde::rfc3339::option"
+        )]
+        delete_at: Option<OffsetDateTime>,
     },
     /// A block this caller set or cleared, delivered to EVERY CONNECTION OF
     /// THE BLOCKER AND TO NOBODY ELSE.
@@ -290,6 +308,13 @@ pub enum ServerFrame {
         /// (protocol.md, "The assistant").
         #[serde(skip_serializing_if = "Option::is_none", default)]
         reason: Option<AiErrorReason>,
+        /// With `allowance_used` only: when the allowance starts again.
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            with = "time::serde::rfc3339::option"
+        )]
+        renews_at: Option<OffsetDateTime>,
     },
     Reaction {
         chat_id: i64,
@@ -1358,6 +1383,7 @@ mod tests {
                 chat_id: 42,
                 message_id: 1339,
                 reason: None,
+                renews_at: None,
             },
             r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#,
         );
@@ -1367,8 +1393,36 @@ mod tests {
                 chat_id: 42,
                 message_id: 1339,
                 reason: Some(AiErrorReason::Refused),
+                renews_at: None,
             },
             r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused"}"#,
+        );
+        // A paid family's deadline, and the same frame clearing it.
+        assert_serializes_to(
+            &ServerFrame::FamilyPlan {
+                family_id: 3,
+                plan: "paid".to_string(),
+                delete_at: Some(time::macros::datetime!(2026-11-14 09:00:00 UTC)),
+            },
+            r#"{"type": "family_plan", "family_id": 3, "plan": "paid", "delete_at": "2026-11-14T09:00:00Z"}"#,
+        );
+        assert_serializes_to(
+            &ServerFrame::FamilyPlan {
+                family_id: 3,
+                plan: "paid".to_string(),
+                delete_at: None,
+            },
+            r#"{"type": "family_plan", "family_id": 3, "plan": "paid"}"#,
+        );
+        // A used-up allowance names the day it comes back.
+        assert_serializes_to(
+            &ServerFrame::AiError {
+                chat_id: 42,
+                message_id: 1339,
+                reason: Some(AiErrorReason::AllowanceUsed),
+                renews_at: Some(time::macros::datetime!(2026-12-01 00:00:00 UTC)),
+            },
+            r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "allowance_used", "renews_at": "2026-12-01T00:00:00Z"}"#,
         );
     }
 

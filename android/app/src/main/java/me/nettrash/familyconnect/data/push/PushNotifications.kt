@@ -78,6 +78,7 @@ object PushNotifications {
     const val EXTRA_KIND = PushRouteParser.KEY_KIND
     const val EXTRA_CHAT_ID = PushRouteParser.KEY_CHAT_ID
     const val EXTRA_FAMILY_ID = PushRouteParser.KEY_FAMILY_ID
+    const val EXTRA_STAGE = PushRouteParser.KEY_STAGE
 
     /** One id, distinct tags: the (tag, id) pair is the dedup slot. */
     const val NOTIFICATION_ID = 1
@@ -127,9 +128,12 @@ object PushNotifications {
         unreadInChat: Int? = null,
         /** The family the push is about, so the tap opens in it (docs/protocol.md, "Several families"). */
         familyId: Long? = null,
+        /** A paid family's deadline push says where it is (docs/protocol.md, "Paid families"). */
+        stage: String? = null,
     ): Notification {
         val tapIntent = Intent(context, MainActivity::class.java).apply {
             kind?.let { putExtra(EXTRA_KIND, it) }
+            stage?.let { putExtra(EXTRA_STAGE, it) }
             // A string, like the chat id below and for its reason.
             familyId?.let { putExtra(EXTRA_FAMILY_ID, it.toString()) }
             // String, not long — FCM data values are strings and the
@@ -224,6 +228,7 @@ object PushNotifications {
         chatId: Long?,
         unreadInChat: Int? = null,
         familyId: Long? = null,
+        stage: String? = null,
     ) {
         // 13+ runtime permission may be denied (notify() would be silently
         // dropped anyway; checking keeps lint and the intent explicit).
@@ -235,6 +240,6 @@ object PushNotifications {
         }
         val tag = chatId?.let(::chatTag) ?: kind ?: "push"
         NotificationManagerCompat.from(context)
-            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId, unreadInChat, familyId))
+            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId, unreadInChat, familyId, stage))
     }
 }

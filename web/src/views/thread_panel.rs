@@ -285,7 +285,7 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                                 run_end={true}
                                 seen={false}
                                 awaited={false}
-                                ai_failed={props.ai_failed.get(&message.id).copied()}
+                                ai_failed={props.ai_failed.get(&message.id).cloned()}
                                 {failed}
                                 chat_kind={props.chat_kind.clone()}
                                 {assistant_user_id}

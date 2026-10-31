@@ -48,6 +48,9 @@ pub struct DateCulture {
     pub short_date_pattern: String,
     /// `MonthDayPattern` — standard format `M`.
     pub month_day_pattern: String,
+    /// `LongDatePattern` — standard format `D`, the weekday included (measured on .NET 10.0.13 for
+    /// the paid families' dates, [`day_month_year_pattern`](Self::day_month_year_pattern)).
+    pub long_date_pattern: String,
     /// What `:` writes in a custom pattern.
     pub time_separator: String,
     /// What `/` writes in a custom pattern.
@@ -124,6 +127,7 @@ impl DateCulture {
             short_time_pattern: table.short_time_pattern.to_string(),
             short_date_pattern: table.short_date_pattern.to_string(),
             month_day_pattern: table.month_day_pattern.to_string(),
+            long_date_pattern: table.long_date_pattern.to_string(),
             time_separator: table.time_separator.to_string(),
             date_separator: table.date_separator.to_string(),
             am_designator: table.am_designator.to_string(),
@@ -135,6 +139,20 @@ impl DateCulture {
             day_names: own(&table.day_names),
             abbreviated_day_names: own(&table.abbreviated_day_names),
         }
+    }
+
+    /// The long date without its weekday — the day, the month and the year in the culture's own
+    /// order: "January 4, 2027", "4. Januar 2027", "4 января 2027 г.", "2027年1月4日". .NET has no
+    /// such standard format, so the weekday is taken off the long date where every measured
+    /// culture puts it — first with ", " or " " after it, or last with " " before it — and a
+    /// pattern with no weekday there is kept whole.
+    pub fn day_month_year_pattern(&self) -> String {
+        let long = self.long_date_pattern.as_str();
+        long.strip_prefix("dddd, ")
+            .or_else(|| long.strip_prefix("dddd "))
+            .or_else(|| long.strip_suffix(" dddd"))
+            .unwrap_or(long)
+            .to_string()
     }
 
     /// `month` (1–12) standing alone, as a picker lists it (`GetMonthName`); "" outside 1–12.
@@ -349,6 +367,7 @@ struct Table {
     short_time_pattern: &'static str,
     short_date_pattern: &'static str,
     month_day_pattern: &'static str,
+    long_date_pattern: &'static str,
     time_separator: &'static str,
     date_separator: &'static str,
     am_designator: &'static str,
@@ -383,6 +402,7 @@ const INVARIANT: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "MM/dd/yyyy",
     month_day_pattern: "MMMM dd",
+    long_date_pattern: "dddd, dd MMMM yyyy",
     time_separator: ":",
     date_separator: "/",
     am_designator: "AM",
@@ -439,6 +459,7 @@ const EN_US: Table = Table {
     short_time_pattern: "h:mm\u{202F}tt",
     short_date_pattern: "M/d/yyyy",
     month_day_pattern: "MMMM d",
+    long_date_pattern: "dddd, MMMM d, yyyy",
     time_separator: ":",
     date_separator: "/",
     am_designator: "AM",
@@ -495,6 +516,7 @@ const EN_GB: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "dd/MM/yyyy",
     month_day_pattern: "d MMMM",
+    long_date_pattern: "dddd, d MMMM yyyy",
     time_separator: ":",
     date_separator: "/",
     am_designator: "am",
@@ -551,6 +573,7 @@ const DE_DE: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "dd.MM.yyyy",
     month_day_pattern: "d. MMMM",
+    long_date_pattern: "dddd, d. MMMM yyyy",
     time_separator: ":",
     date_separator: ".",
     am_designator: "AM",
@@ -618,6 +641,7 @@ const ES_ES: Table = Table {
     short_time_pattern: "H:mm",
     short_date_pattern: "d/M/yyyy",
     month_day_pattern: "d 'de' MMMM",
+    long_date_pattern: "dddd, d 'de' MMMM 'de' yyyy",
     time_separator: ":",
     date_separator: "/",
     am_designator: "a.\u{202F}m.",
@@ -674,6 +698,7 @@ const FR_FR: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "dd/MM/yyyy",
     month_day_pattern: "d MMMM",
+    long_date_pattern: "dddd d MMMM yyyy",
     time_separator: ":",
     date_separator: "/",
     am_designator: "AM",
@@ -746,6 +771,7 @@ const JA_JP: Table = Table {
     short_time_pattern: "H:mm",
     short_date_pattern: "yyyy/MM/dd",
     month_day_pattern: "M\u{6708}d\u{65E5}",
+    long_date_pattern: "yyyy\u{5E74}M\u{6708}d\u{65E5} dddd",
     time_separator: ":",
     date_separator: "/",
     am_designator: "\u{5348}\u{524D}",
@@ -826,6 +852,7 @@ const RU_RU: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "dd.MM.yyyy",
     month_day_pattern: "d MMMM",
+    long_date_pattern: "dddd, d MMMM yyyy '\u{433}'.",
     time_separator: ":",
     date_separator: ".",
     am_designator: "AM",
@@ -912,6 +939,7 @@ const SR_CYRL_RS: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "d. M. yyyy.",
     month_day_pattern: "d. MMMM",
+    long_date_pattern: "dddd, d. MMMM yyyy.",
     time_separator: ":",
     date_separator: ". ",
     am_designator: "AM",
@@ -998,6 +1026,7 @@ const SR_LATN_RS: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "d. M. yyyy.",
     month_day_pattern: "d. MMMM",
+    long_date_pattern: "dddd, d. MMMM yyyy.",
     time_separator: ":",
     date_separator: ". ",
     am_designator: "AM",
@@ -1054,6 +1083,7 @@ const ZH_CN: Table = Table {
     short_time_pattern: "HH:mm",
     short_date_pattern: "yyyy/M/d",
     month_day_pattern: "M\u{6708}d\u{65E5}",
+    long_date_pattern: "yyyy\u{5E74}M\u{6708}d\u{65E5} dddd",
     time_separator: ":",
     date_separator: "/",
     am_designator: "\u{4E0A}\u{5348}",

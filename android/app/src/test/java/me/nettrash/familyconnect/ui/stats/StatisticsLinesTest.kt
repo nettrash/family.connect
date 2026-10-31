@@ -17,7 +17,12 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
+import android.text.format.Formatter
 import me.nettrash.familyconnect.data.net.dto.AiStatsDto
+import me.nettrash.familyconnect.data.net.dto.AllowanceDto
+import me.nettrash.familyconnect.data.net.dto.AllowanceUseDto
+import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
+import me.nettrash.familyconnect.util.TimeFormat
 import me.nettrash.familyconnect.data.net.dto.AttachmentStatsDto
 import me.nettrash.familyconnect.data.net.dto.MemberStatsDto
 import org.junit.Test
@@ -158,6 +163,89 @@ class StatisticsLinesTest {
         assertThat(StatisticsLines.summaryFor(more, context)).isEqualTo(
             "3 attachments, 0 B · 2 questions to the assistant · 4 pictures from the assistant · 6 recordings as text",
         )
+    }
+
+    // -- A paid family's allowance (docs/protocol.md, "Family statistics", amended 2026-10-30) --
+
+    private val allowance = AllowanceDto(
+        renewsAt = "2026-12-01T00:00:00Z",
+        storageBytes = AllowanceUseDto(used = 3_221_225_472, limit = 10_737_418_240),
+        aiTokens = AllowanceUseDto(used = 812_345, limit = 2_000_000),
+        images = AllowanceUseDto(used = 4, limit = 30),
+        transcriptMs = AllowanceUseDto(used = 600_001, limit = 7_200_000),
+    )
+
+    @Test
+    fun `the allowance is read from the statistics, and absent for a free family`() {
+        val paid = json.decodeFromString<FamilyStatsDto>(
+            """{"totals": {"members": 2},
+               "allowance": {"renews_at": "2026-12-01T00:00:00Z",
+                             "storage_bytes": {"used": 3221225472, "limit": 10737418240},
+                             "ai_tokens": {"used": 812345, "limit": 2000000},
+                             "images": {"used": 4, "limit": 30},
+                             "transcript_ms": {"used": 600001, "limit": 7200000}}}""",
+        )
+        assertThat(paid.allowance).isEqualTo(allowance)
+
+        val free = json.decodeFromString<FamilyStatsDto>("""{"totals": {"members": 2}}""")
+        assertThat(free.allowance).isNull()
+
+        // A limit the operator turned off is absent from the block.
+        val some = json.decodeFromString<FamilyStatsDto>(
+            """{"totals": {}, "allowance": {"renews_at": "2026-12-01T00:00:00Z", "images": {"used": 1, "limit": 30}}}""",
+        )
+        assertThat(some.allowance?.storageBytes).isNull()
+        assertThat(some.allowance?.images).isEqualTo(AllowanceUseDto(used = 1, limit = 30))
+    }
+
+    @Test
+    fun `one row per limit, each in its own words`() {
+        val rows = StatisticsLines.allowanceRows(allowance, context)
+
+        assertThat(rows).containsExactly(
+            "Storage" to "${Formatter.formatFileSize(context, 3_221_225_472)} of ${Formatter.formatFileSize(context, 10_737_418_240)}",
+            "Assistant" to "40% used",
+            "Pictures" to "4 of 30",
+            // 10 minutes and a millisecond is 11 started minutes; the limit is 120.
+            "Transcripts" to "11 of 120 min",
+        ).inOrder()
+    }
+
+    @Test
+    fun `only the limits present get a row`() {
+        val rows = StatisticsLines.allowanceRows(AllowanceDto(images = AllowanceUseDto(used = 30, limit = 30)), context)
+        assertThat(rows).containsExactly("Pictures" to "30 of 30")
+        assertThat(StatisticsLines.allowanceRows(AllowanceDto(renewsAt = "2026-12-01T00:00:00Z"), context)).isEmpty()
+        // Overshot by one answer's size: still 100%.
+        assertThat(
+            StatisticsLines.allowanceRows(AllowanceDto(aiTokens = AllowanceUseDto(used = 2_100_000, limit = 2_000_000)), context),
+        ).containsExactly("Assistant" to "100% used")
+    }
+
+    /** The 1st of a UTC month, named as the 1st wherever the reader is. */
+    @Test
+    fun `the section ends with the day it renews, in UTC`() {
+        val now = java.time.Instant.parse("2026-11-20T12:00:00Z").toEpochMilli()
+        val renews = StatisticsLines.allowanceRenews(allowance, context, now)
+
+        assertThat(renews).isEqualTo(
+            "Renews on " + TimeFormat.calendarDay(
+                java.time.Instant.parse("2026-12-01T00:00:00Z").toEpochMilli(),
+                nowMillis = now,
+                zone = java.time.ZoneOffset.UTC,
+            ),
+        )
+        assertThat(renews).contains("December")
+        assertThat(renews).doesNotContain("2026")
+        assertThat(StatisticsLines.allowanceRenews(AllowanceDto(), context, now)).isNull()
+    }
+
+    @Test
+    @Config(qualifiers = "ja")
+    fun `Japanese puts the limit first`() {
+        val rows = StatisticsLines.allowanceRows(allowance, context)
+        assertThat(rows).contains("画像" to "30 中 4")
+        assertThat(rows).contains("文字起こし" to "120 分中 11 分")
     }
 
     @Test

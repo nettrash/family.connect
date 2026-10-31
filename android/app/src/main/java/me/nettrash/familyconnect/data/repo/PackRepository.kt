@@ -204,6 +204,13 @@ class PackRepository @Inject constructor(
         /** The label is over the protocol's 64 characters. Nothing was sent. */
         LABEL_TOO_LONG,
 
+        /**
+         * `storage_allowance_used` on the upload: a PAID family past its
+         * storage (docs/protocol.md, "Paid families"). Trying again changes
+         * nothing until the family is back under it.
+         */
+        STORAGE_ALLOWANCE_USED,
+
         /** Anything else: no network, a refused upload, a server without packs. */
         FAILED,
     }
@@ -621,7 +628,13 @@ class PackRepository @Inject constructor(
                     // "Uploads name their family").
                     familyId = path(family),
                 )
-                val attachment = uploaded.okOrNull()?.attachment ?: return AddResult.FAILED
+                val attachment = uploaded.okOrNull()?.attachment ?: return if (
+                    (uploaded as? ApiResult.HttpError)?.code == PaidFamilies.STORAGE_ALLOWANCE_USED
+                ) {
+                    AddResult.STORAGE_ALLOWANCE_USED
+                } else {
+                    AddResult.FAILED
+                }
                 when (val claimed = packApi.addItem(path(family), attachment.id, wireLabel)) {
                     is ApiResult.Ok -> {
                         val item = claimed.value.item

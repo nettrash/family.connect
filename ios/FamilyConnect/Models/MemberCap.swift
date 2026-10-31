@@ -55,4 +55,13 @@ enum MemberCap {
     static func clamp(_ value: Int, ceiling: Int) -> Int {
         min(max(value, 1), max(ceiling, 1))
     }
+
+    /// The picker's upper bound: the family's own `member_ceiling` — the
+    /// operator's ceiling, or a paid family's lower limit (docs/protocol.md,
+    /// "Paid families") — falling back to `max_family_members` from
+    /// `GET /me` for a server that predates it. Nil when neither is known,
+    /// and then the picker stays away rather than inventing a number.
+    static func ceiling(family: Int?, server: Int?) -> Int? {
+        family ?? server
+    }
 }

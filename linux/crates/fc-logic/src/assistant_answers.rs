@@ -11,8 +11,9 @@
 //! reached the cache.
 //!
 //! A FAILURE REMEMBERS ITS SENTENCE (docs/protocol.md, `ai_error`'s `reason`): a refusal by the
-//! provider's own filter says so, and anything else says "ask again" — for exactly as long as the
-//! row is failed, so a redraw never turns one sentence into the other.
+//! provider's own filter says so, a paid family's used-up allowance says when it renews (2026-10-30,
+//! "Paid families"), and anything else says "ask again" — for exactly as long as the row is failed,
+//! so a redraw never turns one sentence into another.
 //!
 //! One thread (the GLib main context), so no lock: the C#'s `lock` guarded the socket's thread.
 
@@ -23,11 +24,13 @@ use fc_core::protocol::{AiErrorReason, MessageDto};
 use fc_core::rt::Event;
 use fc_core::text::string_catalog::StringCatalog;
 
+use crate::paid_families::{self, Days};
+
 #[derive(Default)]
 pub struct AssistantAnswers {
     written: RefCell<HashMap<i64, String>>,
-    /// Each stopped answer, with the reason its frame gave — `None` for every failure that is not
-    /// a refusal.
+    /// Each stopped answer, with the reason its frame gave — `None` for every failure the
+    /// protocol gives no reason for.
     stopped: RefCell<HashMap<i64, Option<AiErrorReason>>>,
     version: Cell<u64>,
     /// Something about a chat's answers changed.
@@ -101,26 +104,35 @@ impl AssistantAnswers {
     }
 
     /// What a failed row says — on the bubble, under what streamed, and to a screen reader — or
-    /// `None` while it has not failed.
+    /// `None` while it has not failed. `days` writes the day a used-up allowance renews.
     pub fn failure_sentence(
         &self,
         message: &MessageDto,
         say: &dyn StringCatalog,
+        days: &Days<'_>,
     ) -> Option<String> {
         if message.edit_seq.is_some() {
             return None;
         }
         let reason = *self.stopped.borrow().get(&message.id)?;
-        Some(Self::sentence(reason, say))
+        Some(Self::sentence(reason, say, days))
     }
 
     /// The failure sentence for a reason: the provider's refusal is not worth asking again in the
-    /// same words.
-    pub fn sentence(reason: Option<AiErrorReason>, say: &dyn StringCatalog) -> String {
+    /// same words, and neither is a question past a paid family's monthly allowance — that one
+    /// says on which day it renews.
+    pub fn sentence(
+        reason: Option<AiErrorReason>,
+        say: &dyn StringCatalog,
+        days: &Days<'_>,
+    ) -> String {
         match reason {
             Some(AiErrorReason::Refused) => say
                 .get("The assistant's provider refused that. Try putting it another way.")
                 .to_string(),
+            Some(AiErrorReason::AllowanceUsed { renews_at }) => {
+                paid_families::assistant_allowance_used(renews_at, say, days)
+            }
             None => say.get("Couldn't answer that. Ask again.").to_string(),
         }
     }

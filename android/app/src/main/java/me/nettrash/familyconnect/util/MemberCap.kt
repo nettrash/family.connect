@@ -57,4 +57,13 @@ object MemberCap {
      * seeded above its own bound opens invalid.
      */
     fun clamp(value: Int, ceiling: Int): Int = value.coerceIn(1, maxOf(ceiling, 1))
+
+    /**
+     * The picker's upper bound: the family's own `member_ceiling` — which
+     * for a PAID family is the lower paid limit (docs/protocol.md, "Paid
+     * families") — and the operator's `max_family_members` from `GET /me`
+     * on a server that predates it. Null when neither is known, and the
+     * control hides rather than inventing a bound.
+     */
+    fun ceiling(memberCeiling: Int?, maxFamilyMembers: Int?): Int? = memberCeiling ?: maxFamilyMembers
 }

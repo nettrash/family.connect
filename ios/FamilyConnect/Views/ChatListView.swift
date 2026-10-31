@@ -296,6 +296,18 @@ struct ChatListView: View {
         } message: {
             Text(switcherFailure ?? "")
         }
+        // A send the server refused for the family's used storage
+        // (`storage_allowance_used`, docs/protocol.md "Paid families"): the
+        // bubble goes red like any terminal refusal, and this says why —
+        // over whatever is on screen, the conversation included.
+        .alert(
+            coordinator.sendRefusalNotice ?? "",
+            isPresented: Binding(
+                get: { coordinator.sendRefusalNotice != nil },
+                set: { if !$0 { coordinator.sendRefusalNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        }
     }
 
     // MARK: - The two shapes
@@ -336,6 +348,9 @@ struct ChatListView: View {
                         VStack(spacing: 0) {
                             ConnectionBanner()
                             InvitationBanner()
+                            // A paid family's deadline (docs/protocol.md,
+                            // "Paid families"); nothing for any other family.
+                            FamilyPlanBanner()
                         }
                     }
                     .refreshable {
@@ -362,8 +377,10 @@ struct ChatListView: View {
                             if horizontalSizeClass == .compact {
                                 ConnectionBanner()
                             }
-                            // Invitations are the list's, on both widths.
+                            // Invitations are the list's, on both widths —
+                            // and so is a paid family's deadline.
                             InvitationBanner()
+                            FamilyPlanBanner()
                         }
                     }
                     .refreshable {
@@ -816,10 +833,12 @@ struct ChatListView: View {
             showsJoinRequests = false
             popToListForSheet()
             showsReports = true
-        case .invitations:
+        case .invitations, .familyPlan:
             // An invitation is answered from the banner over the list (and
             // the switcher's rows): the list, with nothing over it, is where
-            // it is (docs/protocol.md, "Several families").
+            // it is (docs/protocol.md, "Several families"). A paid family's
+            // deadline is a banner over the same list, in the family the
+            // push opened (docs/protocol.md, "Paid families").
             showsNewChat = false
             showsSettings = false
             showsJoinRequests = false

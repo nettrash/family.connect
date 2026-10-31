@@ -91,6 +91,13 @@ public abstract record ServerFrame
     /// <summary>An invitation that lapsed: accepted, declined, withdrawn, or gone with its family or either account.</summary>
     public sealed record InvitationRemoved(long InvitationId) : ServerFrame;
 
+    /// <summary>
+    /// A paid family's deadline appeared or went (docs/protocol.md, "Paid families", 2026-10-30): the family it names now has
+    /// this <paramref name="Plan"/> and this <paramref name="DeleteAt"/>. An ABSENT <c>delete_at</c> is the deadline GONE — the
+    /// one frame where absence clears rather than leaves alone — and an absent <c>plan</c> leaves the held one.
+    /// </summary>
+    public sealed record FamilyPlan(long FamilyId, string? Plan, string? DeleteAt) : ServerFrame;
+
     /// <summary>The assistant, mid-reply.</summary>
     public sealed record AiDelta(long ChatId, long MessageId, string Text) : ServerFrame;
 
@@ -99,7 +106,13 @@ public abstract record ServerFrame
     /// assistant": <c>ai_error</c>'s optional <c>reason</c>). Null is every other failure, exactly
     /// as it was before the field existed.
     /// </summary>
-    public sealed record AiError(long ChatId, long MessageId, AiErrorReason? Reason = null) : ServerFrame;
+    /// <param name="RenewsAt">
+    /// With <see cref="AiErrorReason.AllowanceUsed"/>, when the family's allowance starts again — the frame's
+    /// <c>renews_at</c>, the start of the next UTC month (2026-10-30). Null with any other reason, and when the frame's
+    /// stamp was absent or could not be read.
+    /// </param>
+    public sealed record AiError(
+        long ChatId, long MessageId, AiErrorReason? Reason = null, DateTimeOffset? RenewsAt = null) : ServerFrame;
 
     public sealed record CallOffer(
         string CallId, long ChatId, long FromUserId, string Sdp, bool Video) : ServerFrame;
@@ -173,13 +186,14 @@ public abstract record ServerFrame
             "invitation" => Decode<InvitationDto>(frame["invitation"]) is { Id: > 0 } invitation
                 ? new Invitation(invitation) : null,
             "invitation_removed" => Number(frame["invitation_id"]) is > 0 and var lapsed ? new InvitationRemoved(lapsed) : null,
+            "family_plan" => Number(frame["family_id"]) is > 0 and var planned
+                ? new FamilyPlan(planned, TextOf(frame["plan"]), TextOf(frame["delete_at"])) : null,
             "member_blocked" => new MemberBlocked(
                 Number(frame["user_id"]), frame["blocked"]?.GetValue<bool>() ?? false),
             "ai_delta" => new AiDelta(
                 Number(frame["chat_id"]), Number(frame["message_id"]),
                 frame["text"]?.GetValue<string>() ?? string.Empty),
-            "ai_error" => new AiError(
-                Number(frame["chat_id"]), Number(frame["message_id"]), AiReason(frame["reason"])),
+            "ai_error" => Stopped(frame),
             "call_offer" => frame["call_id"]?.GetValue<string>() is { } offered
                 ? new CallOffer(
                     offered, Number(frame["chat_id"]), Number(frame["from_user_id"]),
@@ -239,6 +253,35 @@ public abstract record ServerFrame
     }
 
     /// <summary>
+    /// <c>ai_error</c>, with its reason when it is one this client knows — and, for <c>"allowance_used"</c>, when the allowance
+    /// renews. A <c>renews_at</c> beside any other reason means nothing and is not read.
+    /// </summary>
+    private static AiError Stopped(JsonObject frame)
+    {
+        var reason = AiReason(frame["reason"]);
+        return new AiError(
+            Number(frame["chat_id"]), Number(frame["message_id"]), reason,
+            reason == AiErrorReason.AllowanceUsed ? Stamp(frame["renews_at"]) : null);
+    }
+
+    /// <summary>An optional string, or null — anything that is not a JSON string is read as ABSENT, never as text.</summary>
+    private static string? TextOf(JsonNode? node)
+    {
+        try
+        {
+            return node?.GetValue<string>();
+        }
+        catch (Exception exception) when (exception is FormatException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>An RFC3339 instant, or null for one that is absent, not a string or not readable.</summary>
+    private static DateTimeOffset? Stamp(JsonNode? node) =>
+        Store.Times.Instant(TextOf(node)) is { } milliseconds ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : null;
+
+    /// <summary>
     /// <c>ai_error</c>'s <c>reason</c>, or null. A value this client does not know — and anything
     /// that is not a string at all — is read as ABSENT, never guessed at: the compatibility rules,
     /// applied to a value rather than a field, so a later reason cannot be given a meaning here.
@@ -257,6 +300,7 @@ public abstract record ServerFrame
         return value switch
         {
             "refused" => AiErrorReason.Refused,
+            "allowance_used" => AiErrorReason.AllowanceUsed,
             _ => null,
         };
     }
@@ -273,6 +317,12 @@ public enum AiErrorReason
     /// picture's description — asking again in the same words gets the same refusal.
     /// </summary>
     Refused,
+
+    /// <summary>
+    /// A PAID family has used this month's assistant allowance, and the provider was not called at all (docs/protocol.md,
+    /// "Paid families", 2026-10-30). The frame says when it renews; asking again before then gets the same answer.
+    /// </summary>
+    AllowanceUsed,
 }
 
 /// <summary>

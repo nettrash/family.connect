@@ -99,6 +99,9 @@ public static class DoorSentences
         { Code: ErrorCodes.TooManyFamilies or ErrorCodes.AlreadyOwnAFamily or ErrorCodes.MemberFamiliesDisabled } =>
             FamilySentences.For(error, cap, say)!,
         { Code: ErrorCodes.AlreadyInFamily } => say.Get("You're already in a family."),
+        // A server that charges for a new family, and an account without an active subscription (docs/protocol.md, "Paid
+        // families"): checked after every refusal above, so a shut door still says its own sentence.
+        { Code: ErrorCodes.SubscriptionRequired } => say.Get("A new family on this server needs a subscription."),
         { Status: 400 or 409 } => Said(error) ?? say.Get("The server rejected that name."),
         _ => say.Get("Can't reach the server. Try again."),
     };

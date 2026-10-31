@@ -1792,7 +1792,7 @@ public sealed partial class ChatsView : UserControl
         var message = bubble.Message;
         var body = connection.Answers.BodyOf(message);
         var writing = connection.Answers.IsWriting(message) ? body : string.Empty;
-        var failure = connection.Answers.FailureSentence(message, services.Say) ?? string.Empty;
+        var failure = connection.Answers.FailureSentence(message, services.Say, services.Culture) ?? string.Empty;
         var card = LinkPreviewSetting.Enabled
             && message.Call is null
             && PreviewLinkOf(message, body, emojiOnly: false) is { } link
@@ -1918,8 +1918,8 @@ public sealed partial class ChatsView : UserControl
         // The body as drawn: an answer still being written shows what has streamed so far.
         var body = connection.Answers.BodyOf(message);
         var awaited = BubbleRules.Awaited(message, body, Reader, assistantChat, assistantId);
-        // What a failed answer says, remembered with the failure: the provider's refusal, or "ask again".
-        var failure = connection.Answers.FailureSentence(message, say);
+        // What a failed answer says, remembered with the failure: the provider's refusal, a used-up allowance, or "ask again".
+        var failure = connection.Answers.FailureSentence(message, say, services.Culture);
         var failed = failure is not null;
         var shown = bubble with { Message = message with { Body = body } };
         // A STICKER (docs/protocol.md, "How it is drawn"): one flagged photo and no words. A message from before stickers,
@@ -2892,6 +2892,17 @@ public sealed partial class ChatsView : UserControl
         }
         if (row.Failed)
         {
+            // Why, where the refusal has words of its own (a paid family's storage allowance); otherwise the two actions alone.
+            if (PaidFamilies.SendRefusal(row.FailedCode, say) is { } why)
+            {
+                stack.Children.Add(new TextBlock
+                {
+                    Text = why,
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Palette.Ink(),
+                });
+            }
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
             var retry = new HyperlinkButton { Content = say.Get("Try Again") };
             retry.Click += (_, _) =>
@@ -6408,7 +6419,7 @@ public sealed partial class ChatsView : UserControl
                 var error = look.Error ?? ApiError.Transport("no answer");
                 var line = new TextBlock
                 {
-                    Text = TranscriptRules.FailureSentence(error, say),
+                    Text = TranscriptRules.FailureSentence(error, say, services.Culture),
                     FontSize = 12,
                     TextWrapping = TextWrapping.Wrap,
                     Opacity = 0.85,
@@ -9728,6 +9739,8 @@ public sealed partial class ChatsView : UserControl
         if (row.Failed)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            // Why, where the refusal has words of its own (a paid family's storage allowance) — above the two actions.
+            var why = PaidFamilies.SendRefusal(row.FailedCode, say);
             var retry = new HyperlinkButton { Content = say.Get("Try Again") };
             retry.Click += (_, _) =>
             {
@@ -9749,7 +9762,21 @@ public sealed partial class ChatsView : UserControl
             };
             actions.Children.Add(retry);
             actions.Children.Add(discard);
-            return actions;
+            if (why is null)
+            {
+                return actions;
+            }
+            var foot = new StackPanel { Spacing = 2, HorizontalAlignment = HorizontalAlignment.Right };
+            foot.Children.Add(new TextBlock
+            {
+                Text = why,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(4, 0, 4, 0),
+            });
+            foot.Children.Add(actions);
+            return foot;
         }
         return new TextBlock
         {

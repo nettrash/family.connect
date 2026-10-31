@@ -6,7 +6,8 @@
  * policy, join requests, leave/remove. Also the sink for the
  * member_joined / member_left / member_deleted / family_owner WebSocket
  * frames — applied to the roster live, and a member_left carrying *my*
- * user id escalates to SessionRepository (we've been kicked).
+ * user id escalates to SessionRepository (we've been kicked) — and of
+ * family_plan, which moves a paid family's deadline on its entry.
  *
  * The roster holds BOTH arrays `GET /families/mine` answers with:
  * `members` and `former_members`, the second flagged deleted. One table,
@@ -224,6 +225,11 @@ class FamilyRepository @Inject constructor(
                             )
                         }
                     }
+                    // A paid family's deadline, live (docs/protocol.md,
+                    // "Paid families"): applied to the family it names, so
+                    // the banner over that family's chats follows it.
+                    is ServerFrame.FamilyPlan ->
+                        sessionRepository.applyFamilyPlan(frame.familyId, frame.plan, frame.deleteAt)
                     // Reaches only the blocker's own connections, so
                     // there is nobody else's state to consider. A
                     // state-set, not an event: an unblock is this same

@@ -165,6 +165,12 @@ class TranscriptApiTest {
         assertThat(outcomeOf(403, "assistant_consent_required")).isEqualTo(TranscriptOutcome.ConsentRequired)
     }
 
+    /** A paid family past this month's minutes (docs/protocol.md, "Paid families", 2026-10-30). */
+    @Test
+    fun `a used-up allowance is its own answer`() = runTest {
+        assertThat(outcomeOf(403, "ai_allowance_used")).isEqualTo(TranscriptOutcome.AllowanceUsed)
+    }
+
     @Test
     fun `the three no-for-good answers read as not available`() = runTest {
         assertThat(outcomeOf(400, "not_transcribable")).isEqualTo(TranscriptOutcome.Unavailable)

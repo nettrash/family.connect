@@ -118,7 +118,7 @@ public sealed partial class SettingsView : UserControl
         PasswordButton.Click += (_, _) => _ = ChangePasswordAsync();
         LeaveButton.Click += (_, _) => _ = LeaveAsync();
         NewFamilyButton.Click += (_, _) => _ = FamilyDialogs.NewFamilyAsync(
-            XamlRoot, say, new FamilyDoor(connection.Api, connection.Session, say));
+            XamlRoot, say, new FamilyDoor(connection.Api, connection.Session, say), PaidFamilies.AnotherFamily(connection.Session.State));
         JoinAnotherButton.Click += (_, _) => _ = FamilyDialogs.JoinAnotherFamilyAsync(
             XamlRoot, say, new FamilyDoor(connection.Api, connection.Session, say));
         StatisticsButton.Click += (_, _) => _ = StatisticsAsync();
@@ -783,6 +783,18 @@ public sealed partial class SettingsView : UserControl
                 assistant.Add(Row(say.Get("Web searches"), Number(ai.Searches)));
             }
             body.Children.Add(Group(say.Get("Assistant"), [.. assistant]));
+        }
+
+        // A PAID family's allowance (docs/protocol.md, "Family statistics", amended 2026-10-30): a row per limit the operator
+        // has on, and when the monthly ones renew. Nothing for a free family.
+        if (PaidFamilies.Allowance(stats.Allowance, say, culture, DateTimeOffset.UtcNow) is { } allowance)
+        {
+            var limits = new List<UIElement>(allowance.Rows.Select(row => Row(row.Label, row.Value)));
+            if (allowance.Renews is { } renews)
+            {
+                limits.Add(Footnote(renews));
+            }
+            body.Children.Add(Group(allowance.Title, [.. limits]));
         }
 
         var who = new List<UIElement>();

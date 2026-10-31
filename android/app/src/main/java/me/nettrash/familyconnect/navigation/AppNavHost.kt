@@ -291,6 +291,14 @@ fun AppNavHost(
                     // The banner over the chat list (and the switcher) is
                     // where an invitation is answered.
                     navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+                is PendingRoute.FamilyPlan ->
+                    // A paid family's deadline (docs/protocol.md, "Paid
+                    // families"): its chat list, already switched to, where
+                    // the banner says when — or, for one deleted, the chat
+                    // list of what is left, whose switcher lists the
+                    // families. With none left, the session's own teardown
+                    // has already taken the app to the gate.
+                    navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
                 is PendingRoute.Call ->
                     // The call state collector above shows the screen; a
                     // tap on a call notification only needs the app up.

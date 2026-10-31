@@ -13,6 +13,10 @@
  * families added — the cap, owning one already, a server that keeps the
  * door shut — are said here.
  *
+ * On a server that charges for families (#89; docs/protocol.md, "Paid
+ * families") Create is offered only to a caller whose subscription is
+ * active; this app sells none.
+ *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyGate/FamilyGateViewModel.swift
  */
 
@@ -30,6 +34,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.PaidFamilies
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.ui.families.FamilyErrors
 import kotlinx.coroutines.flow.first
@@ -76,6 +81,13 @@ class FamilyGateViewModel @Inject constructor(
          * (docs/protocol.md, "Accounts without a family").
          */
         val familylessAccountTtlDays: Int = 0,
+        /**
+         * The server charges for a new family and the caller holds no
+         * active subscription (docs/protocol.md, "Paid families"): the
+         * create card gives way to the sentence that a new family cannot be
+         * started from this app. Joining stays either way.
+         */
+        val mustPayToStart: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -91,6 +103,7 @@ class FamilyGateViewModel @Inject constructor(
                     it.copy(
                         registrationEnabled = s.familyRegistrationEnabled,
                         familylessAccountTtlDays = s.familylessAccountTtlDays,
+                        mustPayToStart = PaidFamilies.mustPayToStart(s.subscriptionsEnabled, s.subscriptionActive),
                     )
                 }
             }
@@ -128,6 +141,12 @@ class FamilyGateViewModel @Inject constructor(
                                 // it knows (docs/protocol.md, "Starting a family").
                                 "family_registration_disabled" ->
                                     appContext.getString(R.string.s_no_new_families_title)
+                                // A subscription that ended after the card
+                                // was drawn (docs/protocol.md, "Paid
+                                // families"). Terminal: trying again
+                                // changes nothing until something is bought.
+                                PaidFamilies.SUBSCRIPTION_REQUIRED ->
+                                    appContext.getString(R.string.e_subscription_required)
                                 else -> result.message ?: appContext.getString(R.string.e_create_family_failed)
                             },
                         )

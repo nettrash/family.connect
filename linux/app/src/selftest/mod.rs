@@ -31,6 +31,7 @@ pub mod desktop;
 pub mod fake_server;
 pub mod family;
 pub mod media;
+pub mod paid;
 pub mod rich;
 pub mod settings;
 pub mod shell;
@@ -56,12 +57,14 @@ pub const XDG_VARIABLES: [&str; 4] = [
 ];
 
 /// Every group, in run order. Packages add theirs (`chat`, `attachments`, `rich`, `media`,
-/// `board`, `family`, `settings`, `desktop`, `calls`), `privacy` last. `desktop` runs right after
-/// `shell`: GLib chooses its notification backend at the FIRST notification, and the desktop
-/// group's fake `org.gtk.Notifications` must be on the bus by then, as GNOME Shell's is in a real
-/// session — a group that notifies earlier (a live board note, a message) makes GLib fall back to
-/// the freedesktop backend, whose numeric ids and `action::target` strings the checks do not read.
-pub const GROUPS: [&str; 10] = [
+/// `board`, `family`, `settings`, `paid`, `desktop`, `calls`), `privacy` last. `desktop` runs right
+/// after `shell`. GLib chooses its notification backend at the FIRST notification or withdrawal —
+/// `shell`'s offline launch already opens a cached chat, which withdraws its notification — so the
+/// desktop group's fake `org.gtk.Notifications` goes on the bus before the first group
+/// ([`desktop::serve_notifications`]), as GNOME Shell's is from the start of a real session.
+/// Without it GLib falls back to the freedesktop backend, whose numeric ids and `action::target`
+/// strings the checks do not read.
+pub const GROUPS: [&str; 11] = [
     "shell",
     "desktop",
     "chat",
@@ -71,6 +74,7 @@ pub const GROUPS: [&str; 10] = [
     "board",
     "family",
     "settings",
+    "paid",
     "calls",
 ];
 
@@ -670,6 +674,9 @@ async fn run_groups(harness: Rc<Harness>, groups: Vec<&'static str>) {
         );
     }
     harness.screenshot("start").await;
+    if groups.contains(&"desktop") {
+        desktop::serve_notifications().await;
+    }
     for group in groups {
         harness.group.set(group);
         println!("selftest: group {group}");
@@ -682,6 +689,7 @@ async fn run_groups(harness: Rc<Harness>, groups: Vec<&'static str>) {
             "board" => board::run(h).await,
             "family" => family::run(h).await,
             "settings" => settings::run(h).await,
+            "paid" => paid::run(h).await,
             "desktop" => desktop::run(h).await,
             "chat" => chat::run(h).await,
             "calls" => calls::run(h).await,

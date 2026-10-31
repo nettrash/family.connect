@@ -21,6 +21,7 @@ use fc_logic::conversation::{Bubble, ConversationModel};
 use fc_logic::conversation_rows::{self, RowMark};
 use fc_logic::groups::chat_kinds;
 use fc_logic::open_polls::OpenPollsModel;
+use fc_logic::paid_families;
 use fc_logic::quotes::{self, Quote, QuoteClick, QuoteLevel};
 use fc_logic::timeline;
 use fc_text::reactions::{Reaction, my_reaction};
@@ -911,6 +912,23 @@ impl ConversationPage {
             .margin_start(fc_logic::composer_row::conversation_column::BUBBLE_SPACER as i32)
             .build();
         column.append(&clamp);
+        // A paid family's used-up storage is said on the row it refused (docs/protocol.md, "Paid
+        // families"): terminal, so the row waits here for Delete — or a Try Again once room is made.
+        if let Some(why) = row
+            .failed_code
+            .as_deref()
+            .and_then(|code| paid_families::upload_refusal(code, say.as_ref()))
+        {
+            column.append(
+                &gtk::Label::builder()
+                    .label(&why)
+                    .css_classes(["fc-chat-pending"])
+                    .wrap(true)
+                    .xalign(1.0)
+                    .halign(gtk::Align::End)
+                    .build(),
+            );
+        }
         let status = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         status.set_halign(gtk::Align::End);
         status.add_css_class("fc-chat-pending-status");

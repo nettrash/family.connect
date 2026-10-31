@@ -298,7 +298,10 @@ fn the_devices_cannot_is_final() {
     for (error, said) in cases {
         assert!(!error.transient());
         assert!(!transcript_rules::may_retry(&error));
-        assert_eq!(said, transcript_rules::failure_sentence(&error, &say));
+        assert_eq!(
+            said,
+            transcript_rules::failure_sentence(&error, &say, &common::days())
+        );
     }
     assert_eq!(
         error_codes::NOT_TRANSCRIBABLE,

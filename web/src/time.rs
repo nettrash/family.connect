@@ -261,6 +261,53 @@ pub fn birthday(month: u32, day: u32) -> String {
     .into()
 }
 
+/// A day as a sentence names it — "14 November", "November 14", "14
+/// ноября" — in the reader's own zone and language, with the year only when
+/// it is not `now_ms`'s ("14 November 2027"): the day a paid family will be
+/// deleted, a MOMENT, which falls on the reader's own day (docs/protocol.md,
+/// "Paid families"). Empty when the string is not a date this browser can
+/// parse.
+pub fn day_in_sentence(rfc3339: &str, now_ms: f64) -> String {
+    date_of(rfc3339)
+        .map(|date| day_words(&date, now_ms, &locale(), None))
+        .unwrap_or_default()
+}
+
+/// The same, as the UTC calendar day — in the reader's language, but never
+/// their zone: the day a paid family's monthly allowance renews, which is a
+/// UTC month's 1st and is shown as the 1st everywhere. "30 November" for a
+/// reader west of Greenwich would name a month that has not ended
+/// (docs/protocol.md, "The assistant", `"allowance_used"`).
+pub fn utc_day_in_sentence(rfc3339: &str, now_ms: f64) -> String {
+    date_of(rfc3339)
+        .map(|date| day_words(&date, now_ms, &locale(), Some("UTC")))
+        .unwrap_or_default()
+}
+
+/// `date`'s day and month in `locale`, in `zone` (an IANA name; None is the
+/// reader's own), with its year when that is not `now_ms`'s year in the
+/// same zone.
+fn day_words(date: &Date, now_ms: f64, locale: &str, zone: Option<&str>) -> String {
+    let in_zone = |pairs: &[(&str, &str)]| {
+        let mut pairs = pairs.to_vec();
+        pairs.extend(zone.map(|zone| ("timeZone", zone)));
+        options(&pairs)
+    };
+    // The years compared as the zone has them, in digits every locale
+    // writes alike.
+    let year = |date: &Date| -> String {
+        date.to_locale_date_string("en-US", &in_zone(&[("year", "numeric")]))
+            .into()
+    };
+    let now = Date::new(&JsValue::from_f64(now_ms));
+    let parts: &[(&str, &str)] = if year(date) == year(&now) {
+        &[("month", "long"), ("day", "numeric")]
+    } else {
+        &[("year", "numeric"), ("month", "long"), ("day", "numeric")]
+    };
+    date.to_locale_date_string(locale, &in_zone(parts)).into()
+}
+
 /// A month's name standing alone, as a picker lists it — "January",
 /// "январь" — in the reader's language.
 pub fn month_name(month: u32) -> String {
@@ -452,6 +499,70 @@ mod tests {
         assert!(!is_past(&started, Some(&later), now), "still going");
         assert!(!is_past(&later, None, now));
         assert!(!is_past("", None, now), "unreadable is not past");
+    }
+
+    /// A day in a sentence is the LOCAL day, and carries its year only when
+    /// that is not this one.
+    #[wasm_bindgen_test]
+    fn a_day_in_a_sentence_has_a_year_only_when_it_is_not_this_one() {
+        let now = Date::new_with_year_month_day_hr_min(2026, 9, 30, 12, 0).get_time();
+        // Late in the local evening: the day it is HERE, whatever this
+        // machine's zone.
+        let soon = local_iso(2026, 10, 14, 23, 30);
+        let said = day_in_sentence(&soon, now);
+        assert!(said.contains("14"), "{said}");
+        assert!(
+            !said.contains("2026"),
+            "this year's day has no year: {said}"
+        );
+        assert!(!said.contains(':'), "a day, not a time: {said}");
+        let next_year = local_iso(2027, 0, 3, 9, 0);
+        let said = day_in_sentence(&next_year, now);
+        assert!(said.contains("2027") && said.contains('3'), "{said}");
+        assert_eq!(day_in_sentence("", now), "");
+        assert_eq!(day_in_sentence("never", now), "");
+    }
+
+    /// The allowance renews on a UTC month's 1st, and says so to every
+    /// reader: 2026-12-01T00:00:00Z is still 30 November at UTC−5 (POSIX's
+    /// `Etc/GMT+5`, signs reversed), and the renewal is "1 December" there
+    /// all the same. A moment such as `delete_at` keeps the reader's day.
+    #[wasm_bindgen_test]
+    fn a_renewal_is_its_utc_day_wherever_the_reader_is() {
+        let renews = date_of("2026-12-01T00:00:00Z").expect("a date");
+        let now = Date::utc(2026.0, 10.0) + 14.0 * 86_400_000.0;
+        assert_eq!(
+            day_words(&renews, now, "en-GB", Some("Etc/GMT+5")),
+            "30 November",
+            "a reader at UTC−5 is still in November"
+        );
+        assert_eq!(
+            day_words(&renews, now, "en-GB", Some("UTC")),
+            "1 December",
+            "the renewal, as that reader is shown it"
+        );
+        assert_eq!(
+            day_words(&renews, now, "ru", Some("UTC")),
+            "1 декабря",
+            "in the reader's language all the same"
+        );
+        // The year only when the UTC year differs: a renewal on 1 January,
+        // seen in December, names it.
+        let new_year = date_of("2027-01-01T00:00:00Z").expect("a date");
+        let december = Date::utc(2026.0, 11.0) + 14.0 * 86_400_000.0;
+        assert_eq!(
+            day_words(&new_year, december, "en-GB", Some("UTC")),
+            "1 January 2027"
+        );
+        assert_eq!(
+            day_words(&new_year, december, "en-GB", Some("Etc/GMT+5")),
+            "31 December",
+            "the same moment at UTC−5, this year's"
+        );
+        // Whatever this machine's zone, the public one says the 1st.
+        let said = utc_day_in_sentence("2026-12-01T00:00:00Z", now);
+        assert!(said.contains('1') && !said.contains("30"), "{said}");
+        assert_eq!(utc_day_in_sentence("never", now), "");
     }
 
     /// The first of the month's yesterday is the last day of the month

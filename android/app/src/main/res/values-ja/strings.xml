@@ -772,4 +772,20 @@
     <string name="s_leave_named_family">「%s」を離れますか？</string>
     <string name="s_leave_one_of_families_explanation">このファミリーのチャットにアクセスできなくなります。ほかのファミリーでも一緒の人との個別チャットは残ります。</string>
     <string name="s_new_family_explanation">自分のファミリーを作ります。あなたがオーナーになり、ほかのファミリーのメンバーを招待できます。</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">このサーバーでは、このアプリから新しいファミリーを作成することはできません。</string>
+    <string name="e_subscription_required">このサーバーで新しいファミリーを作成するには、サブスクリプションが必要です。</string>
+    <string name="s_banner_member">サブスクリプションが終了したため、「%1$s」は %2$s に削除されます。更新できるのはオーナーの %3$s さんだけです。</string>
+    <string name="s_banner_owner_not_here">あなたのサブスクリプションが終了したため、「%1$s」は %2$s に削除されます。このアプリからは更新できません。</string>
+    <string name="s_allowance_title">今月の上限</string>
+    <string name="s_allowance_storage">ストレージ</string>
+    <string name="s_allowance_assistant">アシスタント</string>
+    <string name="s_allowance_pictures">画像</string>
+    <string name="s_allowance_transcripts">文字起こし</string>
+    <string name="s_allowance_of">%2$s 中 %1$s</string>
+    <string name="s_allowance_percent">%1$d%% 使用</string>
+    <string name="s_allowance_minutes">%2$d 分中 %1$d 分</string>
+    <string name="s_allowance_renews_on">%1$s にリセット</string>
+    <string name="e_storage_allowance_used">このファミリーはストレージの上限に達しました。</string>
+    <string name="e_ai_allowance_used">このファミリーは今月のアシスタントの上限に達しました。%1$s にリセットされます。</string>
 </resources>

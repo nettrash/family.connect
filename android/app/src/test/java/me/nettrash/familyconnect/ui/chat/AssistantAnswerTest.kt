@@ -203,7 +203,7 @@ class AssistantAnswerTest {
     @Test
     fun `a refused answer says the provider refused it`() {
         val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100, reason = "refused"))
-        assertThat(failure).isEqualTo(AssistantFailure.REFUSED)
+        assertThat(failure).isEqualTo(AssistantFailure.Refused)
         assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_provider_refused)
     }
 
@@ -211,15 +211,43 @@ class AssistantAnswerTest {
     @Test
     fun `a failure with no reason keeps the old sentence`() {
         val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100))
-        assertThat(failure).isEqualTo(AssistantFailure.STOPPED)
+        assertThat(failure).isEqualTo(AssistantFailure.Stopped)
         assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_answer_failed)
+    }
+
+    /**
+     * A paid family's month is used up (docs/protocol.md, "Paid families"):
+     * the sentence names the day it starts again, from the frame's
+     * `renews_at`.
+     */
+    @Test
+    fun `a used-up allowance names the day it renews`() {
+        val failure = AssistantFailure.of(
+            ServerFrame.AiError(chatId = 1, messageId = 100, reason = "allowance_used", renewsAt = "2026-12-01T00:00:00Z"),
+        )
+        val renews = java.time.Instant.parse("2026-12-01T00:00:00Z").toEpochMilli()
+        assertThat(failure).isEqualTo(AssistantFailure.AllowanceUsed(renews))
+        assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.e_ai_allowance_used)
+        assertThat(AssistantAnswer.failureDate(failure)).isEqualTo(renews)
+        // The other sentences name no day.
+        assertThat(AssistantAnswer.failureDate(AssistantFailure.Refused)).isNull()
+        assertThat(AssistantAnswer.failureDate(AssistantFailure.Stopped)).isNull()
+    }
+
+    /** Without a readable `renews_at`, the start of the next UTC month. */
+    @Test
+    fun `a used-up allowance without a date renews next month`() {
+        val now = java.time.Instant.parse("2026-10-30T12:00:00Z").toEpochMilli()
+        val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100, reason = "allowance_used"), now)
+        assertThat(failure)
+            .isEqualTo(AssistantFailure.AllowanceUsed(java.time.Instant.parse("2026-11-01T00:00:00Z").toEpochMilli()))
     }
 
     /** An unknown reason is absent: the old sentence, never a guess. */
     @Test
     fun `an unknown reason keeps the old sentence`() {
         val failure = AssistantFailure.of(ServerFrame.AiError(chatId = 1, messageId = 100, reason = "quota_spent"))
-        assertThat(failure).isEqualTo(AssistantFailure.STOPPED)
+        assertThat(failure).isEqualTo(AssistantFailure.Stopped)
         assertThat(AssistantAnswer.failureSentence(failure)).isEqualTo(R.string.s_assistant_answer_failed)
     }
 }

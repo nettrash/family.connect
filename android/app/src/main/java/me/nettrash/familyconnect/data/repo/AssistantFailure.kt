@@ -16,23 +16,39 @@ import me.nettrash.familyconnect.data.net.ws.ServerFrame
  * WHICH sentence it failed with for exactly as long as it remembers that it
  * failed").
  *
- * Two cases and no more, because the protocol defines one `reason` and says
- * a client must read any other as absent.
+ * One case per `reason` the protocol defines, and one for none: a client
+ * must read any other `reason` as absent.
  */
-enum class AssistantFailure {
+sealed interface AssistantFailure {
     /** Any failure the server gave no reason for: asking again may work. */
-    STOPPED,
+    data object Stopped : AssistantFailure
 
     /**
      * The AI provider's own safety or content filter refused it. Asking
      * again in the same words gets the same refusal, so the sentence says
      * to put it another way instead.
      */
-    REFUSED;
+    data object Refused : AssistantFailure
+
+    /**
+     * A PAID family has used this month's assistant allowance and the
+     * provider was never called (docs/protocol.md, "Paid families", added
+     * 2026-10-30). The sentence names the day it starts again,
+     * [renewsAtMillis] — remembered with the row, so a redraw names the
+     * same day.
+     */
+    data class AllowanceUsed(val renewsAtMillis: Long) : AssistantFailure
 
     companion object {
-        /** An unknown `reason` is ABSENT: [STOPPED], never a guess. */
-        fun of(frame: ServerFrame.AiError): AssistantFailure =
-            if (frame.isRefused) REFUSED else STOPPED
+        /**
+         * An unknown `reason` is ABSENT: [Stopped], never a guess. An
+         * `allowance_used` without a readable `renews_at` names the start of
+         * next month, which is what the server would have sent.
+         */
+        fun of(frame: ServerFrame.AiError, nowMillis: Long = System.currentTimeMillis()): AssistantFailure = when {
+            frame.isRefused -> Refused
+            frame.isAllowanceUsed -> AllowanceUsed(PaidFamilies.renewsAt(frame.renewsAt, nowMillis))
+            else -> Stopped
+        }
     }
 }

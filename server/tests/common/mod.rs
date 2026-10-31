@@ -23,6 +23,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+/// The App Store-shaped certificate chain the paid-family suites sign with —
+/// the same file `src/appstore.rs`'s unit tests use (docs/protocol.md, "Paid
+/// families").
+#[path = "../../src/appstore/testing.rs"]
+pub mod appstore;
+
 use family_connect::app::build_router;
 use family_connect::config::{Config, DatabaseConfig, PushConfig};
 use family_connect::keyring::{Keyring, Owner, SealKey};

@@ -853,6 +853,24 @@ class BoardRepositoryTest {
         assertThat(noteDao.findById(5)).isNull()
     }
 
+    /**
+     * A paid family past this month's pictures (docs/protocol.md, "Paid
+     * families", 2026-10-30): its own answer, so the board can say when the
+     * allowance starts again; the note is untouched.
+     */
+    @Test
+    fun `a backdrop past the family's allowance says so, and changes nothing`() = runTest(dispatcher) {
+        val repository = repository()
+        boardApi.backdropFailure = ApiResult.HttpError(
+            status = 403,
+            code = "ai_allowance_used",
+            message = "this family has used this month's assistant allowance",
+        )
+
+        assertThat(repository.drawBackdrop(5L)).isEqualTo(BackdropOutcome.AllowanceUsed)
+        assertThat(noteDao.findById(5)).isNull()
+    }
+
     /** Any other failure — a 500, another 4xx, no network — is only a failure. */
     @Test
     fun `any other backdrop failure is only a failure`() = runTest(dispatcher) {

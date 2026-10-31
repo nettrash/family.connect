@@ -60,6 +60,56 @@
       "sr": "Ту си — добро дошао/ла у %@",
       "sr-Latn": "Tu si — dobro došao/la u %@",
       "zh-Hans": "你已加入——欢迎来到 %@"
+    },
+    "This family's subscription has ended. It will be deleted unless it is renewed.": {
+      "de": "Das Abo dieser Familie ist abgelaufen. Sie wird gelöscht, wenn es nicht verlängert wird.",
+      "es": "La suscripción de esta familia ha terminado. Se eliminará si no se renueva.",
+      "fr": "L’abonnement de cette famille a pris fin. Elle sera supprimée s’il n’est pas renouvelé.",
+      "ja": "このファミリーのサブスクリプションが終了しました。更新されない場合、ファミリーは削除されます。",
+      "ru": "Подписка этой семьи закончилась. Если её не продлить, семья будет удалена.",
+      "sr": "Претплата ове породице је истекла. Биће обрисана ако се претплата не обнови.",
+      "sr-Latn": "Pretplata ove porodice je istekla. Biće obrisana ako se pretplata ne obnovi.",
+      "zh-Hans": "此家庭的订阅已结束。如不续订，家庭将被删除。"
+    },
+    "Your subscription has ended. Renew it, or this family will be deleted.": {
+      "de": "Dein Abo ist abgelaufen. Verlängere es, sonst wird diese Familie gelöscht.",
+      "es": "Tu suscripción ha terminado. Renuévala o esta familia se eliminará.",
+      "fr": "Votre abonnement a pris fin. Renouvelez-le, sinon cette famille sera supprimée.",
+      "ja": "サブスクリプションが終了しました。更新しないと、このファミリーは削除されます。",
+      "ru": "Твоя подписка закончилась. Продли её, иначе эта семья будет удалена.",
+      "sr": "Твоја претплата је истекла. Обнови је или ће ова породица бити обрисана.",
+      "sr-Latn": "Tvoja pretplata je istekla. Obnovi je ili će ova porodica biti obrisana.",
+      "zh-Hans": "你的订阅已结束。请续订，否则此家庭将被删除。"
+    },
+    "This family will be deleted tomorrow unless its subscription is renewed.": {
+      "de": "Diese Familie wird morgen gelöscht, wenn ihr Abo nicht verlängert wird.",
+      "es": "Esta familia se eliminará mañana si no se renueva su suscripción.",
+      "fr": "Cette famille sera supprimée demain si son abonnement n’est pas renouvelé.",
+      "ja": "サブスクリプションが更新されない場合、このファミリーは明日削除されます。",
+      "ru": "Если подписку не продлить, эта семья будет удалена завтра.",
+      "sr": "Ова породица ће сутра бити обрисана ако се претплата не обнови.",
+      "sr-Latn": "Ova porodica će sutra biti obrisana ako se pretplata ne obnovi.",
+      "zh-Hans": "如不续订，此家庭将于明天被删除。"
+    },
+    "This family will be deleted tomorrow. Renew your subscription to keep it.": {
+      "de": "Diese Familie wird morgen gelöscht. Verlängere dein Abo, um sie zu behalten.",
+      "es": "Esta familia se eliminará mañana. Renueva tu suscripción para conservarla.",
+      "fr": "Cette famille sera supprimée demain. Renouvelez votre abonnement pour la conserver.",
+      "ja": "このファミリーは明日削除されます。残すにはサブスクリプションを更新してください。",
+      "ru": "Эта семья будет удалена завтра. Продли подписку, чтобы её сохранить.",
+      "sr": "Ова породица ће сутра бити обрисана. Обнови претплату да је задржиш.",
+      "sr-Latn": "Ova porodica će sutra biti obrisana. Obnovi pretplatu da je zadržiš.",
+      "zh-Hans": "此家庭将于明天被删除。请续订以保留它。"
+    },
+    "This family was deleted because its subscription ended.": {
+      "de": "Diese Familie wurde gelöscht, weil ihr Abo abgelaufen ist.",
+      "es": "Esta familia se ha eliminado porque su suscripción terminó.",
+      "fr": "Cette famille a été supprimée, car son abonnement a pris fin.",
+      "ja": "サブスクリプションが終了したため、このファミリーは削除されました。",
+      "ru": "Эта семья удалена, потому что её подписка закончилась.",
+      "sr": "Ова породица је обрисана јер јој је истекла претплата.",
+      "sr-Latn": "Ova porodica je obrisana jer joj je istekla pretplata.",
+      "zh-Hans": "此家庭的订阅已结束，家庭已被删除。"
     }
   }
 }

@@ -252,7 +252,7 @@ public sealed partial class FamilyView : UserControl
         {
             if (!drawing)
             {
-                limit.Toggle(LimitSwitch.IsOn, FamilyText.Roster(family.Present()).Count, connection.Session.State.MaxFamilyMembers);
+                limit.Toggle(LimitSwitch.IsOn, FamilyText.Roster(family.Present()).Count, PaidFamilies.MemberCeiling(connection.Session.State));
             }
         };
         LimitBox.ValueChanged += (_, args) =>
@@ -262,7 +262,7 @@ public sealed partial class FamilyView : UserControl
             {
                 return;
             }
-            limit.Typed((int)Math.Round(args.NewValue), connection.Session.State.MaxFamilyMembers);
+            limit.Typed((int)Math.Round(args.NewValue), PaidFamilies.MemberCeiling(connection.Session.State));
         };
         LanguageChoice.SelectionChanged += (_, _) =>
         {
@@ -1080,7 +1080,8 @@ public sealed partial class FamilyView : UserControl
             PolicyChoice.IsEnabled = policyAsked is null;
             PolicyCaption.Text = HouseRules.PolicyCaption(policy, say);
 
-            var ceiling = state.MaxFamilyMembers;
+            // The family's own ceiling — a paid family's is lower — or the operator's on a server that predates it.
+            var ceiling = PaidFamilies.MemberCeiling(state);
             LimitSection.Visibility = ceiling > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (ceiling > 0)
             {

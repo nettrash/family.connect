@@ -20,6 +20,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -30,6 +31,7 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BackdropOutcome
+import me.nettrash.familyconnect.data.repo.PaidFamilies
 import me.nettrash.familyconnect.data.repo.BoardRepository
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.di.AppScope
@@ -74,12 +76,17 @@ class BoardViewModel @Inject constructor(
     private val _pinning = MutableStateFlow(false)
     val pinning: StateFlow<Boolean> = _pinning
 
-    /** Set when a pin failed, cleared once the screen has said so. */
-    private val _pinFailed = MutableStateFlow(false)
-    val pinFailed: StateFlow<Boolean> = _pinFailed
+    /**
+     * What to say about a pin that failed — set when one did, cleared once
+     * the screen has said so. Usually "couldn't pin"; for a PAID family past
+     * its storage, that (docs/protocol.md, "Paid families"), since trying
+     * again changes nothing.
+     */
+    private val _pinFailed = MutableStateFlow<Int?>(null)
+    val pinFailed: StateFlow<Int?> = _pinFailed
 
     fun clearPinFailure() {
-        _pinFailed.value = false
+        _pinFailed.value = null
     }
 
     /**
@@ -111,7 +118,7 @@ class BoardViewModel @Inject constructor(
                 val family = settings.state.first().familyKey
                 val prepared = runCatching { mediaPrep.preparePhoto(uri) }.getOrNull()
                 if (prepared == null) {
-                    _pinFailed.value = true
+                    _pinFailed.value = R.string.s_pin_photo_failed
                     return@launch
                 }
                 try {
@@ -128,7 +135,12 @@ class BoardViewModel @Inject constructor(
                     )
                     val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment
                     if (attachment == null) {
-                        _pinFailed.value = true
+                        _pinFailed.value =
+                            if ((uploaded as? ApiResult.HttpError)?.code == PaidFamilies.STORAGE_ALLOWANCE_USED) {
+                                R.string.e_storage_allowance_used
+                            } else {
+                                R.string.s_pin_photo_failed
+                            }
                         return@launch
                     }
                     // The preview the sticker draws, its own upload — the
@@ -148,7 +160,7 @@ class BoardViewModel @Inject constructor(
                         // shown now.
                         familyId = family,
                     )
-                    if (!pinned) _pinFailed.value = true
+                    if (!pinned) _pinFailed.value = R.string.s_pin_photo_failed
                 } finally {
                     // Staged bytes have no further job once they are up.
                     runCatching { prepared.file.delete() }

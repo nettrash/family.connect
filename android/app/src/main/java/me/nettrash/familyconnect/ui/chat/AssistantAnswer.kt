@@ -116,10 +116,17 @@ object AssistantAnswer {
      * which [AssistantFailure.of] already read as absent — keeps the
      * sentence it always had. The board's backdrop says the refusal
      * sentence too, where it says a backdrop failed.
+     *
+     * A paid family's used-up allowance (2026-10-30) names the day it
+     * starts again: that sentence takes [failureDate] as its one argument.
      */
     @StringRes
     fun failureSentence(failure: AssistantFailure): Int = when (failure) {
-        AssistantFailure.REFUSED -> R.string.s_assistant_provider_refused
-        AssistantFailure.STOPPED -> R.string.s_assistant_answer_failed
+        AssistantFailure.Refused -> R.string.s_assistant_provider_refused
+        AssistantFailure.Stopped -> R.string.s_assistant_answer_failed
+        is AssistantFailure.AllowanceUsed -> R.string.e_ai_allowance_used
     }
+
+    /** The day [failureSentence] names, for the one sentence that names one; null for the others. */
+    fun failureDate(failure: AssistantFailure): Long? = (failure as? AssistantFailure.AllowanceUsed)?.renewsAtMillis
 }

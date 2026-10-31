@@ -116,13 +116,14 @@ struct MacSheetSizingTests {
             "the two styles measured the same, so the probe is not exercising the difference")
     }
 
-    /// The five sheets, each with the parent it is presented from.
+    /// The six sheets, each with the parent it is presented from.
     private static let sheets: [(String, CGSize, CGSize)] = [
         ("changePassword", MacSheetSize.changePassword, MacSheetSize.settingsWindow),
         ("myBirthday", MacSheetSize.myBirthday, MacSheetSize.settingsWindow),
         ("deleteAccount", MacSheetSize.deleteAccount, MacSheetSize.settingsWindow),
         ("resetPassword", MacSheetSize.resetPassword, MacSheetSize.rosterSheet),
         ("memberBirthday", MacSheetSize.memberBirthday, MacSheetSize.rosterSheet),
+        ("subscription", MacSheetSize.subscription, MacSheetSize.settingsWindow),
     ]
 
     @Test("every shared sheet fits inside the window it is presented from, at that window's minimum")

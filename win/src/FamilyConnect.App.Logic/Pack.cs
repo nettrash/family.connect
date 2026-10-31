@@ -570,6 +570,8 @@ public static class PackText
         ErrorCodes.PackFull => say.Get("The family's stickers are full. Remove one to make room."),
         ErrorCodes.NotPackItemAuthor =>
             say.Get("Only whoever added a sticker, or the family owner, can remove it."),
+        // A paid family's disk allowance counts its pack too (docs/protocol.md, "Paid families").
+        ErrorCodes.StorageAllowanceUsed => PaidFamilies.StorageAllowanceUsed(say),
         _ when error.Transient => say.Get("The sticker didn't reach the server. Check your connection and try again."),
         _ => say.Get("Something went wrong. Try again."),
     };

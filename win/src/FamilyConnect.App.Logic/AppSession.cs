@@ -103,7 +103,17 @@ public sealed record SessionState(
     /// Whether this server knows several families at all — its <c>GET /me</c> carried <c>families</c>. An older one knows
     /// only <c>/families/mine</c>, and is never asked for a family by id.
     /// </summary>
-    bool NamesFamilies = false)
+    bool NamesFamilies = false,
+    /// <summary>
+    /// Whether this server charges for a new family (docs/protocol.md, "Paid families"). False — every older server — changes
+    /// nothing anywhere (<see cref="PaidFamilies"/>).
+    /// </summary>
+    bool SubscriptionsEnabled = false,
+    /// <summary>
+    /// The account's own App Store subscription as the server holds it, or null. Only <c>active</c> is read here: this client
+    /// cannot sell one, and starts a family on such a server only for an account that already has one.
+    /// </summary>
+    SubscriptionDto? Subscription = null)
 {
     /// <summary>Whether the socket may connect at all: signed in, and in a family.</summary>
     public bool CanChat => Gate is Gate.Member or Gate.Owner;
@@ -355,7 +365,9 @@ public sealed class AppSession(
             Invitations: answered.Invitations ?? [],
             MemberFamiliesEnabled: answered.MemberFamiliesEnabled,
             MaxFamiliesPerAccount: answered.FamilyCap,
-            NamesFamilies: answered.Families is not null);
+            NamesFamilies: answered.Families is not null,
+            SubscriptionsEnabled: answered.SubscriptionsEnabled,
+            Subscription: answered.SubscriptionsEnabled ? answered.Subscription : null);
         foreach (var family in gone)
         {
             cache.DropFamily(family);
@@ -404,9 +416,20 @@ public sealed class AppSession(
         return Holds(last) ? last : families.FirstOrDefault()?.Id;
     }
 
-    /// <summary>The family's fuller document kept, under what the list now says of it — its name, and the reader's role.</summary>
+    /// <summary>
+    /// The family's fuller document kept, under what the list now says of it — its name, the reader's role, and what payment
+    /// says of it now (docs/protocol.md, "Paid families"): the list is the newer read, so a deadline it no longer carries is
+    /// gone, and a ceiling it carries is the one in force.
+    /// </summary>
     private static FamilyDto Merge(FamilyDto held, FamilyDto listed) =>
-        held with { Name = listed.Name, Role = listed.Role ?? held.Role };
+        held with
+        {
+            Name = listed.Name,
+            Role = listed.Role ?? held.Role,
+            Plan = listed.Plan,
+            DeleteAt = listed.DeleteAt,
+            MemberCeiling = listed.MemberCeiling,
+        };
 
     /// <summary>
     /// Show another of this account's families. Everything family-level on screen follows — the chat list, the board, the
@@ -484,6 +507,33 @@ public sealed class AppSession(
         {
             Invitations = [.. state.AllInvitations.Where(held => held.Id != invitation.Id), invitation],
         });
+    }
+
+    /// <summary>
+    /// A <c>family_plan</c> frame (docs/protocol.md, "Paid families"): the family it NAMES takes the frame's plan and deadline
+    /// — whichever family is shown — so the unpaid banner appears and goes while the app is open. An absent <c>delete_at</c>
+    /// CLEARS the deadline; an absent <c>plan</c> keeps the held one. A family this account does not hold, or a frame that
+    /// changes nothing, publishes nothing.
+    /// </summary>
+    public void ApplyPlan(ServerFrame.FamilyPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (state.AllFamilies.All(family => family.Id != plan.FamilyId) && state.Family?.Id != plan.FamilyId)
+        {
+            return;
+        }
+        FamilyDto Planned(FamilyDto held) =>
+            held.Id == plan.FamilyId ? held with { Plan = plan.Plan ?? held.Plan, DeleteAt = plan.DeleteAt } : held;
+        var next = state with
+        {
+            Family = state.Family is { } shown ? Planned(shown) : null,
+            Families = state.Families is { } families ? [.. families.Select(Planned)] : null,
+        };
+        if (Wire.Encode(next) == Wire.Encode(state))
+        {
+            return;
+        }
+        Publish(next);
     }
 
     /// <summary>An invitation lapsed — accepted, declined, withdrawn — and leaves the banner and the switcher.</summary>

@@ -29,10 +29,12 @@ use crate::store::{lost_in_reload, Outgoing};
 /// unknown. The protocol's list, and the phone clients'
 /// (ios ChatSyncCoordinator.terminalSendCodes).
 ///
-/// Two more than the apps' list, both from the UPLOAD a message with
-/// attachments starts with: `attachment_too_large` and `not_in_family`. The
-/// apps reach the same answer another way — they treat every 4xx but 408
-/// and 429 as final — and nothing about either gets better by waiting.
+/// Three more than the apps' list, all from the UPLOAD a message with
+/// attachments starts with: `attachment_too_large`, `not_in_family` and —
+/// for a paid family past its storage allowance (docs/protocol.md, "Paid
+/// families") — `storage_allowance_used`. The apps reach the same answer
+/// another way — they treat every 4xx but 408 and 429 as final — and
+/// nothing about any of them gets better by waiting.
 /// Not the server's: this client's own word for bytes that can no longer
 /// be read — a picked file moved, changed or deleted before it went up.
 pub const LOCAL_FILE_GONE: &str = "local_file_gone";
@@ -44,7 +46,7 @@ pub const LOCAL_FILE_GONE: &str = "local_file_gone";
 /// attach the thing again, which is exactly what nobody can do here.
 pub const STICKER_GONE: &str = "sticker_gone";
 
-pub const TERMINAL_CODES: [&str; 14] = [
+pub const TERMINAL_CODES: [&str; 15] = [
     "validation",
     "message_empty",
     "message_too_long",
@@ -57,6 +59,7 @@ pub const TERMINAL_CODES: [&str; 14] = [
     "attachment_already_used",
     "attachment_too_large",
     "not_in_family",
+    "storage_allowance_used",
     LOCAL_FILE_GONE,
     STICKER_GONE,
 ];
@@ -87,6 +90,10 @@ pub fn refusal(error: &ApiError) -> String {
         }
         Some("not_in_family") => {
             t("Not sent: join a family before sending attachments.").to_string()
+        }
+        // The family's allowance, not the server's disk (`storage_full`).
+        Some("storage_allowance_used") => {
+            t1("Not sent: %@", fc_text::paid::storage_allowance_used())
         }
         Some(LOCAL_FILE_GONE) => t(
             "Not sent: a file was moved, changed or deleted before it could go. Attach it again.",
@@ -900,6 +907,35 @@ mod tests {
         assert_eq!(
             failed.get("a").map(String::as_str),
             Some("Not sent: an attachment is over this server's size limit.")
+        );
+    }
+
+    /// A paid family past its storage allowance: TERMINAL, said once, and
+    /// never retried — it is the family's allowance, not a network that
+    /// will come back (docs/protocol.md, "Paid families").
+    #[wasm_bindgen_test]
+    async fn a_used_storage_allowance_fails_the_message_and_is_not_retried() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run = run_with_uploads(
+            &live,
+            Vec::new(),
+            vec![Err(server("storage_allowance_used"))],
+        )
+        .await;
+
+        assert!(run.sent.is_empty());
+        assert!(run.naps.is_empty(), "a refusal is not retried");
+        assert_eq!(run.uploaded.len(), 1, "asked once");
+        let failed = live.read(|state| state.store.failed_sends(42));
+        assert_eq!(
+            failed.get("a").map(String::as_str),
+            Some("Not sent: This family has used its storage allowance.")
+        );
+        assert!(
+            !is_terminal(&server("storage_full")),
+            "the server's disk is another matter"
         );
     }
 

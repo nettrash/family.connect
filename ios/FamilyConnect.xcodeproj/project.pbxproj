@@ -54,6 +54,7 @@
 		FC0000212EAB0010013FC000 /* FamilyConnectTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FamilyConnectTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0000312EAB0010013FC000 /* FamilyConnectUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FamilyConnectUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0000812EAB0010013FC000 /* FamilyConnectShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FamilyConnectShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC0000902EAB0010013FC000 /* FamilyConnect.storekit */ = {isa = PBXFileReference; lastKnownFileType = text.json.storekit; path = FamilyConnect.storekit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -149,6 +150,7 @@
 				FC0000382EAB0010013FC000 /* FamilyConnectUITests */,
 				FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */,
 				FC00008F2EAB0010013FC000 /* FamilyConnectShared */,
+				FC0000902EAB0010013FC000 /* FamilyConnect.storekit */,
 				FC0000402EAB0010013FC000 /* Products */,
 			);
 			sourceTree = "<group>";

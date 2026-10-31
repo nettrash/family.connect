@@ -58,6 +58,7 @@ pub struct FrameRouter {
     left_family: Event<i64>,
     invitation_changed: Event<InvitationDto>,
     invitation_removed: Event<i64>,
+    family_plan: Event<(i64, Option<String>, Option<String>)>,
     arrived: Event<MessageDto>,
     edited: Event<MessageDto>,
     chat_changed: Event<i64>,
@@ -94,6 +95,7 @@ impl FrameRouter {
             left_family: Event::new(),
             invitation_changed: Event::new(),
             invitation_removed: Event::new(),
+            family_plan: Event::new(),
             arrived: Event::new(),
             edited: Event::new(),
             chat_changed: Event::new(),
@@ -134,6 +136,13 @@ impl FrameRouter {
     /// An invitation lapsed: its id.
     pub fn on_invitation_removed(&self) -> &Event<i64> {
         &self.invitation_removed
+    }
+
+    /// A paid family's plan and deadline as `family_plan` says them (docs/protocol.md, "Paid
+    /// families"): the family's id, its `plan`, and its `delete_at` — `None` when the frame has
+    /// none, which CLEARS the one held. Applied to the family it names, by the session.
+    pub fn on_family_plan(&self) -> &Event<(i64, Option<String>, Option<String>)> {
+        &self.family_plan
     }
 
     /// A message that is NEW — the only frame that may raise a notification.
@@ -373,6 +382,17 @@ impl FrameRouter {
             ServerFrame::FamilyOwner { family_id, user_id } => {
                 chats.set_owner(*user_id, self.named(*family_id))?;
                 self.roster_changed.emit(&());
+            }
+
+            ServerFrame::FamilyPlan {
+                family_id,
+                plan,
+                delete_at,
+            } => {
+                // The session's, not the cache's: a family's plan and deadline live on the family it
+                // holds (docs/protocol.md, "Paid families").
+                self.family_plan
+                    .emit(&(*family_id, plan.clone(), delete_at.clone()));
             }
 
             ServerFrame::Invitation(invitation) => {

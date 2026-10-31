@@ -311,7 +311,7 @@ impl FamilyDialog {
             content.append(&self.reports_group(&connection, &loaded.reports));
             drop(loaded);
             content.append(&self.policy_group(&connection, &state));
-            if state.max_family_members > 0 {
+            if state.member_ceiling() > 0 {
                 content.append(&self.cap_group(&connection, &state, present.len()));
             }
             for group in assistant::groups(self, &connection, &state) {
@@ -715,7 +715,9 @@ impl FamilyDialog {
         let group = adw::PreferencesGroup::builder()
             .title(say.get("Member limit"))
             .build();
-        let ceiling = state.max_family_members;
+        // The family's own ceiling — a paid family's is lower — else the server's
+        // (docs/protocol.md, "Paid families": `member_ceiling`).
+        let ceiling = state.member_ceiling();
         let count = i32::try_from(members).unwrap_or(i32::MAX);
         let held = state.family.as_ref().and_then(|family| family.max_members);
         let draft = self.cap_draft(connection);

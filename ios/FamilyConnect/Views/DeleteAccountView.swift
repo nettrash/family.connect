@@ -39,11 +39,16 @@ struct DeleteAccountView: View {
     /// all, so a bare literal here would ship English to all eight
     /// languages. Every site that writes this wraps in `String(localized:)`.
     @State private var errorText: String?
+    /// Manage Subscription, from the line about a subscription that goes on
+    /// renewing (docs/protocol.md, "Deleting an account", amended
+    /// 2026-10-30).
+    @State private var managingSubscription = false
 
     var body: some View {
         NavigationStack {
             Form {
                 consequencesSection
+                subscriptionSection
                 passwordSection
                 if let errorText {
                     Section {
@@ -70,6 +75,7 @@ struct DeleteAccountView: View {
             .overlay {
                 if isDeleting { ProgressView() }
             }
+            .manageSubscriptions(isPresented: $managingSubscription)
             .confirmationDialog(
                 "Delete your account?",
                 isPresented: $confirming,
@@ -108,6 +114,22 @@ struct DeleteAccountView: View {
             Text("What happens")
         } footer: {
             Text("There is no grace period and no way to cancel afterwards.")
+        }
+    }
+
+    /// Before the password, while the account's App Store subscription is
+    /// active: deleting the account cancels nothing at Apple, and Apple asks
+    /// every app that sells a subscription to say so here.
+    @ViewBuilder
+    private var subscriptionSection: some View {
+        if PaidFamilies.keepsRenewingOnDelete(
+            subscriptionsEnabled: session.subscriptionsEnabled, subscription: session.subscription) {
+            Section {
+                Label(
+                    "Your App Store subscription keeps renewing after the account is deleted. Cancel it in the App Store if you no longer need it.",
+                    systemImage: "creditcard")
+                Button("Manage Subscription") { managingSubscription = true }
+            }
         }
     }
 

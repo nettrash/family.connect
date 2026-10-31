@@ -153,6 +153,12 @@ nonisolated enum AppSettings {
         static let videoMessageCameraID = "v1.round.cameraID"
         /// The recorder's first-time line has led to a recording (S7.5).
         static let videoMessagePreviewTaught = "v1.round.previewTaught"
+        /// The products this SERVER sells for paid families, as `GET /me`
+        /// last reported them; MISSING when it said it does not charge
+        /// (docs/protocol.md, "Paid families"). Read at launch, before the
+        /// first `/me` answers, so the App Store's update listener starts
+        /// with the app — and never on a server that has not charged.
+        static let subscriptionProducts = "v1.subscriptions.products"
     }
 
     /// The server URL compiled into this build, or nil for the generic
@@ -706,6 +712,19 @@ nonisolated enum AppSettings {
             serverCanDraw: assistantImages, serverToken: assistantDraw)
     }
 
+    /// What this server sold for paid families at its last `/me`, or nil
+    /// when it did not charge — see `Key.subscriptionProducts`.
+    static var subscriptionProducts: [String]? {
+        get { defaults.stringArray(forKey: Key.subscriptionProducts) }
+        set {
+            if let newValue, !newValue.isEmpty {
+                defaults.set(newValue, forKey: Key.subscriptionProducts)
+            } else {
+                defaults.removeObject(forKey: Key.subscriptionProducts)
+            }
+        }
+    }
+
     /// Remove everything this type owns; `keepServerURL` preserves the
     /// server row (logout keeps it; server change does not).
     static func wipe(keepServerURL: Bool) {
@@ -753,5 +772,8 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.roundVideoMaxBytes)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
+        // Whether this server charges is a fact about it and this session;
+        // the next sign-in's `/me` says it again.
+        defaults.removeObject(forKey: Key.subscriptionProducts)
     }
 }

@@ -832,4 +832,20 @@
     <string name="s_leave_named_family">¿Salir de «%s»?</string>
     <string name="s_leave_one_of_families_explanation">Perderás el acceso a los chats de esta familia. Los chats directos con quienes compartes otra familia se mantienen.</string>
     <string name="s_new_family_explanation">Crea tu propia familia. Será tuya y podrás invitar a miembros de tus otras familias.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">En este servidor no se pueden crear familias nuevas desde esta app.</string>
+    <string name="e_subscription_required">Para crear una familia nueva en este servidor hace falta una suscripción.</string>
+    <string name="s_banner_member">«%1$s» se eliminará el %2$s porque su suscripción ha terminado. Solo %3$s, el propietario, puede renovarla.</string>
+    <string name="s_banner_owner_not_here">«%1$s» se eliminará el %2$s porque tu suscripción ha terminado. No se puede renovar desde esta app.</string>
+    <string name="s_allowance_title">Límite de este mes</string>
+    <string name="s_allowance_storage">Almacenamiento</string>
+    <string name="s_allowance_assistant">Asistente</string>
+    <string name="s_allowance_pictures">Imágenes</string>
+    <string name="s_allowance_transcripts">Transcripciones</string>
+    <string name="s_allowance_of">%1$s de %2$s</string>
+    <string name="s_allowance_percent">%1$d %% usado</string>
+    <string name="s_allowance_minutes">%1$d de %2$d min</string>
+    <string name="s_allowance_renews_on">Se renueva el %1$s</string>
+    <string name="e_storage_allowance_used">Esta familia ha agotado su almacenamiento.</string>
+    <string name="e_ai_allowance_used">Esta familia ha agotado el límite del asistente de este mes. Se renueva el %1$s.</string>
 </resources>

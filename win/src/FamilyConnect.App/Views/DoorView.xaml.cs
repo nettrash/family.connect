@@ -28,10 +28,13 @@ public sealed partial class DoorView : UserControl
         LogOutButton.Content = say.Get("Log Out");
         DeclinedBar.Message = say.Get("Your request to join was declined. You can ask for a new invite code and try again.");
         DeclinedBar.IsOpen = connection.Session.State.JoinDeclined;
-        // The door a closed server has shut is not drawn at all (docs/protocol.md, "Starting a family").
-        CreatePanel.Visibility = connection.Session.State.FamilyRegistrationEnabled
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        // The door a closed server has shut is not drawn at all (docs/protocol.md, "Starting a family"); one that charges for a
+        // new family, to an account without a subscription, says where one is started instead of the form ("Paid families").
+        var create = PaidFamilies.FirstFamily(connection.Session.State);
+        CreatePanel.Visibility = create == CreateDoor.Shut ? Visibility.Collapsed : Visibility.Visible;
+        CreateForm.Visibility = create == CreateDoor.Open ? Visibility.Visible : Visibility.Collapsed;
+        CreateElsewhere.Visibility = create == CreateDoor.AppleApp ? Visibility.Visible : Visibility.Collapsed;
+        CreateElsewhere.Text = PaidFamilies.StartsInAppleApp(say);
 
         CodeBox.TextChanged += (_, _) => Arrange();
         NameBox.TextChanged += (_, _) => Arrange();
@@ -91,7 +94,8 @@ public sealed partial class DoorView : UserControl
 
     private async Task CreateAsync()
     {
-        if (JoinWorking.IsActive || CreateWorking.IsActive || !FamilyDoor.MayCreate(NameBox.Text))
+        if (JoinWorking.IsActive || CreateWorking.IsActive || CreateForm.Visibility != Visibility.Visible
+            || !FamilyDoor.MayCreate(NameBox.Text))
         {
             return;
         }

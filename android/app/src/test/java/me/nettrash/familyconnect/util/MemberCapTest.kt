@@ -73,4 +73,18 @@ class MemberCapTest {
         // range the control would trap on.
         assertThat(MemberCap.clamp(5, ceiling = 0)).isEqualTo(1)
     }
+
+    /**
+     * The picker's bound is the family's own `member_ceiling` — a paid
+     * family's is the lower paid limit — and the operator's ceiling from
+     * `GET /me` only on a server that predates it (docs/protocol.md, "Paid
+     * families").
+     */
+    @Test
+    fun theFamilysOwnCeilingWinsAndTheOperatorsIsTheFallback() {
+        assertThat(MemberCap.ceiling(memberCeiling = 25, maxFamilyMembers = 50)).isEqualTo(25)
+        assertThat(MemberCap.ceiling(memberCeiling = null, maxFamilyMembers = 50)).isEqualTo(50)
+        assertThat(MemberCap.ceiling(memberCeiling = 25, maxFamilyMembers = null)).isEqualTo(25)
+        assertThat(MemberCap.ceiling(memberCeiling = null, maxFamilyMembers = null)).isNull()
+    }
 }

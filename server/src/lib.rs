@@ -12,6 +12,7 @@
 pub mod admin;
 pub mod ai;
 pub mod app;
+pub mod appstore;
 pub mod auth;
 pub mod blocks;
 pub mod calls;
@@ -36,6 +37,7 @@ pub mod handlers_pack;
 pub mod handlers_poll;
 pub mod handlers_report;
 pub mod handlers_stats;
+pub mod handlers_subscription;
 pub mod handlers_transcript;
 pub mod keyring;
 pub mod lookups;
@@ -51,6 +53,7 @@ pub mod seal_existing;
 pub mod seal_files;
 pub mod state;
 pub mod storage;
+pub mod subscriptions;
 #[cfg(test)]
 pub(crate) mod test_keys;
 pub mod tokens;

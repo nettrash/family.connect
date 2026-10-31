@@ -390,7 +390,7 @@ pub async fn accept_invitation(
         &mut tx,
         family_id,
         auth.user_id,
-        state.cfg.limits.max_family_members,
+        &state.cfg,
         state.cfg.families.max_families_per_account,
     )
     .await?;

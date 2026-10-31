@@ -16,6 +16,7 @@ use fc_core::protocol::{AttachmentDto, MessageDto};
 use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::backdrop_consent;
 use fc_logic::message_menu::{self, TextItem};
+use fc_logic::paid_families::Days;
 use fc_logic::transcript_sound::{self, TranscriptForm};
 use fc_logic::transcripts::{TranscriptPhase, transcript_rules};
 use gtk::prelude::*;
@@ -279,9 +280,16 @@ fn fill(
             let error = look
                 .error
                 .unwrap_or_else(|| fc_core::protocol::ApiError::transport("no answer"));
+            let shell = Shell::get();
+            let days = Days::new(
+                &shell.culture,
+                shell.zone.as_ref(),
+                time::OffsetDateTime::now_utc(),
+            );
             root.append(&note(&transcript_rules::failure_sentence(
                 &error,
                 say.as_ref(),
+                &days,
             )));
             if transcript_rules::may_retry(&error) && offered(connection, message, attachment) {
                 root.append(&show());

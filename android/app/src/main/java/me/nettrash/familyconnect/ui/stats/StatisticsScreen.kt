@@ -9,6 +9,8 @@
  * Nothing is cached: this is a page opened occasionally, and a stale count
  * would be worse than a moment's spinner.
  *
+ * A paid family also sees what it has used of its allowance (#89).
+ *
  * iOS/macOS counterpart: ios/FamilyConnect/Views/StatisticsView.swift
  */
 
@@ -50,7 +52,11 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
+import java.time.ZoneOffset
 import me.nettrash.familyconnect.data.net.dto.AiStatsDto
+import me.nettrash.familyconnect.data.net.dto.AllowanceDto
+import me.nettrash.familyconnect.data.repo.PaidFamilies
+import me.nettrash.familyconnect.util.TimeFormat
 import me.nettrash.familyconnect.data.net.dto.MemberStatsDto
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
 
@@ -123,6 +129,28 @@ fun StatisticsScreen(
                     item { StatRow(stringResource(R.string.s_messages), "${stats.totals.messages}") }
                     item {
                         StatRow(stringResource(R.string.s_board_notes), "${stats.totals.boardNotes}")
+                    }
+
+                    // A paid family's allowance (docs/protocol.md, "Family
+                    // statistics", amended 2026-10-30): one row per limit the
+                    // operator has on, then when the monthly ones start
+                    // again. A free family's statistics carry none.
+                    stats.allowance?.let { allowance ->
+                        val allowanceRows = StatisticsLines.allowanceRows(allowance, context)
+                        if (allowanceRows.isNotEmpty()) {
+                            item { SectionHeader(stringResource(R.string.s_allowance_title)) }
+                            items(allowanceRows) { (label, value) -> StatRow(label, value) }
+                            StatisticsLines.allowanceRenews(allowance, context)?.let { renews ->
+                                item {
+                                    Text(
+                                        text = renews,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     item { SectionHeader(stringResource(R.string.s_attachments)) }
@@ -250,6 +278,66 @@ internal object StatisticsLines {
                 add(context.getString(R.string.s_stats_recording_time) to recordingTime(ai.transcriptDurationMs))
             }
         }
+    }
+
+    /**
+     * A paid family's allowance, label to value, one row per limit present
+     * (docs/protocol.md, "Family statistics", amended 2026-10-30): storage
+     * as "3 GB of 10 GB" in the reader's own units, the assistant's tokens
+     * as a whole percentage, pictures as counts, and transcripts in whole
+     * minutes — the time used rounded up, the limit rounded down. Empty
+     * when the operator turned every limit off, and then no section.
+     */
+    fun allowanceRows(allowance: AllowanceDto, context: Context): List<Pair<String, String>> = buildList {
+        allowance.storageBytes?.let { use ->
+            add(
+                context.getString(R.string.s_allowance_storage) to context.getString(
+                    R.string.s_allowance_of,
+                    formatBytes(context, use.used.coerceAtLeast(0)),
+                    formatBytes(context, use.limit.coerceAtLeast(0)),
+                ),
+            )
+        }
+        allowance.aiTokens?.let { use ->
+            PaidFamilies.percentUsed(use.used, use.limit)?.let { percent ->
+                add(context.getString(R.string.s_allowance_assistant) to context.getString(R.string.s_allowance_percent, percent))
+            }
+        }
+        allowance.images?.let { use ->
+            add(
+                context.getString(R.string.s_allowance_pictures) to context.getString(
+                    R.string.s_allowance_of,
+                    "${use.used.coerceAtLeast(0)}",
+                    "${use.limit.coerceAtLeast(0)}",
+                ),
+            )
+        }
+        allowance.transcriptMs?.let { use ->
+            add(
+                context.getString(R.string.s_allowance_transcripts) to context.getString(
+                    R.string.s_allowance_minutes,
+                    PaidFamilies.minutesUsed(use.used),
+                    PaidFamilies.minutesLimit(use.limit),
+                ),
+            )
+        }
+    }
+
+    /**
+     * "Renews on 1 December": the start of the next UTC month, named as the
+     * day it is in UTC — the 1st everywhere. Null without a readable
+     * `renews_at`.
+     */
+    fun allowanceRenews(
+        allowance: AllowanceDto,
+        context: Context,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): String? {
+        val renewsAt = allowance.renewsAt?.let(TimeFormat::parseTimestamp) ?: return null
+        return context.getString(
+            R.string.s_allowance_renews_on,
+            TimeFormat.calendarDay(renewsAt, nowMillis = nowMillis, zone = ZoneOffset.UTC),
+        )
     }
 
     /** "3:42", or "1:03:42" past an hour — rounded to the nearest second. */

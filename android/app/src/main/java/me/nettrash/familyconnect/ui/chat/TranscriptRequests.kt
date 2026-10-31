@@ -71,6 +71,12 @@ class TranscriptRequests(
 
         /** "Couldn't read the sound in this file." No retry. */
         UNREADABLE,
+
+        /**
+         * A paid family has used this month's transcript minutes: the
+         * sentence names the 1st of next month (UTC). No retry.
+         */
+        ALLOWANCE_USED,
     }
 
     private val _status = MutableStateFlow<Map<Long, Status>>(emptyMap())
@@ -124,6 +130,7 @@ class TranscriptRequests(
             TranscriptOutcome.Failed -> set(ask, Status.FAILED)
             TranscriptOutcome.TooLong -> set(ask, Status.TOO_LONG)
             TranscriptOutcome.Unreadable -> set(ask, Status.UNREADABLE)
+            TranscriptOutcome.AllowanceUsed -> set(ask, Status.ALLOWANCE_USED)
             TranscriptOutcome.ConsentRequired ->
                 // The server's answer outranks this device's stamp: ask,
                 // and request again on a yes — unless the assistant cannot

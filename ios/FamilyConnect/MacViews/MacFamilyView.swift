@@ -243,7 +243,7 @@ struct MacFamilyView: View {
 
     @ViewBuilder
     private var capSection: some View {
-        if let ceiling = session.maxFamilyMembers {
+        if let ceiling = session.memberCeiling {
             Section("Member limit") {
                 Toggle("Limit members", isOn: capEnabledBinding(ceiling: ceiling))
                 if let cap = draftCap {
@@ -331,7 +331,10 @@ struct MacFamilyView: View {
             aiTranscripts: updated.aiTranscripts,
             aiLookups: updated.aiLookups,
             greetingPlaces: updated.greetingPlaces,
-            maxMembers: updated.maxMembers)
+            maxMembers: updated.maxMembers,
+            plan: updated.plan,
+            memberCeiling: updated.memberCeiling,
+            deleteAt: updated.deleteAt)
     }
 
     /// The owner's moderation inbox, inline rather than behind a sheet: a

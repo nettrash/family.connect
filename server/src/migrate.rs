@@ -326,6 +326,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "sealed",
         sql: include_str!("../migrations/0060_sealed.sql"),
     },
+    Migration {
+        version: 61,
+        name: "paid_families",
+        sql: include_str!("../migrations/0061_paid_families.sql"),
+    },
 ];
 
 /// The first migration that may run only once every value is sealed. Before

@@ -1,7 +1,8 @@
 //! The operator's commands for encryption at rest (#59, docs/operations.md,
 //! "Encryption at rest" and "Restoring"): rotating the server key, forgetting
 //! what a restore left without keys, and reading the assistant reports that
-//! `psql` can only show sealed.
+//! `psql` can only show sealed — and, since #89, seeing the families and
+//! moving one between plans (docs/operations.md, "Paid families").
 //!
 //! They run from the same binary as the server (`family-connect storage-key
 //! rotate`, `family-connect storage forget-missing`, `family-connect
@@ -31,8 +32,8 @@ pub struct Rotated {
 
 /// Move the database from server key `old` to `new`, in ONE transaction:
 /// every storage key is re-wrapped, and every lookup column — usernames,
-/// invite codes, push and VoIP tokens, which are HMACs under the server key —
-/// is recomputed from the value beside it. Nothing else is touched: the data
+/// invite codes, push and VoIP tokens and App Store transaction ids, which
+/// are HMACs under the server key — is recomputed from the value beside it. Nothing else is touched: the data
 /// keys, and so every sealed value and file, stay as they are.
 ///
 /// Refuses a database that is not at this version's schema (start the server
@@ -97,6 +98,27 @@ pub async fn rotate(pool: &PgPool, old: &ServerKey, new: &ServerKey) -> Result<R
             .bind(voip.map(|token| new.lookup(Lookup::VoipToken, &token)))
             .execute(&mut *tx)
             .await?;
+        lookups += 1;
+    }
+    // App Store transaction ids (docs/protocol.md, "Paid families"): the
+    // only way a notification names a subscription.
+    let subscriptions =
+        sqlx::query("SELECT id, original_transaction_id, latest_transaction_id FROM subscriptions")
+            .fetch_all(&mut *tx)
+            .await?;
+    for row in &subscriptions {
+        let original = row.text(&keyring, "original_transaction_id")?;
+        let latest = row.text(&keyring, "latest_transaction_id")?;
+        sqlx::query(
+            "UPDATE subscriptions
+                SET original_transaction_key = $2, latest_transaction_key = $3
+              WHERE id = $1",
+        )
+        .bind(row.get::<i64, _>("id"))
+        .bind(new.lookup(Lookup::AppStoreTransaction, &original))
+        .bind(new.lookup(Lookup::AppStoreTransaction, &latest))
+        .execute(&mut *tx)
+        .await?;
         lookups += 1;
     }
     tx.commit().await?;
@@ -260,4 +282,87 @@ pub async fn assistant_reports(
             note: row.text_opt(keys, "note").ok().flatten(),
         })
         .collect())
+}
+
+/// One family as `family-connect families list` prints it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FamilyLine {
+    pub id: i64,
+    pub name: String,
+    pub plan: String,
+    pub owner_user_id: i64,
+    pub members: i64,
+    pub storage_bytes: i64,
+    pub month_tokens: i64,
+    /// The owner's subscription: when it ends and whether it covers now.
+    pub subscription: Option<(OffsetDateTime, bool)>,
+    /// When the server will delete it, while it is unpaid.
+    pub delete_at: Option<OffsetDateTime>,
+}
+
+/// Every family, oldest first, with what payment means for it. Names are
+/// opened for the operator's own terminal — this never reaches the journal.
+pub async fn families(
+    pool: &PgPool,
+    keys: &Keyring,
+    cfg: &crate::config::Config,
+) -> Result<Vec<FamilyLine>> {
+    let rows = sqlx::query(
+        "SELECT f.id, f.name, f.plan, f.owner_user_id, f.unpaid_since,
+                (SELECT count(*) FROM family_members fm WHERE fm.family_id = f.id) AS members
+           FROM families f ORDER BY f.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut lines = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: i64 = row.get("id");
+        let owner_user_id: i64 = row.get("owner_user_id");
+        let plan: String = row.get("plan");
+        let view = crate::subscriptions::plan_view(cfg, &plan, row.get("unpaid_since"));
+        let subscription = crate::subscriptions::subscription_of(pool, cfg, owner_user_id)
+            .await
+            .map_err(|error| anyhow::anyhow!("reading a subscription: {error:?}"))?
+            .map(|s| (s.expires_at, s.active));
+        let storage_bytes = crate::subscriptions::storage_used(pool, id)
+            .await
+            .map_err(|error| anyhow::anyhow!("measuring storage: {error:?}"))?;
+        let month_tokens = crate::subscriptions::month_use(pool, id)
+            .await
+            .map_err(|error| anyhow::anyhow!("reading usage: {error:?}"))?
+            .tokens;
+        lines.push(FamilyLine {
+            id,
+            name: row.text(keys, "name")?,
+            plan,
+            owner_user_id,
+            members: row.get("members"),
+            storage_bytes,
+            month_tokens,
+            subscription,
+            delete_at: view.delete_at,
+        });
+    }
+    Ok(lines)
+}
+
+/// Move a family between plans. Returns the plan it had. A family moved to
+/// `paid` whose owner holds no subscription starts its days at the running
+/// server's next sweep, which tells every member; one moved to `free` has its
+/// deadline dropped there too — this command writes the plan and nothing
+/// else, because the sweep is the one place that announces a deadline.
+pub async fn set_plan(pool: &PgPool, family_id: i64, plan: &str) -> Result<String> {
+    if plan != crate::subscriptions::FREE && plan != crate::subscriptions::PAID {
+        bail!("a plan is \"free\" or \"paid\"");
+    }
+    let before: Option<String> = sqlx::query_scalar(
+        "UPDATE families f SET plan = $2 FROM families old
+          WHERE f.id = $1 AND old.id = f.id
+          RETURNING old.plan",
+    )
+    .bind(family_id)
+    .bind(plan)
+    .fetch_optional(pool)
+    .await?;
+    before.with_context(|| format!("no family with id {family_id}"))
 }

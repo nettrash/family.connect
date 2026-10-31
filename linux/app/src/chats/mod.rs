@@ -225,7 +225,7 @@ impl Chats {
         self.schedule();
     }
 
-    /// Draws the list, the switcher and the two banners from the cache and the session.
+    /// Draws the list, the switcher and the banners from the cache and the session.
     fn refresh(&self) {
         let Some(main) = self.main() else {
             return;
@@ -265,8 +265,14 @@ impl Chats {
         }
         main.sidebar_title_slot()
             .set_child(Some(&switcher::title(&shell, &state, &model.held())));
+        // The shown family's roster names its owner on the unpaid banner; the roster's own frames
+        // and reads redraw this (`on_roster_changed`).
+        let members = connection.chats.members().unwrap_or_else(|error| {
+            crate::fc_warn!("roster: the cache refused ({})", log::store_error(&error));
+            Rc::from(Vec::new())
+        });
         main.sidebar_banner_slot()
-            .set_child(Some(&banners::invitations(&shell, &state)));
+            .set_child(Some(&banners::above_list(&shell, &state, &members)));
         let network = gio::NetworkMonitor::default().is_network_available();
         let line = banners::connection_text(connection.live.link(), network, shell.say.as_ref());
         match line {

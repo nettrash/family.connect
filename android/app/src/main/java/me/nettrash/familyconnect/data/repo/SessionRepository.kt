@@ -353,6 +353,15 @@ class SessionRepository @Inject constructor(
                 settings.setBlockedUserIds(me.blockedUserIds)
                 settings.setMaxFamilyMembers(me.maxFamilyMembers)
                 settings.setSupportContact(me.supportContact)
+                // Paid families (docs/protocol.md, "Paid families"): whether
+                // this server charges for a new family, and whether the
+                // caller already pays. Active only counts while the server
+                // charges at all, so a stale subscription on a server that
+                // turned the switch off changes nothing.
+                settings.setSubscriptions(
+                    enabled = me.subscriptionsEnabled,
+                    active = me.subscriptionsEnabled && me.subscription?.active == true,
+                )
                 val before = settings.state.first()
                 val next = applyFamilies(me, before)
                 if (previous == FamilyStatus.PENDING && next == FamilyStatus.NONE) {
@@ -503,6 +512,20 @@ class SessionRepository @Inject constructor(
             multiFamilyServer = state.multiFamilyServer,
         )
         if (state.currentFamilyId == family.id) mirrorCurrent(families, family.id, state.pendingJoinRequests)
+    }
+
+    /**
+     * A paid family's deadline appeared or went (`family_plan`,
+     * docs/protocol.md, "Paid families"): that family's entry takes the
+     * frame's `plan` and `delete_at`, so the chat list's banner appears and
+     * disappears with it. An absent `delete_at` CLEARS the deadline — the
+     * frame is a state-set. A family this account does not hold is nobody's
+     * business here.
+     */
+    suspend fun applyFamilyPlan(familyId: Long, plan: String?, deleteAt: String?) {
+        val held = settings.state.first().families.firstOrNull { it.id == familyId } ?: return
+        val next = held.copy(plan = plan ?: held.plan, deleteAt = deleteAt)
+        if (next != held) updateFamily(next)
     }
 
     /**

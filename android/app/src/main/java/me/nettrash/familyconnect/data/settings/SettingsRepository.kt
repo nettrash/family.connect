@@ -372,6 +372,20 @@ data class SettingsState(
      */
     val familylessAccountTtlDays: Int = 0,
     /**
+     * Whether a NEW family on this server needs its owner's App Store
+     * subscription (`GET /me` → subscriptions_enabled, docs/protocol.md,
+     * "Paid families"). False until a `/me` says otherwise, which is also
+     * the answer on an older server — and with it false nothing changes.
+     */
+    val subscriptionsEnabled: Boolean = false,
+    /**
+     * Whether the caller holds an ACTIVE subscription (`subscription.active`
+     * on `GET /me`). Only with it may this app offer "Create a family" and
+     * "New Family…" on a server that charges: the app sells nothing, it
+     * only reads what was bought elsewhere.
+     */
+    val subscriptionActive: Boolean = false,
+    /**
      * The voice messages that were not sent, waiting in their chats' "Voice
      * message not sent" rows (#79, docs/audio-video-messages-2026-10-04.md,
      * S2.8). The INDEX only — the bytes live in `filesDir`, and
@@ -638,6 +652,12 @@ interface SettingsRepository {
     suspend fun setFamilylessAccountTtlDays(days: Int)
 
     /**
+     * Record what `GET /me` said about paid families: whether this server
+     * charges for new ones, and whether the caller's subscription is active.
+     */
+    suspend fun setSubscriptions(enabled: Boolean, active: Boolean)
+
+    /**
      * REPLACE the caller's block list with what the server just said.
      *
      * A complete state-set and never a delta, so the empty set is a real
@@ -778,6 +798,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
         val FAMILYLESS_ACCOUNT_TTL_DAYS = intPreferencesKey("familyless_account_ttl_days")
+        val SUBSCRIPTIONS_ENABLED = booleanPreferencesKey("subscriptions_enabled")
+        val SUBSCRIPTION_ACTIVE = booleanPreferencesKey("subscription_active")
         // JSON, through ParkedRecording's own codec: a list of small records,
         // which no Preferences key type can hold. Account-scoped: NOT among
         // the keys resetKeepingServerUrl keeps.
@@ -860,6 +882,8 @@ class DataStoreSettingsRepository @Inject constructor(
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
             familylessAccountTtlDays = prefs[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] ?: 0,
+            subscriptionsEnabled = prefs[Keys.SUBSCRIPTIONS_ENABLED] == true,
+            subscriptionActive = prefs[Keys.SUBSCRIPTION_ACTIVE] == true,
             // Never throws: a corrupt index reads as empty, like the block
             // list's `toLongOrNull`, and the sweep reclaims the files.
             parkedRecordings = ParkedRecording.decode(prefs[Keys.PARKED_RECORDINGS]),
@@ -1154,6 +1178,13 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setFamilylessAccountTtlDays(days: Int) {
         dataStore.edit { it[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] = days }
+    }
+
+    override suspend fun setSubscriptions(enabled: Boolean, active: Boolean) {
+        dataStore.edit {
+            it[Keys.SUBSCRIPTIONS_ENABLED] = enabled
+            it[Keys.SUBSCRIPTION_ACTIVE] = active
+        }
     }
 
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {

@@ -109,6 +109,31 @@ pub enum PushEvent {
         family_id: i64,
         invitation_id: i64,
     },
+    /// A paid family's deadline: it stopped being covered, it is deleted
+    /// tomorrow, or it was deleted (docs/protocol.md, "Paid families").
+    FamilyPlan {
+        family_id: i64,
+        stage: PlanStage,
+    },
+}
+
+/// Which moment of a paid family's deadline a push announces — `stage` on
+/// the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanStage {
+    Unpaid,
+    Tomorrow,
+    Deleted,
+}
+
+impl PlanStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlanStage::Unpaid => "unpaid",
+            PlanStage::Tomorrow => "tomorrow",
+            PlanStage::Deleted => "deleted",
+        }
+    }
 }
 
 impl PushEvent {
@@ -121,6 +146,7 @@ impl PushEvent {
             PushEvent::Joined { .. } => "joined",
             PushEvent::Report { .. } => "report",
             PushEvent::Invitation { .. } => "invitation",
+            PushEvent::FamilyPlan { .. } => "family_plan",
         }
     }
 
@@ -136,7 +162,8 @@ impl PushEvent {
             PushEvent::JoinRequest { .. }
             | PushEvent::Joined { .. }
             | PushEvent::Report { .. }
-            | PushEvent::Invitation { .. } => None,
+            | PushEvent::Invitation { .. }
+            | PushEvent::FamilyPlan { .. } => None,
         }
     }
 }
@@ -178,12 +205,13 @@ impl Notification {
             match note.event {
                 PushEvent::Message { .. } => note.body = Text::say("New message", &[]),
                 PushEvent::BoardNote { .. } => note.body = Text::say("New note", &[]),
-                // A report, a join request, a join and an invitation carry no
-                // family text to withhold.
+                // A report, a join request, a join, an invitation and a
+                // deadline carry no family text to withhold.
                 PushEvent::JoinRequest { .. }
                 | PushEvent::Joined { .. }
                 | PushEvent::Report { .. }
-                | PushEvent::Invitation { .. } => {}
+                | PushEvent::Invitation { .. }
+                | PushEvent::FamilyPlan { .. } => {}
             }
         }
         note
@@ -490,6 +518,49 @@ pub fn invitation_notification(
     }
 }
 
+/// A paid family's deadline, to one member: the family's name over the
+/// server's own sentence, the OWNER's words for the owner, because the owner
+/// is the one person who can renew (docs/protocol.md, "Paid families"). No
+/// date and no number in it: the banner in the app carries the date, in the
+/// reader's own calendar.
+pub fn family_plan_notification(
+    family_name: &str,
+    family_id: i64,
+    stage: PlanStage,
+    to_owner: bool,
+    badge: i64,
+) -> Notification {
+    let body = match (stage, to_owner) {
+        (PlanStage::Unpaid, false) => Text::say(
+            "This family's subscription has ended. It will be deleted unless it is renewed.",
+            &[],
+        ),
+        (PlanStage::Unpaid, true) => Text::say(
+            "Your subscription has ended. Renew it, or this family will be deleted.",
+            &[],
+        ),
+        (PlanStage::Tomorrow, false) => Text::say(
+            "This family will be deleted tomorrow unless its subscription is renewed.",
+            &[],
+        ),
+        (PlanStage::Tomorrow, true) => Text::say(
+            "This family will be deleted tomorrow. Renew your subscription to keep it.",
+            &[],
+        ),
+        (PlanStage::Deleted, _) => Text::say(
+            "This family was deleted because its subscription ended.",
+            &[],
+        ),
+    };
+    Notification {
+        title: Text::Verbatim(family_name.to_string()),
+        body,
+        badge,
+        chat_unread: None,
+        event: PushEvent::FamilyPlan { family_id, stage },
+    }
+}
+
 /// The APNs request body, exactly as protocol.md specifies it: the `aps`
 /// dictionary plus top-level `kind` and the event's ids — its words in `language`, the one the
 /// device registered (docs/protocol.md, "The words of a push").
@@ -521,6 +592,10 @@ pub fn apns_payload(note: &Notification, language: Option<&str>) -> Value {
         } => {
             payload["family_id"] = json!(family_id);
             payload["invitation_id"] = json!(invitation_id);
+        }
+        PushEvent::FamilyPlan { family_id, stage } => {
+            payload["family_id"] = json!(family_id);
+            payload["stage"] = json!(stage.as_str());
         }
         PushEvent::BoardNote { family_id, note_id } => {
             payload["family_id"] = json!(family_id);
@@ -560,6 +635,10 @@ pub fn fcm_message(note: &Notification, push_token: &str, language: Option<&str>
         } => {
             data["family_id"] = json!(family_id.to_string());
             data["invitation_id"] = json!(invitation_id.to_string());
+        }
+        PushEvent::FamilyPlan { family_id, stage } => {
+            data["family_id"] = json!(family_id.to_string());
+            data["stage"] = json!(stage.as_str());
         }
         PushEvent::BoardNote { family_id, note_id } => {
             data["family_id"] = json!(family_id.to_string());
@@ -1348,6 +1427,42 @@ mod tests {
                 .get("family_id")
                 .is_none()
         );
+    }
+
+    /// A paid family's deadline: the family's name, the owner's words for the
+    /// owner, `kind: "family_plan"` with the family and the stage, on both
+    /// transports — and FCM's as strings.
+    #[test]
+    fn the_family_plan_push_carries_its_family_and_stage() {
+        let member = family_plan_notification("Ivanovs", 3, PlanStage::Unpaid, false, 0);
+        let owner = family_plan_notification("Ivanovs", 3, PlanStage::Unpaid, true, 0);
+        assert_eq!(member.title, "Ivanovs");
+        assert_eq!(
+            member.body,
+            "This family's subscription has ended. It will be deleted unless it is renewed."
+        );
+        assert_eq!(
+            owner.body,
+            "Your subscription has ended. Renew it, or this family will be deleted."
+        );
+        let apns = apns_payload(&owner, None);
+        assert_eq!(apns["kind"], "family_plan");
+        assert_eq!(apns["family_id"], 3);
+        assert_eq!(apns["stage"], "unpaid");
+        let tomorrow = family_plan_notification("Ivanovs", 3, PlanStage::Tomorrow, false, 0);
+        let fcm = fcm_message(&tomorrow, "token", Some("ru"));
+        assert_eq!(fcm["message"]["data"]["family_id"], "3");
+        assert_eq!(fcm["message"]["data"]["stage"], "tomorrow");
+        assert_eq!(
+            fcm["message"]["notification"]["body"],
+            "Если подписку не продлить, эта семья будет удалена завтра."
+        );
+        let deleted = family_plan_notification("Ivanovs", 3, PlanStage::Deleted, true, 0);
+        assert_eq!(
+            deleted.body,
+            "This family was deleted because its subscription ended."
+        );
+        assert_eq!(apns_payload(&deleted, None)["stage"], "deleted");
     }
 
     /// The invitation push: the family's name over `"<Owner> invited you"`,

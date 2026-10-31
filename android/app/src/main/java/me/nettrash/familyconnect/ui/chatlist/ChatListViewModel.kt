@@ -16,6 +16,9 @@
  * switcher above it lists every family with its unread, the pending join
  * requests and the invitations — which the banner also offers to answer.
  *
+ * Paid families (#89; docs/protocol.md, "Paid families"): while the current
+ * family is unpaid, a banner over its chats says when it will be deleted.
+ *
  * iOS counterpart: ios/FamilyConnect/UI/ChatList/ChatListViewModel.swift
  */
 
@@ -51,6 +54,8 @@ import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.GroupRepository
 import me.nettrash.familyconnect.data.repo.FamilyList
+import me.nettrash.familyconnect.data.repo.PaidFamilies
+import me.nettrash.familyconnect.data.settings.currentFamily
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.familyKey
 import me.nettrash.familyconnect.ui.families.FamiliesUi
@@ -118,6 +123,22 @@ class ChatListViewModel @Inject constructor(
                 canJoinAnother = FamilyList.canJoinAnother(s),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FamiliesUi())
+
+    /**
+     * The banner over the CURRENT family's chats while it is unpaid
+     * (docs/protocol.md, "Paid families"), or null while it has no deadline
+     * — and for a member, while the roster does not name the owner yet. A
+     * family the app is not showing needs none. Live: a `family_plan` frame
+     * moves `delete_at` on the family's entry, and this follows.
+     */
+    val unpaidBanner: StateFlow<PaidFamilies.UnpaidBanner?> =
+        combine(settings.state, familyRepository.observeActiveMembers()) { s, members ->
+            PaidFamilies.banner(
+                s.currentFamily,
+                ownerName = members.firstOrNull { it.role == FamilyList.OWNER }?.displayName,
+            )
+        }.distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** The switcher's tap on a family. */
     fun switchFamily(familyId: Long) {

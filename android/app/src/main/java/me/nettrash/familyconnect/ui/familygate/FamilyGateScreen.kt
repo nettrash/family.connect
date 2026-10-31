@@ -10,6 +10,9 @@
  * docs/protocol.md, "Several families"): the same field and button, one
  * card each, under a back arrow — [FamilyGateMode].
  *
+ * What stands in the create card's place — the card, a shut server, or the
+ * paid-families sentence (#89) — is [CreateDoor]'s decision.
+ *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyGate/FamilyGateView.swift
  */
 
@@ -100,7 +103,8 @@ fun FamilyGateScreen(
         }
     }
 
-    val showsCreate = mode != FamilyGateMode.JOIN_FAMILY
+    val createDoor = CreateDoor.of(mode, state.registrationEnabled, state.mustPayToStart)
+    val showsCreate = createDoor != CreateDoor.HIDDEN
     val showsJoin = mode != FamilyGateMode.NEW_FAMILY
     Scaffold(
         topBar = {
@@ -176,9 +180,16 @@ fun FamilyGateScreen(
             // Family…" is the separate `member_families` door, which the
             // switcher offers only while it is open (docs/protocol.md,
             // "Several families").
-            if (showsCreate && mode == FamilyGateMode.GATE && !state.registrationEnabled) {
+            //
+            // A server that charges for families, to a caller with no active
+            // subscription, gets the sentence in the same place — on the gate
+            // and behind "New Family…" alike (docs/protocol.md, "Paid
+            // families"). CreateDoor holds the order.
+            if (createDoor == CreateDoor.CLOSED_SERVER) {
                 ClosedServerCard()
-            } else if (showsCreate) Card(modifier = Modifier.fillMaxWidth()) {
+            } else if (createDoor == CreateDoor.CANNOT_START_HERE) {
+                CannotStartHereCard()
+            } else if (createDoor == CreateDoor.OPEN) Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
@@ -264,6 +275,29 @@ fun FamilyGateScreen(
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * What stands where "Create a family" would on a server that charges for
+ * new families, to somebody without an active subscription (docs/protocol.md,
+ * "Paid families"): the card's own heading, and the one sentence that a new
+ * family cannot be started from this app. Nothing to tap and nowhere named —
+ * Google Play's payments policy forbids steering a buyer to another way of
+ * paying, so this says no more than that.
+ */
+@Composable
+private fun CannotStartHereCard() {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.s_gate_cannot_start_here),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

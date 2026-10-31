@@ -1,3 +1,4 @@
+using System.Globalization;
 using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
 using FamilyConnect.Core.Store;
@@ -134,15 +135,24 @@ public static class TranscriptRules
     /// recording or THIS member is "not available", and is final too; anything that says nothing about the request —
     /// no connection, the deadline, the provider's own failure — asks to try again.
     /// </summary>
-    public static string FailureSentence(ApiError error, IStringCatalog say)
+    /// <remarks>
+    /// A paid family past this month's minutes (<c>ai_allowance_used</c>, docs/protocol.md "Paid families") says when the
+    /// allowance renews — the 1st of the next UTC month, as that UTC day in <paramref name="culture"/> (the current culture
+    /// when not given) — and is final until then.
+    /// </remarks>
+    public static string FailureSentence(
+        ApiError error, IStringCatalog say, CultureInfo? culture = null, DateTimeOffset? now = null)
     {
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(say);
+        var clock = now ?? DateTimeOffset.UtcNow;
         return MayRetry(error)
             ? say.Get("Couldn't get the text. Try again.")
             : error.Code switch
             {
                 ErrorCodes.TranscriptRefused => say.Get("The assistant's provider refused this recording."),
+                ErrorCodes.AiAllowanceUsed => PaidFamilies.AiAllowanceUsed(
+                    PaidFamilies.NextMonthUtc(clock), say, culture ?? CultureInfo.CurrentCulture, clock),
                 // What this device could not do with the file, in the words the other three clients use.
                 TranscriptSound.TooLongCode => say.Get("This recording is too long to turn into text."),
                 TranscriptSound.UnreadableCode => say.Get("Couldn't read the sound in this file."),

@@ -1290,6 +1290,20 @@ impl Store {
         self.sync_view();
     }
 
+    /// A `family_plan` frame: the family it names will be deleted at
+    /// `delete_at` — or, with none, no longer will — wherever that family is
+    /// held, on screen or away (docs/protocol.md, "Paid families"). The
+    /// banner over its chat list follows.
+    pub fn apply_plan(&mut self, family_id: i64, delete_at: Option<String>) {
+        if let Some(family) = self.family.as_mut().filter(|held| held.id == family_id) {
+            family.delete_at = delete_at.clone();
+        }
+        for family in self.families.iter_mut().filter(|held| held.id == family_id) {
+            family.delete_at = delete_at.clone();
+        }
+        self.sync_view();
+    }
+
     /// A member's birthday, as the owner's own change left it — or mine.
     pub fn set_birthday(&mut self, user_id: i64, birthday: Option<crate::model::Birthday>) {
         if let Some(member) = self.members.iter_mut().find(|member| member.id == user_id) {
@@ -3215,6 +3229,14 @@ mod tests {
             "a finished answer is a finished answer"
         );
         assert_eq!(store.ai_failed.get(&101), Some(&AiFailure::Refused));
+
+        // A paid family's month used up is remembered the same way, with
+        // the day it renews.
+        let spent = AiFailure::AllowanceUsed {
+            renews_at: Some("2026-12-01T00:00:00Z".into()),
+        };
+        store.apply_ai_error(101, spent.clone());
+        assert_eq!(store.ai_failed.get(&101), Some(&spent));
     }
 
     // --- Cursors ----------------------------------------------------------
@@ -5296,5 +5318,121 @@ mod tests {
         );
         assert!(store.board.notes.is_empty());
         assert_eq!(store.board_of(3).map(|board| board.notes.len()), Some(1));
+    }
+
+    // --- paid families (#89; docs/protocol.md, "Paid families") ----------
+
+    /// A `family_plan` frame sets the deadline of the family it NAMES — on
+    /// screen or away — and one without `delete_at` clears it, so the banner
+    /// comes and goes with it.
+    #[wasm_bindgen_test]
+    fn a_plan_frame_sets_and_clears_the_named_familys_deadline() {
+        let mut store = Store {
+            my_user_id: ME,
+            ..Store::default()
+        };
+        store.apply_me(&several(&[(3, "Parents", "member"), (4, "Ours", "owner")]));
+        assert_eq!(store.current_family_id(), Some(3));
+
+        store.apply_plan(4, Some("2026-11-14T09:00:00Z".into()));
+        let deadline = |store: &Store, id: i64| {
+            store
+                .family_list()
+                .into_iter()
+                .find(|family| family.id == id)
+                .and_then(|family| family.delete_at)
+        };
+        assert_eq!(deadline(&store, 4).as_deref(), Some("2026-11-14T09:00:00Z"));
+        assert_eq!(deadline(&store, 3), None, "only the family it names");
+        assert_eq!(
+            store.family.as_ref().and_then(|f| f.delete_at.clone()),
+            None
+        );
+
+        // Shown, it is the family on screen that carries it — and the
+        // account's view of it.
+        store.switch_family(4);
+        assert_eq!(
+            store.family.as_ref().and_then(|f| f.delete_at.as_deref()),
+            Some("2026-11-14T09:00:00Z")
+        );
+        store.apply_plan(4, None);
+        assert_eq!(
+            store.family.as_ref().and_then(|f| f.delete_at.clone()),
+            None
+        );
+        assert_eq!(deadline(&store, 4), None, "renewed: no deadline anywhere");
+        assert_eq!(
+            store
+                .account
+                .as_ref()
+                .and_then(|me| me.family.as_ref())
+                .and_then(|f| f.delete_at.clone()),
+            None
+        );
+
+        store.apply_plan(4, Some("2026-11-20T09:00:00Z".into()));
+        assert_eq!(
+            store
+                .account
+                .as_ref()
+                .and_then(|me| me.family.as_ref())
+                .and_then(|f| f.delete_at.as_deref()),
+            Some("2026-11-20T09:00:00Z")
+        );
+        // A family this account is not in changes nothing.
+        store.apply_plan(9, Some("2026-11-20T09:00:00Z".into()));
+        assert_eq!(store.families.len(), 2);
+    }
+
+    /// `/me` and the family reads carry the new keys, and a server from
+    /// before paid families sends none of them.
+    #[wasm_bindgen_test]
+    fn the_paid_keys_are_read_and_absent_is_the_old_behaviour() {
+        let me: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "families": [{"id": 3, "name": "Ivanovs", "role": "owner", "plan": "paid",
+                              "member_ceiling": 25, "delete_at": "2026-11-14T09:00:00Z"}],
+                "subscriptions_enabled": true,
+                "subscription_products": ["me.nettrash.FamilyConnect.family.monthly"],
+                "app_account_token": "6f1c0000-0000-4000-8000-000000000000",
+                "unpaid_days": 14, "paid_family_limits": {"members": 25},
+                "subscription": {"product_id": "me.nettrash.FamilyConnect.family.yearly",
+                                 "environment": "Sandbox", "expires_at": "2026-11-01T00:00:00Z",
+                                 "active": true, "renews": false}}"#,
+        )
+        .expect("reads");
+        assert!(me.subscriptions_enabled);
+        assert!(me.may_start_family(), "an active subscription");
+        assert_eq!(me.families[0].member_ceiling, Some(25));
+        assert_eq!(
+            me.families[0].delete_at.as_deref(),
+            Some("2026-11-14T09:00:00Z")
+        );
+
+        let ended: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "subscriptions_enabled": true,
+                "subscription": {"product_id": "x", "environment": "Production",
+                                 "expires_at": "2026-10-01T00:00:00Z", "active": false}}"#,
+        )
+        .expect("reads");
+        assert!(!ended.may_start_family(), "one that has ended");
+        let never: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "subscriptions_enabled": true, "subscription": null}"#,
+        )
+        .expect("reads");
+        assert!(!never.may_start_family(), "none at all");
+
+        let before: Me = serde_json::from_str(
+            r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                "families": [{"id": 3, "name": "Ivanovs", "role": "owner"}]}"#,
+        )
+        .expect("reads");
+        assert!(!before.subscriptions_enabled);
+        assert!(before.may_start_family(), "a server that does not charge");
+        assert_eq!(before.families[0].member_ceiling, None);
+        assert_eq!(before.families[0].delete_at, None);
     }
 }

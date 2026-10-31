@@ -1992,7 +1992,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                                     run_end={row.run_end}
                                     seen={row.seen}
                                     awaited={row.awaited}
-                                    ai_failed={props.ai_failed.get(&message.id).copied()}
+                                    ai_failed={props.ai_failed.get(&message.id).cloned()}
                                     {failed}
                                     chat_kind={chat_kind_value.clone()}
                                     {assistant_user_id}

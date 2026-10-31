@@ -61,6 +61,12 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
     /// <summary>An invitation lapsed.</summary>
     public event Action<long>? InvitationRemoved;
 
+    /// <summary>
+    /// A paid family's plan or deadline changed (docs/protocol.md, "Paid families"): the session's to apply to the family the
+    /// frame names, which is not necessarily the one shown. Nothing about it is in the cache.
+    /// </summary>
+    public event Action<ServerFrame.FamilyPlan>? FamilyPlanChanged;
+
     /// <summary>A message that is NEW — the only frame that may raise a notification.</summary>
     /// <remarks>
     /// It fires for this device's own sends too: the sender's OTHER connections receive
@@ -109,9 +115,9 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
 
     /// <summary>
     /// The assistant stopped early, and the half-written answer is all there is — with the reason,
-    /// when the frame gave one this client knows.
+    /// when the frame gave one this client knows, and when a used-up allowance renews.
     /// </summary>
-    public event Action<long, long, AiErrorReason?>? AiStopped;
+    public event Action<long, long, AiErrorReason?, DateTimeOffset?>? AiStopped;
 
     /// <summary>
     /// A call frame, passed on whole. Signalling is a conversation with state of its own and no
@@ -242,6 +248,10 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 InvitationRemoved?.Invoke(lapsed.InvitationId);
                 break;
 
+            case ServerFrame.FamilyPlan plan:
+                FamilyPlanChanged?.Invoke(plan);
+                break;
+
             case ServerFrame.MemberBlocked blocked:
                 // Full current state, so an unblock is this same frame with `false`.
                 chats.SetBlocked(blocked.UserId, blocked.Blocked);
@@ -274,7 +284,7 @@ public sealed class FrameRouter(ChatStore chats, BoardStore board, PackStore? pa
                 break;
 
             case ServerFrame.AiError stopped:
-                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId, stopped.Reason);
+                AiStopped?.Invoke(stopped.ChatId, stopped.MessageId, stopped.Reason, stopped.RenewsAt);
                 break;
 
             case ServerFrame.CallOffer:

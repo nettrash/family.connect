@@ -12,8 +12,15 @@ use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
     handlers_chat, handlers_device, handlers_family, handlers_group, handlers_invitation,
-    handlers_pack, handlers_poll, handlers_report, handlers_stats, handlers_transcript, ws,
+    handlers_pack, handlers_poll, handlers_report, handlers_stats, handlers_subscription,
+    handlers_transcript, ws,
 };
+
+/// The body ceiling of the two App Store routes (docs/protocol.md, "Paid
+/// families"): every signed value carries Apple's certificate chain, and a
+/// notification nests two of them inside a third. Fixed, and inside the
+/// repo's nginx `client_max_body_size 64k`.
+const APPSTORE_BODY_LIMIT: usize = 64 * 1024;
 
 /// Build the full application router for the given state. Used identically
 /// by the binary and by the integration tests.
@@ -51,6 +58,14 @@ pub fn build_router(state: AppState) -> Router {
             // top of the first (docs/protocol.md, "Looking things up").
             "/api/v1/me/assistant-lookup-consent",
             post(handlers_auth::set_assistant_lookup_consent),
+        )
+        // What the App Store signed for this account (docs/protocol.md,
+        // "Paid families"). Its own body limit: a transaction and a renewal
+        // info each carry Apple's three certificates.
+        .route(
+            "/api/v1/me/subscription",
+            put(handlers_subscription::put_subscription)
+                .layer(DefaultBodyLimit::max(APPSTORE_BODY_LIMIT)),
         )
         .route("/api/v1/me/password", post(handlers_auth::change_password))
         // A POST rather than a DELETE /me: the request carries a body, and
@@ -370,6 +385,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/calls/ice", get(handlers_call::get_ice_servers))
         // Ops
         .route("/api/v1/healthz", get(handlers_device::healthz))
+        // Apple's App Store Server Notifications: no session, Apple's
+        // signature is the authentication. A notification nests two signed
+        // values in a third, each with its certificates — tens of KiB.
+        .route(
+            "/api/v1/appstore/notifications",
+            post(handlers_subscription::appstore_notification)
+                .layer(DefaultBodyLimit::max(APPSTORE_BODY_LIMIT)),
+        )
         // Realtime
         .route("/api/v1/ws", get(ws::ws_upgrade))
         .layer(DefaultBodyLimit::max(body_limit))

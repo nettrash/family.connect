@@ -9,12 +9,14 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use time::OffsetDateTime;
 
 use super::api_error::error_codes;
 use super::dtos::{
     ChatDto, MemberDto, MessageDto, NoteDto, PackItemDto, PollDto, ReactionDto, UserDto, wire,
 };
 use super::requests::InvitationDto;
+use crate::store::times;
 
 /// One frame from the server, as this client uses it.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +92,15 @@ pub enum ServerFrame {
     FamilyOwner {
         family_id: Option<i64>,
         user_id: i64,
+    },
+
+    /// A PAID family's standing changed (docs/protocol.md, "Paid families", 2026-10-30): its owner's
+    /// subscription ended, so `delete_at` says when the server will delete it — or it is covered
+    /// again, and `delete_at` is ABSENT, which CLEARS the one held. About the family it names.
+    FamilyPlan {
+        family_id: i64,
+        plan: Option<String>,
+        delete_at: Option<String>,
     },
 
     MemberBlocked {
@@ -244,6 +255,17 @@ impl ServerFrame {
                 family_id: optional(frame.get("family_id")),
                 user_id: number(frame.get("user_id")),
             }),
+            // A frame that names no family is about nothing this client could apply it to.
+            "family_plan" => match number(frame.get("family_id")) {
+                named if named > 0 => Some(ServerFrame::FamilyPlan {
+                    family_id: named,
+                    plan: text(frame, "plan").map(str::to_string),
+                    delete_at: text(frame, "delete_at")
+                        .filter(|at| !at.is_empty())
+                        .map(str::to_string),
+                }),
+                _ => None,
+            },
             "chat_updated" => decode::<ChatDto>(frame.get("chat"))
                 .filter(|chat| chat.id > 0)
                 .map(ServerFrame::ChatUpdated),
@@ -272,7 +294,7 @@ impl ServerFrame {
             "ai_error" => Some(ServerFrame::AiError {
                 chat_id: number(frame.get("chat_id")),
                 message_id: number(frame.get("message_id")),
-                reason: ai_reason(frame.get("reason")),
+                reason: ai_reason(frame.get("reason"), frame.get("renews_at")),
             }),
             "call_offer" => text(frame, "call_id").map(|offered| ServerFrame::CallOffer {
                 call_id: offered.to_string(),
@@ -348,10 +370,15 @@ fn text<'a>(frame: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
 
 /// `ai_error`'s `reason`, or `None`. A value this client does not know — and anything that is
 /// not a string at all — is read as ABSENT, never guessed at: the compatibility rules, applied to
-/// a value rather than a field, so a later reason cannot be given a meaning here.
-fn ai_reason(node: Option<&Value>) -> Option<AiErrorReason> {
+/// a value rather than a field, so a later reason cannot be given a meaning here. `renews_at`
+/// rides beside `"allowance_used"` only; one that cannot be read is `None`, and the reason stands.
+fn ai_reason(node: Option<&Value>, renews_at: Option<&Value>) -> Option<AiErrorReason> {
     match node.and_then(Value::as_str) {
         Some("refused") => Some(AiErrorReason::Refused),
+        Some("allowance_used") => Some(AiErrorReason::AllowanceUsed {
+            renews_at: times::instant(renews_at.and_then(Value::as_str))
+                .and_then(times::from_milliseconds),
+        }),
         _ => None,
     }
 }
@@ -363,6 +390,10 @@ pub enum AiErrorReason {
     /// The AI provider's OWN safety or content filter refused the question, the answer, or a
     /// picture's description — asking again in the same words gets the same refusal.
     Refused,
+    /// A PAID family has used this month's assistant allowance, and the server called no model at
+    /// all (docs/protocol.md, "Paid families", 2026-10-30). `renews_at` is when it starts again —
+    /// the 1st of the next month, UTC — or `None` when the frame's could not be read.
+    AllowanceUsed { renews_at: Option<OffsetDateTime> },
 }
 
 /// One ICE candidate. `sdp_mid` and `sdp_mline_index` are each optional: a WebRTC stack

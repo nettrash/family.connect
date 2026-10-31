@@ -56,6 +56,69 @@ familyless_account_ttl_days = 7
 # creating one, an owner's invitation, or an invite code. At least 1.
 max_families_per_account = 5
 
+[subscriptions]
+# Whether a NEW family on this server needs its owner's App Store
+# subscription (docs/protocol.md, "Paid families"). Off by default, and off
+# means none of this section is read: no plans, no limits, no deadlines.
+#
+# Only the Family Connect app on iPhone, iPad and Mac can sell it, so with
+# this on a family is started from there — the other apps say so and still
+# JOIN families as before. Members never pay; one owner's subscription covers
+# every family they own.
+#
+# It narrows the doors above and never opens one: with `registration` or
+# `member_families` shut, that door stays shut whatever this says.
+#
+# Every family that exists when you first turn this on stays FREE, your own
+# included, and so does every family created while it is off. Move one with
+#     family-connect families plan <id> paid      (or free)
+# and see them all with `family-connect families list`.
+#
+# The subscription is sold by the app's publisher, so this is meant for the
+# publisher's own server. It needs App Store Connect set up to match (the
+# products below, and the notification URL
+# https://<this server>/api/v1/appstore/notifications) — docs/operations.md,
+# "Paid families", has the steps.
+enabled = false
+# The app whose purchases count. A signed transaction for any other bundle is
+# refused.
+bundle_id = "me.nettrash.FamilyConnect"
+# The auto-renewable subscriptions that host a family, in the order the app
+# shows them. All in one subscription group in App Store Connect.
+product_ids = [
+    "me.nettrash.FamilyConnect.family.monthly",
+    "me.nettrash.FamilyConnect.family.yearly",
+]
+# Which App Store environments to believe. App Review and TestFlight buy in
+# "Sandbox" against your production server, so leave it in unless you never
+# want a reviewer to be able to start a family. A Sandbox subscription stops
+# renewing within hours (TestFlight within days), so its family is deleted
+# unpaid_days later on its own.
+environments = ["Production", "Sandbox"]
+# How many days a paid family stays after its owner's subscription ends,
+# counted from when the server notices (within the hour). Every member is
+# told at the start and the day before; then the family is deleted with its
+# chats, board and files. Renewing at any point before that cancels it.
+# Everything keeps working until then. 1 to 365.
+unpaid_days = 14
+# The limits of a PAID family. Free families have none of these. 0 turns
+# one off. Lowering one removes nothing: a family past it just cannot add
+# more until it is back under.
+#
+# Members: the family's ceiling is the lowest of this, [limits]
+# max_family_members and the owner's own cap.
+max_members = 25
+# Bytes on your disk: every file uploaded for the family — messages, board
+# pictures, stickers, uploads not sent yet — each distinct file once.
+# Previews are small and not counted. 10 GiB.
+storage_bytes = 10737418240
+# The assistant, per UTC calendar month: tokens (prompt plus completion, as
+# Family Statistics counts them), pictures, and minutes of transcripts.
+# Checked before a call, so one answer may overshoot by its own size.
+ai_tokens_per_month = 2000000
+images_per_month = 30
+transcript_minutes_per_month = 120
+
 [greetings]
 # The assistant's one unprompted message a day (protocol.md, "The daily
 # greeting"): a short, warm note about the day, plus a light line for the star

@@ -417,11 +417,11 @@ fn the_devices_own_failures_say_what_they_were() {
     let say = common::english();
     assert_eq!(
         "This recording is too long to turn into text.",
-        transcript_rules::failure_sentence(&transcript_sound::too_long(), &say)
+        transcript_rules::failure_sentence(&transcript_sound::too_long(), &say, &common::days())
     );
     assert_eq!(
         "Couldn't read the sound in this file.",
-        transcript_rules::failure_sentence(&transcript_sound::unreadable(), &say)
+        transcript_rules::failure_sentence(&transcript_sound::unreadable(), &say, &common::days())
     );
     assert!(!transcript_rules::may_retry(&transcript_sound::too_long()));
     assert!(!transcript_rules::may_retry(&transcript_sound::unreadable()));
@@ -558,7 +558,7 @@ fn a_failure_says_what_it_was() {
         let error = ApiError::new(code, "x", status);
         assert_eq!(
             said,
-            transcript_rules::failure_sentence(&error, &say),
+            transcript_rules::failure_sentence(&error, &say, &common::days()),
             "{code}"
         );
         assert_eq!(retry, transcript_rules::may_retry(&error), "{code}");
@@ -572,7 +572,7 @@ fn no_answer_at_all_may_be_asked_again() {
     let gone = ApiError::transport("TaskCanceledException");
     assert_eq!(
         "Couldn't get the text. Try again.",
-        transcript_rules::failure_sentence(&gone, &common::english())
+        transcript_rules::failure_sentence(&gone, &common::english(), &common::days())
     );
     assert!(transcript_rules::may_retry(&gone));
 }
@@ -602,27 +602,37 @@ fn the_sentences_are_the_catalogues_in_every_language() {
         "The assistant's provider refused this recording.",
         transcript_rules::failure_sentence(
             &ApiError::new(error_codes::TRANSCRIPT_REFUSED, "x", 400),
-            &russian
+            &russian,
+            &common::days()
         )
     );
     assert_ne!(
         "Not available for this message.",
         transcript_rules::failure_sentence(
             &ApiError::new(error_codes::NOT_TRANSCRIBABLE, "x", 400),
-            &russian
+            &russian,
+            &common::days()
         )
     );
     assert_ne!(
         "Couldn't get the text. Try again.",
-        transcript_rules::failure_sentence(&ApiError::transport("x"), &russian)
+        transcript_rules::failure_sentence(&ApiError::transport("x"), &russian, &common::days())
     );
     assert_ne!(
         "This recording is too long to turn into text.",
-        transcript_rules::failure_sentence(&transcript_sound::too_long(), &russian)
+        transcript_rules::failure_sentence(
+            &transcript_sound::too_long(),
+            &russian,
+            &common::days()
+        )
     );
     assert_ne!(
         "Couldn't read the sound in this file.",
-        transcript_rules::failure_sentence(&transcript_sound::unreadable(), &russian)
+        transcript_rules::failure_sentence(
+            &transcript_sound::unreadable(),
+            &russian,
+            &common::days()
+        )
     );
     for key in [
         "Show text",

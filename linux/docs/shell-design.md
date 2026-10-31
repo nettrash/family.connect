@@ -466,10 +466,21 @@ order: booting → needs server → needs auth → needs family → pending appr
 | Booting | spinner | — | the app's icon and an `adw::Spinner` in the gate's form (where the next page's icon stands) |
 | Needs server | `ServerSetupView` | `ServerView` | `adw::Clamp` (360) + `adw::PreferencesGroup` with an `adw::EntryRow` (server address; `fc_logic::doorway::ServerCheck`), the default server offered (`DefaultServer`) |
 | Needs auth | `AuthView` | `SignInView` | username `adw::EntryRow`, password `adw::PasswordEntryRow`, Sign In / Create Account (`SignInForm`); refusals from `DoorSentences` |
-| Needs family | `FamilyGateView` | `DoorView` | Create a family / Join with a code / invitations (`FamilyDoor`, `Families`) |
+| Needs family | `FamilyGateView` | `DoorView` | Create a family / Join with a code / invitations (`FamilyDoor`, `Families`); on a server that charges for families (#89), Create only with an active subscription — else, in its place, where a family is started (`paid_families::create_door`, below) |
 | Pending approval | `PendingApprovalView` | `PendingView` | `adw::StatusPage` + Cancel |
 | Offline at launch | — | `OfflineView` ("a flaky network is not a sign-out") | `adw::StatusPage` + Try Again |
 | Active | `MacChatView` | `ChatsView` | the split view |
+
+**Paid families (#89, docs/protocol.md "Paid families", 2026-10-30).** Only Apple's apps sell the
+subscription a new family needs on a server with `subscriptions_enabled`, so this app never sells
+anything. `fc_logic::paid_families::create_door` decides what stands where "Create a family" (and
+"New Family…" — the switcher's dialog and Settings' entry) would: the shut door
+(`family_registration_enabled: false`) first, with its own words and only for a FIRST family; then,
+with subscriptions on and no `subscription.active`, an `adw::PreferencesGroup` titled as the form
+was, whose description is "On this server, a new family is started in the Family Connect app on
+iPhone, iPad or Mac." and which has no field and no button; otherwise the form. "Join a family" is
+never touched. A create that meets `subscription_required` anyway says "A new family on this server
+needs a subscription." in the door's error line (`door_sentences::create`).
 
 A stored token is not a session: `GET /me` decides; an expired one lands where a REST 401 lands, once
 (`LiveConnection`). The socket runs only while signed in **and** in a family. A launch that cannot
@@ -511,6 +522,19 @@ closed; the tray icon withdrawn; `app.quit()`. `query-end` at logout does the sa
 
 Keyboard: Up/Down move the selection and Enter opens, as a `ListBox` does; the list is the first focus
 stop of the window.
+
+**Above the list** (`MainWindow::sidebar_banner_slot`, `chats::banners::above_list`): the UNPAID
+banner first, then the invitations. The unpaid banner (#89) is drawn while the family SHOWN has
+`delete_at` — a `fc-chat-banner` row with a warning glyph and `paid_families::banner`'s words: to a
+member "“Ivanovs” will be deleted on 14 November because its subscription has ended. Only Boris, the
+owner, can renew it." (the owner from the cached roster — no roster yet, no banner rather than a
+sentence with a gap), to the owner "… because your subscription has ended. Renew it in the Family
+Connect app on iPhone, iPad or Mac." No button: renewing is done in the Apple app. The day is
+`paid_families::Days::day` — the culture's month-and-day in the reader's zone, with the year when it
+is not this year (the long date without its weekday, measured on .NET). It comes and goes live: a
+`family_plan` frame reaches `AppSession::apply_family_plan` through the router, and a frame without
+`delete_at` clears it; a `GET /me` that no longer carries it clears it too (`merge` takes the
+plan, the ceiling and the deadline from the list).
 
 ---
 
@@ -1218,12 +1242,12 @@ family stickers, the assistant's family settings; owner-only controls **hidden**
 | Members | `adw::ActionRow` per live member (avatar, name, `@username`, Owner); a row's menu: Message (opens the direct chat in the main window and closes the dialog), Report…, Block/Unblock, Birthday…, and for the owner Reset Password…, Remove from Family (asks first, "Remove %@ from the family?" — P4 correction: the Mac removes on one menu click) |
 | Invite code | the code (selectable), Copy (`gdk::Clipboard`), Rotate (asks: "Rotating invalidates the current code immediately."), Invite… (`Families` invitations) |
 | Join policy | `adw::ComboRow`: Join immediately / Need approval / Nobody |
-| Member limit | `adw::SpinRow` — the LOWER of the family's and the operator's numbers (`Seats`) |
+| Member limit | `adw::SpinRow` — the LOWER of the family's and the operator's numbers (`Seats`); its range ends at the family's `member_ceiling` (a paid family's is 25), else `GET /me`'s `max_family_members` (`SessionState::member_ceiling`, #89) |
 | Join requests | Approve / Decline per request |
 | Reports | the inbox, Mark as handled |
 | Family Stickers | Manage… → the pack `adw::Dialog` |
 | Assistant | the family switches; `ai_history_photos` and `ai_faces` never offered or drawn on while `ai_vision` is off; Looking things up (only where the server names providers); Daily greeting and its up-to-three places (`GreetingPlaces`, saved on leaving a field or Enter) |
-| Statistics | Statistics… (rows never summed — the gap is the block) |
+| Statistics | Statistics… (rows never summed — the gap is the block); for a PAID family a "This Month’s Allowance" group after "The family" (#89): Storage "3 GB of 10 GB", Assistant "40% used" (whole, rounded down, at most 100), Pictures "4 of 30", Transcripts "11 of 120 min" (used rounded up, the limit down) — a row per limit the block carries — and "Renews on 1 December" under them — the UTC calendar day, always the 1st, unlike the banner's reader's-zone deadline (`paid_families::allowance_rows`, `allowance_renews`, `Days::utc_day`) |
 
 The "New Group" and "Group info" dialogs (`GroupModel`, `GroupRules`) follow the same pattern.
 
@@ -1759,7 +1783,10 @@ offline under the CSP), `desktop` (fakes of GNOME Shell's notifications, the fre
 the GlobalShortcuts portal on a second connection of the group's own; the LauncherEntry signal; the
 autostart file states; the libsecret round trip, and "no Secret Service" in a child process), `calls` (two
 instances in one container calling each other through the fake server, then the phase-0 Chromium peer),
-`privacy` (only the files of §2.3 exist afterwards).
+`paid` (#89: the gate's sentence and `subscription_required` on a server that charges, the form back
+with a subscription; the unpaid banner for a member and for the owner, cleared and brought back by
+`family_plan`; Settings' New Family…; the cap picker's range from `member_ceiling`; the allowance in
+Statistics), `privacy` (only the files of §2.3 exist afterwards).
 
 ---
 

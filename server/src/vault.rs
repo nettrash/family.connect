@@ -297,6 +297,10 @@ pub enum Lookup {
     PushToken,
     /// A device's VoIP token, as the platform issued it.
     VoipToken,
+    /// An App Store transaction id — Apple's `originalTransactionId`, and
+    /// the id of the latest transaction beside it (docs/protocol.md, "Paid
+    /// families"). A notification names the subscription only by it.
+    AppStoreTransaction,
 }
 
 impl Lookup {
@@ -306,6 +310,7 @@ impl Lookup {
             Lookup::InviteCode => b"invite_code",
             Lookup::PushToken => b"push_token",
             Lookup::VoipToken => b"voip_token",
+            Lookup::AppStoreTransaction => b"appstore_transaction",
         }
     }
 
@@ -313,7 +318,9 @@ impl Lookup {
         match self {
             Lookup::Username => value.to_ascii_lowercase(),
             Lookup::InviteCode => value.to_uppercase(),
-            Lookup::PushToken | Lookup::VoipToken => value.to_string(),
+            Lookup::PushToken | Lookup::VoipToken | Lookup::AppStoreTransaction => {
+                value.to_string()
+            }
         }
     }
 }

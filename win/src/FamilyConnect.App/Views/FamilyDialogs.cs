@@ -18,10 +18,19 @@ internal static class FamilyDialogs
 {
     /// <summary>
     /// "New Family…": the create screen's field and button, under the sentence that says what starting another family means.
-    /// Done, the family is added and shown (<see cref="FamilyDoor.CreateAsync"/>).
+    /// Done, the family is added and shown (<see cref="FamilyDoor.CreateAsync"/>). On a server that charges for a new family,
+    /// to an account without a subscription (<see cref="CreateDoor.AppleApp"/>), it says where one is started instead.
     /// </summary>
-    public static async Task NewFamilyAsync(XamlRoot root, IStringCatalog say, FamilyDoor door)
+    public static async Task NewFamilyAsync(XamlRoot root, IStringCatalog say, FamilyDoor door, CreateDoor shows)
     {
+        if (shows == CreateDoor.AppleApp)
+        {
+            var notice = Dialogs.Create(root, say.Get("Create a Family"), Dialogs.Text(PaidFamilies.StartsInAppleApp(say)));
+            notice.CloseButtonText = say.Get("OK");
+            notice.DefaultButton = ContentDialogButton.Close;
+            await ShowAsync(notice, "starting another family");
+            return;
+        }
         var name = new TextBox { Header = say.Get("Family name"), PlaceholderText = "The Smiths", MaxLength = FamilyDoor.NameLimit };
         var problem = Dialogs.Problem();
         var dialog = Dialogs.Create(

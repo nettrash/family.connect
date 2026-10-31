@@ -46,6 +46,8 @@ import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.util.Clock
+import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.chat.SendRefusals
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -238,6 +240,55 @@ class AttachmentSendTest {
         assertThat(items).hasSize(1)
         assertThat(items.single().attachmentId).isNull()
         assertThat(File(items.single().localPath!!).exists()).isTrue()
+    }
+
+    /**
+     * A PAID family past its storage (docs/protocol.md, "Paid families"):
+     * terminal — the row fails visibly at once, with no retry scheduled —
+     * and the refusal is remembered, so the "Message not sent" dialog says
+     * why. Asking again clears what the last attempt was told.
+     */
+    @Test
+    fun `an upload refused for the family's storage allowance fails at once and says why`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        attachmentApi.uploadHandler = { _, _, _ ->
+            ApiResult.HttpError(403, "storage_allowance_used", "this family has used its storage allowance")
+        }
+
+        val clientMsgId = repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)!!
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.status).isEqualTo(MessageStatus.FAILED)
+        assertThat(row.nextAttemptAt).isNull()
+        assertThat(attachmentApi.calls).containsExactly("upload")
+        assertThat(chatApi.postedMessages).isEmpty()
+        assertThat(repository.sendRefusals.value).containsExactly(clientMsgId, "storage_allowance_used")
+        assertThat(SendRefusals.sentence(repository.sendRefusals.value[clientMsgId]))
+            .isEqualTo(R.string.e_storage_allowance_used)
+
+        // Not the server's full disk, and not a code without words: those
+        // keep the dialog's usual line.
+        assertThat(SendRefusals.sentence("storage_full")).isNull()
+        assertThat(SendRefusals.sentence(null)).isNull()
+
+        repository.retry(clientMsgId)
+        assertThat(repository.sendRefusals.value).doesNotContainKey(clientMsgId)
+    }
+
+    @Test
+    fun `deleting a refused send forgets why it was refused`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        attachmentApi.uploadHandler = { _, _, _ -> ApiResult.HttpError(403, "storage_allowance_used", null) }
+
+        val clientMsgId = repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)!!
+        advanceUntilIdle()
+        assertThat(repository.sendRefusals.value).containsKey(clientMsgId)
+
+        repository.deleteFailed(clientMsgId)
+        assertThat(repository.sendRefusals.value).isEmpty()
     }
 
     /** The preview is best-effort: a bubble without one fetches the full photo. */

@@ -13,7 +13,7 @@
 //! | Server | `ServerSetupView` | `ServerView` | address row; `doorway::server_check` probes `GET /me` with no token before anything is saved |
 //! | SignIn | `AuthView` | `SignInView` | Log In / Register on one page (`adw::ToggleGroup`), `sign_in_form::may_submit`, refusals by `door_sentences::sign_in`; "Change server…" |
 //! | Offline | — | `OfflineView` | "a flaky network is not a sign-out": Try Again (`Shell::retry`), Change server… |
-//! | Family | `FamilyGateView` | `DoorView` | join with a code / create (only where `family_registration_enabled`) through `FamilyDoor`; the declined line; the familyless-account footnote; Log out |
+//! | Family | `FamilyGateView` | `DoorView` | join with a code / create (only where `family_registration_enabled`, and — on a server that charges for families — only with an active subscription, else where a family is started: `paid_families::create_door`) through `FamilyDoor`; the declined line; the familyless-account footnote; Log out |
 //! | Pending | `PendingApprovalView` | `PendingView` | the family's name, Log out, `GET /me` again every 15 s while shown |
 //!
 //! "Change server…" swaps the page's own slot to the server form (Cancel brings the page back): the
@@ -28,6 +28,7 @@ use adw::prelude::*;
 use fc_core::rt::Http;
 use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::doorway::{FamilyDoor, door_sentences, server_check, sign_in_form};
+use fc_logic::paid_families::{self, CreateDoor};
 
 use crate::seams::routes::WindowPart;
 use crate::services::log;
@@ -777,7 +778,22 @@ pub fn family_forms(shell: &Rc<Shell>, which: FamilyForms, done: Rc<dyn Fn()>) -
         content.append(&join.group);
     }
     if which.create {
-        if state.family_registration_enabled || which.another {
+        let offered = paid_families::create_door(&state, which.another);
+        if offered == CreateDoor::StartInAppleApp {
+            // A server that charges for a new family, and no active subscription: only Apple's apps
+            // sell one, so the door says where a family is started instead of offering the form
+            // (docs/protocol.md, "Paid families") — in the shut door's place and style. "Join a
+            // family" above is untouched.
+            let elsewhere = adw::PreferencesGroup::builder()
+                .title(if which.another {
+                    say.get("New Family…")
+                } else {
+                    say.get("Create a family")
+                })
+                .description(paid_families::start_in_apple_app(say.as_ref()))
+                .build();
+            content.append(&elsewhere);
+        } else if offered == CreateDoor::Open {
             let (title, description) = if which.another {
                 (
                     say.get("New Family…").to_string(),

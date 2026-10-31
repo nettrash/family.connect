@@ -11,6 +11,10 @@
 //! another family. An invitation is a banner at the top until it is
 //! answered (docs/protocol.md, "Several families"). An account in ONE
 //! family with nothing pending sees none of this.
+//!
+//! A paid family its owner's subscription no longer covers will be deleted
+//! on a day the server names: a banner under the family's name says so,
+//! until the day goes (docs/protocol.md, "Paid families").
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -20,7 +24,7 @@ use yew::prelude::*;
 
 use crate::actions::Action;
 use crate::live::Panel;
-use crate::model::{ChatListItem, Invitation, Member, Message, PendingJoin};
+use crate::model::{ChatListItem, Family, Invitation, Member, Message, PendingJoin};
 use crate::time;
 use crate::views::avatar::Avatar;
 use crate::views::group::NewGroupDialog;
@@ -51,6 +55,29 @@ pub struct ChatListProps {
     /// Every family the account is in, for the switcher.
     #[prop_or_default]
     pub families: Families,
+    /// The family on screen will be deleted: what the banner over the list
+    /// says ([`unpaid_banner`]).
+    #[prop_or_default]
+    pub unpaid: Option<String>,
+}
+
+/// What the banner over the list of the family on screen says while that
+/// family will be deleted for want of a subscription — None while it will
+/// not (no `delete_at`), and for a member until the roster has named the
+/// owner they are told to ask (docs/protocol.md, "Paid families"). The day
+/// is the reader's own: their zone, their language's way of writing it.
+pub fn unpaid_banner(family: &Family, members: &[Member], now_ms: f64) -> Option<String> {
+    let delete_at = family.delete_at.as_deref()?;
+    let owner = members
+        .iter()
+        .find(|member| member.is_owner())
+        .map(|member| member.display_name.as_str());
+    fc_text::paid::banner(
+        &family.name,
+        &time::day_in_sentence(delete_at, now_ms),
+        family.is_owner(),
+        owner,
+    )
 }
 
 /// One family's row in the switcher.
@@ -303,6 +330,9 @@ pub fn chat_list(props: &ChatListProps) -> Html {
     html! {
         <nav class="chat-list" aria-label={t("Chats")}>
             { switcher.unwrap_or_default() }
+            if let Some(said) = props.unpaid.clone() {
+                <p class="banner unpaid-banner" role="status">{ said }</p>
+            }
             { invitation_banner(&props.families.invitations, &props.on_action) }
             { new_group.unwrap_or_default() }
             { for props.chats.iter().map(|item| {
@@ -557,6 +587,7 @@ mod tests {
             members,
             on_action: Callback::noop(),
             families: Families::default(),
+            unpaid: None,
         };
         let document = web_sys::window().unwrap().document().unwrap();
         let root = document.create_element("div").unwrap();
@@ -639,6 +670,7 @@ mod tests {
                 members: None,
                 on_action: Callback::from(move |action| sink.borrow_mut().push(action)),
                 families,
+                unpaid: None,
             }
         };
         let one = Families {
@@ -779,6 +811,114 @@ mod tests {
             log.borrow()[..],
             [_, Action::AcceptInvitation { invitation_id: 4 }]
         ));
+        handle.destroy();
+        root.remove();
+    }
+
+    /// THE UNPAID BANNER (docs/protocol.md, "Paid families"): only while
+    /// the family on screen has a `delete_at`; the owner is told where to
+    /// renew, a member who the owner is — and nothing for a member before
+    /// the roster has named one.
+    #[wasm_bindgen_test]
+    fn the_unpaid_banner_is_the_owners_or_a_members() {
+        let now = js_sys::Date::now();
+        let mut family = Family {
+            id: 3,
+            name: "Ivanovs".into(),
+            role: Some("member".into()),
+            ..Family::default()
+        };
+        let roster = vec![
+            Member {
+                id: 7,
+                display_name: "Me".into(),
+                role: Some("member".into()),
+                ..Member::default()
+            },
+            Member {
+                id: 9,
+                display_name: "Anna".into(),
+                role: Some("owner".into()),
+                ..Member::default()
+            },
+        ];
+        assert_eq!(unpaid_banner(&family, &roster, now), None, "no deadline");
+
+        family.delete_at = Some("2026-11-14T09:00:00Z".into());
+        let day = time::day_in_sentence("2026-11-14T09:00:00Z", now);
+        assert!(!day.is_empty());
+        assert_eq!(
+            unpaid_banner(&family, &roster, now),
+            Some(format!(
+                "“Ivanovs” will be deleted on {day} because its subscription has ended. Only Anna, the owner, can renew it."
+            ))
+        );
+        assert_eq!(
+            unpaid_banner(&family, &roster[..1], now),
+            None,
+            "the owner not named yet"
+        );
+
+        family.role = Some("owner".into());
+        assert_eq!(
+            unpaid_banner(&family, &[], now),
+            Some(format!(
+                "“Ivanovs” will be deleted on {day} because your subscription has ended. Renew it in the Family Connect app on iPhone, iPad or Mac."
+            ))
+        );
+    }
+
+    /// The banner sits under the family's name, above everything else the
+    /// list holds — and is not there without one.
+    #[wasm_bindgen_test]
+    async fn the_unpaid_banner_heads_the_list() {
+        let props = |unpaid: Option<String>| ChatListProps {
+            chats: Vec::new(),
+            names: HashMap::new(),
+            blocked: HashSet::new(),
+            avatars: HashMap::new(),
+            my_user_id: 7,
+            selected: None,
+            on_select: Callback::noop(),
+            now_ms: 0.0,
+            members: Some(Vec::new()),
+            on_action: Callback::noop(),
+            families: Families::default(),
+            unpaid,
+        };
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let handle = yew::Renderer::<ChatList>::with_root_and_props(
+            root.clone(),
+            props(Some("“Ivanovs” will be deleted on 14 November.".into())),
+        )
+        .render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        let banner = root
+            .query_selector(".chat-list > .unpaid-banner")
+            .unwrap()
+            .expect("the banner");
+        assert_eq!(
+            banner.text_content().as_deref(),
+            Some("“Ivanovs” will be deleted on 14 November.")
+        );
+        assert_eq!(banner.get_attribute("role").as_deref(), Some("status"));
+        let first = root
+            .query_selector(".chat-list")
+            .unwrap()
+            .and_then(|list| list.first_element_child())
+            .expect("something in the list");
+        assert!(
+            first.class_list().contains("unpaid-banner"),
+            "above the rest"
+        );
+        handle.destroy();
+
+        let handle =
+            yew::Renderer::<ChatList>::with_root_and_props(root.clone(), props(None)).render();
+        gloo_timers::future::TimeoutFuture::new(20).await;
+        assert!(root.query_selector(".unpaid-banner").unwrap().is_none());
         handle.destroy();
         root.remove();
     }

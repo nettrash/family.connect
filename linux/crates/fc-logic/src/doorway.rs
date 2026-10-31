@@ -145,6 +145,9 @@ pub mod door_sentences {
                 family_sentences::for_error(error, cap, say).unwrap_or_default()
             }
             error_codes::ALREADY_IN_FAMILY => say.get("You're already in a family.").to_string(),
+            // A server that charges for a new family, and no active subscription (docs/protocol.md,
+            // "Paid families"): terminal, said in the door's own line.
+            error_codes::SUBSCRIPTION_REQUIRED => crate::paid_families::subscription_required(say),
             _ if matches!(error.status, 400 | 409) => {
                 said(error).unwrap_or_else(|| say.get("The server rejected that name.").to_string())
             }

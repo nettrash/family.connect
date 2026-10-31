@@ -455,7 +455,7 @@ fn an_answer_with_no_text_is_a_failure_and_not_kept() -> StoreResult<()> {
         assert!(transcript_rules::may_retry(&error), "{body}");
         assert_eq!(
             "Couldn't get the text. Try again.",
-            transcript_rules::failure_sentence(&error, &common::english()),
+            transcript_rules::failure_sentence(&error, &common::english(), &common::days()),
             "{body}"
         );
         // Not kept, so the next click asks again — and a readable answer then is kept.

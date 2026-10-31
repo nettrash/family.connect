@@ -153,6 +153,166 @@ pub(crate) static TABLE: &[(&str, &str, &str)] = &[
     ("Sticker", "sr", "Стикер"),
     ("Sticker", "sr-Latn", "Stiker"),
     ("Sticker", "zh-Hans", "贴纸"),
+    (
+        "This family was deleted because its subscription ended.",
+        "de",
+        "Diese Familie wurde gelöscht, weil ihr Abo abgelaufen ist.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "es",
+        "Esta familia se ha eliminado porque su suscripción terminó.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "fr",
+        "Cette famille a été supprimée, car son abonnement a pris fin.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "ja",
+        "サブスクリプションが終了したため、このファミリーは削除されました。",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "ru",
+        "Эта семья удалена, потому что её подписка закончилась.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "sr",
+        "Ова породица је обрисана јер јој је истекла претплата.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "sr-Latn",
+        "Ova porodica je obrisana jer joj je istekla pretplata.",
+    ),
+    (
+        "This family was deleted because its subscription ended.",
+        "zh-Hans",
+        "此家庭的订阅已结束，家庭已被删除。",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "de",
+        "Diese Familie wird morgen gelöscht, wenn ihr Abo nicht verlängert wird.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "es",
+        "Esta familia se eliminará mañana si no se renueva su suscripción.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "fr",
+        "Cette famille sera supprimée demain si son abonnement n’est pas renouvelé.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "ja",
+        "サブスクリプションが更新されない場合、このファミリーは明日削除されます。",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "ru",
+        "Если подписку не продлить, эта семья будет удалена завтра.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "sr",
+        "Ова породица ће сутра бити обрисана ако се претплата не обнови.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "sr-Latn",
+        "Ova porodica će sutra biti obrisana ako se pretplata ne obnovi.",
+    ),
+    (
+        "This family will be deleted tomorrow unless its subscription is renewed.",
+        "zh-Hans",
+        "如不续订，此家庭将于明天被删除。",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "de",
+        "Diese Familie wird morgen gelöscht. Verlängere dein Abo, um sie zu behalten.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "es",
+        "Esta familia se eliminará mañana. Renueva tu suscripción para conservarla.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "fr",
+        "Cette famille sera supprimée demain. Renouvelez votre abonnement pour la conserver.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "ja",
+        "このファミリーは明日削除されます。残すにはサブスクリプションを更新してください。",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "ru",
+        "Эта семья будет удалена завтра. Продли подписку, чтобы её сохранить.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "sr",
+        "Ова породица ће сутра бити обрисана. Обнови претплату да је задржиш.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "sr-Latn",
+        "Ova porodica će sutra biti obrisana. Obnovi pretplatu da je zadržiš.",
+    ),
+    (
+        "This family will be deleted tomorrow. Renew your subscription to keep it.",
+        "zh-Hans",
+        "此家庭将于明天被删除。请续订以保留它。",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "de",
+        "Das Abo dieser Familie ist abgelaufen. Sie wird gelöscht, wenn es nicht verlängert wird.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "es",
+        "La suscripción de esta familia ha terminado. Se eliminará si no se renueva.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "fr",
+        "L’abonnement de cette famille a pris fin. Elle sera supprimée s’il n’est pas renouvelé.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "ja",
+        "このファミリーのサブスクリプションが終了しました。更新されない場合、ファミリーは削除されます。",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "ru",
+        "Подписка этой семьи закончилась. Если её не продлить, семья будет удалена.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "sr",
+        "Претплата ове породице је истекла. Биће обрисана ако се претплата не обнови.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "sr-Latn",
+        "Pretplata ove porodice je istekla. Biće obrisana ako se pretplata ne obnovi.",
+    ),
+    (
+        "This family's subscription has ended. It will be deleted unless it is renewed.",
+        "zh-Hans",
+        "此家庭的订阅已结束。如不续订，家庭将被删除。",
+    ),
     ("Video", "de", "Video"),
     ("Video", "es", "Vídeo"),
     ("Video", "fr", "Vidéo"),
@@ -208,6 +368,46 @@ pub(crate) static TABLE: &[(&str, &str, &str)] = &[
         "You're in — welcome to %@",
         "zh-Hans",
         "你已加入——欢迎来到 %@",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "de",
+        "Dein Abo ist abgelaufen. Verlängere es, sonst wird diese Familie gelöscht.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "es",
+        "Tu suscripción ha terminado. Renuévala o esta familia se eliminará.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "fr",
+        "Votre abonnement a pris fin. Renouvelez-le, sinon cette famille sera supprimée.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "ja",
+        "サブスクリプションが終了しました。更新しないと、このファミリーは削除されます。",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "ru",
+        "Твоя подписка закончилась. Продли её, иначе эта семья будет удалена.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "sr",
+        "Твоја претплата је истекла. Обнови је или ће ова породица бити обрисана.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "sr-Latn",
+        "Tvoja pretplata je istekla. Obnovi je ili će ova porodica biti obrisana.",
+    ),
+    (
+        "Your subscription has ended. Renew it, or this family will be deleted.",
+        "zh-Hans",
+        "你的订阅已结束。请续订，否则此家庭将被删除。",
     ),
 ];
 

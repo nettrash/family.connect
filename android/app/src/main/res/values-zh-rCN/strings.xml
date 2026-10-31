@@ -772,4 +772,20 @@
     <string name="s_leave_named_family">要退出“%s”吗？</string>
     <string name="s_leave_one_of_families_explanation">你将无法再访问此家庭的聊天。与你在其他家庭中共同所在的人之间的单独对话会保留。</string>
     <string name="s_new_family_explanation">创建你自己的家庭。你将成为它的所有者，并可邀请你其他家庭中的成员。</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">在此服务器上，无法通过此 App 创建新家庭。</string>
+    <string name="e_subscription_required">在此服务器上创建新家庭需要订阅。</string>
+    <string name="s_banner_member">“%1$s”的订阅已结束，将于 %2$s 删除。只有所有者 %3$s 可以续订。</string>
+    <string name="s_banner_owner_not_here">您的订阅已结束，“%1$s”将于 %2$s 删除。无法通过此 App 续订。</string>
+    <string name="s_allowance_title">本月额度</string>
+    <string name="s_allowance_storage">存储空间</string>
+    <string name="s_allowance_assistant">助手</string>
+    <string name="s_allowance_pictures">图片</string>
+    <string name="s_allowance_transcripts">转写</string>
+    <string name="s_allowance_of">%1$s / %2$s</string>
+    <string name="s_allowance_percent">已使用 %1$d%%</string>
+    <string name="s_allowance_minutes">%1$d / %2$d 分钟</string>
+    <string name="s_allowance_renews_on">将于 %1$s 重置</string>
+    <string name="e_storage_allowance_used">此家庭的存储额度已用完。</string>
+    <string name="e_ai_allowance_used">此家庭本月的助手额度已用完。将于 %1$s 重置。</string>
 </resources>

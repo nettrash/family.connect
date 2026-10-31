@@ -258,6 +258,136 @@
       "sr": "Цео екран",
       "sr-Latn": "Ceo ekran",
       "zh-Hans": "全屏"
+    },
+    "On this server, a new family is started in the Family Connect app on iPhone, iPad or Mac.": {
+      "de": "Auf diesem Server wird eine neue Familie in der Family-Connect-App auf dem iPhone, iPad oder Mac gegründet.",
+      "es": "En este servidor, las familias nuevas se crean en la app Family Connect para iPhone, iPad o Mac.",
+      "fr": "Sur ce serveur, une nouvelle famille se crée dans l’app Family Connect sur iPhone, iPad ou Mac.",
+      "ja": "このサーバーでは、新しいファミリーは iPhone、iPad、Mac の Family Connect アプリで作成します。",
+      "ru": "На этом сервере новую семью создают в приложении Family Connect на iPhone, iPad или Mac.",
+      "sr": "На овом серверу нова породица се прави у апликацији Family Connect на iPhone-у, iPad-у или Mac-у.",
+      "sr-Latn": "Na ovom serveru nova porodica se pravi u aplikaciji Family Connect na iPhone-u, iPad-u ili Mac-u.",
+      "zh-Hans": "在此服务器上，新家庭需在 iPhone、iPad 或 Mac 上的 Family Connect App 中创建。"
+    },
+    "A new family on this server needs a subscription.": {
+      "de": "Für eine neue Familie auf diesem Server ist ein Abo nötig.",
+      "es": "Para crear una familia nueva en este servidor hace falta una suscripción.",
+      "fr": "Une nouvelle famille sur ce serveur nécessite un abonnement.",
+      "ja": "このサーバーで新しいファミリーを作成するには、サブスクリプションが必要です。",
+      "ru": "Чтобы создать новую семью на этом сервере, нужна подписка.",
+      "sr": "За нову породицу на овом серверу потребна је претплата.",
+      "sr-Latn": "Za novu porodicu na ovom serveru potrebna je pretplata.",
+      "zh-Hans": "在此服务器上创建新家庭需要订阅。"
+    },
+    "“%@” will be deleted on %@ because its subscription has ended. Only %@, the owner, can renew it.": {
+      "de": "„%1$@“ wird am %2$@ gelöscht, weil das Abo abgelaufen ist. Nur %3$@ (Besitzer:in) kann es verlängern.",
+      "es": "«%1$@» se eliminará el %2$@ porque su suscripción ha terminado. Solo %3$@, el propietario, puede renovarla.",
+      "fr": "« %1$@ » sera supprimée le %2$@, car son abonnement a pris fin. Seul %3$@, le propriétaire, peut le renouveler.",
+      "ja": "サブスクリプションが終了したため、「%1$@」は %2$@ に削除されます。更新できるのはオーナーの %3$@ さんだけです。",
+      "ru": "«%1$@» будет удалена %2$@: её подписка закончилась. Продлить её может только владелец — %3$@.",
+      "sr": "„%1$@“ ће бити обрисана %2$@ јер јој је истекла претплата. Само власник, %3$@, може да је обнови.",
+      "sr-Latn": "„%1$@“ će biti obrisana %2$@ jer joj je istekla pretplata. Samo vlasnik, %3$@, može da je obnovi.",
+      "zh-Hans": "“%1$@”的订阅已结束，将于 %2$@ 删除。只有所有者 %3$@ 可以续订。"
+    },
+    "“%@” will be deleted on %@ because your subscription has ended. Renew it in the Family Connect app on iPhone, iPad or Mac.": {
+      "de": "„%1$@“ wird am %2$@ gelöscht, weil dein Abo abgelaufen ist. Verlängere es in der Family-Connect-App auf dem iPhone, iPad oder Mac.",
+      "es": "«%1$@» se eliminará el %2$@ porque tu suscripción ha terminado. Renuévala en la app Family Connect para iPhone, iPad o Mac.",
+      "fr": "« %1$@ » sera supprimée le %2$@, car votre abonnement a pris fin. Renouvelez-le dans l’app Family Connect sur iPhone, iPad ou Mac.",
+      "ja": "あなたのサブスクリプションが終了したため、「%1$@」は %2$@ に削除されます。iPhone、iPad、Mac の Family Connect アプリで更新してください。",
+      "ru": "«%1$@» будет удалена %2$@: ваша подписка закончилась. Продлите её в приложении Family Connect на iPhone, iPad или Mac.",
+      "sr": "„%1$@“ ће бити обрисана %2$@ јер вам је истекла претплата. Обновите је у апликацији Family Connect на iPhone-у, iPad-у или Mac-у.",
+      "sr-Latn": "„%1$@“ će biti obrisana %2$@ jer vam je istekla pretplata. Obnovite je u aplikaciji Family Connect na iPhone-u, iPad-u ili Mac-u.",
+      "zh-Hans": "您的订阅已结束，“%1$@”将于 %2$@ 删除。请在 iPhone、iPad 或 Mac 上的 Family Connect App 中续订。"
+    },
+    "This Month’s Allowance": {
+      "de": "Kontingent in diesem Monat",
+      "es": "Límite de este mes",
+      "fr": "Forfait de ce mois",
+      "ja": "今月の上限",
+      "ru": "Лимит этого месяца",
+      "sr": "Квота за овај месец",
+      "sr-Latn": "Kvota za ovaj mesec",
+      "zh-Hans": "本月额度"
+    },
+    "Storage": {
+      "de": "Speicher",
+      "es": "Almacenamiento",
+      "fr": "Stockage",
+      "ja": "ストレージ",
+      "ru": "Хранилище",
+      "sr": "Простор",
+      "sr-Latn": "Prostor",
+      "zh-Hans": "存储空间"
+    },
+    "Transcripts": {
+      "de": "Transkripte",
+      "es": "Transcripciones",
+      "fr": "Transcriptions",
+      "ja": "文字起こし",
+      "ru": "Расшифровки",
+      "sr": "Транскрипти",
+      "sr-Latn": "Transkripti",
+      "zh-Hans": "转写"
+    },
+    "%@ of %@": {
+      "de": "%1$@ von %2$@",
+      "es": "%1$@ de %2$@",
+      "fr": "%1$@ sur %2$@",
+      "ja": "%2$@ 中 %1$@",
+      "ru": "%1$@ из %2$@",
+      "sr": "%1$@ од %2$@",
+      "sr-Latn": "%1$@ od %2$@",
+      "zh-Hans": "%1$@ / %2$@"
+    },
+    "%lld%% used": {
+      "de": "%1$lld %% verbraucht",
+      "es": "%1$lld %% usado",
+      "fr": "%1$lld %% utilisé",
+      "ja": "%1$lld%% 使用",
+      "ru": "Использовано %1$lld%%",
+      "sr": "Искоришћено %1$lld%%",
+      "sr-Latn": "Iskorišćeno %1$lld%%",
+      "zh-Hans": "已使用 %1$lld%%"
+    },
+    "%@ of %@ min": {
+      "de": "%1$@ von %2$@ Min.",
+      "es": "%1$@ de %2$@ min",
+      "fr": "%1$@ sur %2$@ min",
+      "ja": "%2$@ 分中 %1$@ 分",
+      "ru": "%1$@ из %2$@ мин",
+      "sr": "%1$@ од %2$@ мин",
+      "sr-Latn": "%1$@ od %2$@ min",
+      "zh-Hans": "%1$@ / %2$@ 分钟"
+    },
+    "Renews on %1$@": {
+      "de": "Erneuert sich am %1$@",
+      "es": "Se renueva el %1$@",
+      "fr": "Renouvellement le %1$@",
+      "ja": "%1$@ にリセット",
+      "ru": "Обновится %1$@",
+      "sr": "Обнавља се %1$@",
+      "sr-Latn": "Obnavlja se %1$@",
+      "zh-Hans": "将于 %1$@ 重置"
+    },
+    "This family has used its storage allowance.": {
+      "de": "Diese Familie hat ihr Speicherkontingent aufgebraucht.",
+      "es": "Esta familia ha agotado su almacenamiento.",
+      "fr": "Cette famille a épuisé son espace de stockage.",
+      "ja": "このファミリーはストレージの上限に達しました。",
+      "ru": "Эта семья исчерпала лимит хранилища.",
+      "sr": "Ова породица је искористила своју квоту простора.",
+      "sr-Latn": "Ova porodica je iskoristila svoju kvotu prostora.",
+      "zh-Hans": "此家庭的存储额度已用完。"
+    },
+    "This family has used this month’s assistant allowance. It renews on %@.": {
+      "de": "Diese Familie hat ihr Assistenten-Kontingent für diesen Monat aufgebraucht. Es erneuert sich am %1$@.",
+      "es": "Esta familia ha agotado el límite del asistente de este mes. Se renueva el %1$@.",
+      "fr": "Cette famille a épuisé le forfait de l’assistant pour ce mois. Il se renouvelle le %1$@.",
+      "ja": "このファミリーは今月のアシスタントの上限に達しました。%1$@ にリセットされます。",
+      "ru": "Эта семья исчерпала лимит ассистента на этот месяц. Он обновится %1$@.",
+      "sr": "Ова породица је искористила квоту асистента за овај месец. Обнавља се %1$@.",
+      "sr-Latn": "Ova porodica je iskoristila kvotu asistenta za ovaj mesec. Obnavlja se %1$@.",
+      "zh-Hans": "此家庭本月的助手额度已用完。将于 %1$@ 重置。"
     }
   }
 }

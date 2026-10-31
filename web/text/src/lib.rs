@@ -77,6 +77,10 @@
 //!   is shown, which chats are listed in it, when the switcher is drawn,
 //!   when "New Family…" and "Join Another Family…" are offered, and what
 //!   each new refusal is told as.
+//! - [`paid`] — families a server hosts for a subscription (#89): whether
+//!   this account may start one here, the banner over a family that will be
+//!   deleted, Family Statistics' allowance rows, and what each new refusal is
+//!   told as, for a client that cannot sell the subscription.
 //! - [`greeting_places`] — the places the owner names for today's weather
 //!   in the daily greeting (#72): when the field is offered, and what a name
 //!   may be, by the server's own rules.
@@ -120,6 +124,7 @@ pub mod mp4;
 pub mod mp4_read;
 pub mod notify;
 pub mod pack;
+pub mod paid;
 pub mod reactions;
 pub mod record;
 pub mod sound_mix;

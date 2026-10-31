@@ -862,4 +862,20 @@
     <string name="s_leave_named_family">Покинуть «%s»?</string>
     <string name="s_leave_one_of_families_explanation">Ты потеряешь доступ к чатам этой семьи. Личные чаты с теми, с кем ты состоишь в другой семье, останутся.</string>
     <string name="s_new_family_explanation">Создай свою семью. Она будет твоей, и ты сможешь пригласить участников других своих семей.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">На этом сервере новую семью нельзя создать в этом приложении.</string>
+    <string name="e_subscription_required">Чтобы создать новую семью на этом сервере, нужна подписка.</string>
+    <string name="s_banner_member">«%1$s» будет удалена %2$s: её подписка закончилась. Продлить её может только владелец — %3$s.</string>
+    <string name="s_banner_owner_not_here">«%1$s» будет удалена %2$s: ваша подписка закончилась. Продлить её в этом приложении нельзя.</string>
+    <string name="s_allowance_title">Лимит этого месяца</string>
+    <string name="s_allowance_storage">Хранилище</string>
+    <string name="s_allowance_assistant">Ассистент</string>
+    <string name="s_allowance_pictures">Картинки</string>
+    <string name="s_allowance_transcripts">Расшифровки</string>
+    <string name="s_allowance_of">%1$s из %2$s</string>
+    <string name="s_allowance_percent">Использовано %1$d%%</string>
+    <string name="s_allowance_minutes">%1$d из %2$d мин</string>
+    <string name="s_allowance_renews_on">Обновится %1$s</string>
+    <string name="e_storage_allowance_used">Эта семья исчерпала лимит хранилища.</string>
+    <string name="e_ai_allowance_used">Эта семья исчерпала лимит ассистента на этот месяц. Он обновится %1$s.</string>
 </resources>

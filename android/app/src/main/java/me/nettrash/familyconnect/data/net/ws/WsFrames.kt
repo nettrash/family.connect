@@ -10,7 +10,7 @@
  *                 call_offer / call_answer / call_ice / call_end
  *   ServerFrame — ack / message / read / typing / member_joined /
  *                 member_left / member_deleted / family_owner /
- *                 member_blocked / chat_updated / chat_removed /
+ *                 family_plan / member_blocked / chat_updated / chat_removed /
  *                 reaction / poll / pong / error /
  *                 call_offer / call_ringing / call_answer / call_ice / call_end
  *
@@ -285,6 +285,23 @@ sealed interface ServerFrame {
     ) : ServerFrame
 
     /**
+     * A PAID family's deadline appeared or went (docs/protocol.md, "Paid
+     * families", added 2026-10-30): to every member when the owner's
+     * subscription stops covering it, and again when it covers it once
+     * more. A state-set over that family's `plan` and `delete_at`, so an
+     * ABSENT [deleteAt] CLEARS the deadline — this frame says what the
+     * deadline now is, and "none" is said by leaving it out. Applied to the
+     * family it names, shown or not.
+     */
+    @Serializable
+    @SerialName("family_plan")
+    data class FamilyPlan(
+        @SerialName("family_id") val familyId: Long,
+        val plan: String? = null,
+        @SerialName("delete_at") val deleteAt: String? = null,
+    ) : ServerFrame
+
+    /**
      * One member blocked or unblocked, delivered to every connection of the
      * BLOCKER and to NOBODY else.
      *
@@ -394,7 +411,7 @@ sealed interface ServerFrame {
      * decoded into an enum, because a value this client does not know must
      * read as ABSENT — never as a frame that failed to decode — so a later
      * server can add one without this client inventing a meaning for it.
-     * [isRefused] is the only question asked of it.
+     * [isRefused] and [isAllowanceUsed] are the only questions asked of it.
      */
     @Serializable
     @SerialName("ai_error")
@@ -402,6 +419,11 @@ sealed interface ServerFrame {
         @SerialName("chat_id") val chatId: Long,
         @SerialName("message_id") val messageId: Long,
         val reason: String? = null,
+        /**
+         * With `"allowance_used"`: the start of the next UTC month, when a
+         * paid family's assistant allowance starts again (added 2026-10-30).
+         */
+        @SerialName("renews_at") val renewsAt: String? = null,
     ) : ServerFrame {
         /**
          * The AI provider's OWN safety or content filter refused the
@@ -411,9 +433,19 @@ sealed interface ServerFrame {
          */
         val isRefused: Boolean get() = reason == REASON_REFUSED
 
+        /**
+         * A PAID family has used this month's assistant allowance, and the
+         * provider was never called (docs/protocol.md, "Paid families").
+         * Asking again before [renewsAt] gets the same answer.
+         */
+        val isAllowanceUsed: Boolean get() = reason == REASON_ALLOWANCE_USED
+
         companion object {
-            /** The one `reason` protocol.md defines. */
+            /** The provider's own filter refused it. */
             const val REASON_REFUSED = "refused"
+
+            /** A paid family's month is used up (2026-10-30). */
+            const val REASON_ALLOWANCE_USED = "allowance_used"
         }
     }
 

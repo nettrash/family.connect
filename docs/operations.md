@@ -456,3 +456,100 @@ lives in `sessionStorage`, so closing the tab ends the session for that
 reader — which is what makes a shared machine safe and is worth saying to a
 family that asks why the web keeps signing them out and the phone does not.
 
+
+## 9. Paid families
+
+`[subscriptions]` lets this server host families for an App Store
+subscription (docs/protocol.md, "Paid families"; issue #89). It is off by
+default, and a server that never turns it on has nothing to do here.
+
+The subscription is sold by the app's publisher, so this section is for the
+publisher's server. Turning it on anywhere else costs that server's families
+money that goes to somebody else.
+
+### Before turning it on
+
+1. **App Store Connect → the app → Subscriptions.** Create one subscription
+   group ("Family hosting") holding the products named in `product_ids`: by
+   default `me.nettrash.FamilyConnect.family.monthly` and `….family.yearly`.
+   Give them prices, a display name and a description, and the review
+   screenshot Apple asks for.
+2. **Billing Grace Period** (in the same place): turn it on, 16 days. While
+   Apple retries a failed payment the subscription stays active, and the
+   server counts it as active. The family's 14 days start only after that.
+3. **App Information → App Store Server Notifications.** Set the URL to
+   `https://<your server>/api/v1/appstore/notifications` for BOTH Production
+   and Sandbox, version 2. The repo's nginx config already passes it
+   through; nothing else needs a change there.
+4. **App Privacy.** Add "Purchases", linked to the user, used for app
+   functionality. The server keeps, per subscriber, Apple's transaction id,
+   the product, the environment and when it expires. Say the same on the
+   privacy policy page.
+5. **Ship the app that can buy.** Until the iPhone/iPad/Mac app with the
+   subscription screen is on the App Store, nobody can start a family once
+   the switch is on.
+
+### Turning it on
+
+Add the section, keep the defaults unless you mean to change them, and
+restart:
+
+```toml
+[subscriptions]
+enabled = true
+```
+
+Every family that exists at that moment stays FREE — yours, and any other
+already here — so nothing changes for anybody who is already using the
+server. See them, and move one if you mean to:
+
+```sh
+sudo family-connect families list
+sudo family-connect families plan 7 paid     # or: free
+```
+
+`list` prints names, so it prints to your terminal only. It never goes to
+the journal. A family moved to `paid` whose owner has no subscription starts
+its 14 days at the next hourly sweep, and every member is told. Moving one to
+`free` stops the clock.
+
+### What to watch
+
+The journal says, with ids and never names:
+
+- `subscription stored` / `subscription refused (<reason>)` — an app handing
+  over a purchase. A refusal names the check that failed (the chain, a
+  marker extension, the bundle, the product, the environment, the account
+  token). Every refusal from a real app is a bug worth reporting.
+- `app store notification applied` / `ignored` / `refused`. A burst of
+  refusals is somebody posting junk at the URL, which costs nothing. Apple's
+  own notifications should never be refused.
+- `family unpaid`, `family covered again`, `family deleted (unpaid)`.
+
+A server that was down for a while misses Apple's notifications for that
+time (Apple retries five times over several days). Nothing is lost: the
+owner's app hands over the current state on its next launch, and the 14 days
+exist to give it time to.
+
+### Testing it
+
+Use a Sandbox tester (App Store Connect → Users and Access → Sandbox) on a
+development or TestFlight build. Its monthly subscription renews every few
+minutes and stops by itself after a few renewals, so you can see the whole
+cycle in an afternoon:
+
+1. the purchase;
+2. the family starting;
+3. the subscription expiring;
+4. the banner and the push;
+5. the deletion.
+
+For step 5, shorten `unpaid_days` to 1 while you watch, and put it back.
+
+### Turning it off
+
+`enabled = false` and restart. Plans are kept but nothing reads them: no
+limits, no deadlines, and nobody is deleted. Families created while it was
+on keep their `paid` plan, and any deadline is dropped at that restart: a
+family that was unpaid gets a fresh 14 days, with fresh warnings, if the
+switch is turned on again. Move any you mean to keep free first.

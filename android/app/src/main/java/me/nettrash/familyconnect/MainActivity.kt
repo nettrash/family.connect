@@ -272,6 +272,8 @@ class MainActivity : ComponentActivity() {
                 ?.let { put(PushNotifications.EXTRA_CHAT_ID, it) }
             intent.getStringExtra(PushNotifications.EXTRA_FAMILY_ID)
                 ?.let { put(PushNotifications.EXTRA_FAMILY_ID, it) }
+            intent.getStringExtra(PushNotifications.EXTRA_STAGE)
+                ?.let { put(PushNotifications.EXTRA_STAGE, it) }
             intent.getStringExtra(PushRouteParser.KEY_CALL_ACTION)
                 ?.let { put(PushRouteParser.KEY_CALL_ACTION, it) }
         }

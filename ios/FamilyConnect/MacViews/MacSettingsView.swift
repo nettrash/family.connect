@@ -69,6 +69,10 @@ struct MacSettingsView: View {
     /// phone's two fields (protocol.md, "Consenting to the assistant").
     @State private var reviewingAssistant = false
     @State private var assistantConsentError: String?
+    /// Paid families — the phone's two fields (docs/protocol.md, "Paid
+    /// families"): Manage Subscription, and the screen an owner renews on.
+    @State private var managingSubscription = false
+    @State private var renewingSubscription = false
 
     /// The answer to the assistant question, and the way back out of it
     /// — the phone's section, in the Mac's window (protocol.md,
@@ -278,6 +282,8 @@ struct MacSettingsView: View {
                             .foregroundStyle(.red)
                     }
                 }
+                SubscriptionSettingsSection(
+                    managing: $managingSubscription, renewing: $renewingSubscription)
                 Section {
                     Button("Statistics…") { showingStatistics = true }
                 }
@@ -358,6 +364,14 @@ struct MacSettingsView: View {
     private var leaveTitle: String {
         FamilyRules.leaveTitle(familyName: session.family?.name ?? "", familyCount: session.families.count)
             ?? String(localized: "Leave the family?")
+    }
+
+    /// The phone's rule, same keys: the owner of a paid family whose
+    /// subscription is still active is told it goes on renewing.
+    private var keepsRenewingOnLeave: Bool {
+        PaidFamilies.keepsRenewingOnLeave(
+            subscriptionsEnabled: session.subscriptionsEnabled, subscription: session.subscription,
+            isOwner: session.isOwner, family: session.family)
     }
 
     /// What leaving costs — the phone's sentences, same keys.
@@ -465,14 +479,27 @@ struct MacSettingsView: View {
                 onDecline: { reviewingAssistant = false })
         }
         .familyDoorSheets(showsNewFamily: $showsNewFamily, showsJoinAnother: $showsJoinAnother)
+        .manageSubscriptions(isPresented: $managingSubscription)
+        .sheet(isPresented: $renewingSubscription) {
+            SubscriptionSheet()
+        }
         .confirmationDialog(
             Text(leaveTitle),
             isPresented: $confirmLeave,
             titleVisibility: .visible
         ) {
             Button("Leave Family", role: .destructive) { leave() }
+            // The phone's rule: leaving a paid family cancels nothing at Apple.
+            if keepsRenewingOnLeave {
+                Button("Manage Subscription") { managingSubscription = true }
+            }
         } message: {
-            Text(leaveMessage)
+            if keepsRenewingOnLeave {
+                Text(leaveMessage) + Text(verbatim: "\n\n")
+                    + Text("Your App Store subscription keeps renewing after you leave. Cancel it in the App Store if you no longer need it.")
+            } else {
+                Text(leaveMessage)
+            }
         }
         .alert(
             "Ownership passed on",

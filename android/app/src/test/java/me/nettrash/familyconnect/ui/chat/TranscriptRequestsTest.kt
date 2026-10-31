@@ -207,6 +207,7 @@ class TranscriptRequestsTest {
             answers += TranscriptOutcome.Failed
             answers += TranscriptOutcome.TooLong
             answers += TranscriptOutcome.Unreadable
+            answers += TranscriptOutcome.AllowanceUsed
         }
         val requests = requests(world)
 
@@ -215,6 +216,7 @@ class TranscriptRequestsTest {
         requests.request(Ask(3, 502, 42))
         requests.request(Ask(3, 503, 43))
         requests.request(Ask(3, 504, 44))
+        requests.request(Ask(3, 505, 45))
         runCurrent()
 
         assertThat(requests.status.value).containsExactly(
@@ -223,7 +225,27 @@ class TranscriptRequestsTest {
             42L, Status.FAILED,
             43L, Status.TOO_LONG,
             44L, Status.UNREADABLE,
+            45L, Status.ALLOWANCE_USED,
         )
+    }
+
+    /**
+     * A paid family's minutes are used up until next month (docs/protocol.md,
+     * "Paid families"): said under the player, and not offered again from
+     * the long-press menu, where asking would only earn it again.
+     */
+    @Test
+    fun `a used-up allowance is not offered again from the menu`() {
+        val action = TranscriptRules.menuAction(
+            held = null,
+            status = Status.ALLOWANCE_USED,
+            offered = true,
+            canAsk = true,
+            reveal = {},
+            hide = {},
+            ask = {},
+        )
+        assertThat(action).isNull()
     }
 
     @Test

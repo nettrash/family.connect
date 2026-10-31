@@ -26,7 +26,8 @@ private enum Fixture {
         FamilyDTO(
             id: id, name: name, joinPolicy: "open", createdAt: nil, inviteCode: nil,
             aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false,
-            aiTranscripts: false, aiLookups: false, greetingPlaces: [], maxMembers: nil, role: role)
+            aiTranscripts: false, aiLookups: false, greetingPlaces: [], maxMembers: nil,
+            plan: nil, memberCeiling: nil, deleteAt: nil, role: role)
     }
 
     static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)

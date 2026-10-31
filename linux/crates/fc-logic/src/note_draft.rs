@@ -323,6 +323,7 @@ pub mod note_sheet_text {
 
     use crate::assistant_answers::AssistantAnswers;
     use crate::family_console::family_text;
+    use crate::paid_families::{self, Days};
 
     pub fn title(is_new: bool, kind: Kind, say: &dyn StringCatalog) -> String {
         match (is_new, kind) {
@@ -358,6 +359,10 @@ pub mod note_sheet_text {
             error_codes::ATTACHMENT_TOO_LARGE => "That photo is too large to pin.",
             error_codes::INVALID_ATTACHMENT => "The board pins photos only.",
             error_codes::NOT_IN_FAMILY => "You're not in a family, so there is no board.",
+            // A pinned photo is an upload like any other (docs/protocol.md, "Paid families").
+            error_codes::STORAGE_ALLOWANCE_USED => {
+                return paid_families::upload_refusal(&error.code, say).unwrap_or_default();
+            }
             _ => return family_text::generic_failure(error, say),
         };
         say.get(key).to_string()
@@ -365,13 +370,18 @@ pub mod note_sheet_text {
 
     /// What to tell the author whose backdrop was not drawn. A title the provider's own filter
     /// refused (`picture_refused`, docs/protocol.md "Board") says so, in the sentence a refused
-    /// answer says — drawing the same title again gets the same refusal. Anything else is the plain
-    /// failure it always was.
-    pub fn backdrop_failure(error: &ApiError, say: &dyn StringCatalog) -> String {
-        if error.code == error_codes::PICTURE_REFUSED {
-            AssistantAnswers::sentence(Some(AiErrorReason::Refused), say)
-        } else {
-            say.get("Couldn't draw that.").to_string()
+    /// answer says — drawing the same title again gets the same refusal. A paid family past this
+    /// month's pictures (`ai_allowance_used`, "Paid families") says on which day they renew.
+    /// Anything else is the plain failure it always was.
+    pub fn backdrop_failure(error: &ApiError, say: &dyn StringCatalog, days: &Days<'_>) -> String {
+        match error.code.as_str() {
+            error_codes::PICTURE_REFUSED => {
+                AssistantAnswers::sentence(Some(AiErrorReason::Refused), say, days)
+            }
+            error_codes::AI_ALLOWANCE_USED => {
+                paid_families::assistant_allowance_used(Some(days.next_month()), say, days)
+            }
+            _ => say.get("Couldn't draw that.").to_string(),
         }
     }
 }

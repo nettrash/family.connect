@@ -35,6 +35,12 @@ nonisolated enum PushRoute: Equatable, Sendable {
     /// (docs/protocol.md, "Several families", 2026-10-22): the invitations,
     /// which are the banner over the chat list and rows in the switcher.
     case invitations
+    /// kind "family_plan" — a paid family stopped being paid for, is
+    /// deleted tomorrow, or was deleted (docs/protocol.md, "Paid families",
+    /// 2026-10-30): the app opens in that family, where the banner over the
+    /// chat list says the rest — or, for `stage: "deleted"`, which names a
+    /// family that is gone, on the family list as it now is.
+    case familyPlan
     /// kind "joined" and anything unrecognised — the chat list.
     case chatList
 
@@ -53,6 +59,8 @@ nonisolated enum PushRoute: Equatable, Sendable {
             return .reports
         case "invitation":
             return .invitations
+        case "family_plan":
+            return .familyPlan
         default:
             // "joined" plus forward compatibility with future kinds.
             return .chatList
@@ -77,7 +85,12 @@ nonisolated enum PushRoute: Equatable, Sendable {
     /// request, an invitation (docs/protocol.md, "Several families" —
     /// Pushes). A direct chat's message names none.
     static func familyID(userInfo: [AnyHashable: Any]) -> Int64? {
-        int64(userInfo["family_id"])
+        // A deleted family is not one to open in: the app stays on the
+        // families it still has.
+        if userInfo["kind"] as? String == "family_plan", userInfo["stage"] as? String == "deleted" {
+            return nil
+        }
+        return int64(userInfo["family_id"])
     }
 
     static func messageID(userInfo: [AnyHashable: Any]) -> Int64? {

@@ -1336,6 +1336,9 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             // empty by default (protocol.md, "Today's weather, for places
             // the owner chose").
             "greeting_places": [],
+            // And the ceiling in force, always present: the operator's, on a
+            // server that does not charge (protocol.md, "Paid families").
+            "member_ceiling": 50,
         }),
         "the whole Family object, exactly the shape in protocol.md — no language key, \
          because nobody has chosen one, and ai_history present because it always is"
@@ -1368,6 +1371,7 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             "ai_transcripts": false,
             "ai_lookups": false,
             "greeting_places": [],
+            "member_ceiling": 50,
         }),
         "and the whole object again with a cap — one key more, nothing else moved"
     );

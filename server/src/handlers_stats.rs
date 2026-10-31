@@ -251,7 +251,7 @@ pub async fn family_stats(
     .fetch_one(&state.pool)
     .await?;
 
-    let body = json!({
+    let mut body = json!({
         "generated_at": time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
@@ -283,6 +283,12 @@ pub async fn family_stats(
         },
         "members": member_rows,
     });
+    // A PAID family's allowance, beside everything else every member sees
+    // (protocol.md, "Family statistics", amended 2026-10-30). Absent for a
+    // free family and on a server that does not charge.
+    if let Some(allowance) = crate::subscriptions::allowance_json(&state, family_id).await? {
+        body["allowance"] = allowance;
+    }
 
     Ok((StatusCode::OK, Json(body)).into_response())
 }

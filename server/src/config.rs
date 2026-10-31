@@ -55,6 +55,9 @@ pub struct Config {
 
     #[serde(default)]
     pub greetings: GreetingsConfig,
+
+    #[serde(default)]
+    pub subscriptions: SubscriptionsConfig,
 }
 
 /// `[families]` — who may start a family here (docs/protocol.md, "Starting
@@ -132,6 +135,161 @@ impl Default for FamiliesConfig {
         }
     }
 }
+
+/// `[subscriptions]` — paid family hosting (docs/protocol.md, "Paid
+/// families"; issue #89).
+///
+/// Off by default, and off means nothing in this section is read: no plans,
+/// no limits, no deadlines. On, a NEW family needs its owner's App Store
+/// subscription, verified offline by `crate::appstore`; a paid family that
+/// loses it is deleted `unpaid_days` later, and has the limits below. It
+/// narrows the `[families]` doors and never opens one.
+///
+/// Unknown keys are REFUSED, as `[ai]`'s are: `enable = true` misspelt would
+/// otherwise boot a server that charges nobody while its operator believes
+/// it does.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// The app whose purchases count.
+    #[serde(default = "default_subscription_bundle_id")]
+    pub bundle_id: String,
+
+    /// The auto-renewable subscriptions that host a family, in the order
+    /// the app shows them.
+    #[serde(default = "default_subscription_product_ids")]
+    pub product_ids: Vec<String>,
+
+    /// The App Store environments believed. App Review and TestFlight buy
+    /// in "Sandbox" against the production server, hence both by default.
+    #[serde(default = "default_subscription_environments")]
+    pub environments: Vec<String>,
+
+    /// Days a paid family stays after its owner's subscription ends,
+    /// counted from when the server noticed.
+    #[serde(default = "default_unpaid_days")]
+    pub unpaid_days: i64,
+
+    /// A paid family's member ceiling. 0 turns it off.
+    #[serde(default = "default_paid_max_members")]
+    pub max_members: i64,
+
+    /// Bytes a paid family may keep on the disk. 0 turns it off.
+    #[serde(default = "default_paid_storage_bytes")]
+    pub storage_bytes: i64,
+
+    /// The assistant per UTC calendar month. 0 turns each off.
+    #[serde(default = "default_paid_ai_tokens")]
+    pub ai_tokens_per_month: i64,
+    #[serde(default = "default_paid_images")]
+    pub images_per_month: i64,
+    #[serde(default = "default_paid_transcript_minutes")]
+    pub transcript_minutes_per_month: i64,
+
+    /// The root the App Store chain must end in: always Apple Root CA – G3,
+    /// except in tests, which sign with a chain of their own. NOT a config
+    /// key — `serde(skip)` keeps a TOML from ever setting it.
+    #[serde(skip)]
+    pub trust_root_for_tests: Option<Vec<u8>>,
+}
+
+impl SubscriptionsConfig {
+    /// The DER of the root an App Store chain must end in.
+    pub fn trust_root(&self) -> &[u8] {
+        self.trust_root_for_tests
+            .as_deref()
+            .unwrap_or(crate::appstore::APPLE_ROOT_CA_G3)
+    }
+
+    /// The verifier's policy: this app, these products, these environments.
+    pub fn policy(&self) -> crate::appstore::Policy<'_> {
+        crate::appstore::Policy {
+            root: self.trust_root(),
+            bundle_id: &self.bundle_id,
+            product_ids: &self.product_ids,
+            environments: &self.environments,
+        }
+    }
+
+    /// A limit as the wire and the checks want it: `None` when off.
+    fn limit(value: i64) -> Option<i64> {
+        (value > 0).then_some(value)
+    }
+
+    pub fn member_limit(&self) -> Option<i64> {
+        Self::limit(self.max_members)
+    }
+    pub fn storage_limit(&self) -> Option<i64> {
+        Self::limit(self.storage_bytes)
+    }
+    pub fn ai_token_limit(&self) -> Option<i64> {
+        Self::limit(self.ai_tokens_per_month)
+    }
+    pub fn image_limit(&self) -> Option<i64> {
+        Self::limit(self.images_per_month)
+    }
+    /// Transcript minutes in the unit `ai_usage` counts: milliseconds.
+    pub fn transcript_ms_limit(&self) -> Option<i64> {
+        Self::limit(self.transcript_minutes_per_month).map(|minutes| minutes * 60_000)
+    }
+}
+
+impl Default for SubscriptionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bundle_id: default_subscription_bundle_id(),
+            product_ids: default_subscription_product_ids(),
+            environments: default_subscription_environments(),
+            unpaid_days: default_unpaid_days(),
+            max_members: default_paid_max_members(),
+            storage_bytes: default_paid_storage_bytes(),
+            ai_tokens_per_month: default_paid_ai_tokens(),
+            images_per_month: default_paid_images(),
+            transcript_minutes_per_month: default_paid_transcript_minutes(),
+            trust_root_for_tests: None,
+        }
+    }
+}
+
+fn default_subscription_bundle_id() -> String {
+    "me.nettrash.FamilyConnect".to_string()
+}
+fn default_subscription_product_ids() -> Vec<String> {
+    vec![
+        "me.nettrash.FamilyConnect.family.monthly".to_string(),
+        "me.nettrash.FamilyConnect.family.yearly".to_string(),
+    ]
+}
+fn default_subscription_environments() -> Vec<String> {
+    vec!["Production".to_string(), "Sandbox".to_string()]
+}
+fn default_unpaid_days() -> i64 {
+    14
+}
+fn default_paid_max_members() -> i64 {
+    25
+}
+fn default_paid_storage_bytes() -> i64 {
+    10 * 1024 * 1024 * 1024
+}
+fn default_paid_ai_tokens() -> i64 {
+    2_000_000
+}
+fn default_paid_images() -> i64 {
+    30
+}
+fn default_paid_transcript_minutes() -> i64 {
+    120
+}
+
+/// The App Store environments a server may believe. "Xcode" is not one: a
+/// transaction from Xcode's StoreKit testing is signed by a certificate on
+/// the developer's Mac, not by Apple.
+const SUBSCRIPTION_ENVIRONMENTS: [&str; 2] = ["Production", "Sandbox"];
 
 /// `[greetings]` — the assistant's one unprompted message a day
 /// (docs/protocol.md, "The daily greeting").
@@ -2323,6 +2481,46 @@ impl Config {
                  {MAX_FAMILIES_PER_ACCOUNT_CEILING}"
             );
         }
+        // Checked whether or not it is on, so a section written today and
+        // switched on next month cannot fail at that moment instead.
+        let subs = &self.subscriptions;
+        if subs.bundle_id.trim().is_empty() {
+            anyhow::bail!("subscriptions.bundle_id must name the app");
+        }
+        if subs.product_ids.is_empty() || subs.product_ids.iter().any(|p| p.trim().is_empty()) {
+            anyhow::bail!("subscriptions.product_ids must name at least one product, none empty");
+        }
+        if subs.environments.is_empty()
+            || subs
+                .environments
+                .iter()
+                .any(|e| !SUBSCRIPTION_ENVIRONMENTS.contains(&e.as_str()))
+        {
+            anyhow::bail!("subscriptions.environments must list \"Production\" and/or \"Sandbox\"");
+        }
+        // Bound above for the reason familyless_account_ttl_days is: the
+        // sweep binds it as an `int` for make_interval.
+        if !(1..=365).contains(&subs.unpaid_days) {
+            anyhow::bail!("subscriptions.unpaid_days must be between 1 and 365");
+        }
+        for (name, value) in [
+            ("max_members", subs.max_members),
+            ("storage_bytes", subs.storage_bytes),
+            ("ai_tokens_per_month", subs.ai_tokens_per_month),
+            ("images_per_month", subs.images_per_month),
+            (
+                "transcript_minutes_per_month",
+                subs.transcript_minutes_per_month,
+            ),
+        ] {
+            if value < 0 {
+                anyhow::bail!("subscriptions.{name} must be 0 (off) or more");
+            }
+        }
+        // Minutes become milliseconds; keep the product inside an i64.
+        if subs.transcript_minutes_per_month > i64::MAX / 60_000 {
+            anyhow::bail!("subscriptions.transcript_minutes_per_month is too large");
+        }
         if self.auth.session_touch_interval_mins < 1 {
             anyhow::bail!("auth.session_touch_interval_mins must be at least 1");
         }
@@ -3852,6 +4050,83 @@ height = 1024
     fn load_reports_a_missing_file_with_its_path() {
         let err = Config::load(Path::new("/nonexistent/family-connect/cfg.toml")).unwrap_err();
         assert!(format!("{err:#}").contains("reading config file"));
+    }
+
+    #[test]
+    fn subscriptions_are_off_by_default_with_the_documented_limits() {
+        let cfg = Config::from_toml_str("").expect("empty config parses");
+        let subs = &cfg.subscriptions;
+        assert!(!subs.enabled);
+        assert_eq!(subs.bundle_id, "me.nettrash.FamilyConnect");
+        assert_eq!(
+            subs.product_ids,
+            [
+                "me.nettrash.FamilyConnect.family.monthly",
+                "me.nettrash.FamilyConnect.family.yearly"
+            ]
+        );
+        assert_eq!(subs.environments, ["Production", "Sandbox"]);
+        assert_eq!(subs.unpaid_days, 14);
+        assert_eq!(subs.member_limit(), Some(25));
+        assert_eq!(subs.storage_limit(), Some(10 * 1024 * 1024 * 1024));
+        assert_eq!(subs.ai_token_limit(), Some(2_000_000));
+        assert_eq!(subs.image_limit(), Some(30));
+        assert_eq!(subs.transcript_ms_limit(), Some(120 * 60_000));
+        assert_eq!(subs.trust_root(), crate::appstore::APPLE_ROOT_CA_G3);
+    }
+
+    #[test]
+    fn a_zero_subscription_limit_is_off() {
+        let cfg = Config::from_toml_str(
+            "[subscriptions]\nenabled = true\nmax_members = 0\nstorage_bytes = 0\n\
+             ai_tokens_per_month = 0\nimages_per_month = 0\ntranscript_minutes_per_month = 0\n",
+        )
+        .expect("parses");
+        let subs = &cfg.subscriptions;
+        assert!(subs.enabled);
+        assert_eq!(subs.member_limit(), None);
+        assert_eq!(subs.storage_limit(), None);
+        assert_eq!(subs.ai_token_limit(), None);
+        assert_eq!(subs.image_limit(), None);
+        assert_eq!(subs.transcript_ms_limit(), None);
+    }
+
+    #[test]
+    fn validate_rejects_a_bad_subscriptions_section() {
+        for (toml, what) in [
+            ("[subscriptions]\nenable = true\n", "a misspelt key"),
+            (
+                "[subscriptions]\ntrust_root_for_tests = \"x\"\n",
+                "the test-only root",
+            ),
+            ("[subscriptions]\nbundle_id = \" \"\n", "an empty bundle"),
+            ("[subscriptions]\nproduct_ids = []\n", "no products"),
+            (
+                "[subscriptions]\nproduct_ids = [\"\"]\n",
+                "an empty product",
+            ),
+            ("[subscriptions]\nenvironments = []\n", "no environments"),
+            (
+                "[subscriptions]\nenvironments = [\"Xcode\"]\n",
+                "Xcode's environment",
+            ),
+            ("[subscriptions]\nunpaid_days = 0\n", "no unpaid days"),
+            ("[subscriptions]\nunpaid_days = 366\n", "over a year"),
+            ("[subscriptions]\nmax_members = -1\n", "a negative limit"),
+            (
+                "[subscriptions]\ntranscript_minutes_per_month = 9223372036854775807\n",
+                "minutes that overflow milliseconds",
+            ),
+        ] {
+            assert!(
+                Config::from_toml_str(toml).is_err(),
+                "{what} must be refused"
+            );
+        }
+        let production_only =
+            Config::from_toml_str("[subscriptions]\nenvironments = [\"Production\"]\n")
+                .expect("Production alone is legal");
+        assert_eq!(production_only.subscriptions.environments, ["Production"]);
     }
 
     #[test]

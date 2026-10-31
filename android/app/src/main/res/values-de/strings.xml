@@ -802,4 +802,20 @@
     <string name="s_leave_named_family">„%s“ verlassen?</string>
     <string name="s_leave_one_of_families_explanation">Du verlierst den Zugang zu den Chats dieser Familie. Direktchats mit Personen, mit denen du eine andere Familie teilst, bleiben.</string>
     <string name="s_new_family_explanation">Gründe deine eigene Familie. Sie gehört dir, und du kannst Mitglieder deiner anderen Familien einladen.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">Auf diesem Server kann in dieser App keine neue Familie gegründet werden.</string>
+    <string name="e_subscription_required">Für eine neue Familie auf diesem Server ist ein Abo nötig.</string>
+    <string name="s_banner_member">„%1$s“ wird am %2$s gelöscht, weil das Abo abgelaufen ist. Nur %3$s (Besitzer:in) kann es verlängern.</string>
+    <string name="s_banner_owner_not_here">„%1$s“ wird am %2$s gelöscht, weil dein Abo abgelaufen ist. In dieser App kann es nicht verlängert werden.</string>
+    <string name="s_allowance_title">Kontingent in diesem Monat</string>
+    <string name="s_allowance_storage">Speicher</string>
+    <string name="s_allowance_assistant">Assistent</string>
+    <string name="s_allowance_pictures">Bilder</string>
+    <string name="s_allowance_transcripts">Transkripte</string>
+    <string name="s_allowance_of">%1$s von %2$s</string>
+    <string name="s_allowance_percent">%1$d %% verbraucht</string>
+    <string name="s_allowance_minutes">%1$d von %2$d Min.</string>
+    <string name="s_allowance_renews_on">Erneuert sich am %1$s</string>
+    <string name="e_storage_allowance_used">Diese Familie hat ihr Speicherkontingent aufgebraucht.</string>
+    <string name="e_ai_allowance_used">Diese Familie hat ihr Assistenten-Kontingent für diesen Monat aufgebraucht. Es erneuert sich am %1$s.</string>
 </resources>

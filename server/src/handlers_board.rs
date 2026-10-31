@@ -1552,6 +1552,17 @@ pub async fn draw_backdrop(
         ));
     }
     let title = held.text(&state.keys, "text")?;
+    // A PAID family past this month's pictures is told so, and nothing is
+    // drawn (protocol.md, "Paid families"). After consent, like the
+    // refusals a client cannot act on by changing the request.
+    if !crate::subscriptions::may_spend(&state, family_id, crate::subscriptions::Spend::Images)
+        .await?
+    {
+        return Err(ApiError::forbidden(
+            codes::AI_ALLOWANCE_USED,
+            "this family has used this month's pictures",
+        ));
+    }
 
     // The slow part, with nothing locked.
     //

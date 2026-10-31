@@ -517,7 +517,13 @@ struct FamilyAssistantSettings: View {
                     // And the seventh, which nothing else moves either.
                     aiLookups: updated.aiLookups,
                     greetingPlaces: updated.greetingPlaces,
-                    maxMembers: updated.maxMembers))
+                    maxMembers: updated.maxMembers,
+                    // The plan and its deadline, from the answer too: a
+                    // rebuild that dropped `deleteAt` would take the banner
+                    // away while the server still meant it.
+                    plan: updated.plan,
+                    memberCeiling: updated.memberCeiling,
+                    deleteAt: updated.deleteAt))
             } catch APIError.forbidden {
                 errorText = String(localized: "Only the family owner can change this.")
             } catch {

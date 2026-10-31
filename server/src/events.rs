@@ -1400,6 +1400,89 @@ pub async fn deliver_family_owner(
     send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await
 }
 
+/// `family_plan` — a paid family's deadline appeared (`delete_at`) or went
+/// (`None`), to every member (docs/protocol.md, "Paid families").
+pub async fn deliver_family_plan(
+    state: &AppState,
+    family_id: i64,
+    plan: &str,
+    delete_at: Option<time::OffsetDateTime>,
+) -> Result<(), ApiError> {
+    let recipients = family_member_ids(&state.pool, family_id).await?;
+    let frame = ServerFrame::FamilyPlan {
+        family_id,
+        plan: plan.to_string(),
+        delete_at,
+    };
+    send_scoped(state, &recipients, &frame, None, Scope::Family(family_id)).await
+}
+
+/// Push a paid family's deadline to every member of a family that still
+/// exists — its name, its owner and its members read now.
+pub async fn push_family_plan(
+    state: &AppState,
+    family_id: i64,
+    stage: push_payload::PlanStage,
+) -> Result<(), ApiError> {
+    let Some(row) = sqlx::query("SELECT name, owner_user_id FROM families WHERE id = $1")
+        .bind(family_id)
+        .fetch_optional(&state.pool)
+        .await?
+    else {
+        return Ok(());
+    };
+    let name = row.text(&state.keys, "name")?;
+    let owner_user_id: i64 = row.get("owner_user_id");
+    let members = family_member_ids(&state.pool, family_id).await?;
+    push_family_plan_to(state, family_id, &name, owner_user_id, &members, stage).await
+}
+
+/// The same, with everything named by the caller — for a family that has
+/// just been DELETED, whose name went with its key and whose members are no
+/// longer members of anything to read.
+///
+/// No block gate: a deadline is nobody's words or actions. Only a socket
+/// that understood the `family_plan` frame stands in for the push — an app
+/// from before paid families was sent nothing it could show, and its device
+/// is woken.
+pub async fn push_family_plan_to(
+    state: &AppState,
+    family_id: i64,
+    family_name: &str,
+    owner_user_id: i64,
+    members: &[i64],
+    stage: push_payload::PlanStage,
+) -> Result<(), ApiError> {
+    let live_sessions = state.registry.live_multi_sessions(members).await;
+    let mut by_member: BTreeMap<i64, Vec<DeviceTarget>> = BTreeMap::new();
+    for device in devices_for_users(state, members).await? {
+        by_member
+            .entry(device.push.user_id)
+            .or_default()
+            .push(device);
+    }
+    let mut batch = Vec::new();
+    for (member, devices) in by_member {
+        let mine = devices_to_wake(devices, &live_sessions, None);
+        if mine.is_empty() {
+            continue;
+        }
+        let badge = unread_badge(&state.pool, member).await?;
+        let note = push_payload::family_plan_notification(
+            family_name,
+            family_id,
+            stage,
+            member == owner_user_id,
+            badge,
+        );
+        batch.push((mine, note));
+    }
+    if !batch.is_empty() {
+        spawn_notify(state, batch);
+    }
+    Ok(())
+}
+
 /// Delivery-failure logging shared by REST handlers: fan-out problems must
 /// not fail the HTTP request that already committed its write.
 pub fn log_fanout_error(context: &'static str, result: Result<(), ApiError>) {

@@ -353,6 +353,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import androidx.core.content.FileProvider
 import java.io.File
+import java.time.ZoneOffset
 import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.ui.components.AttachmentGroup
@@ -445,6 +446,7 @@ fun ChatScreen(
     // says so (docs/protocol.md, "Pictures"). Each remembers HOW it failed,
     // which picks the sentence (docs/protocol.md, "The assistant").
     val failedAssistantAnswers by viewModel.failedAssistantAnswers.collectAsStateWithLifecycle()
+    val sendRefusals by viewModel.sendRefusals.collectAsStateWithLifecycle()
     // The two picture affordances, each behind its own capability check —
     // no surface at all where the server cannot do the thing, rather than
     // a disabled one that lies about what would happen.
@@ -2265,10 +2267,14 @@ fun ChatScreen(
     }
 
     failedActionTarget?.let { clientMsgId ->
+        // Why, when the server said so in words this app has — a paid
+        // family past its storage, above all (docs/protocol.md, "Paid
+        // families"); otherwise the usual line.
+        val refusal = SendRefusals.sentence(sendRefusals[clientMsgId])
         AlertDialog(
             onDismissRequest = { failedActionTarget = null },
             title = { Text(stringResource(R.string.s_message_not_sent)) },
-            text = { Text(stringResource(R.string.s_try_sending_it_again_or_delete_the_draft)) },
+            text = { Text(stringResource(refusal ?: R.string.s_try_sending_it_again_or_delete_the_draft)) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.retry(clientMsgId)
@@ -4727,9 +4733,19 @@ private fun BubbleContent(
             // its half instead, and says nothing extra. A refusal by the
             // provider's own filter says so instead of "ask again", which
             // would only earn the same refusal (docs/protocol.md, "The
-            // assistant").
+            // assistant"). A paid family's used-up allowance names the day
+            // it starts again — the 1st of a UTC month, named in UTC
+            // (docs/protocol.md, "Paid families").
+            val failureDate = AssistantAnswer.failureDate(answerFailure)
             Text(
-                text = stringResource(AssistantAnswer.failureSentence(answerFailure)),
+                text = if (failureDate != null) {
+                    stringResource(
+                        AssistantAnswer.failureSentence(answerFailure),
+                        TimeFormat.calendarDay(failureDate, zone = ZoneOffset.UTC),
+                    )
+                } else {
+                    stringResource(AssistantAnswer.failureSentence(answerFailure))
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontStyle = FontStyle.Italic,

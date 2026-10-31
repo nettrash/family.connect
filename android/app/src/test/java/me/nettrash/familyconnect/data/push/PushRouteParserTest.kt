@@ -133,4 +133,34 @@ class PushRouteParserTest {
         assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.Invitations)
         assertThat(PushRouteParser.familyId(data)).isEqualTo(8L)
     }
+
+    /**
+     * A paid family's deadline (docs/protocol.md, "Paid families"): the
+     * family stopped being paid for, or is deleted tomorrow — the tap opens
+     * the app in that family, whose banner says when.
+     */
+    @Test
+    fun aDeadlinePushOpensThatFamily() {
+        for (stage in listOf("unpaid", "tomorrow")) {
+            val data = mapOf("kind" to "family_plan", "family_id" to "3", "stage" to stage)
+            assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.FamilyPlan(deleted = false))
+            assertThat(PushRouteParser.familyId(data)).isEqualTo(3L)
+        }
+    }
+
+    /** …and once it is deleted, on the families that are left: there is no family to switch to. */
+    @Test
+    fun aDeletedFamilyPushOpensOnTheFamiliesLeft() {
+        val data = mapOf("kind" to "family_plan", "family_id" to "3", "stage" to "deleted")
+        assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.FamilyPlan(deleted = true))
+        assertThat(PushRouteParser.familyId(data)).isNull()
+    }
+
+    /** A stage this client does not know still opens the app in that family, never as a deletion. */
+    @Test
+    fun aDeadlinePushWithAnUnknownStageIsNotADeletion() {
+        val data = mapOf("kind" to "family_plan", "family_id" to "3", "stage" to "someday")
+        assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.FamilyPlan(deleted = false))
+        assertThat(PushRouteParser.familyId(data)).isEqualTo(3L)
+    }
 }

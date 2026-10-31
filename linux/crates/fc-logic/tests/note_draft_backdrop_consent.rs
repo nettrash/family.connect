@@ -12,6 +12,6 @@ fn an_unanswered_agree_first_is_the_plain_failure() {
     let not_agreed = ApiError::new(error_codes::ASSISTANT_CONSENT_REQUIRED, "agree first", 403);
     assert_eq!(
         "Couldn't draw that.",
-        note_sheet_text::backdrop_failure(&not_agreed, &common::english())
+        note_sheet_text::backdrop_failure(&not_agreed, &common::english(), &common::days())
     );
 }

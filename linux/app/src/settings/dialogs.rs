@@ -9,6 +9,7 @@ use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::doorway::FamilyDoor;
 use fc_logic::families::another_family;
 use fc_logic::family::FamilyModel;
+use fc_logic::paid_families::{self, Days};
 use fc_logic::settings::{LeaveContext, settings_text};
 
 use crate::services::log;
@@ -217,11 +218,28 @@ pub fn delete_account(parent: &impl IsA<gtk::Widget>) {
     dialog.present(Some(parent));
 }
 
-/// New Family… (`CreateFamilyView(anotherFamily: true)`): the family is added and SHOWN.
+/// New Family… (`CreateFamilyView(anotherFamily: true)`): the family is added and SHOWN. On a
+/// server that charges for a new family, without an active subscription, the entry stays and says
+/// where a family is started instead of offering the form (docs/protocol.md, "Paid families").
 pub fn new_family(parent: &impl IsA<gtk::Widget>) {
     let shell = Shell::get();
     let say = Rc::clone(&shell.say);
     let (dialog, view, _) = ui::dialog(say.get("Create a Family"), 440, 320);
+    let charged = shell.connection().is_some_and(|connection| {
+        paid_families::create_door(&connection.session.state(), true)
+            == paid_families::CreateDoor::StartInAppleApp
+    });
+    if charged {
+        view.add_top_bar(&adw::HeaderBar::new());
+        let group = adw::PreferencesGroup::builder()
+            .description(paid_families::start_in_apple_app(say.as_ref()))
+            .build();
+        let page = adw::PreferencesPage::new();
+        page.add(&group);
+        view.set_content(Some(&page));
+        dialog.present(Some(parent));
+        return;
+    }
     let (header, create) =
         ui::dialog_bar(&dialog, say.get("Cancel"), say.get("Create Family"), false);
     create.set_sensitive(false);
@@ -510,6 +528,28 @@ fn load_statistics(page: adw::PreferencesPage, waiting: adw::PreferencesGroup) {
         row(&family, say.get("Messages"), grouped(totals.messages));
         row(&family, say.get("Board notes"), grouped(totals.board_notes));
         page.add(&family);
+
+        // A PAID family's allowance (docs/protocol.md, "Family statistics", amended 2026-10-30):
+        // a row per limit the server has on, and the day the monthly ones start again. No section
+        // for a free family, or on a server that charges nothing.
+        if let Some(allowance) = &stats.allowance {
+            let used = adw::PreferencesGroup::builder()
+                .title(paid_families::allowance_title(say))
+                .build();
+            for (title, value) in paid_families::allowance_rows(allowance, say, separator, &grouped)
+            {
+                row(&used, &title, value);
+            }
+            let days = Days::new(
+                &shell.culture,
+                shell.zone.as_ref(),
+                time::OffsetDateTime::now_utc(),
+            );
+            if let Some(renews) = paid_families::allowance_renews(allowance, say, &days) {
+                used.add(&ui::footnote(&renews));
+            }
+            page.add(&used);
+        }
 
         let files = totals.attachments.clone().unwrap_or_default();
         let sent = adw::PreferencesGroup::builder()

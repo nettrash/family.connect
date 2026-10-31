@@ -415,11 +415,16 @@ nonisolated struct CallOfferPayload: Decodable, Equatable, Sendable {
 /// Only the values the protocol defines are here. Anything else the server
 /// sends decodes to nil — the same as no reason at all — so a value added
 /// later never makes this client invent a meaning for it.
-nonisolated enum AIErrorReason: String, Equatable, Sendable {
+nonisolated enum AIErrorReason: Equatable, Sendable {
     /// The AI provider's OWN safety or content filter refused the question,
     /// the answer, or a picture's description. Asking again in the same
     /// words gets the same refusal.
     case refused
+    /// A PAID family has used this month's assistant allowance, and the
+    /// provider was not called at all (docs/protocol.md, "Paid families",
+    /// 2026-10-30). `renewsAt` is the frame's `renews_at`, the start of the
+    /// next UTC month — nil only when a server left it out.
+    case allowanceUsed(renewsAt: Date?)
 }
 
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
@@ -491,6 +496,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// That invitation is gone from both lists: accepted, declined,
     /// withdrawn, or lapsed.
     case invitationRemoved(invitationID: Int64)
+    /// A family's plan, and whether it is about to be deleted for want of
+    /// payment (docs/protocol.md, "Paid families", 2026-10-30). Sent to
+    /// every member when `delete_at` appears or goes; ABSENT `deleteAt`
+    /// clears it, which is how the banner goes away.
+    case familyPlan(familyID: Int64, plan: String?, deleteAt: Date?)
     /// A poll's full current state after a vote, a retraction or a close.
     /// Dispatched exactly like `reaction`, under its own seq guard.
     case poll(PollPayload)
@@ -539,6 +549,9 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case chat
         case invitation
         case invitationID = "invitation_id"
+        case renewsAt = "renews_at"
+        case plan
+        case deleteAt = "delete_at"
     }
 
     init(from decoder: Decoder) throws {
@@ -568,8 +581,19 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             // as a malformed frame, so a later server can add a reason
             // without costing an old client the failure it would otherwise
             // show (docs/protocol.md, "The assistant").
-            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason))
-                .flatMap(AIErrorReason.init(rawValue:))
+            let reason: AIErrorReason?
+            switch (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? nil {
+            case "refused":
+                reason = .refused
+            case "allowance_used":
+                // A `renews_at` that is missing or malformed costs the date,
+                // never the reason (`AssistantFailure` falls back to the 1st
+                // of next month, UTC, which is what the server means by it).
+                reason = .allowanceUsed(
+                    renewsAt: (try? container.decodeIfPresent(Date.self, forKey: .renewsAt)) ?? nil)
+            default:
+                reason = nil
+            }
             self = .aiError(
                 chatID: try container.decode(Int64.self, forKey: .chatID),
                 messageID: try container.decode(Int64.self, forKey: .messageID),
@@ -616,6 +640,11 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case "invitation_removed":
             self = .invitationRemoved(
                 invitationID: try container.decode(Int64.self, forKey: .invitationID))
+        case "family_plan":
+            self = .familyPlan(
+                familyID: try container.decode(Int64.self, forKey: .familyID),
+                plan: try container.decodeIfPresent(String.self, forKey: .plan),
+                deleteAt: try container.decodeIfPresent(Date.self, forKey: .deleteAt))
         case "call_offer":
             // Re-decode from the top so CallOfferPayload owns its keys.
             self = .callOffer(try CallOfferPayload(from: decoder))

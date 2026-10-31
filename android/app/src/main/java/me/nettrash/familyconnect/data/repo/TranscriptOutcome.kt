@@ -55,6 +55,15 @@ sealed interface TranscriptOutcome {
     data object ConsentRequired : TranscriptOutcome
 
     /**
+     * `ai_allowance_used` (403): a PAID family has used this month's
+     * transcript minutes (docs/protocol.md, "Paid families", added
+     * 2026-10-30). Nothing was sent to the provider; asking again before the
+     * 1st of next month (UTC) gets the same answer. A transcript already
+     * kept is still handed out, so this only ever means a new one.
+     */
+    data object AllowanceUsed : TranscriptOutcome
+
+    /**
      * An answer that came back after the session that asked had ended
      * ([SessionEpoch]): not kept and not drawn — it belongs to an account
      * that is no longer here. There is nothing to say about it either.
@@ -67,6 +76,7 @@ sealed interface TranscriptOutcome {
         const val TRANSCRIPT_NOT_ALLOWED = "transcript_not_allowed"
         const val TRANSCRIPTS_UNAVAILABLE = "transcripts_unavailable"
         const val ASSISTANT_CONSENT_REQUIRED = "assistant_consent_required"
+        const val AI_ALLOWANCE_USED = PaidFamilies.AI_ALLOWANCE_USED
 
         /**
          * A failed request, read. Only the CODE decides — never the status,
@@ -77,6 +87,7 @@ sealed interface TranscriptOutcome {
             result !is ApiResult.HttpError -> Failed
             result.code == TRANSCRIPT_REFUSED -> Refused
             result.code == ASSISTANT_CONSENT_REQUIRED -> ConsentRequired
+            result.code == AI_ALLOWANCE_USED -> AllowanceUsed
             result.code == NOT_TRANSCRIBABLE ||
                 result.code == TRANSCRIPT_NOT_ALLOWED ||
                 result.code == TRANSCRIPTS_UNAVAILABLE -> Unavailable

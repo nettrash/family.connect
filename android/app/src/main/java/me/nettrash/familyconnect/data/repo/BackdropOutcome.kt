@@ -44,6 +44,14 @@ sealed interface BackdropOutcome {
      */
     data object Declined : BackdropOutcome
 
+    /**
+     * `ai_allowance_used` (403): a PAID family has used this month's
+     * pictures (docs/protocol.md, "Paid families", added 2026-10-30). The
+     * note is untouched; the sentence names the 1st of next month (UTC),
+     * when the allowance starts again.
+     */
+    data object AllowanceUsed : BackdropOutcome
+
     /** The picture, when one landed. */
     val picture: AttachmentDto? get() = null
 
@@ -53,6 +61,9 @@ sealed interface BackdropOutcome {
 
         /** The protocol's code for an author who has not consented: 403. */
         const val ASSISTANT_CONSENT_REQUIRED = "assistant_consent_required"
+
+        /** A paid family past this month's pictures: 403 (2026-10-30). */
+        const val AI_ALLOWANCE_USED = PaidFamilies.AI_ALLOWANCE_USED
 
         /**
          * A failed request, read. Only the CODE decides a refusal or a
@@ -65,6 +76,7 @@ sealed interface BackdropOutcome {
             result !is ApiResult.HttpError -> Failed
             result.code == PICTURE_REFUSED -> Refused
             result.code == ASSISTANT_CONSENT_REQUIRED -> ConsentRequired
+            result.code == AI_ALLOWANCE_USED -> AllowanceUsed
             else -> Failed
         }
     }

@@ -176,7 +176,7 @@ class MessageRepository @Inject constructor(
                         // failed rides along, so the sentence it is given
                         // survives every redraw the mark does.
                         _failedAssistantAnswers.update {
-                            it + (frame.messageId to AssistantFailure.of(frame))
+                            it + (frame.messageId to AssistantFailure.of(frame, clock.now()))
                         }
                     }
                     is ServerFrame.Read -> onRead(frame)
@@ -870,6 +870,19 @@ class MessageRepository @Inject constructor(
     val failedAssistantAnswers: StateFlow<Map<Long, AssistantFailure>> = _failedAssistantAnswers
 
     /**
+     * Why a send that failed for good was refused, by client message id: the
+     * server's code, for the "Message not sent" dialog to say in this app's
+     * words where it has any — `storage_allowance_used` above all, a paid
+     * family past its storage (docs/protocol.md, "Paid families"), which no
+     * retry fixes and which a bare red mark would leave unexplained.
+     *
+     * Remembered as the failed assistant row is, for as long as the process
+     * lives; a person asking again, or deleting the draft, clears it.
+     */
+    private val _sendRefusals = MutableStateFlow<Map<String, String>>(emptyMap())
+    val sendRefusals: StateFlow<Map<String, String>> = _sendRefusals
+
+    /**
      * Append one fragment to the assistant's row.
      *
      * Deltas carry no `editSeq`, so this never fights the edit guard: the
@@ -888,6 +901,8 @@ class MessageRepository @Inject constructor(
     suspend fun retry(clientMsgId: String) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // already landed
+        // Whatever refused it last is about that attempt, not this one.
+        _sendRefusals.update { it - clientMsgId }
         // A person asking again is a fresh budget: the automatic attempts
         // were spent on a network that has probably changed since.
         messageDao.resetSendBudget(clientMsgId)
@@ -989,6 +1004,7 @@ class MessageRepository @Inject constructor(
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // acked rows are history, not drafts
         pendingAcks.remove(clientMsgId)?.cancel()
+        _sendRefusals.update { it - clientMsgId }
         // The staged bytes go with the bubble. This is the one place a
         // person can say "not this after all", and it is all that stands
         // between a queued 100 MB video and disk nothing reclaims.
@@ -1192,6 +1208,10 @@ class MessageRepository @Inject constructor(
         val attempts = row.sendAttempts + 1
         val terminal = !result.isTransient
         if (terminal || attempts >= MAX_SEND_ATTEMPTS) {
+            // The refusal is remembered BEFORE the row turns red, so the
+            // dialog a tap on it opens already knows why.
+            val code = (result as? ApiResult.HttpError)?.code
+            if (terminal && code != null) _sendRefusals.update { it + (clientMsgId to code) }
             messageDao.markSendFailed(clientMsgId, attempts)
             return
         }

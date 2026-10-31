@@ -876,7 +876,7 @@ internal sealed class NoteSheet
                 DrawPreview();
                 if (outcome.Error is { } error)
                 {
-                    ShowProblem(problem, NoteSheetText.BackdropFailure(error, say));
+                    ShowProblem(problem, NoteSheetText.BackdropFailure(error, say, services.Culture));
                 }
             };
             row.Children.Add(backdrop);

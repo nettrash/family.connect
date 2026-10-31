@@ -230,6 +230,7 @@ class StickerViewModel @Inject constructor(
                 PackPicture.MAX_LABEL_CHARS,
                 PackPicture.MAX_LABEL_CHARS,
             )
+            PackRepository.AddResult.STORAGE_ALLOWANCE_USED -> appContext.getString(R.string.e_storage_allowance_used)
             PackRepository.AddResult.FAILED -> appContext.getString(R.string.s_sticker_add_failed)
         }
         _notices.tryEmit(message)

@@ -117,21 +117,30 @@ fn a_failed_answer_remembers_which_sentence_it_says() {
     const REFUSAL: &str = "The assistant's provider refused that. Try putting it another way.";
     const ASK_AGAIN: &str = "Couldn't answer that. Ask again.";
 
-    assert_eq!(answers.failure_sentence(&refused, &say), None);
+    assert_eq!(
+        answers.failure_sentence(&refused, &say, &common::days()),
+        None
+    );
     answers.stopped(42, 5, Some(AiErrorReason::Refused));
     answers.stopped(42, 6, None);
     assert!(answers.failed(&refused));
     assert_eq!(
-        answers.failure_sentence(&refused, &say).as_deref(),
+        answers
+            .failure_sentence(&refused, &say, &common::days())
+            .as_deref(),
         Some(REFUSAL)
     );
     assert_eq!(
-        answers.failure_sentence(&broken, &say).as_deref(),
+        answers
+            .failure_sentence(&broken, &say, &common::days())
+            .as_deref(),
         Some(ASK_AGAIN)
     );
     // Asked again — as every redraw does — it says the same thing.
     assert_eq!(
-        answers.failure_sentence(&refused, &say).as_deref(),
+        answers
+            .failure_sentence(&refused, &say, &common::days())
+            .as_deref(),
         Some(REFUSAL)
     );
 
@@ -149,39 +158,47 @@ fn a_failed_answer_remembers_which_sentence_it_says() {
     answers.stopped(chat_id, message_id, reason);
     assert_eq!(
         answers
-            .failure_sentence(&with_id(&broken, 7), &say)
+            .failure_sentence(&with_id(&broken, 7), &say, &common::days())
             .as_deref(),
         Some(ASK_AGAIN)
     );
 
     // A finished answer says nothing, and forgets the reason with the failure.
     assert_eq!(
-        answers.failure_sentence(&with_edit(&refused, 2), &say),
+        answers.failure_sentence(&with_edit(&refused, 2), &say, &common::days()),
         None
     );
     answers.finished(&with_edit(&refused, 2));
-    assert_eq!(answers.failure_sentence(&refused, &say), None);
+    assert_eq!(
+        answers.failure_sentence(&refused, &say, &common::days()),
+        None
+    );
     answers.stopped(42, 5, None);
     assert_eq!(
-        answers.failure_sentence(&refused, &say).as_deref(),
+        answers
+            .failure_sentence(&refused, &say, &common::days())
+            .as_deref(),
         Some(ASK_AGAIN)
     );
 
     answers.clear();
-    assert_eq!(answers.failure_sentence(&broken, &say), None);
+    assert_eq!(
+        answers.failure_sentence(&broken, &say, &common::days()),
+        None
+    );
 
     // Translated, not left in English.
     let german = common::catalogues().for_language("de");
     assert_eq!(
-        AssistantAnswers::sentence(Some(AiErrorReason::Refused), &german),
+        AssistantAnswers::sentence(Some(AiErrorReason::Refused), &german, &common::days()),
         german.get(REFUSAL)
     );
     assert_ne!(
-        AssistantAnswers::sentence(Some(AiErrorReason::Refused), &german),
+        AssistantAnswers::sentence(Some(AiErrorReason::Refused), &german, &common::days()),
         REFUSAL
     );
     assert_eq!(
-        AssistantAnswers::sentence(None, &german),
+        AssistantAnswers::sentence(None, &german, &common::days()),
         german.get(ASK_AGAIN)
     );
 }

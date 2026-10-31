@@ -94,6 +94,7 @@ public sealed class LiveConnection : IAsyncDisposable
         router.LeftFamily += OnLeftFamily;
         router.InvitationChanged += session.ApplyInvitation;
         router.InvitationRemoved += session.InvitationGone;
+        router.FamilyPlanChanged += session.ApplyPlan;
     }
 
     /// <summary>
@@ -350,6 +351,7 @@ public sealed class LiveConnection : IAsyncDisposable
         router.LeftFamily -= OnLeftFamily;
         router.InvitationChanged -= session.ApplyInvitation;
         router.InvitationRemoved -= session.InvitationGone;
+        router.FamilyPlanChanged -= session.ApplyPlan;
         await StopAsync().ConfigureAwait(false);
         due.Dispose();
         lifecycle.Dispose();

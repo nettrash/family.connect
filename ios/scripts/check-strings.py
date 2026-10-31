@@ -83,6 +83,11 @@ def candidate_keys(literal):
             buffer += literal[i]
             i += 1
     parts.append(buffer)
+    # An INTERPOLATED literal's text is a format string, so Swift's extraction
+    # doubles every literal `%` in it ("\(n)% used" is the key "%lld%% used");
+    # a plain literal is taken as it is written.
+    if len(parts) > 1:
+        parts = [part.replace("%", "%%") for part in parts]
     return [
         "".join(head + spec for head, spec in zip(parts, combo)) + parts[-1]
         for combo in itertools.product(("%@", "%lld"), repeat=len(parts) - 1)

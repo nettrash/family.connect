@@ -586,6 +586,29 @@ found and fixed, each verified in code and by the gates:
 - **Not taken:** "Open Settings" after a microphone or camera refusal — a host app's microphone is
   not behind a portal on Linux, and the sentence already says where the switch is.
 
+## From paid families (#89, 2026-10-30)
+
+Built: `fc_logic::paid_families` (the door, the banner, the allowance, the refusals, `Days`),
+`AppSession::apply_family_plan` with the router's `on_family_plan`, the gate and both "New Family…"
+entries, the unpaid banner over the chat list, the cap picker's `member_ceiling`, the allowance in
+Statistics, the storage refusal on a failed send, a board photo and a sticker, and `ai_allowance_used`
+on an assistant row, a transcript and a backdrop (shell-design §3.6, §4, §12; self-test group `paid`).
+For a later step:
+
+- **Re-run `python3 linux/i18n/generate.py .` once the Apple and Windows ports' strings land.** The
+  generator takes `ios/…/Localizable.xcstrings` first and `win/i18n/win.json` last, so a key either of
+  them adds (`%@ of %@`, the banners …) changes `linux/data/i18n` — the same words, but the CI gate
+  fails on a stale table.
+- **"Renews on %1$@" is positional on purpose:** Apple's apps say "Renews on …" of the SUBSCRIPTION
+  too, worded differently in de/ja/ru/zh-Hans, and the apps' catalogue wins over `linux.json` for a
+  shared key. English reads the same.
+- **Two kinds of day** (the lead's ruling, docs/protocol.md "UTC calendar day"): `delete_at` is a
+  moment, shown as the reader's day (`Days::day`); every `renews_at` — the frame's, the statistics',
+  and the REST refusal's 1st of the next month — is shown as its UTC calendar day, always the 1st,
+  never "30 November" west of UTC (`Days::utc_day`, pinned by
+  `a_renewal_is_the_utc_day_and_a_deadline_the_readers`).
+- **Not here:** buying, Restore, the subscription row, the pushes — Apple's apps and phones only.
+
 ## From P6 (call media) — merged 2026-10-29
 
 Done: `app/src/calls/` (`GstCallMedia` on `webrtcbin`, the ring tones) and `tools/call-interop/`

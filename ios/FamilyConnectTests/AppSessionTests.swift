@@ -23,7 +23,7 @@ struct SessionLogicTests {
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
         aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false, greetingPlaces: [],
-        maxMembers: nil)
+        maxMembers: nil, plan: nil, memberCeiling: nil, deleteAt: nil)
     private static let pending = PendingJoinRequestDTO(familyID: 3, familyName: "The Smiths", createdAt: nil)
 
     @Test("family present → active (regardless of prior waiting)")
@@ -108,7 +108,7 @@ struct AppSessionTransitionTests {
     private static let family = FamilyDTO(
         id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
         aiVision: false, aiHistoryPhotos: false, aiGreeting: false, aiFaces: false, aiTranscripts: false, aiLookups: false, greetingPlaces: [],
-        maxMembers: nil)
+        maxMembers: nil, plan: nil, memberCeiling: nil, deleteAt: nil)
 
     /// Spy-instrumented session against a never-hit API client.
     @MainActor

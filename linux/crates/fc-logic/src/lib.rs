@@ -37,8 +37,9 @@
 //! pack (`pack`), the assistant's consent and lookups (`assistant_consent`, `lookups`,
 //! `consented_ask`, `backdrop_consent`, `picture_hint`, `greeting_weather`), the composer's helpers
 //! (`composer_mentions`, `attach_menu`), a bubble's body (`bubble_body`), notifications
-//! (`notifications`, `toast_arguments`), the family console (`family_console`) and the board's sheet
-//! (`note_draft`, `note_preview`, `photo_pinning`).
+//! (`notifications`, `toast_arguments`), the family console (`family_console`), the board's sheet
+//! (`note_draft`, `note_preview`, `photo_pinning`) and paid families — the door, the unpaid banner,
+//! the allowance and the refusals (`paid_families`).
 //!
 //! The recording package — voice notes, video messages and the composer: the Send slot and its
 //! guards (`composer_button`, over `fc_text::record`), the composer's row and column
@@ -121,6 +122,7 @@ pub mod notification_target;
 pub mod notifications;
 pub mod open_polls;
 pub mod pack;
+pub mod paid_families;
 pub mod parked_recordings;
 pub mod peer_reads;
 pub mod photo_pinning;

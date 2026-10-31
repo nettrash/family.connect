@@ -52,6 +52,8 @@ win/
                 Family — the door, the owner's console, and the numbers everybody may see
                 Families — one account in several families (#88): which chats a family lists, the switcher's rows,
                                 the doors to another family, invitations and the owner's "Invite…"
+                PaidFamilies — a server that charges for a new family (#89): the create doors, the cap's ceiling, the unpaid
+                                banner, the statistics' allowance, the dates they name and the two refusals
                 Notifications — when this client speaks up, and what it says when it does
                 Avatars — what a picture must be before it is sent, and a cache keyed by VERSION
                 StartupSetting — what the "start when I sign in" row shows, and who may change it
@@ -260,6 +262,19 @@ when the ceiling moves. `Seats` keeps both and answers what is actually left. An
 two dependent switches (`ai_history_photos`, `ai_faces`) are never offered, never sent and never
 drawn as on while `ai_vision` is off — the server refuses that combination and clears them in the
 same write.
+
+**A server may charge for a new family, and this client cannot sell one** (docs/protocol.md, "Paid families"; issue #89;
+`PaidFamilies`). With `subscriptions_enabled` on `GET /me` false or absent nothing changes. With it true, "Create a Family" on the
+family gate and "New Family…" need the account's `subscription.active`: without it the gate draws "On this server, a new family is
+started in the Family Connect app on iPhone, iPad or Mac." where the form was, and "New Family…" stays and says the same in a
+dialog; a door the operator shut keeps priority and stays as it was, and "Join a Family" is untouched. While the family shown has
+a `delete_at`, an InfoBar over its chat list says the day it will be deleted — to the owner where to renew, to a member which
+member owns it (no banner until the roster names them) — and a `family_plan` frame puts it on, or takes it off, the family it
+names. The owner's cap picker takes its range from `member_ceiling`. A paid family's statistics gain "This Month's Allowance".
+`storage_allowance_used` fails an upload for good and the row says why; `ai_error`'s `"allowance_used"` and the REST code
+`ai_allowance_used` say when the month renews. A deadline is the reader's own day in their zone; a renewal is its UTC calendar
+day, always the 1st (docs/protocol.md, "UTC calendar day"; `PaidFamilies.RenewalDay`) — both with the year only when it is not
+this year (`PaidFamilies.Day`).
 
 **The statistics' rows do not add up to the totals, and the gap is the block.** The totals are the
 family's numbers; the rows are what this caller may see of them. Nothing here sums the rows.

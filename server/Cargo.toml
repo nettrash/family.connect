@@ -136,6 +136,15 @@ futures-util = "0.3"
 # `nix` and `rustix` are large surfaces to add for a single struct.
 libc = "0.2"
 
+# Paid families (#89, src/appstore.rs): what the App Store signs is a JWS
+# whose x5c header carries Apple's certificate chain, and the server checks
+# it OFFLINE — the chain to the pinned Apple Root CA – G3, Apple's marker
+# extensions, the signatures. x509-cert (RustCrypto, the family the AEAD and
+# HKDF above come from) parses the certificates; ring, already in the tree
+# under rustls and jsonwebtoken, checks the ECDSA signatures.
+x509-cert = { version = "0.2", default-features = false }
+ring = "0.17"
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 
@@ -164,6 +173,11 @@ tokio-tungstenite = "0.29"
 
 # Scoped temp files for Config::load unit tests; cleaned up on drop.
 tempfile = "3"
+
+# A certificate chain shaped like Apple's App Store chain — a P-384 root, a
+# marked P-384 intermediate, a marked P-256 leaf — with keys the tests hold,
+# so src/appstore.rs can sign what it must refuse. ring only: no C toolchain.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 
 # The rsa crate's prime generation is unusably slow at opt-level 0; the test
 # suites generate a throwaway 2048-bit key for the fake FCM service account,

@@ -10,7 +10,8 @@
  *
  * Several families (#88): with a switcher to show, the title is the current
  * family's name and opens it; an invitation waiting is a banner over the
- * list (docs/protocol.md, "Several families").
+ * list (docs/protocol.md, "Several families"), and so is an unpaid family's
+ * deadline (#89; docs/protocol.md, "Paid families").
  *
  * iOS counterpart: ios/FamilyConnect/UI/ChatList/ChatListView.swift
  */
@@ -106,6 +107,7 @@ import me.nettrash.familyconnect.ui.components.OfflineBanner
 import me.nettrash.familyconnect.ui.families.FamilySwitcherSheet
 import me.nettrash.familyconnect.ui.families.FamilySwitcherTitle
 import me.nettrash.familyconnect.ui.families.InvitationBanner
+import me.nettrash.familyconnect.ui.families.UnpaidFamilyBanner
 import me.nettrash.familyconnect.ui.group.GroupAvatarMark
 import me.nettrash.familyconnect.ui.group.NewGroupForm
 import me.nettrash.familyconnect.util.GroupRules
@@ -143,6 +145,7 @@ fun ChatListScreen(
     val creatingGroup by viewModel.creatingGroup.collectAsStateWithLifecycle()
     val families by viewModel.families.collectAsStateWithLifecycle()
     val answeringInvitation by viewModel.answeringInvitation.collectAsStateWithLifecycle()
+    val unpaidBanner by viewModel.unpaidBanner.collectAsStateWithLifecycle()
     var showSwitcher by rememberSaveable { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     // The sheet's second face, New Group, and what is typed and ticked in
@@ -275,6 +278,15 @@ fun ChatListScreen(
                     busy = answeringInvitation != null,
                     onJoin = { viewModel.acceptInvitation(invitation.id) },
                     onDecline = { viewModel.declineInvitation(invitation.id) },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+            // The family shown is unpaid and will be deleted on a day it
+            // names (docs/protocol.md, "Paid families"). Gone with the
+            // deadline: a renewal clears `delete_at` and this with it.
+            unpaidBanner?.let { banner ->
+                UnpaidFamilyBanner(
+                    banner = banner,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                 )
             }

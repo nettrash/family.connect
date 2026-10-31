@@ -2714,7 +2714,12 @@ fieldset.segmented { padding: 0; margin: 0; min-width: 0; }
 }
 .invitation-banner .row-actions { display: flex; gap: 8px; align-items: center; }
 
+/* A paid family that will be deleted (#89): the day, under the family's name. */
+.unpaid-banner { flex: none; margin: 8px; }
+
 /* The owner's picker of whom to invite. */
 .members.invitable { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 .invite-row { text-align: left; flex: 1; min-height: 36px; }
 .another-family-pane .gate-step { display: grid; gap: 8px; max-width: 440px; }
+.another-family-pane .start-elsewhere { max-width: 440px; }
+.start-elsewhere p { margin: 0; }

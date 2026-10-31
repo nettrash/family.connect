@@ -236,7 +236,22 @@ public sealed record MeResponse(
     /// </summary>
     [property: JsonPropertyName("member_families_enabled")] bool MemberFamiliesEnabled = false,
     /// <summary>How many families one account may be in; 0 from an older server, which allows one (<see cref="FamilyCap"/>).</summary>
-    [property: JsonPropertyName("max_families_per_account")] int MaxFamiliesPerAccount = 0)
+    [property: JsonPropertyName("max_families_per_account")] int MaxFamiliesPerAccount = 0,
+    /// <summary>
+    /// Whether this server charges for a NEW family (docs/protocol.md, "Paid families", 2026-10-30). ALWAYS present on a server
+    /// that knows it; absent is an older server, which is <c>false</c> — and with it false nothing about paid families applies.
+    /// </summary>
+    [property: JsonPropertyName("subscriptions_enabled")] bool SubscriptionsEnabled = false,
+    /// <summary>
+    /// The caller's own App Store subscription — the active one, or else the one that ended last — or null. Present only while
+    /// <see cref="SubscriptionsEnabled"/>; this client cannot sell one, and reads it for one thing: whether the caller may start
+    /// a family here (<c>active</c>).
+    /// </summary>
+    SubscriptionDto? Subscription = null,
+    /// <summary>What a paid family gets — each limit present only while the operator has it on. A purchase screen's words.</summary>
+    [property: JsonPropertyName("paid_family_limits")] PaidFamilyLimitsDto? PaidFamilyLimits = null,
+    /// <summary>How many days an unpaid family has before it is deleted (14 by default); 0 when the server did not say.</summary>
+    [property: JsonPropertyName("unpaid_days")] int UnpaidDays = 0)
 {
     /// <summary>Whether the caller owns the HOME family — what <c>role</c> is about.</summary>
     public bool IsOwner => Role == "owner";
@@ -255,6 +270,26 @@ public sealed record MeResponse(
     /// <summary>The cap on families per account, never below one.</summary>
     public int FamilyCap => Math.Max(1, MaxFamiliesPerAccount);
 }
+
+/// <summary>
+/// An account's App Store subscription as the server holds it (docs/protocol.md, "Paid families"). <see cref="ExpiresAt"/> is
+/// when it stops covering anything — the expiry, or Apple's grace-period end when that is later; <see cref="Renews"/> only
+/// when the server knows.
+/// </summary>
+public sealed record SubscriptionDto(
+    [property: JsonPropertyName("product_id")] string? ProductId = null,
+    string? Environment = null,
+    [property: JsonPropertyName("expires_at")] string? ExpiresAt = null,
+    bool Active = false,
+    bool? Renews = null);
+
+/// <summary>A paid family's limits from <c>GET /me</c>, each key present only while the operator has that one on.</summary>
+public sealed record PaidFamilyLimitsDto(
+    int? Members = null,
+    [property: JsonPropertyName("storage_bytes")] long? StorageBytes = null,
+    [property: JsonPropertyName("ai_tokens")] long? AiTokens = null,
+    int? Images = null,
+    [property: JsonPropertyName("transcript_ms")] long? TranscriptMs = null);
 
 /// <summary>
 /// An owner's invitation into their family (docs/protocol.md, "Several families"): pending until the invited person accepts
@@ -319,7 +354,21 @@ public sealed record FamilyDto(
     /// The caller's own role in this family, <c>"owner"</c> or <c>"member"</c> — on each of <c>GET /me</c>'s
     /// <c>families</c> (docs/protocol.md, "Several families"); absent on every other read of a family.
     /// </summary>
-    string? Role = null)
+    string? Role = null,
+    /// <summary>
+    /// The most members this family may have whatever its owner sets (docs/protocol.md, <c>Family</c>, 2026-10-30): the
+    /// operator's ceiling, or a paid family's lower limit. The owner's cap picker draws its range from it; absent on an older
+    /// server, which falls back to <c>max_family_members</c> on <c>GET /me</c>.
+    /// </summary>
+    [property: JsonPropertyName("member_ceiling")] int? MemberCeiling = null,
+    /// <summary><c>"free"</c> or <c>"paid"</c>, only while the server's subscriptions are on; absent means payment does not apply.</summary>
+    string? Plan = null,
+    /// <summary>
+    /// When the server will DELETE this family, present only while a paid family is not covered by its owner's subscription
+    /// (docs/protocol.md, "Paid families"). Every member's app shows it as a banner; its absence on a read, or on a
+    /// <c>family_plan</c> frame, is the deadline gone.
+    /// </summary>
+    [property: JsonPropertyName("delete_at")] string? DeleteAt = null)
 {
     /// <summary>Whether the caller owns this family, as <c>GET /me</c>'s <c>families</c> says.</summary>
     public bool IsOwner => Role == "owner";
@@ -619,7 +668,26 @@ public sealed record ReportsResponse(ReportDto[]? Reports);
 public sealed record StatsResponse(
     [property: JsonPropertyName("generated_at")] string? GeneratedAt,
     StatsTotalsDto Totals,
-    StatsMemberDto[]? Members);
+    StatsMemberDto[]? Members,
+    /// <summary>
+    /// What a PAID family has used of its limits, and when the monthly ones start again (docs/protocol.md, "Family statistics",
+    /// amended 2026-10-30). Absent for a free family and on a server with subscriptions off — and then no section is drawn.
+    /// </summary>
+    AllowanceDto? Allowance = null);
+
+/// <summary>
+/// A paid family's allowance: each limit absent when the operator turned that one off. The monthly numbers count from the 1st,
+/// UTC, where the rest of the statistics count everything still here — so the two can differ, and neither is wrong.
+/// </summary>
+public sealed record AllowanceDto(
+    [property: JsonPropertyName("renews_at")] string? RenewsAt = null,
+    [property: JsonPropertyName("storage_bytes")] AllowanceUseDto? StorageBytes = null,
+    [property: JsonPropertyName("ai_tokens")] AllowanceUseDto? AiTokens = null,
+    AllowanceUseDto? Images = null,
+    [property: JsonPropertyName("transcript_ms")] AllowanceUseDto? TranscriptMs = null);
+
+/// <summary>One limit: how much is used, and of how much.</summary>
+public sealed record AllowanceUseDto(long Used = 0, long Limit = 0);
 
 public sealed record StatsTotalsDto(
     int Members,

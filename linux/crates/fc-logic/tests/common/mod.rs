@@ -68,6 +68,19 @@ pub fn english() -> EnglishCatalog {
     EnglishCatalog::with_plurals(plurals())
 }
 
+/// How a day is written where a test does not care: en-US, UTC, on 30 October 2026 — so a paid
+/// family's allowance renews "November 1". Leaked once per call: a test's lifetime.
+pub fn days() -> fc_logic::paid_families::Days<'static> {
+    let culture: &'static fc_logic::date_culture::DateCulture = Box::leak(Box::new(
+        fc_logic::date_culture::DateCulture::named("en-US").expect("en-US is measured"),
+    ));
+    fc_logic::paid_families::Days::new(
+        culture,
+        &time::UtcOffset::UTC,
+        time::macros::datetime!(2026-10-30 12:00 UTC),
+    )
+}
+
 /// A new, empty folder of its own under the system's temporary directory (`TMPDIR`), named for
 /// `label` — the C# tests' `Path.GetTempPath()` + a GUID. The caller removes it.
 pub fn scratch_dir(label: &str) -> PathBuf {

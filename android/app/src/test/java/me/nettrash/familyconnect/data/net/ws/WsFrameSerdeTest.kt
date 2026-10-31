@@ -581,6 +581,42 @@ class WsFrameSerdeTest {
         assertThat(decoded.isRefused).isFalse()
     }
 
+    /**
+     * A paid family's month is used up (docs/protocol.md, "Paid families"):
+     * the frame names the day it starts again, and it is not a refusal.
+     */
+    @Test
+    fun anAllowanceUsedAiErrorRoundTripsWithTheDayItRenews() {
+        val literal = """{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "allowance_used",
+            "renews_at": "2026-12-01T00:00:00Z"}"""
+        assertRoundTrips(
+            literal,
+            ServerFrame.AiError(chatId = 42, messageId = 1339, reason = "allowance_used", renewsAt = "2026-12-01T00:00:00Z"),
+        )
+        val decoded = parseServerFrame(json, literal) as ServerFrame.AiError
+        assertThat(decoded.isAllowanceUsed).isTrue()
+        assertThat(decoded.isRefused).isFalse()
+        assertThat(ServerFrame.AiError(chatId = 42, messageId = 1339, reason = "refused").isAllowanceUsed).isFalse()
+    }
+
+    /** protocol.md's `family_plan` example: a deadline appeared. */
+    @Test
+    fun familyPlanFrameRoundTripsWithItsDeadline() {
+        assertRoundTrips(
+            """{"type": "family_plan", "family_id": 3, "plan": "paid", "delete_at": "2026-11-14T09:00:00Z"}""",
+            ServerFrame.FamilyPlan(familyId = 3, plan = "paid", deleteAt = "2026-11-14T09:00:00Z"),
+        )
+    }
+
+    /** …and went: `delete_at` is absent from the frame, which is what clears it. */
+    @Test
+    fun familyPlanFrameWithoutADeadlineDecodesAsNone() {
+        assertRoundTrips(
+            """{"type": "family_plan", "family_id": 3, "plan": "paid"}""",
+            ServerFrame.FamilyPlan(familyId = 3, plan = "paid", deleteAt = null),
+        )
+    }
+
     @Test
     fun errorFrameWithoutClientMsgIdDecodes() {
         val decoded = parseServerFrame(json, """{"type": "error", "code": "internal", "message": "boom"}""")

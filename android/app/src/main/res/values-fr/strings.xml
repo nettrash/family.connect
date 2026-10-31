@@ -832,4 +832,20 @@
     <string name="s_leave_named_family">Quitter « %s » ?</string>
     <string name="s_leave_one_of_families_explanation">Vous perdrez l’accès aux conversations de cette famille. Les conversations directes avec les membres d’une autre de vos familles sont conservées.</string>
     <string name="s_new_family_explanation">Créez votre propre famille. Elle vous appartiendra et vous pourrez inviter des membres de vos autres familles.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">Sur ce serveur, impossible de créer une nouvelle famille depuis cette app.</string>
+    <string name="e_subscription_required">Une nouvelle famille sur ce serveur nécessite un abonnement.</string>
+    <string name="s_banner_member">« %1$s » sera supprimée le %2$s, car son abonnement a pris fin. Seul %3$s, le propriétaire, peut le renouveler.</string>
+    <string name="s_banner_owner_not_here">« %1$s » sera supprimée le %2$s, car votre abonnement a pris fin. Il ne peut pas être renouvelé depuis cette app.</string>
+    <string name="s_allowance_title">Forfait de ce mois</string>
+    <string name="s_allowance_storage">Stockage</string>
+    <string name="s_allowance_assistant">Assistant</string>
+    <string name="s_allowance_pictures">Images</string>
+    <string name="s_allowance_transcripts">Transcriptions</string>
+    <string name="s_allowance_of">%1$s sur %2$s</string>
+    <string name="s_allowance_percent">%1$d %% utilisé</string>
+    <string name="s_allowance_minutes">%1$d sur %2$d min</string>
+    <string name="s_allowance_renews_on">Renouvellement le %1$s</string>
+    <string name="e_storage_allowance_used">Cette famille a épuisé son espace de stockage.</string>
+    <string name="e_ai_allowance_used">Cette famille a épuisé le forfait de l’assistant pour ce mois. Il se renouvelle le %1$s.</string>
 </resources>

@@ -16,9 +16,9 @@
 //! | `POST /auth/login` | `200 {token, user}`, or `401 invalid_credentials` |
 //! | `POST /auth/register` | `201 {token, user}`, or `409 username_taken` |
 //! | `POST /auth/logout` | `204`; the token is revoked |
-//! | `GET /me` | `MeResponse`: the user, every family with its role (home first), `blocked_user_ids: []`, `calls_enabled` / `video_calls_enabled` from [`FakeState`] |
-//! | `GET /families/mine`, `/families/{id}` | `FamilyResponse` with the members (their `avatar_version`), the pack's ceilings from [`FakeState`]; `404 family_not_found` outside them |
-//! | `POST /families` | a new family owned by the caller: `201 {family}` |
+//! | `GET /me` | `MeResponse`: the user, every family with its role (home first), `blocked_user_ids: []`, `calls_enabled` / `video_calls_enabled` from [`FakeState`], and paid families' keys ([`FakeState::paying`]) |
+//! | `GET /families/mine`, `/families/{id}` | `FamilyResponse` with the members (their `avatar_version`), the pack's ceilings from [`FakeState`]; `404 family_not_found` outside them. A family carries its `plan`, `member_ceiling` and `delete_at` from [`FakeState::plans`] while subscriptions are on |
+//! | `POST /families` | a new family owned by the caller: `201 {family}` — or `403 subscription_required` while [`FakeState::subscriptions`] is on and the caller holds no active subscription |
 //! | `GET /chats` | the family's chat rows ([`FakeServer::set_chats`]), `[]` by default |
 //! | `GET /chats/{id}/messages`, `/reactions`, `/edits`, `/polls` | empty lists |
 //! | `GET /families/*/board`, `/board/changes`, `/pack`, `/pack/changes` | empty |
@@ -54,9 +54,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use fc_core::protocol::{
-    AuthResponse, BoardResponse, ChatRowDto, ChatsResponse, ErrorBody, ErrorEnvelope, FamilyDto,
-    FamilyOnlyResponse, FamilyResponse, IceServersResponse, MeResponse, MemberDto, PackResponse,
-    UserDto,
+    AllowanceDto, AuthResponse, BoardResponse, ChatRowDto, ChatsResponse, ErrorBody, ErrorEnvelope,
+    FamilyDto, FamilyOnlyResponse, FamilyResponse, IceServersResponse, MeResponse, MemberDto,
+    PackResponse, PaidFamilyLimitsDto, SubscriptionDto, UserDto,
 };
 use serde::Serialize;
 use soup::prelude::*;
@@ -150,6 +150,17 @@ pub struct FakeFamily {
     pub name: String,
 }
 
+/// A family's standing on a server that charges (docs/protocol.md, "Paid families").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakePlan {
+    /// `"free"` or `"paid"`.
+    pub plan: String,
+    /// `member_ceiling`.
+    pub member_ceiling: i32,
+    /// `delete_at` while the family is unpaid.
+    pub delete_at: Option<String>,
+}
+
 /// Everything the fake remembers.
 #[derive(Debug, Default)]
 pub struct FakeState {
@@ -167,6 +178,15 @@ pub struct FakeState {
     /// The family's pack ceilings (`max_pack_items`, `max_pack_item_bytes`): a server that keeps
     /// a sticker pack says them; `None` is one that predates packs.
     pub pack_limits: Option<(i32, i64)>,
+    /// `/me`'s `subscriptions_enabled`: the server charges for a new family (docs/protocol.md,
+    /// "Paid families"). Off, nothing below is said.
+    pub subscriptions: bool,
+    /// Each account's subscription as `/me` reports it.
+    pub subscriptions_held: HashMap<i64, SubscriptionDto>,
+    /// Each family's plan, ceiling and deadline, said while subscriptions are on.
+    pub plans: HashMap<i64, FakePlan>,
+    /// The allowance a family's statistics carry.
+    pub allowances: HashMap<i64, AllowanceDto>,
 }
 
 impl FakeState {
@@ -189,10 +209,42 @@ impl FakeState {
             .1
             .clone();
         let name = self.families.iter().find(|f| f.id == family)?.name.clone();
+        let plan = self.plans.get(&family).filter(|_| self.subscriptions);
         Some(FamilyDto {
             role: Some(role),
+            plan: plan.map(|plan| plan.plan.clone()),
+            member_ceiling: plan.map(|plan| plan.member_ceiling),
+            delete_at: plan.and_then(|plan| plan.delete_at.clone()),
             ..FamilyDto::new(family, &name)
         })
+    }
+
+    /// `me` with what a server that charges adds for `user` (docs/protocol.md, "Paid families"):
+    /// the switch, their subscription, the limits and the days — nothing while the switch is off.
+    pub fn paying(&self, user: i64, me: MeResponse) -> MeResponse {
+        if !self.subscriptions {
+            return me;
+        }
+        MeResponse {
+            subscriptions_enabled: true,
+            subscription: self.subscriptions_held.get(&user).cloned(),
+            unpaid_days: Some(14),
+            paid_family_limits: Some(PaidFamilyLimitsDto {
+                members: Some(25),
+                storage_bytes: Some(10 * 1024 * 1024 * 1024),
+                ai_tokens: Some(2_000_000),
+                images: Some(30),
+                transcript_ms: Some(7_200_000),
+            }),
+            ..me
+        }
+    }
+
+    /// Whether `user` holds an active subscription.
+    pub fn subscribed(&self, user: i64) -> bool {
+        self.subscriptions_held
+            .get(&user)
+            .is_some_and(|held| held.active)
     }
 
     fn user_dto(&self, id: i64) -> UserDto {
@@ -662,21 +714,24 @@ fn install_routes(fake: &FakeServer) {
                 .collect();
             FakeResponse::json(
                 200,
-                &MeResponse {
-                    user: state.user_dto(user),
-                    family: families.first().cloned(),
-                    role: families.first().and_then(|f| f.role.clone()),
-                    blocked_user_ids: Some(Vec::new()),
-                    families: Some(families),
-                    pending_join_requests: Some(Vec::new()),
-                    invitations: Some(Vec::new()),
-                    member_families_enabled: true,
-                    max_families_per_account: 3,
-                    max_family_members: 12,
-                    calls_enabled: state.calls,
-                    video_calls_enabled: state.video_calls,
-                    ..MeResponse::default()
-                },
+                &state.paying(
+                    user,
+                    MeResponse {
+                        user: state.user_dto(user),
+                        family: families.first().cloned(),
+                        role: families.first().and_then(|f| f.role.clone()),
+                        blocked_user_ids: Some(Vec::new()),
+                        families: Some(families),
+                        pending_join_requests: Some(Vec::new()),
+                        invitations: Some(Vec::new()),
+                        member_families_enabled: true,
+                        max_families_per_account: 3,
+                        max_family_members: 12,
+                        calls_enabled: state.calls,
+                        video_calls_enabled: state.video_calls,
+                        ..MeResponse::default()
+                    },
+                ),
             )
         }),
     );
@@ -729,6 +784,14 @@ fn install_routes(fake: &FakeServer) {
                 .unwrap_or_default()
                 .to_string();
             let user = request.user.unwrap_or_default();
+            // Checked after everything else a create can meet (docs/protocol.md, "Paid families").
+            let refused = {
+                let state = fake.state();
+                state.subscriptions && !state.subscribed(user)
+            };
+            if refused {
+                return FakeResponse::error(403, "subscription_required");
+            }
             let id = fake.add_family(&name, user);
             let family = fake.state().family_for(user, id).unwrap_or_default();
             FakeResponse::json(201, &FamilyOnlyResponse { family })

@@ -67,6 +67,26 @@ const NEVER_ANSWER: u32 = 99;
 
 const GTK_NOTIFICATIONS: &str = "org.gtk.Notifications";
 const FDO_NOTIFICATIONS: &str = "org.freedesktop.Notifications";
+
+thread_local! {
+    /// The fakes [`serve_notifications`] put on the bus before the first group, and whether both
+    /// notification names were owned; [`run`] takes them.
+    static EARLY: RefCell<Option<(Rc<Fakes>, bool)>> = const { RefCell::new(None) };
+}
+
+/// Puts the fake notification servers on the bus before the first group, as GNOME Shell's is from
+/// the start of a session: GLib picks its notification backend once, at the first notification or
+/// withdrawal ANY group causes, and this group's checks read the GNOME backend's.
+pub async fn serve_notifications() {
+    if std::env::var_os(NO_KEYRING_ENV).is_some() {
+        return;
+    }
+    let Some(fakes) = Fakes::start().await else {
+        return;
+    };
+    let up = fakes.start_notifications().await;
+    EARLY.with(|early| *early.borrow_mut() = Some((fakes, up)));
+}
 const FDO_PATH: &str = "/org/freedesktop/Notifications";
 const SNI_INTERFACE: &str = "org.kde.StatusNotifierItem";
 
@@ -1223,17 +1243,23 @@ pub async fn run(h: &Harness) {
     autostart(h).await;
 
     // ---- the fakes -------------------------------------------------------------------------------
-    let Some(fakes) = Fakes::start().await else {
-        h.check("fakes", false, "no second connection to the session bus");
-        return;
+    let (fakes, notifications_up) = match EARLY.with(|early| early.borrow_mut().take()) {
+        Some(early) => early,
+        None => {
+            let Some(fakes) = Fakes::start().await else {
+                h.check("fakes", false, "no second connection to the session bus");
+                return;
+            };
+            let up = fakes.start_notifications().await;
+            (fakes, up)
+        }
     };
-    let notifications_up = fakes.start_notifications().await;
     fakes.watch_launcher();
     fakes.watch_item(&app);
     h.check(
         "fake_notification_servers",
         notifications_up,
-        "org.gtk.Notifications and org.freedesktop.Notifications owned by the group",
+        "org.gtk.Notifications and org.freedesktop.Notifications owned by the fakes",
     );
 
     // ---- signed in, through S0: the token reaches the keyring ------------------------------------

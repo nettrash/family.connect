@@ -51,6 +51,7 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
+import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import org.junit.After
 import org.junit.Before
 import me.nettrash.familyconnect.data.db.GroupMembersCodec
@@ -462,5 +463,75 @@ class ChatListViewModelTest {
         runCurrent()
 
         assertThat(viewModel.error.value).isEqualTo("You've reached the most families one account can be in (5).")
+    }
+
+    // -- Paid families: the unpaid banner (docs/protocol.md, "Paid families") ----
+
+    private val deadline = "2026-11-14T09:00:00Z"
+
+    private suspend fun rosterOf(familyId: Long) {
+        db.memberDao().upsertAll(
+            listOf(
+                MemberEntity(ME, "anna", "Anna", "member", familyId = familyId),
+                MemberEntity(11, "olga", "Olga", "owner", familyId = familyId),
+            ),
+        )
+    }
+
+    /**
+     * While the family shown has a deadline, a member sees the banner naming
+     * the owner; the `family_plan` frame that clears `delete_at` takes it
+     * away, live.
+     */
+    @Test
+    fun aMemberSeesTheBannerWhileTheFamilyShownIsUnpaid() = runTest(dispatcher) {
+        twoFamilies()
+        rosterOf(3)
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.unpaidBanner.collect {} }
+        runCurrent()
+        assertThat(viewModel.unpaidBanner.value).isNull()
+
+        socket.emit(ServerFrame.FamilyPlan(familyId = 3, plan = "paid", deleteAt = deadline))
+        runCurrent()
+        val banner = viewModel.unpaidBanner.value
+        assertThat(banner?.familyName).isEqualTo("The Smiths")
+        assertThat(banner?.isOwner).isFalse()
+        assertThat(banner?.ownerName).isEqualTo("Olga")
+        assertThat(banner?.deleteAtMillis).isEqualTo(java.time.Instant.parse(deadline).toEpochMilli())
+
+        socket.emit(ServerFrame.FamilyPlan(familyId = 3, plan = "paid"))
+        runCurrent()
+        assertThat(viewModel.unpaidBanner.value).isNull()
+    }
+
+    @Test
+    fun theOwnerSeesTheOwnersBanner() = runTest(dispatcher) {
+        twoFamilies()
+        settings.setCurrentFamilyId(5)
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.unpaidBanner.collect {} }
+
+        socket.emit(ServerFrame.FamilyPlan(familyId = 5, plan = "paid", deleteAt = deadline))
+        runCurrent()
+
+        assertThat(viewModel.unpaidBanner.value?.isOwner).isTrue()
+        assertThat(viewModel.unpaidBanner.value?.familyName).isEqualTo("The Joneses")
+    }
+
+    /** A family the app is NOT showing needs no banner — until it is shown. */
+    @Test
+    fun aFamilyNotShownHasNoBannerUntilItIsShown() = runTest(dispatcher) {
+        twoFamilies()
+        val viewModel = newViewModel()
+        backgroundScope.launch { viewModel.unpaidBanner.collect {} }
+
+        socket.emit(ServerFrame.FamilyPlan(familyId = 5, plan = "paid", deleteAt = deadline))
+        runCurrent()
+        assertThat(viewModel.unpaidBanner.value).isNull()
+
+        viewModel.switchFamily(5)
+        runCurrent()
+        assertThat(viewModel.unpaidBanner.value?.familyName).isEqualTo("The Joneses")
     }
 }

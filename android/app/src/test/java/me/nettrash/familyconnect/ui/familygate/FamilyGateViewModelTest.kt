@@ -4,7 +4,8 @@
  *
  * The gate on a server that takes no new families (docs/protocol.md,
  * "Starting a family"): it follows what `/me` said, live, and says a
- * refused creation in the app's own words.
+ * refused creation in the app's own words. The same for a server that
+ * charges for new families (#89, "Paid families").
  */
 
 package me.nettrash.familyconnect.ui.familygate
@@ -168,6 +169,98 @@ class FamilyGateViewModelTest {
             """{"user": $user, "family": null, "role": null, "pending_join_request": null, "familyless_account_ttl_days": 7}""",
         )
         assertThat(week.familylessAccountTtlDays).isEqualTo(7)
+    }
+
+    // -- Paid families (docs/protocol.md, "Paid families") -------------------
+
+    /**
+     * Create gives way to the sentence on a server that charges, to a caller
+     * with no active subscription — live, so a subscription bought elsewhere
+     * brings Create back on the next `/me`.
+     */
+    @Test
+    fun theGateFollowsWhetherTheCallerMustPayToStartAFamily() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        assertThat(viewModel.state.value.mustPayToStart).isFalse()
+
+        settings.setSubscriptions(enabled = true, active = false)
+        runCurrent()
+        assertThat(viewModel.state.value.mustPayToStart).isTrue()
+
+        settings.setSubscriptions(enabled = true, active = true)
+        runCurrent()
+        assertThat(viewModel.state.value.mustPayToStart).isFalse()
+
+        settings.setSubscriptions(enabled = false, active = false)
+        runCurrent()
+        assertThat(viewModel.state.value.mustPayToStart).isFalse()
+    }
+
+    /**
+     * Reachable when a subscription ended after Create was drawn: the
+     * refusal is said in the app's own words, and it names no store.
+     */
+    @Test
+    fun aCreateThatNeedsASubscriptionIsSaidInTheAppsOwnWords() = runTest(dispatcher) {
+        familyApi.createResult = ApiResult.HttpError(403, "subscription_required", "a new family needs a subscription")
+        val viewModel = newViewModel()
+        runCurrent()
+
+        viewModel.onFamilyNameChange("The Smiths")
+        viewModel.createFamily()
+        runCurrent()
+
+        assertThat(viewModel.state.value.generalError).isEqualTo("A new family on this server needs a subscription.")
+        assertThat(viewModel.state.value.busy).isFalse()
+        assertThat(viewModel.state.value.outcome).isNull()
+    }
+
+    @Test
+    fun meCarriesWhetherTheServerChargesAndWhatTheCallerHolds() {
+        val json = Json { ignoreUnknownKeys = true }
+        val user = """{"id": 7, "username": "nora", "display_name": "Nora", "created_at": "2026-01-01T00:00:00Z"}"""
+        val older = json.decodeFromString<MeResponse>("""{"user": $user, "family": null}""")
+        assertThat(older.subscriptionsEnabled).isFalse()
+        assertThat(older.subscription).isNull()
+        assertThat(older.paidFamilyLimits).isNull()
+        assertThat(older.unpaidDays).isNull()
+
+        val paid = json.decodeFromString<MeResponse>(
+            """{"user": $user, "family": null, "subscriptions_enabled": true,
+               "subscription_products": ["me.nettrash.FamilyConnect.family.monthly"],
+               "app_account_token": "6f1c0000-0000-4000-8000-000000000000",
+               "unpaid_days": 14,
+               "paid_family_limits": {"members": 25, "storage_bytes": 10737418240, "ai_tokens": 2000000,
+                                      "images": 30, "transcript_ms": 7200000},
+               "subscription": {"product_id": "me.nettrash.FamilyConnect.family.yearly", "environment": "Sandbox",
+                                "expires_at": "2026-11-30T10:00:00Z", "active": true, "renews": false}}""",
+        )
+        assertThat(paid.subscriptionsEnabled).isTrue()
+        assertThat(paid.unpaidDays).isEqualTo(14)
+        assertThat(paid.subscription?.active).isTrue()
+        assertThat(paid.subscription?.renews).isFalse()
+        assertThat(paid.subscription?.environment).isEqualTo("Sandbox")
+        assertThat(paid.subscription?.expiresAt).isEqualTo("2026-11-30T10:00:00Z")
+        assertThat(paid.paidFamilyLimits?.members).isEqualTo(25)
+        assertThat(paid.paidFamilyLimits?.storageBytes).isEqualTo(10_737_418_240L)
+        assertThat(paid.paidFamilyLimits?.aiTokens).isEqualTo(2_000_000L)
+        assertThat(paid.paidFamilyLimits?.images).isEqualTo(30)
+        assertThat(paid.paidFamilyLimits?.transcriptMs).isEqualTo(7_200_000L)
+
+        // No subscription at all, and limits the operator turned off: both
+        // absent rather than failing the whole read.
+        val none = json.decodeFromString<MeResponse>(
+            """{"user": $user, "family": null, "subscriptions_enabled": true, "subscription": null,
+               "paid_family_limits": {"members": 25}}""",
+        )
+        assertThat(none.subscription).isNull()
+        assertThat(none.paidFamilyLimits?.storageBytes).isNull()
+        // A subscription the server half-described still reads, as not active.
+        val partial = json.decodeFromString<MeResponse>(
+            """{"user": $user, "family": null, "subscriptions_enabled": true, "subscription": {}}""",
+        )
+        assertThat(partial.subscription?.active).isFalse()
     }
 
     // -- Several families: the doors to another family (docs/protocol.md) ----

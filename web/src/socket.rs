@@ -118,16 +118,14 @@ pub enum ServerFrame {
     },
     /// It stopped early; the row keeps what arrived. `reason` is optional
     /// on the wire and read here into what the row will say: `"refused"`
-    /// is the provider's own filter, and absent or anything else is the
-    /// failure it always was (docs/protocol.md, "The assistant").
+    /// is the provider's own filter, `"allowance_used"` a paid family's
+    /// month used up — with the `renews_at` beside it — and absent or
+    /// anything else is the failure it always was (docs/protocol.md, "The
+    /// assistant").
     AiError {
         chat_id: i64,
         message_id: i64,
-        #[serde(
-            default,
-            rename = "reason",
-            deserialize_with = "crate::model::ai_failure"
-        )]
+        #[serde(flatten)]
         failure: crate::model::AiFailure,
     },
     /// The four roster frames name their family, and are applied to THAT
@@ -163,6 +161,14 @@ pub enum ServerFrame {
         #[serde(default)]
         family_id: Option<i64>,
         user_id: i64,
+    },
+    /// A paid family's deadline appeared or went: `delete_at` is when the
+    /// server will delete it, and its ABSENCE clears it — to every member,
+    /// about the family it names (docs/protocol.md, "Paid families").
+    FamilyPlan {
+        family_id: i64,
+        #[serde(default)]
+        delete_at: Option<String>,
     },
     /// Reaches the BLOCKER's own devices and nobody else; full state.
     MemberBlocked {
@@ -480,6 +486,24 @@ mod tests {
                 blocked: true
             })
         );
+        // A paid family's deadline, and — with no `delete_at` — its end.
+        assert_eq!(
+            decode(
+                r#"{"type": "family_plan", "family_id": 3, "plan": "paid",
+                    "delete_at": "2026-11-14T09:00:00Z"}"#
+            ),
+            Some(ServerFrame::FamilyPlan {
+                family_id: 3,
+                delete_at: Some("2026-11-14T09:00:00Z".into())
+            })
+        );
+        assert_eq!(
+            decode(r#"{"type": "family_plan", "family_id": 3, "plan": "paid"}"#),
+            Some(ServerFrame::FamilyPlan {
+                family_id: 3,
+                delete_at: None
+            })
+        );
         assert!(matches!(
             decode(r#"{"type": "board_note", "note": {"id": 12, "author_id": 7, "text": "Milk",
                        "color": "yellow", "x": 0.4, "y": 0.1, "board_seq": 88}}"#),
@@ -585,6 +609,35 @@ mod tests {
             ),
             AiFailure::Refused
         );
+        // A paid family's month used up, with the day it renews beside it.
+        assert_eq!(
+            failure(
+                r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "allowance_used",
+                    "renews_at": "2026-12-01T00:00:00Z"}"#
+            ),
+            AiFailure::AllowanceUsed {
+                renews_at: Some("2026-12-01T00:00:00Z".into())
+            }
+        );
+        // Without one — or with one that is not a word — it is still that
+        // failure, and the sentence finds the day itself.
+        for renews_at in ["", r#", "renews_at": null"#, r#", "renews_at": 7"#] {
+            assert_eq!(
+                failure(&format!(
+                    r#"{{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "allowance_used"{renews_at}}}"#
+                )),
+                AiFailure::AllowanceUsed { renews_at: None },
+                "{renews_at}"
+            );
+        }
+        // A `renews_at` beside another reason means nothing.
+        assert_eq!(
+            failure(
+                r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339, "reason": "refused",
+                    "renews_at": "2026-12-01T00:00:00Z"}"#
+            ),
+            AiFailure::Refused
+        );
         assert_eq!(
             failure(r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#),
             AiFailure::Failed
@@ -592,6 +645,7 @@ mod tests {
         for unknown in [
             r#""rate_limited""#,
             r#""REFUSED""#,
+            r#""ALLOWANCE_USED""#,
             r#""""#,
             "null",
             "7",

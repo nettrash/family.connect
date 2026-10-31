@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using FamilyConnect.Core;
 using FamilyConnect.Core.Protocol;
@@ -20,16 +21,18 @@ namespace FamilyConnect.App.Logic;
 /// </para>
 /// <para>
 /// <b>A FAILURE REMEMBERS ITS SENTENCE</b> (docs/protocol.md, <c>ai_error</c>'s <c>reason</c>): a refusal by the
-/// provider's own filter says so, and anything else says "ask again" — for exactly as long as the row is failed, so a
-/// redraw never turns one sentence into the other.
+/// provider's own filter says so, a family whose month is used up says when it renews (docs/protocol.md, "Paid families"),
+/// and anything else says "ask again" — for exactly as long as the row is failed, so a redraw never turns one sentence into
+/// the other.
 /// </para>
 /// </remarks>
 public sealed class AssistantAnswers
 {
     private readonly object gate = new();
     private readonly Dictionary<long, StringBuilder> written = [];
-    // Each stopped answer, with the reason its frame gave — null for every failure that is not a refusal.
-    private readonly Dictionary<long, AiErrorReason?> stopped = [];
+    // Each stopped answer, with the reason its frame gave — null for every failure the protocol has no word for — and, for a
+    // used-up allowance, when it renews.
+    private readonly Dictionary<long, (AiErrorReason? Reason, DateTimeOffset? RenewsAt)> stopped = [];
     private int version;
 
     /// <summary>Something about a chat's answers changed (raised on whatever thread the frame arrived on).</summary>
@@ -56,11 +59,11 @@ public sealed class AssistantAnswers
     }
 
     /// <summary>It stopped early: the row keeps what arrived, and says so — and why, when the frame said.</summary>
-    public void Stopped(long chatId, long messageId, AiErrorReason? reason = null)
+    public void Stopped(long chatId, long messageId, AiErrorReason? reason = null, DateTimeOffset? renewsAt = null)
     {
         lock (gate)
         {
-            stopped[messageId] = reason;
+            stopped[messageId] = (reason, renewsAt);
         }
         Touch(chatId);
     }
@@ -123,29 +126,43 @@ public sealed class AssistantAnswers
 
     /// <summary>
     /// What a failed row says — on the bubble, under what streamed, and to a screen reader — or null while it has not
-    /// failed.
+    /// failed. A used-up allowance names its UTC renewal day in <paramref name="culture"/> (the current culture when not
+    /// given).
     /// </summary>
-    public string? FailureSentence(MessageDto message, IStringCatalog say)
+    public string? FailureSentence(
+        MessageDto message, IStringCatalog say, CultureInfo? culture = null, DateTimeOffset? now = null)
     {
         if (message.EditSeq is not null)
         {
             return null;
         }
-        AiErrorReason? reason;
+        (AiErrorReason? Reason, DateTimeOffset? RenewsAt) failure;
         lock (gate)
         {
-            if (!stopped.TryGetValue(message.Id, out reason))
+            if (!stopped.TryGetValue(message.Id, out failure))
             {
                 return null;
             }
         }
-        return Sentence(reason, say);
+        return Sentence(
+            failure.Reason, failure.RenewsAt, say,
+            culture ?? CultureInfo.CurrentCulture, now ?? DateTimeOffset.UtcNow);
     }
 
     /// <summary>The failure sentence for a reason: the provider's refusal is not worth asking again in the same words.</summary>
-    public static string Sentence(AiErrorReason? reason, IStringCatalog say) => reason switch
+    public static string Sentence(AiErrorReason? reason, IStringCatalog say) =>
+        Sentence(reason, null, say, CultureInfo.CurrentCulture, DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// The failure sentence for a reason, and for a used-up allowance the day it renews: the frame's <c>renews_at</c>, or —
+    /// when it did not carry a readable one — the 1st of the next UTC month, which is what it always is — as its UTC day.
+    /// </summary>
+    public static string Sentence(
+        AiErrorReason? reason, DateTimeOffset? renewsAt, IStringCatalog say, CultureInfo culture, DateTimeOffset now) => reason switch
     {
         AiErrorReason.Refused => say.Get("The assistant's provider refused that. Try putting it another way."),
+        AiErrorReason.AllowanceUsed =>
+            PaidFamilies.AiAllowanceUsed(renewsAt ?? PaidFamilies.NextMonthUtc(now), say, culture, now),
         _ => say.Get("Couldn't answer that. Ask again."),
     };
 

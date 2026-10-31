@@ -36,7 +36,8 @@ use std::rc::Rc;
 
 use fc_core::protocol::{
     ApiClient, ApiError, ApiResult, AssistantDto, AuthResponse, FamilyDto, InvitationDto,
-    MeResponse, PendingJoinDto, RoundVideoLimits, TokenStore, UserDto, error_codes,
+    MeResponse, PaidFamilyLimitsDto, PendingJoinDto, RoundVideoLimits, SubscriptionDto, TokenStore,
+    UserDto, error_codes,
 };
 use fc_core::rt::Event;
 use fc_core::store::{Database, StoreResult};
@@ -131,6 +132,15 @@ pub struct SessionState {
     /// Whether this server knows several families at all — its `GET /me` carried `families`. An
     /// older one knows only `/families/mine`, and is never asked for a family by id.
     pub names_families: bool,
+    /// Whether this server charges for a new family (docs/protocol.md, "Paid families"): with it
+    /// false — and on every server from before — nothing about paying applies.
+    pub subscriptions_enabled: bool,
+    /// The account's own App Store subscription as the server judged it, or `None`.
+    pub subscription: Option<SubscriptionDto>,
+    /// What a paid family gets on this server.
+    pub paid_family_limits: Option<PaidFamilyLimitsDto>,
+    /// How long an unpaid family is kept.
+    pub unpaid_days: Option<i32>,
 }
 
 impl SessionState {
@@ -160,6 +170,10 @@ impl SessionState {
             member_families_enabled: false,
             max_families_per_account: 1,
             names_families: false,
+            subscriptions_enabled: false,
+            subscription: None,
+            paid_family_limits: None,
+            unpaid_days: None,
         }
     }
 
@@ -193,6 +207,23 @@ impl SessionState {
     /// The pending invitations to this account, never `None`.
     pub fn all_invitations(&self) -> &[InvitationDto] {
         self.invitations.as_deref().unwrap_or_default()
+    }
+
+    /// Whether this account holds an ACTIVE subscription, as the server judged it.
+    pub fn subscription_active(&self) -> bool {
+        self.subscription.as_ref().is_some_and(|held| held.active)
+    }
+
+    /// The top of the owner's member-cap picker: the family's own `member_ceiling`
+    /// (docs/protocol.md, "Paid families" — a paid family's is lower), else the operator's
+    /// `max_family_members` from `GET /me`, which is every server that predates it. 0 when neither
+    /// says, and then there is no picker.
+    pub fn member_ceiling(&self) -> i32 {
+        self.family
+            .as_ref()
+            .and_then(|family| family.member_ceiling)
+            .filter(|ceiling| *ceiling > 0)
+            .unwrap_or(self.max_family_members)
     }
 }
 
@@ -535,6 +566,10 @@ impl AppSession {
             max_families_per_account: answered.family_cap(),
             names_families: answered.families.is_some(),
             families: Some(families),
+            subscriptions_enabled: answered.subscriptions_enabled,
+            subscription: answered.subscription.clone(),
+            paid_family_limits: answered.paid_family_limits.clone(),
+            unpaid_days: answered.unpaid_days,
         };
         for family in &gone {
             self.cache.drop_family(*family)?;
@@ -685,6 +720,49 @@ impl AppSession {
             invitations: Some(invitations),
             ..state
         });
+    }
+
+    /// A `family_plan` frame (docs/protocol.md, "Paid families"): the family it names takes the
+    /// frame's plan and deadline — in the list, and on screen when it is the one shown — so the
+    /// unpaid banner comes and goes live. An absent `delete_at` CLEARS the one held (the family is
+    /// covered again); an absent `plan` leaves the held one alone. A family this account is not in
+    /// changes nothing, and a frame that changes nothing publishes nothing.
+    pub fn apply_family_plan(&self, family_id: i64, plan: Option<&str>, delete_at: Option<&str>) {
+        let state = self.state();
+        let planned = |family: &FamilyDto| FamilyDto {
+            plan: plan.map(str::to_string).or_else(|| family.plan.clone()),
+            delete_at: delete_at.map(str::to_string),
+            ..family.clone()
+        };
+        if !state.all_families().iter().any(|held| held.id == family_id) {
+            return;
+        }
+        let families: Vec<FamilyDto> = state
+            .all_families()
+            .iter()
+            .map(|held| {
+                if held.id == family_id {
+                    planned(held)
+                } else {
+                    held.clone()
+                }
+            })
+            .collect();
+        let family = state.family.as_ref().map(|shown| {
+            if shown.id == family_id {
+                planned(shown)
+            } else {
+                shown.clone()
+            }
+        });
+        let next = SessionState {
+            families: Some(families),
+            family,
+            ..state.clone()
+        };
+        if next != state {
+            self.publish(next);
+        }
     }
 
     /// An invitation lapsed — accepted, declined, withdrawn — and leaves the banner and the
@@ -897,12 +975,18 @@ impl AppSession {
     }
 }
 
-/// The family's fuller document kept, under what the list now says of it — its name, and the
-/// reader's role.
+/// The family's fuller document kept, under what the list now says of it — its name, the reader's
+/// role, and its plan, ceiling and deadline.
 fn merge(held: &FamilyDto, listed: &FamilyDto) -> FamilyDto {
     FamilyDto {
         name: listed.name.clone(),
         role: listed.role.clone().or_else(|| held.role.clone()),
+        // A paid family's standing is the list's too (docs/protocol.md, "Paid families"): a
+        // deadline that appeared — or went — while no frame reached this device is learnt here, and
+        // its absence clears the one held.
+        plan: listed.plan.clone(),
+        member_ceiling: listed.member_ceiling,
+        delete_at: listed.delete_at.clone(),
         ..held.clone()
     }
 }

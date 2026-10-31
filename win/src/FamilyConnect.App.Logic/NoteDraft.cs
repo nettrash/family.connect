@@ -275,6 +275,8 @@ public static class NoteSheetText
         ErrorCodes.AttachmentExpired => say.Get("The photo took too long to pin. Try again."),
         ErrorCodes.AttachmentTooLarge => say.Get("That photo is too large to pin."),
         ErrorCodes.InvalidAttachment => say.Get("The board pins photos only."),
+        // A paid family's disk allowance (docs/protocol.md, "Paid families"): the photo is refused before it is read.
+        ErrorCodes.StorageAllowanceUsed => PaidFamilies.StorageAllowanceUsed(say),
         ErrorCodes.NotInFamily => say.Get("You're not in a family, so there is no board."),
         _ => FamilyText.GenericFailure(error, say),
     };
@@ -282,10 +284,17 @@ public static class NoteSheetText
     /// <summary>
     /// What to tell the author whose backdrop was not drawn. A title the provider's own filter refused
     /// (<c>picture_refused</c>, docs/protocol.md "Board") says so, in the sentence a refused answer says — drawing
-    /// the same title again gets the same refusal. Anything else is the plain failure it always was.
+    /// the same title again gets the same refusal. A paid family past this month's pictures (<c>ai_allowance_used</c>) says
+    /// when they renew — the 1st of the next UTC month, as that UTC day. Anything else is the plain failure it always was.
     /// </summary>
-    public static string BackdropFailure(ApiError error, IStringCatalog say) =>
-        error.Code == ErrorCodes.PictureRefused
-            ? AssistantAnswers.Sentence(AiErrorReason.Refused, say)
-            : say.Get("Couldn't draw that.");
+    public static string BackdropFailure(
+        ApiError error, IStringCatalog say, CultureInfo? culture = null, DateTimeOffset? now = null) =>
+        error.Code switch
+        {
+            ErrorCodes.PictureRefused => AssistantAnswers.Sentence(AiErrorReason.Refused, say),
+            ErrorCodes.AiAllowanceUsed => AssistantAnswers.Sentence(
+                AiErrorReason.AllowanceUsed, null, say,
+                culture ?? CultureInfo.CurrentCulture, now ?? DateTimeOffset.UtcNow),
+            _ => say.Get("Couldn't draw that."),
+        };
 }

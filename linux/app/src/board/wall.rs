@@ -29,6 +29,7 @@ use fc_logic::board::{BoardModel, Sticker};
 use fc_logic::event_text;
 use fc_logic::note_draft::note_sheet_text;
 use fc_logic::note_hand::{HandResult, Letting, NoteHand};
+use fc_logic::paid_families::Days;
 use fc_logic::wall_text;
 use fc_text::board::{Answer, Kind, Size, going_line, wall_task_lines};
 
@@ -1050,10 +1051,15 @@ impl Wall {
                 (Some(_), _) => crate::fc_info!("board: backdrop drawn for note {id}"),
                 (None, Some(error)) => {
                     crate::fc_info!("board: backdrop refused ({})", error.code);
-                    let say = Rc::clone(&Shell::get().say);
+                    let shell = Shell::get();
+                    let days = Days::new(
+                        &shell.culture,
+                        shell.zone.as_ref(),
+                        time::OffsetDateTime::now_utc(),
+                    );
                     ui::toast(
                         &wall.toasts,
-                        &note_sheet_text::backdrop_failure(error, say.as_ref()),
+                        &note_sheet_text::backdrop_failure(error, shell.say.as_ref(), &days),
                     );
                 }
                 (None, None) => {}

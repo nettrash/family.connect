@@ -858,7 +858,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
             </p>
         }
     } else if props.awaited {
-        if let Some(failure) = props.ai_failed {
+        if let Some(failure) = &props.ai_failed {
             html! { <p class="body ai-failed">{ failure.sentence() }</p> }
         } else {
             html! { <p class="body awaiting" aria-label={t("The assistant is answering")}>{ "▍" }</p> }
@@ -881,7 +881,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                         on_open_direct={open_direct}
                     />
                 }
-                if let Some(failure) = props.ai_failed {
+                if let Some(failure) = &props.ai_failed {
                     <p class="ai-failed">{ failure.sentence() }</p>
                 }
             </>
@@ -1661,15 +1661,21 @@ mod tests {
         const REFUSED: &str = "The assistant's provider refused that. Try putting it another way.";
         let failed_line = |root: &Element| labels(root, ".ai-failed");
 
+        // A paid family's month used up names the day it renews.
+        let spent = AiFailure::AllowanceUsed {
+            renews_at: Some("2026-12-01T00:00:00Z".into()),
+        };
+        let spent_says = spent.sentence();
         for (failure, says, never) in [
             (AiFailure::Failed, ASK_AGAIN, REFUSED),
             (AiFailure::Refused, REFUSED, ASK_AGAIN),
+            (spent, spent_says.as_str(), ASK_AGAIN),
         ] {
             // Still waiting for its first word: the streaming row.
             let mut waiting = props(message(101, 2, ""), Rc::new(RefCell::new(Vec::new())));
             waiting.chat_kind = "ai".into();
             waiting.awaited = true;
-            waiting.ai_failed = Some(failure);
+            waiting.ai_failed = Some(failure.clone());
             let (root, handle) = render(waiting).await;
             assert_eq!(failed_line(&root), vec![says.to_string()], "{failure:?}");
             assert!(!text(&root).contains(never), "{}", text(&root));
@@ -1683,7 +1689,7 @@ mod tests {
                 Rc::new(RefCell::new(Vec::new())),
             );
             partial.chat_kind = "ai".into();
-            partial.ai_failed = Some(failure);
+            partial.ai_failed = Some(failure.clone());
             let (root, handle) = render(partial).await;
             assert_eq!(failed_line(&root), vec![says.to_string()], "{failure:?}");
             assert!(text(&root).contains("Half an"), "{}", text(&root));
@@ -1707,16 +1713,44 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_refusal_sentence_is_chosen_only_for_refused() {
         assert_eq!(
-            AiFailure::from_reason(Some("refused")).sentence(),
+            AiFailure::from_reason(Some("refused"), None).sentence(),
             "The assistant's provider refused that. Try putting it another way."
         );
         for absent in [None, Some("rate_limited"), Some(""), Some("Refused")] {
             assert_eq!(
-                AiFailure::from_reason(absent).sentence(),
+                AiFailure::from_reason(absent, None).sentence(),
                 "Couldn't answer that. Ask again.",
                 "{absent:?} reads as absent"
             );
         }
+    }
+
+    /// `"allowance_used"` says the month is used up and names the day it
+    /// renews — the frame's `renews_at`, else the 1st of the next month, UTC
+    /// — as its UTC calendar day, in the reader's language (docs/protocol.md,
+    /// "Paid families").
+    #[wasm_bindgen_test]
+    fn a_used_allowance_names_the_day_it_renews() {
+        const LEAD: &str = "This family has used this month’s assistant allowance. It renews on ";
+        let now = js_sys::Date::now();
+        let said =
+            AiFailure::from_reason(Some("allowance_used"), Some("2026-12-01T00:00:00Z")).sentence();
+        let day = crate::time::utc_day_in_sentence("2026-12-01T00:00:00Z", now);
+        assert!(!day.is_empty() && !day.contains("2026-12"), "{day}");
+        // Its UTC day, the 1st, wherever this machine is — never "30 November".
+        assert!(day.contains('1') && !day.contains("30"), "{day}");
+        assert_eq!(said, format!("{LEAD}{day}."));
+        // Without a day from the frame, the month's own rule finds it.
+        let next = fc_text::paid::next_month_utc(now);
+        assert_eq!(
+            AiFailure::from_reason(Some("allowance_used"), None).sentence(),
+            format!("{LEAD}{}.", crate::time::utc_day_in_sentence(&next, now))
+        );
+        // A day beside any other reason means nothing.
+        assert_eq!(
+            AiFailure::from_reason(Some("refused"), Some("2026-12-01T00:00:00Z")),
+            AiFailure::Refused
+        );
     }
 
     fn recording(id: i64, mime: &str) -> crate::model::Attachment {
@@ -1963,15 +1997,23 @@ mod tests {
         handle.destroy();
         root.remove();
 
-        // What this device could not make: terminal, no retry.
+        // What this device could not make: terminal, no retry — and a paid
+        // family's minutes used up, which names the day they renew and is
+        // terminal until then.
         for (failure, said) in [
             (
                 Failure::TooLong,
                 "This recording is too long to turn into text.",
             ),
             (Failure::Unreadable, "Couldn't read the sound in this file."),
+            (
+                Failure::AllowanceUsed {
+                    renews_on: "1 December".into(),
+                },
+                "This family has used this month’s assistant allowance. It renews on 1 December.",
+            ),
         ] {
-            let (props, _) = drawn(State::Failed(failure));
+            let (props, _) = drawn(State::Failed(failure.clone()));
             let (root, handle) = render(props).await;
             assert!(text(&root).contains(said), "{failure:?}");
             assert!(show_buttons(&root).is_empty(), "{failure:?}: no retry");
@@ -2348,7 +2390,7 @@ mod tests {
                 run_end: self.run_end,
                 seen: self.seen,
                 awaited: self.awaited,
-                ai_failed: self.ai_failed,
+                ai_failed: self.ai_failed.clone(),
                 failed: self.failed.clone(),
                 chat_kind: self.chat_kind.clone(),
                 assistant_user_id: self.assistant_user_id,

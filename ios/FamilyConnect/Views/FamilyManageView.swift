@@ -338,12 +338,16 @@ struct FamilyManageView: View {
         }
     }
 
-    /// The operator's ceiling — the most this server lets ANY family hold.
-    /// An owner's own cap may only be lower (docs/protocol.md, "Limits").
+    /// The ceiling — the most this family may hold, which is the operator's
+    /// for every family and lower for a paid one (`MemberCap.ceiling`). An
+    /// owner's own cap may only be lower (docs/protocol.md, "Limits").
     /// Absent on a server too old to report it, in which case there is
     /// nothing sensible to bound a stepper by and the section stays away
     /// rather than inventing a number.
-    private var ceiling: Int? { session.maxFamilyMembers }
+    private var ceiling: Int? {
+        MemberCap.ceiling(
+            family: (settingsModel.family ?? session.family)?.memberCeiling, server: session.maxFamilyMembers)
+    }
 
     @ViewBuilder
     private var capSection: some View {
@@ -426,7 +430,10 @@ struct FamilyManageView: View {
                     aiTranscripts: updated.aiTranscripts,
                     aiLookups: updated.aiLookups,
                     greetingPlaces: updated.greetingPlaces,
-                    maxMembers: updated.maxMembers)
+                    maxMembers: updated.maxMembers,
+                    plan: updated.plan,
+                    memberCeiling: updated.memberCeiling,
+                    deleteAt: updated.deleteAt)
                 // The server's answer is the truth; drop the draft so the
                 // stepper follows it again.
                 capDraft = nil
@@ -731,7 +738,10 @@ struct FamilyManageView: View {
                         aiTranscripts: family.aiTranscripts,
                         aiLookups: family.aiLookups,
                         greetingPlaces: family.greetingPlaces,
-                        maxMembers: family.maxMembers)
+                        maxMembers: family.maxMembers,
+                        plan: family.plan,
+                        memberCeiling: family.memberCeiling,
+                        deleteAt: family.deleteAt)
                 }
             } catch {
                 model.errorText = String(localized: "Couldn't rotate the code. Try again.")
@@ -764,7 +774,10 @@ struct FamilyManageView: View {
                     // invite code, the cap is not owner-gated, so the
                     // server's answer is complete and authoritative — and
                     // an absent key here genuinely means "no cap".
-                    maxMembers: updated.maxMembers)
+                    maxMembers: updated.maxMembers,
+                    plan: updated.plan,
+                    memberCeiling: updated.memberCeiling,
+                    deleteAt: updated.deleteAt)
             } catch {
                 model.errorText = String(localized: "Couldn't change the policy. Try again.")
             }

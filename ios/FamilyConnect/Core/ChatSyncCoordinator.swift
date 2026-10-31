@@ -79,19 +79,25 @@ nonisolated enum BackdropOutcome: Equatable, Sendable {
     /// for a consent withdrawn on another device (protocol.md, "Consenting
     /// to the assistant").
     case consentRequired
+    /// `ai_allowance_used` (403): a paid family past this month's pictures
+    /// (docs/protocol.md, "Paid families"). The note is untouched; asking
+    /// again works once the allowance renews on `renewsAt`.
+    case allowanceUsed(renewsAt: Date)
     /// Anything else: no images deployment, a transport failure, the
     /// provider's own failure (`internal`), a picture that never landed.
     case failed
 
     /// Sorted from what the request threw. Only the protocol's code decides
     /// a refusal; a 400 with any other code is an ordinary failure, and so
-    /// is a 403 with any code but the consent one.
-    init(error: Error) {
+    /// is a 403 with any code but the consent and allowance ones.
+    init(error: Error, now: Date = .now) {
         switch error {
         case APIError.conflict(let code, _) where code == "picture_refused":
             self = .refused
         case APIError.forbidden(let code) where code == "assistant_consent_required":
             self = .consentRequired
+        case APIError.forbidden(let code) where code == "ai_allowance_used":
+            self = .allowanceUsed(renewsAt: PaidFamilies.nextMonthStartUTC(after: now))
         default:
             self = .failed
         }
@@ -116,6 +122,8 @@ nonisolated enum BackdropOutcome: Equatable, Sendable {
         case .drawn: nil
         case .refused:
             String(localized: "The assistant's provider refused that. Try putting it another way.")
+        case .allowanceUsed(let renewsAt):
+            PaidFamilies.assistantAllowanceUsed(renewsAt: renewsAt)
         // Shown only where the question cannot be asked
         // (`asksForConsent`): then it is simply the backdrop failing.
         case .consentRequired, .failed: String(localized: "Couldn't draw that.")
@@ -856,6 +864,13 @@ final class ChatSyncCoordinator {
 
         case .invitationRemoved(let invitationID):
             session?.removeInvitation(id: invitationID)
+
+        case .familyPlan(let familyID, let plan, let deleteAt):
+            // A paid family stopped, or started again, being covered by its
+            // owner's subscription (docs/protocol.md, "Paid families"). To
+            // the family it NAMES: the banner over that family's chat list
+            // appears or goes with it, live.
+            session?.applyFamilyPlan(familyID: familyID, plan: plan, deleteAt: deleteAt)
 
         case .poll(let payload):
             // The reaction case's twin, and deliberately identical: full
@@ -1971,6 +1986,8 @@ final class ChatSyncCoordinator {
             return String(localized: "A sticker has to be a WebP or PNG picture.")
         case .forbidden(code: "not_pack_item_author"?):
             return String(localized: "Only whoever added a sticker, or the family owner, can remove it.")
+        case .forbidden(code: "storage_allowance_used"?):
+            return PaidFamilies.storageAllowanceUsed
         case .transport, .throttled, .server:
             return String(localized: "The sticker didn't reach the server. Check your connection and try again.")
         default:
@@ -2229,6 +2246,8 @@ final class ChatSyncCoordinator {
         switch error as? APIError {
         case .conflict(code: "board_full"?, message: _):
             return String(localized: "The board is full. Take a note down to make room for this one.")
+        case .forbidden(code: "storage_allowance_used"?):
+            return PaidFamilies.storageAllowanceUsed
         case .transport, .throttled, .server:
             return String(localized: "The photo didn't reach the server. Check your connection and try again.")
         case .payloadTooLarge:
@@ -4171,9 +4190,23 @@ final class ChatSyncCoordinator {
             row.nextAttemptAt = nil
             AppLog.sync.info(
                 "Send failed for \(localID, privacy: .public) after \(row.sendAttempts, privacy: .public) attempt(s): \(String(describing: error))")
+            // A refusal the red bubble cannot explain on its own: the
+            // family's storage, not this message, is what stops it — and
+            // trying again changes nothing until there is room
+            // (docs/protocol.md, "Paid families"). Said once, by the chat
+            // list, over whatever is on screen.
+            if case APIError.forbidden(let code) = error, code == "storage_allowance_used" {
+                sendRefusalNotice = PaidFamilies.storageAllowanceUsed
+            }
             saveContext()
         }
     }
+
+    /// A sentence about a send the server refused for a reason the failed
+    /// bubble cannot say — today only a paid family's used storage
+    /// (`storage_allowance_used`). The chat list shows it as an alert and
+    /// clears it.
+    var sendRefusalNotice: String?
 
     /// Re-fetch locations this device stored without their coordinates.
     ///

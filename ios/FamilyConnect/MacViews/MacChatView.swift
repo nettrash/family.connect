@@ -116,6 +116,9 @@ struct MacChatView: View {
                             .padding(.top, 6)
                     }
                     InvitationBanner()
+                    // A paid family's deadline (docs/protocol.md, "Paid
+                    // families"); nothing for any other family.
+                    FamilyPlanBanner()
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -228,6 +231,16 @@ struct MacChatView: View {
         } message: {
             Text(switcherFailure ?? "")
         }
+        // The phone's alert: a send refused for the family's used storage
+        // (`storage_allowance_used`) says why, once.
+        .alert(
+            coordinator.sendRefusalNotice ?? "",
+            isPresented: Binding(
+                get: { coordinator.sendRefusalNotice != nil },
+                set: { if !$0 { coordinator.sendRefusalNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        }
         // Where a share INTO the app lands: pick a chat, and the files
         // stage in its composer — nothing is sent until Send there.
         // Dismissing without choosing discards the files (a no-op after a
@@ -334,8 +347,10 @@ struct MacChatView: View {
             // sheet, so this is the same destination.
             guard session.isOwner else { return }
             showingFamily = true
-        case .invitations:
-            // Answered from the sidebar's header, which is already on screen.
+        case .invitations, .familyPlan:
+            // Answered from the sidebar's header, which is already on screen
+            // — as is a paid family's deadline banner, in the family the
+            // push opened.
             break
         case .chatList:
             break // Already here.

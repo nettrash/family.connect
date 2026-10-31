@@ -1,19 +1,72 @@
-//! The two lines around the chat list (shell-design §3.1): the INVITATION banner above it — "Anna
-//! invited you to “The Smiths”" with Join and Decline (the Mac's `InvitationBanner`) — and the
-//! CONNECTION line under it — "Connecting…" while the socket is on its way, "Offline" while the
-//! network is gone (the Mac's `ConnectionBanner`), nothing while all is well.
+//! The lines around the chat list (shell-design §3.1): above it the UNPAID banner — "“Ivanovs” will
+//! be deleted on 14 November because its subscription has ended…" while the shown family has
+//! `delete_at` (docs/protocol.md, "Paid families"; `paid_families::banner`) — and the INVITATION
+//! banner — "Anna invited you to “The Smiths”" with Join and Decline (the Mac's
+//! `InvitationBanner`); under it the CONNECTION line — "Connecting…" while the socket is on its
+//! way, "Offline" while the network is gone (the Mac's `ConnectionBanner`), nothing while all is
+//! well.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
-use fc_core::protocol::{ApiError, error_codes};
+use fc_core::protocol::{ApiError, MemberDto, error_codes};
 use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::app_session::SessionState;
 use fc_logic::families::{family_sentences, invitation_text};
 use fc_logic::live_connection::Link;
+use fc_logic::paid_families::{self, Days};
 
 use crate::services::log;
 use crate::shell::Shell;
+
+/// The family-level notices above the chat list: the unpaid banner of the family shown, when it
+/// has a deadline, then the invitations.
+pub fn above_list(shell: &Rc<Shell>, state: &SessionState, members: &[MemberDto]) -> gtk::Widget {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    if let Some(banner) = unpaid(shell, state, members) {
+        column.append(&banner);
+    }
+    column.append(&invitations(shell, state));
+    column.upcast()
+}
+
+/// The unpaid banner (docs/protocol.md, "Paid families"): the day the family shown will be deleted
+/// and who can renew it — or where, for its owner. `None` while it is paid for, free, or on a server
+/// that charges nothing. It has no button: renewing happens in the Apple app.
+pub fn unpaid(
+    shell: &Rc<Shell>,
+    state: &SessionState,
+    members: &[MemberDto],
+) -> Option<gtk::Widget> {
+    let days = Days::new(
+        &shell.culture,
+        shell.zone.as_ref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let text = paid_families::banner(state, members, shell.say.as_ref(), &days)?;
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    line.add_css_class("fc-chat-banner");
+    line.add_css_class("fc-unpaid-banner");
+    line.set_margin_start(8);
+    line.set_margin_end(8);
+    line.set_margin_top(4);
+    let mark = gtk::Image::builder()
+        .icon_name("dialog-warning-symbolic")
+        .valign(gtk::Align::Start)
+        .css_classes(["warning"])
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    line.append(&mark);
+    let words = gtk::Label::builder()
+        .label(&text)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    line.append(&words);
+    Some(line.upcast())
+}
 
 /// The invitations as rows (none drawn when there are none).
 pub fn invitations(shell: &Rc<Shell>, state: &SessionState) -> gtk::Widget {

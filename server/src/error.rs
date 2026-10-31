@@ -96,6 +96,21 @@ pub mod codes {
     pub const MEMBER_IN_OTHER_FAMILIES: &str = "member_in_other_families";
     /// Accepted, declined, withdrawn, somebody else's, or never existed.
     pub const INVITATION_NOT_PENDING: &str = "invitation_not_pending";
+    /// Paid families (protocol.md, "Paid families"): a new family on a
+    /// server that charges, from an account with no active subscription.
+    pub const SUBSCRIPTION_REQUIRED: &str = "subscription_required";
+    /// A signed App Store value that failed verification, or is for another
+    /// app, product or environment.
+    pub const SUBSCRIPTION_INVALID: &str = "subscription_invalid";
+    /// An App Store subscription another account presented first.
+    pub const SUBSCRIPTION_TAKEN: &str = "subscription_taken";
+    /// `PUT /me/subscription` on a server that does not charge.
+    pub const SUBSCRIPTIONS_DISABLED: &str = "subscriptions_disabled";
+    /// A paid family's storage allowance is used — NOT `storage_full`, which
+    /// is the server's own disk.
+    pub const STORAGE_ALLOWANCE_USED: &str = "storage_allowance_used";
+    /// A paid family's monthly assistant allowance is used.
+    pub const AI_ALLOWANCE_USED: &str = "ai_allowance_used";
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";

@@ -319,7 +319,7 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                 />
                 <Reports reports={props.reports.clone()} on_action={props.on_action.clone()} />
                 <JoinPolicy family={family.clone()} on_action={props.on_action.clone()} />
-                if let Some(ceiling) = props.account.max_family_members {
+                if let Some(ceiling) = cap_ceiling(family, &props.account) {
                     <MemberLimit
                         family={family.clone()}
                         {count}
@@ -1100,6 +1100,14 @@ struct AssistantProps {
     on_action: Callback<Action>,
 }
 
+/// The most the owner's member cap may be: the family's own
+/// `member_ceiling` — a paid family's is lower — else `GET /me`'s
+/// `max_family_members`, from a server that predates it (docs/protocol.md,
+/// "Paid families"). None when neither is known, and no cap is offered.
+pub fn cap_ceiling(family: &Family, account: &Me) -> Option<i64> {
+    fc_text::paid::member_ceiling(family.member_ceiling, account.max_family_members)
+}
+
 /// The family as a change on its way will leave it — for drawing, while the
 /// answer is out. Turning vision off takes the two switches that ride on it
 /// with it, as the server does in the same write.
@@ -1681,6 +1689,23 @@ mod tests {
         };
         yew::Renderer::<MemberLimit>::with_root_and_props(root.clone(), props).render();
         (root, sent)
+    }
+
+    /// The cap picker's range is the family's own ceiling — 25 for a paid
+    /// family under an operator's 50 — and the operator's where a server
+    /// predates it.
+    #[wasm_bindgen_test]
+    fn the_caps_range_is_the_familys_ceiling_then_the_servers() {
+        let account = Me {
+            max_family_members: Some(50),
+            ..Me::default()
+        };
+        let mut family = Family::default();
+        assert_eq!(cap_ceiling(&family, &account), Some(50), "from before");
+        family.member_ceiling = Some(25);
+        assert_eq!(cap_ceiling(&family, &account), Some(25), "a paid family");
+        assert_eq!(cap_ceiling(&family, &Me::default()), Some(25));
+        assert_eq!(cap_ceiling(&Family::default(), &Me::default()), None);
     }
 
     fn element(root: &web_sys::Element, css: &str) -> web_sys::HtmlElement {

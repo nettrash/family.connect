@@ -825,4 +825,20 @@
     <string name="s_leave_named_family">Напустити „%s“?</string>
     <string name="s_leave_one_of_families_explanation">Изгубићеш приступ разговорима ове породице. Лични разговори са онима са којима делиш другу породицу остају.</string>
     <string name="s_new_family_explanation">Направи своју породицу. Биће твоја и моћи ћеш да позовеш чланове својих других породица.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). -->
+    <string name="s_gate_cannot_start_here">На овом серверу нова породица не може да се направи из ове апликације.</string>
+    <string name="e_subscription_required">За нову породицу на овом серверу потребна је претплата.</string>
+    <string name="s_banner_member">„%1$s“ ће бити обрисана %2$s јер јој је истекла претплата. Само власник, %3$s, може да је обнови.</string>
+    <string name="s_banner_owner_not_here">„%1$s“ ће бити обрисана %2$s јер вам је истекла претплата. Не може да се обнови из ове апликације.</string>
+    <string name="s_allowance_title">Квота за овај месец</string>
+    <string name="s_allowance_storage">Простор</string>
+    <string name="s_allowance_assistant">Асистент</string>
+    <string name="s_allowance_pictures">Слике</string>
+    <string name="s_allowance_transcripts">Транскрипти</string>
+    <string name="s_allowance_of">%1$s од %2$s</string>
+    <string name="s_allowance_percent">Искоришћено %1$d%%</string>
+    <string name="s_allowance_minutes">%1$d од %2$d мин</string>
+    <string name="s_allowance_renews_on">Обнавља се %1$s</string>
+    <string name="e_storage_allowance_used">Ова породица је искористила своју квоту простора.</string>
+    <string name="e_ai_allowance_used">Ова породица је искористила квоту асистента за овај месец. Обнавља се %1$s.</string>
 </resources>

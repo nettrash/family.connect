@@ -319,7 +319,7 @@ public class FrameRouterTests : IDisposable
         var text = "";
         router.AiDelta += (_, _, piece) => text += piece;
         var stopped = new List<AiErrorReason?>();
-        router.AiStopped += (_, _, reason) => stopped.Add(reason);
+        router.AiStopped += (_, _, reason, _) => stopped.Add(reason);
 
         router.Hear(new ServerFrame.AiDelta(42, 1341, "Once "));
         router.Hear(new ServerFrame.AiDelta(42, 1341, "upon"));

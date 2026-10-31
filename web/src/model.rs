@@ -106,12 +106,37 @@ pub struct Family {
     /// keeps the role it holds.
     #[serde(default)]
     pub role: Option<String>,
+    /// The most members this family may have whatever its owner sets: the
+    /// operator's ceiling, or a paid family's lower limit. The owner's cap
+    /// picker draws its range from this, and from `GET /me`'s
+    /// `max_family_members` on a server that predates it (docs/protocol.md,
+    /// "Paid families").
+    #[serde(default)]
+    pub member_ceiling: Option<i64>,
+    /// When the server will delete this family — present only while it is a
+    /// PAID family its owner's subscription no longer covers, and the reason
+    /// for the banner over its chat list. Absent is no deadline: a
+    /// `family_plan` frame without it clears one (docs/protocol.md, "Paid
+    /// families").
+    #[serde(default)]
+    pub delete_at: Option<String>,
 }
 
 impl Family {
     pub fn is_owner(&self) -> bool {
         self.role.as_deref() == Some("owner")
     }
+}
+
+/// The caller's own App Store subscription, as `GET /me` reports it — only
+/// whether it is active matters to a client that cannot sell one
+/// (docs/protocol.md, "Paid families").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct Subscription {
+    /// Not revoked or refunded, and its expiry — or Apple's grace period's
+    /// end, when later — still ahead.
+    #[serde(default)]
+    pub active: bool,
 }
 
 fn yes() -> bool {
@@ -217,11 +242,33 @@ pub struct Me {
     /// predates several, and a client offers no other family there.
     #[serde(default)]
     pub max_families_per_account: Option<i64>,
+    /// Whether a new family on this server needs its owner's App Store
+    /// subscription. Absent is false: a server from before paid families,
+    /// where nothing about them applies (docs/protocol.md, "Paid families").
+    #[serde(default)]
+    pub subscriptions_enabled: bool,
+    /// The caller's own subscription — the active one, or else the one that
+    /// ended last — and None for an account that never had one.
+    #[serde(default)]
+    pub subscription: Option<Subscription>,
 }
 
 impl Me {
     pub fn is_owner(&self) -> bool {
         self.role.as_deref() == Some("owner")
+    }
+
+    /// Whether this account may start a family here — "Create a family" and
+    /// "New Family…" — as far as paying goes: this client cannot sell the
+    /// subscription, so on a server that charges it offers them only while
+    /// the account's own is active (fc_text::paid::may_start_family).
+    pub fn may_start_family(&self) -> bool {
+        fc_text::paid::may_start_family(
+            self.subscriptions_enabled,
+            self.subscription
+                .as_ref()
+                .is_some_and(|subscription| subscription.active),
+        )
     }
 }
 
@@ -538,6 +585,43 @@ pub struct MemberStats {
     pub ai: AiCounts,
 }
 
+/// One limit of a paid family's allowance: what is used of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Usage {
+    pub used: i64,
+    pub limit: i64,
+}
+
+/// What a PAID family has used of its limits, and when the monthly ones
+/// start again (docs/protocol.md, "Family statistics", amended for paid
+/// families). Each limit is absent when the operator turned it off.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct Allowance {
+    #[serde(default)]
+    pub renews_at: Option<String>,
+    #[serde(default)]
+    pub storage_bytes: Option<Usage>,
+    #[serde(default)]
+    pub ai_tokens: Option<Usage>,
+    #[serde(default)]
+    pub images: Option<Usage>,
+    #[serde(default)]
+    pub transcript_ms: Option<Usage>,
+}
+
+impl Allowance {
+    /// The limits, as the shared wording reads them.
+    pub fn limits(&self) -> fc_text::paid::Allowance {
+        let pair = |usage: Option<Usage>| usage.map(|usage| (usage.used, usage.limit));
+        fc_text::paid::Allowance {
+            storage_bytes: pair(self.storage_bytes),
+            ai_tokens: pair(self.ai_tokens),
+            images: pair(self.images),
+            transcript_ms: pair(self.transcript_ms),
+        }
+    }
+}
+
 /// The family's numbers. The rows do NOT add up to the totals when the
 /// reader has blocked somebody, and the gap is the block: never sum them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -547,6 +631,10 @@ pub struct Stats {
     pub totals: StatsTotals,
     #[serde(default)]
     pub members: Vec<MemberStats>,
+    /// A paid family's allowance — absent for a free family and on a server
+    /// that does not charge, and then there is no section for it.
+    #[serde(default)]
+    pub allowance: Option<Allowance>,
 }
 
 /// One answer to an event.
@@ -1124,12 +1212,12 @@ impl Message {
 /// Why an assistant answer stopped early — an `ai_error`'s optional
 /// `reason`, already read (docs/protocol.md, "The assistant").
 ///
-/// Two values and not a string, because a client MUST treat a reason it
-/// does not know as absent: the decision is made once, where the frame is
-/// read, and nothing after it can invent a meaning for a word a newer
-/// server sends. It is what the failed row REMEMBERS, beside the fact that
-/// it failed, so the sentence survives every redraw the flag did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// An enum and not a string, because a client MUST treat a reason it does
+/// not know as absent: the decision is made once, where the frame is read,
+/// and nothing after it can invent a meaning for a word a newer server
+/// sends. It is what the failed row REMEMBERS, beside the fact that it
+/// failed, so the sentence survives every redraw the flag did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AiFailure {
     /// Any failure the server did not say more about — the provider out of
     /// reach, a broken stream, a picture that could not be stored — and any
@@ -1141,39 +1229,71 @@ pub enum AiFailure {
     /// the same words gets the same refusal, so the sentence says to put it
     /// another way instead.
     Refused,
+    /// `"allowance_used"`: a PAID family has used this month's assistant
+    /// allowance, and the server did not call the provider at all. The frame
+    /// says when it renews (`renews_at`, the 1st of the next UTC month), and
+    /// the sentence names that UTC calendar day — the 1st, for every reader
+    /// (docs/protocol.md, "Paid families").
+    AllowanceUsed { renews_at: Option<String> },
 }
 
 impl AiFailure {
-    /// The wire's `reason`, with everything but a known word read as absent.
-    pub fn from_reason(reason: Option<&str>) -> AiFailure {
+    /// The wire's `reason`, with everything but a known word read as absent
+    /// — and `renews_at`, which only `"allowance_used"` carries.
+    pub fn from_reason(reason: Option<&str>, renews_at: Option<&str>) -> AiFailure {
         match reason {
             Some("refused") => AiFailure::Refused,
+            Some("allowance_used") => AiFailure::AllowanceUsed {
+                renews_at: renews_at.map(str::to_string),
+            },
             _ => AiFailure::Failed,
         }
     }
 
     /// What the failed answer says — in the bubble, in the row still
     /// waiting for words, and so to a screen reader.
-    pub fn sentence(self) -> &'static str {
+    pub fn sentence(&self) -> String {
         match self {
-            AiFailure::Failed => t("Couldn't answer that. Ask again."),
+            AiFailure::Failed => t("Couldn't answer that. Ask again.").to_string(),
             AiFailure::Refused => {
-                t("The assistant's provider refused that. Try putting it another way.")
+                t("The assistant's provider refused that. Try putting it another way.").to_string()
+            }
+            AiFailure::AllowanceUsed { renews_at } => {
+                let now = js_sys::Date::now();
+                // A frame without the day still says the month's rule: the
+                // 1st of the next one, UTC.
+                let renews_at = renews_at
+                    .clone()
+                    .unwrap_or_else(|| fc_text::paid::next_month_utc(now));
+                fc_text::paid::ai_allowance_used(&crate::time::utc_day_in_sentence(&renews_at, now))
             }
         }
     }
 }
 
-/// Deserialises an `ai_error`'s `reason` FORGIVINGLY: a word this client
-/// does not know, or a value that is not a word at all, is the failure it
-/// always was — never a frame dropped for being unreadable, which would
-/// leave the row waiting for an answer that is not coming.
-pub fn ai_failure<'de, D>(deserializer: D) -> Result<AiFailure, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let reason = serde_json::Value::deserialize(deserializer)?;
-    Ok(AiFailure::from_reason(reason.as_str()))
+/// An `ai_error`'s `reason` and `renews_at`, read FORGIVINGLY from the
+/// frame they sit in: a word this client does not know, or a value that is
+/// not a word at all, is the failure it always was — never a frame dropped
+/// for being unreadable, which would leave the row waiting for an answer
+/// that is not coming.
+impl<'de> Deserialize<'de> for AiFailure {
+    fn deserialize<D>(deserializer: D) -> Result<AiFailure, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Said {
+            #[serde(default)]
+            reason: serde_json::Value,
+            #[serde(default)]
+            renews_at: serde_json::Value,
+        }
+        let said = Said::deserialize(deserializer)?;
+        Ok(AiFailure::from_reason(
+            said.reason.as_str(),
+            said.renews_at.as_str(),
+        ))
+    }
 }
 
 #[cfg(test)]

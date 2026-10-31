@@ -63,6 +63,10 @@ enum Command {
     /// What a restore needs.
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// The families on this server, and their plans (docs/operations.md,
+    /// "Paid families").
+    #[command(subcommand)]
+    Families(FamiliesCommand),
     /// The newest reports about the assistant, opened — psql shows them sealed.
     Reports {
         /// How many, newest first.
@@ -84,6 +88,22 @@ enum StorageKeyCommand {
     /// the lookups recomputed in one transaction, the old file is kept as
     /// `<key_file>.old`, and the new one takes its place.
     Rotate,
+}
+
+#[derive(Subcommand, Debug)]
+enum FamiliesCommand {
+    /// Every family: its plan, owner, members, disk, this month's assistant
+    /// tokens, the owner's subscription and any deletion date. Prints names,
+    /// so it prints to this terminal only.
+    List,
+    /// Move a family between plans. A paid family whose owner has no
+    /// subscription starts its days at the server's next hourly sweep.
+    Plan {
+        /// The family's id, from `families list`.
+        id: i64,
+        /// `free` or `paid`.
+        plan: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -162,6 +182,20 @@ async fn main() -> Result<()> {
         .await
         .context("loading the storage keys")?;
 
+    // With subscriptions off there are no deadlines; any left from when
+    // they were on go now, so turning them on again later starts every
+    // family's days afresh (docs/protocol.md, "Paid families").
+    if !cfg.subscriptions.enabled {
+        let dropped = family_connect::subscriptions::drop_deadlines(&pool)
+            .await
+            .map_err(|error| anyhow::anyhow!("dropping paid-family deadlines: {error:?}"))?;
+        if dropped > 0 {
+            info!(
+                dropped,
+                "subscriptions are off: paid-family deadlines dropped"
+            );
+        }
+    }
     let push_sender = push::build(&cfg.push).context("building the push transports")?;
     let state = AppState::new(pool.clone(), Arc::new(cfg), push_sender, keys);
     // Fail at BOOT if the attachments directory is unusable, rather than
@@ -216,6 +250,16 @@ async fn main() -> Result<()> {
                     Ok(0) => {}
                     Ok(count) => info!(count, "lapsed invitations nobody shares a family for"),
                     Err(err) => warn!(error = ?err, "sweeping unshared invitations failed"),
+                }
+                // And paid families: who stopped being covered, who is
+                // covered again, the day-before warning, and the families
+                // whose deadline has come (docs/protocol.md, "Paid
+                // families"). Hourly, so an expiry known in advance is
+                // noticed within the hour and "14 days" means fourteen.
+                match family_connect::subscriptions::sweep(&sweeper_state).await {
+                    Ok(report) if report == Default::default() => {}
+                    Ok(report) => info!(?report, "paid families swept"),
+                    Err(err) => warn!(error = ?err, "sweeping paid families failed"),
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
@@ -371,6 +415,49 @@ async fn run_command(config: &std::path::Path, command: Command) -> Result<()> {
                 "deleted again: {} families, {} conversations, {} accounts",
                 forgotten.families, forgotten.conversations, forgotten.accounts
             );
+        }
+        Command::Families(FamiliesCommand::List) => {
+            let keys = Keyring::new(key);
+            let pool = db::connect(&cfg.database).await?;
+            keys.load(&mut *pool.acquire().await?).await?;
+            if !cfg.subscriptions.enabled {
+                println!("[subscriptions] is off: plans are kept, and nothing reads them");
+            }
+            for family in family_connect::admin::families(&pool, &keys, &cfg).await? {
+                let subscription = match family.subscription {
+                    None => "no subscription".to_string(),
+                    Some((ends, true)) => format!("subscribed until {}", ends.date()),
+                    Some((ends, false)) => format!("subscription ended {}", ends.date()),
+                };
+                let deadline = family
+                    .delete_at
+                    .map(|at| format!(" — DELETED ON {}", at.date()))
+                    .unwrap_or_default();
+                println!(
+                    "#{} {} — {}, owner account {} ({}), {} members, {} MB, {} tokens this \
+                     month{}",
+                    family.id,
+                    family.name,
+                    family.plan,
+                    family.owner_user_id,
+                    subscription,
+                    family.members,
+                    family.storage_bytes / (1024 * 1024),
+                    family.month_tokens,
+                    deadline,
+                );
+            }
+        }
+        Command::Families(FamiliesCommand::Plan { id, plan }) => {
+            let pool = db::connect(&cfg.database).await?;
+            let before = family_connect::admin::set_plan(&pool, id, plan.trim()).await?;
+            println!("family #{id}: {before} -> {}", plan.trim());
+            if cfg.subscriptions.enabled && plan.trim() == family_connect::subscriptions::PAID {
+                println!(
+                    "if its owner holds no subscription, its days start at the server's next \
+                     hourly sweep, and every member is told"
+                );
+            }
         }
         Command::Reports { limit } => {
             let keys = Keyring::new(key);

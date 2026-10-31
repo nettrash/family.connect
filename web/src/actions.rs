@@ -546,6 +546,9 @@ pub fn board_failure(error: &ApiError) -> String {
         Some("attachment_too_large") => t("That photo is too large to pin.").to_string(),
         Some("invalid_attachment") => t("The board pins photos only.").to_string(),
         Some("not_in_family") => t("You're not in a family, so there is no board.").to_string(),
+        // A paid family past its storage allowance (docs/protocol.md, "Paid
+        // families").
+        Some("storage_allowance_used") => fc_text::paid::storage_allowance_used().to_string(),
         _ => error.detail(),
     }
 }
@@ -575,11 +578,25 @@ pub fn asks_for_consent(error: &ApiError) -> bool {
 /// refused answer says — once, and not behind "Couldn't draw that.", which
 /// would read as a fault worth a retry (docs/protocol.md, "Board"). Every
 /// other failure is led by what did not happen, as the board's always are.
+///
+/// `ai_allowance_used` is a paid family past this month's pictures: said as
+/// an answer that failed for it is, naming the day it renews.
 pub fn backdrop_failure(error: &ApiError) -> String {
     match error.code() {
-        Some("picture_refused") => AiFailure::Refused.sentence().to_string(),
+        Some("picture_refused") => AiFailure::Refused.sentence(),
+        Some("ai_allowance_used") => fc_text::paid::ai_allowance_used(&renews_on()),
         _ => format!("{} {}", t("Couldn't draw that."), board_failure(error)),
     }
+}
+
+/// The day a paid family's monthly allowance renews, in the reader's
+/// language, for an `ai_allowance_used` that came over REST — a transcript
+/// or a backdrop — and so with no `renews_at` of its own: the 1st of the
+/// next month, UTC, shown as that UTC calendar day (docs/protocol.md, "Paid
+/// families").
+pub fn renews_on() -> String {
+    let now = js_sys::Date::now();
+    crate::time::utc_day_in_sentence(&fc_text::paid::next_month_utc(now), now)
 }
 
 /// What to tell somebody whose change to the sticker pack did not go in —
@@ -600,6 +617,7 @@ pub fn pack_failure(error: &ApiError) -> String {
         Some("invalid_attachment") => t("A sticker is a WebP or PNG picture.").to_string(),
         Some("attachment_expired") => t("The sticker took too long to add. Try again.").to_string(),
         Some("validation") => t("A description is at most 64 characters.").to_string(),
+        Some("storage_allowance_used") => fc_text::paid::storage_allowance_used().to_string(),
         _ => error.detail(),
     }
 }
@@ -2233,6 +2251,16 @@ impl Actions {
                                     ask_consent.emit(());
                                 }
                             }
+                            // A paid family's minutes for the month are
+                            // used: the line names the day they renew.
+                            transcript::Next::AllowanceUsed => {
+                                let failure = transcript::Failure::AllowanceUsed {
+                                    renews_on: renews_on(),
+                                };
+                                live.update(session, |state| {
+                                    state.store.transcripts.failed(attachment_id, failure)
+                                });
+                            }
                             transcript::Next::Fail(failure) => {
                                 live.update(session, |state| {
                                     state.store.transcripts.failed(attachment_id, failure)
@@ -3177,6 +3205,10 @@ mod tests {
         assert!(board_failure(&refusal("board_full")).contains("The board is full"));
         assert!(board_failure(&refusal("not_note_author")).contains("Only the person who wrote"));
         assert_eq!(board_failure(&refusal("validation")), "for developers");
+        assert_eq!(
+            board_failure(&refusal("storage_allowance_used")),
+            "This family has used its storage allowance."
+        );
         assert!(fc_text::board::COLORS.contains(&random_color().as_str()));
     }
 
@@ -3205,6 +3237,22 @@ mod tests {
             backdrop_failure(&ApiError::Answered { status: 502 }),
             "Couldn't draw that. The server answered 502."
         );
+        // A paid family past this month's pictures: said as an answer that
+        // failed for it is, with the 1st of next month — not "Couldn't draw
+        // that.", which would read as worth another try.
+        assert_eq!(
+            backdrop_failure(&refusal("ai_allowance_used")),
+            format!(
+                "This family has used this month’s assistant allowance. It renews on {}.",
+                renews_on()
+            )
+        );
+        let now = js_sys::Date::now();
+        assert_eq!(
+            renews_on(),
+            crate::time::utc_day_in_sentence(&fc_text::paid::next_month_utc(now), now)
+        );
+        assert!(!renews_on().is_empty());
         assert!(asks_for_consent(&refusal("assistant_consent_required")));
         assert!(!asks_for_consent(&refusal("picture_refused")));
         assert!(!asks_for_consent(&refusal("not_note_author")));
@@ -3466,6 +3514,15 @@ mod tests {
             (400, "transcript_refused", Failure::Refused),
             (403, "transcript_not_allowed", Failure::NotAvailable),
             (403, "transcripts_unavailable", Failure::NotAvailable),
+            // A paid family's minutes used up: the day they renew, the 1st
+            // of next month (docs/protocol.md, "Paid families").
+            (
+                403,
+                "ai_allowance_used",
+                Failure::AllowanceUsed {
+                    renews_on: renews_on(),
+                },
+            ),
             (500, "internal", Failure::TryAgain),
         ] {
             agree(&actions);
@@ -4399,6 +4456,10 @@ mod tests {
         assert!(pack_failure(&refusal("attachment_expired")).contains("took too long to add"));
         assert!(pack_failure(&refusal("invalid_attachment")).contains("WebP or PNG"));
         assert_eq!(pack_failure(&refusal("not_in_family")), "for developers");
+        assert_eq!(
+            pack_failure(&refusal("storage_allowance_used")),
+            "This family has used its storage allowance."
+        );
         assert_eq!(
             sticker_refusal(fc_text::pack::Refusal::TooLarge),
             too_large_for_a_sticker()

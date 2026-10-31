@@ -1524,6 +1524,18 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             }
             None
         }
+        // A paid family's deadline came or went: onto the family it names,
+        // and the banner over its list with it (docs/protocol.md, "Paid
+        // families").
+        ServerFrame::FamilyPlan {
+            family_id,
+            delete_at,
+        } => {
+            live.update(session, |state| {
+                state.store.apply_plan(family_id, delete_at)
+            });
+            None
+        }
         ServerFrame::MemberBlocked { user_id, blocked } => {
             live.update(session, |state| state.store.set_blocked(user_id, blocked));
             // An unblock brings the direct chat back whole — from the list.

@@ -321,6 +321,18 @@ impl LiveConnection {
             router.on_invitation_removed()
         }));
 
+        // A paid family's plan and deadline, live (docs/protocol.md, "Paid families"): on the
+        // family the frame names, so the unpaid banner comes and goes without a read.
+        let to = Rc::clone(&session);
+        let id = router
+            .on_family_plan()
+            .subscribe(move |(family_id, plan, delete_at)| {
+                to.apply_family_plan(*family_id, plan.as_deref(), delete_at.as_deref());
+            });
+        undo.push(unsubscribe_from(&router, id, |router| {
+            router.on_family_plan()
+        }));
+
         // A send answered by a frame the cache could not record: nothing is lost (the row stays
         // queued, and the next flush sends it again under the same key) — logged with the rest.
         let weak = Rc::downgrade(&inner);

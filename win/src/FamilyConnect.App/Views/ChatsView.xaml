@@ -15,7 +15,7 @@
             <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
-        <!-- The list: a heading, the link's state under it, the invitations, and the rows. -->
+        <!-- The list: a heading, the link's state under it, the family's notices, and the rows. -->
         <Grid Padding="4,12,4,8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -48,8 +48,16 @@
                     <FontIcon Glyph="&#xE8FA;" FontSize="16" />
                 </Button>
             </Grid>
-            <!-- Invitations to this account into other families: a card each, with Join and Decline (ChatsView.Families). -->
-            <StackPanel x:Name="InvitationsPanel" Grid.Row="1" Margin="12,0,8,8" Spacing="8" Visibility="Collapsed" />
+            <StackPanel Grid.Row="1">
+                <!--
+                    A paid family whose subscription has ended (docs/protocol.md, "Paid families"): the day it will be deleted, and
+                    who can renew it, while the family shown has a delete_at (ChatsView.Families). Collapsed as well as closed, so its
+                    margin takes no room either.
+                -->
+                <InfoBar x:Name="UnpaidBar" Margin="12,0,8,8" Severity="Warning" IsClosable="False" IsOpen="False" Visibility="Collapsed" />
+                <!-- Invitations to this account into other families: a card each, with Join and Decline (ChatsView.Families). -->
+                <StackPanel x:Name="InvitationsPanel" Margin="12,0,8,8" Spacing="8" Visibility="Collapsed" />
+            </StackPanel>
             <ListView x:Name="ChatList" Grid.Row="2" SelectionMode="Single" />
             <TextBlock x:Name="EmptyListText" Grid.Row="2" Margin="16,12,12,0" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
         </Grid>

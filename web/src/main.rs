@@ -587,10 +587,11 @@ fn app() -> Html {
                 on_close={close_panel.clone()}
             />
         }),
-        (Some(panel @ (Panel::NewFamily | Panel::JoinFamily)), Some(_), _) => Some(html! {
+        (Some(panel @ (Panel::NewFamily | Panel::JoinFamily)), Some(account), _) => Some(html! {
             <AnotherFamilyPane
                 join={panel == Panel::JoinFamily}
                 max_families={actions::max_families(store)}
+                may_start={account.may_start_family()}
                 on_action={on_action.clone()}
                 on_close={close_panel.clone()}
             />
@@ -684,6 +685,7 @@ fn app() -> Html {
                     members={store.family.is_some().then(|| store.members.clone())}
                     on_action={on_action.clone()}
                     {families}
+                    unpaid={store.family.as_ref().and_then(|family| views::chat_list::unpaid_banner(family, &store.members, now))}
                 />
                 if let Some(panel) = panel {
                     { panel }

@@ -731,6 +731,13 @@ class ChatViewModel @Inject constructor(
     val failedAssistantAnswers: StateFlow<Map<Long, AssistantFailure>> =
         messageRepository.failedAssistantAnswers
 
+    /**
+     * Why a send that failed for good was refused, by client message id —
+     * what the "Message not sent" dialog says when it has words for it
+     * ([SendRefusals]).
+     */
+    val sendRefusals: StateFlow<Map<String, String>> = messageRepository.sendRefusals
+
     /** Open the poll sheet on a fresh draft — two empty options, no question. */
     fun beginPoll() {
         if (!canCreatePoll.value) return

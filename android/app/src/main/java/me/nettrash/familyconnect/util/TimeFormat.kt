@@ -148,6 +148,32 @@ object TimeFormat {
     }
 
     /**
+     * A day a sentence names — "deleted on 14 November", "renews on
+     * 1 December": day and month in the reader's own order and words, and
+     * the year only when it is not this one ("14 November", "14 ноября",
+     * "11月14日"; "3 January 2027").
+     *
+     * [zone] decides which calendar day an instant is. An unpaid family's
+     * deadline is the reader's own (the default); a monthly allowance
+     * renews on the 1st of a UTC month, and is named in UTC so that it
+     * reads as the 1st everywhere rather than as the 30th west of Greenwich.
+     */
+    fun calendarDay(
+        epochMillis: Long,
+        nowMillis: Long = System.currentTimeMillis(),
+        zone: ZoneId = ZoneId.systemDefault(),
+        locale: Locale = Locale.getDefault(),
+    ): String {
+        val day = Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate()
+        val thisYear = Instant.ofEpochMilli(nowMillis).atZone(zone).year
+        return if (day.year == thisYear) {
+            day.format(DateTimeFormatter.ofPattern(dayAndMonthPattern(locale), locale))
+        } else {
+            day.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG).withLocale(locale))
+        }
+    }
+
+    /**
      * A month's name standing on its own, in the reader's language:
      * "March", "март", "3月". STANDALONE rather than the form used
      * inside a date, because Slavic languages inflect the two

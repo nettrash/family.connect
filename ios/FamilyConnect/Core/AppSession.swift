@@ -219,6 +219,19 @@ final class AppSession {
         FamilyRules.offersJoinAnother(families: families, maxFamilies: maxFamiliesPerAccount)
     }
 
+    /// Whether starting a family goes through the subscription screen first
+    /// (`PaidFamilies.needsSubscription`).
+    var needsSubscriptionToCreate: Bool {
+        PaidFamilies.needsSubscription(subscriptionsEnabled: subscriptionsEnabled, subscription: subscription)
+    }
+
+    /// The upper bound of the owner's member-cap picker: the current
+    /// family's `member_ceiling`, falling back to the operator's
+    /// `max_family_members` (`MemberCap.ceiling`).
+    var memberCeiling: Int? {
+        MemberCap.ceiling(family: family?.memberCeiling, server: maxFamilyMembers)
+    }
+
     /// Replace one cached family after its owner changes a setting on it —
     /// the twin of `applyProfile`, and narrow for the same reason. PATCH
     /// answers with the whole family, and nothing else re-reads it until
@@ -228,6 +241,24 @@ final class AppSession {
     func applyFamily(_ family: FamilyDTO) {
         guard let index = families.firstIndex(where: { $0.id == family.id }) else { return }
         families[index] = family.withRole(family.role ?? families[index].role)
+    }
+
+    /// The caller's subscription as `PUT /me/subscription` answered it —
+    /// held at once, so the screen that sold it can go on to create the
+    /// family before the `/me` that follows has answered.
+    func applySubscription(_ subscription: SubscriptionDTO?) {
+        guard subscriptionsEnabled else { return }
+        self.subscription = subscription
+    }
+
+    /// A `family_plan` frame (docs/protocol.md, "Paid families"): THAT
+    /// family's plan and deletion date, which an absent `delete_at` clears
+    /// — so the banner over its chat list appears and goes live. A frame
+    /// without a plan leaves the one held; a family this account is not in
+    /// changes nothing.
+    func applyFamilyPlan(familyID: Int64, plan: String?, deleteAt: Date?) {
+        guard let index = families.firstIndex(where: { $0.id == familyID }) else { return }
+        families[index] = families[index].withPlan(plan ?? families[index].plan, deleteAt: deleteAt)
     }
 
     /// Show another family. Everything family-level follows: the chat list
@@ -286,6 +317,20 @@ final class AppSession {
     /// 2026-10-03). The server's answer, replaced on every `/me`, for the
     /// reasons `assistantConsentAt` is.
     private(set) var assistantLookupConsentAt: Date?
+    /// Paid families (docs/protocol.md, "Paid families", 2026-10-30):
+    /// whether this server charges for a NEW family. False until a `/me`
+    /// says otherwise, which is also the answer on an older server — and
+    /// with it false nothing below is read and nothing on screen changes.
+    private(set) var subscriptionsEnabled = false
+    /// The caller's own App Store subscription as the server holds it — the
+    /// active one, else the one that ended last — or nil.
+    private(set) var subscription: SubscriptionDTO?
+    /// What a paid family gets on this server, for the subscription screen.
+    private(set) var paidFamilyLimits: PaidFamilyLimitsDTO?
+    /// The products the subscription screen sells, in the server's order.
+    private(set) var subscriptionProducts: [String] = []
+    /// The account's `app_account_token`, carried by a purchase.
+    private(set) var appAccountToken: UUID?
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -506,6 +551,18 @@ final class AppSession {
     /// Run a resync: a family was added and its roster, board, pack and
     /// chats are to be fetched now, not at the next reconnect.
     var requestResync: () -> Void = {}
+    /// What every `/me` says about subscriptions, handed to the
+    /// `SubscriptionManager` — which starts the App Store's update listener
+    /// and sends the newest entitlement only when the server charges. A
+    /// closure for the reason `clearChatStore` is one: the phase machine
+    /// knows nothing about StoreKit.
+    var applySubscriptionConfig: (MeResponse) -> Void = { _ in }
+    /// A session exists and `/me` has not answered yet (a launch): the
+    /// manager may start listening, if this server charged last time.
+    var resumeSubscriptions: () -> Void = {}
+    /// The session is gone: the manager stops, and sends again at the next
+    /// sign-in.
+    var resetSubscriptions: () -> Void = {}
 
     /// Best-effort push deregistration (PushRegistrar.deregister), also
     /// injected at wiring time so the phase machine stays UIKit-free.
@@ -557,6 +614,9 @@ final class AppSession {
             return
         }
         await api.configure(serverURL: serverURL, token: token)
+        // Before `/me`, so a server that charged last time has the App
+        // Store's update listener running from launch (SubscriptionManager).
+        resumeSubscriptions()
 
         do {
             apply(me: try await api.me())
@@ -604,6 +664,15 @@ final class AppSession {
         assistantLookupConsentAt = me.assistantLookupConsentAt
         familyRegistrationEnabled = me.familyRegistrationEnabled
         familylessAccountTTLDays = me.familylessAccountTTLDays
+        // Paid families (docs/protocol.md, "Paid families"). The rest of
+        // the keys mean nothing on a server that does not charge, and are
+        // not held there.
+        subscriptionsEnabled = me.subscriptionsEnabled
+        subscription = me.subscriptionsEnabled ? me.subscription : nil
+        paidFamilyLimits = me.subscriptionsEnabled ? me.paidFamilyLimits : nil
+        subscriptionProducts = me.subscriptionsEnabled ? me.subscriptionProducts : []
+        appAccountToken = me.subscriptionsEnabled ? me.appAccountToken.flatMap(UUID.init(uuidString:)) : nil
+        applySubscriptionConfig(me)
         // The operator's half of the daily greeting. Stored rather than held
         // on this object because the settings screen draws the family's
         // switch before the first /me of a session answers (protocol.md,
@@ -1143,6 +1212,12 @@ final class AppSession {
         assistantLookupConsentAt = nil
         familyRegistrationEnabled = true
         familylessAccountTTLDays = 0
+        subscriptionsEnabled = false
+        subscription = nil
+        paidFamilyLimits = nil
+        subscriptionProducts = []
+        appAccountToken = nil
+        resetSubscriptions()
         phase = .needsAuth
     }
 

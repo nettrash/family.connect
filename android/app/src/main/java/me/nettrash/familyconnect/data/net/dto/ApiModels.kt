@@ -263,6 +263,27 @@ data class FamilyDto(
      * "not said", never "no role".
      */
     val role: String? = null,
+    /**
+     * The most members this family may have whatever its owner sets: the
+     * operator's `max_family_members`, or for a PAID family the lower paid
+     * limit (docs/protocol.md, "Paid families", added 2026-10-30). The
+     * owner's cap picker draws its range from this, and falls back to
+     * `MeResponse.maxFamilyMembers` when it is null — every server that
+     * predates it.
+     */
+    @SerialName("member_ceiling") val memberCeiling: Int? = null,
+    /**
+     * "free" | "paid", present only while the server's subscriptions are
+     * on. Null means payment does not apply: every family on a server that
+     * has them off, or predates them.
+     */
+    val plan: String? = null,
+    /**
+     * The moment the server will delete this PAID family, present only
+     * while its owner's subscription does not cover it. While it is here
+     * the chat list shows the unpaid banner; null is no deadline.
+     */
+    @SerialName("delete_at") val deleteAt: String? = null,
 ) {
     /** [greetingPlaces], with absent read as none. */
     val places: List<String> get() = greetingPlaces.orEmpty()
@@ -1645,6 +1666,51 @@ data class MeResponse(
     @SerialName("member_families_enabled") val memberFamiliesEnabled: Boolean = false,
     /** The most families one account may be in; null from an older server. */
     @SerialName("max_families_per_account") val maxFamiliesPerAccount: Int? = null,
+    /**
+     * Whether a NEW family on this server needs its owner's App Store
+     * subscription (`[subscriptions] enabled`, docs/protocol.md "Paid
+     * families", added 2026-10-30). ALWAYS present on a current server;
+     * absent means false, and with it false nothing below applies.
+     *
+     * This app sells nothing (Google Play's payments policy): it only reads
+     * whether the caller already holds an active subscription, which is
+     * what lets it offer "Create a family" at all.
+     */
+    @SerialName("subscriptions_enabled") val subscriptionsEnabled: Boolean = false,
+    /** The caller's own subscription — the active one, or else the one that ended last; null for none. */
+    val subscription: SubscriptionDto? = null,
+    /** What a paid family gets; each limit present only while the operator has it on. */
+    @SerialName("paid_family_limits") val paidFamilyLimits: PaidFamilyLimitsDto? = null,
+    /** Days a paid family the owner stops paying for has before it is deleted; null with subscriptions off. */
+    @SerialName("unpaid_days") val unpaidDays: Int? = null,
+)
+
+/**
+ * An App Store subscription, as the server verified it (docs/protocol.md,
+ * "Paid families"). Every field defaults, so one the server leaves out
+ * never fails the whole `/me` it rides on.
+ */
+@Serializable
+data class SubscriptionDto(
+    @SerialName("product_id") val productId: String? = null,
+    /** "Production" | "Sandbox". */
+    val environment: String? = null,
+    /** When it stops covering anything: the expiry, or the grace-period end when that is later. */
+    @SerialName("expires_at") val expiresAt: String? = null,
+    /** Whether it covers its owner's families right now. Absent reads as not. */
+    val active: Boolean = false,
+    /** Whether it will renew, when the server knows; null when it does not. */
+    val renews: Boolean? = null,
+)
+
+/** A paid family's limits (`paid_family_limits` on `GET /me`); each absent while that limit is off. */
+@Serializable
+data class PaidFamilyLimitsDto(
+    val members: Int? = null,
+    @SerialName("storage_bytes") val storageBytes: Long? = null,
+    @SerialName("ai_tokens") val aiTokens: Long? = null,
+    val images: Int? = null,
+    @SerialName("transcript_ms") val transcriptMs: Long? = null,
 )
 
 @Serializable
@@ -2131,6 +2197,31 @@ data class ErrorBody(val error: ErrorPayload) {
 data class FamilyStatsDto(
     val totals: StatsTotalsDto,
     val members: List<MemberStatsDto> = emptyList(),
+    /**
+     * What a PAID family has used of its limits, and when the monthly ones
+     * start again (docs/protocol.md, "Family statistics", amended
+     * 2026-10-30). Absent for a free family and on a server with
+     * subscriptions off — and then no section is drawn.
+     */
+    val allowance: AllowanceDto? = null,
+)
+
+/** A paid family's allowance; each limit absent when the operator turned that one off. */
+@Serializable
+data class AllowanceDto(
+    /** The start of the next UTC month, when the monthly limits start again. */
+    @SerialName("renews_at") val renewsAt: String? = null,
+    @SerialName("storage_bytes") val storageBytes: AllowanceUseDto? = null,
+    @SerialName("ai_tokens") val aiTokens: AllowanceUseDto? = null,
+    val images: AllowanceUseDto? = null,
+    @SerialName("transcript_ms") val transcriptMs: AllowanceUseDto? = null,
+)
+
+/** One limit: how much of it is used, of how much. */
+@Serializable
+data class AllowanceUseDto(
+    val used: Long = 0,
+    val limit: Long = 0,
 )
 
 @Serializable

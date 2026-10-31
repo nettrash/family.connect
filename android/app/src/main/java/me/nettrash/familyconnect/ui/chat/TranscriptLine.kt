@@ -37,8 +37,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.time.ZoneOffset
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.repo.PaidFamilies
+import me.nettrash.familyconnect.util.TimeFormat
 
 @Composable
 fun TranscriptLine(
@@ -130,6 +133,22 @@ fun TranscriptLine(
             }
             status == TranscriptRequests.Status.REFUSED -> Text(
                 text = stringResource(R.string.s_transcript_refused),
+                style = MaterialTheme.typography.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = quiet,
+                modifier = Modifier.padding(vertical = 6.dp),
+            )
+            // A paid family's minutes are used up until the 1st of next
+            // month (docs/protocol.md, "Paid families"), named in UTC, where
+            // the month turns.
+            status == TranscriptRequests.Status.ALLOWANCE_USED -> Text(
+                text = stringResource(
+                    R.string.e_ai_allowance_used,
+                    TimeFormat.calendarDay(
+                        PaidFamilies.nextMonthStartUtc(System.currentTimeMillis()),
+                        zone = ZoneOffset.UTC,
+                    ),
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 fontStyle = FontStyle.Italic,
                 color = quiet,

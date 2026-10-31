@@ -291,6 +291,44 @@ actor APIClient {
         }
     }
 
+    // MARK: - Subscription
+
+    private struct SubscriptionRequest: Encodable {
+        let transaction: String
+        let renewal: String?
+
+        // `renewal` is left OUT when there is none, rather than sent as
+        // null: the protocol names it optional, not nullable.
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(transaction, forKey: .transaction)
+            try container.encodeIfPresent(renewal, forKey: .renewal)
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case transaction
+            case renewal
+        }
+    }
+
+    /// `PUT /me/subscription` — what the App Store signed for this account:
+    /// `Transaction.jwsRepresentation` and, when StoreKit has it, the
+    /// subscription status's `RenewalInfo.jwsRepresentation`
+    /// (docs/protocol.md, "Paid families", 2026-10-30). The server verifies
+    /// both offline and answers with the caller's RESULTING subscription,
+    /// which is not necessarily the one just sent.
+    ///
+    /// Idempotent: sending the same thing twice changes nothing. Errors:
+    /// `subscription_invalid` (400) and `subscription_taken` (409) are the
+    /// server's verdict and terminal; `subscriptions_disabled` (403) is a
+    /// server that has stopped charging.
+    func putSubscription(transaction: String, renewal: String?) async throws -> SubscriptionDTO? {
+        let response: SubscriptionResponse = try await request(
+            "PUT", "/me/subscription",
+            body: SubscriptionRequest(transaction: transaction, renewal: renewal))
+        return response.subscription
+    }
+
     // MARK: - Profile picture
 
     /// `PUT /me/avatar` — the one endpoint that carries bytes rather than

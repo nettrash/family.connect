@@ -14,7 +14,7 @@ namespace FamilyConnect.App.Views;
 // whose family_ids name the shown family (ChatListModel); this is the switcher in the list's heading — every family with its
 // unread count, the join requests and invitations waiting, "New Family…" and "Join Another Family…" — and the invitation cards
 // over the rows. Which rows there are and what they say is FamilySwitcher's; an account in one family with nothing pending sees
-// none of it.
+// none of it. Over the cards, a paid family's deadline while the family shown has one (PaidFamilies.UnpaidBanner, #89).
 
 public sealed partial class ChatsView
 {
@@ -86,7 +86,30 @@ public sealed partial class ChatsView
         {
             switcherDrawn = string.Empty;
         }
+        DrawUnpaid(state, say);
         DrawInvitations(state, say);
+    }
+
+    /// <summary>
+    /// The shown family's deadline, while it has one (docs/protocol.md, "Paid families"): the day it will be deleted, and who
+    /// can renew it — the owner told where. Gone with the <c>delete_at</c>, whether a read or a <c>family_plan</c> took it.
+    /// </summary>
+    private void DrawUnpaid(SessionState state, IStringCatalog say)
+    {
+        var banner = PaidFamilies.UnpaidBanner(
+            state, connection.Chats.Members(), say, services.Culture, TimeZoneInfo.Local, DateTimeOffset.UtcNow);
+        if (banner is null)
+        {
+            UnpaidBar.IsOpen = false;
+            UnpaidBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (UnpaidBar.Message != banner)
+        {
+            UnpaidBar.Message = banner;
+        }
+        UnpaidBar.Visibility = Visibility.Visible;
+        UnpaidBar.IsOpen = true;
     }
 
     /// <summary>
@@ -148,7 +171,8 @@ public sealed partial class ChatsView
                 case SwitcherRowKind.NewFamily:
                 {
                     var item = new MenuFlyoutItem { Text = row.Title, Icon = Glyph(0xE710) };
-                    item.Click += (_, _) => _ = FamilyDialogs.NewFamilyAsync(XamlRoot, say, FamilyDoorway);
+                    item.Click += (_, _) => _ = FamilyDialogs.NewFamilyAsync(
+                        XamlRoot, say, FamilyDoorway, PaidFamilies.AnotherFamily(connection.Session.State));
                     menu.Items.Add(item);
                     break;
                 }

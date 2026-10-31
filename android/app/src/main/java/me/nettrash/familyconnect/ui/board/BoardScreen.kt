@@ -129,8 +129,11 @@ import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.ui.components.AssistantConsentDialog
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BackdropOutcome
+import me.nettrash.familyconnect.data.repo.PaidFamilies
+import me.nettrash.familyconnect.util.TimeFormat
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -147,6 +150,7 @@ import android.content.Intent
 import android.provider.CalendarContract
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -1276,7 +1280,7 @@ fun BoardScreen(
     ) { uri ->
         if (uri != null) viewModel.pinPhoto(uri, notes.size % NoteColors.palette.size)
     }
-    if (pinFailed) {
+    pinFailed?.let { said ->
         AlertDialog(
             onDismissRequest = viewModel::clearPinFailure,
             confirmButton = {
@@ -1284,7 +1288,7 @@ fun BoardScreen(
                     Text(stringResource(R.string.s_dismiss))
                 }
             },
-            text = { Text(stringResource(R.string.s_pin_photo_failed)) },
+            text = { Text(stringResource(said)) },
         )
     }
     // The wall is in front of somebody, so everything on it has been shown
@@ -2009,6 +2013,9 @@ internal fun NoteDialog(
     // the reader anything on its own. The web says both (docs/protocol.md,
     // "Board"). A toast, like the missing-calendar refusal above it.
     val context = LocalContext.current
+    // For the one refusal whose sentence takes an argument: read through
+    // the configuration-aware resources, never LocalContext's.
+    val resources = LocalResources.current
     /**
      * A backdrop this dialog has just drawn, and whether one is on its way.
      * Kept here rather than beside the button so the banner above can draw
@@ -2213,8 +2220,20 @@ internal fun NoteDialog(
                                             val said = when (outcome) {
                                                 is BackdropOutcome.Drawn -> null
                                                 BackdropOutcome.Refused ->
-                                                    R.string.s_assistant_provider_refused
-                                                BackdropOutcome.Failed -> R.string.s_draw_failed
+                                                    resources.getString(R.string.s_assistant_provider_refused)
+                                                BackdropOutcome.Failed -> resources.getString(R.string.s_draw_failed)
+                                                // A paid family's pictures are
+                                                // used up until the 1st of next
+                                                // month, named in UTC where the
+                                                // month turns (docs/protocol.md,
+                                                // "Paid families").
+                                                BackdropOutcome.AllowanceUsed -> resources.getString(
+                                                    R.string.e_ai_allowance_used,
+                                                    TimeFormat.calendarDay(
+                                                        PaidFamilies.nextMonthStartUtc(System.currentTimeMillis()),
+                                                        zone = ZoneOffset.UTC,
+                                                    ),
+                                                )
                                                 // The consent screen asked,
                                                 // and "Not Now" was the
                                                 // answer: nothing to report.
@@ -2228,7 +2247,11 @@ internal fun NoteDialog(
                                                 Toast.makeText(
                                                     context,
                                                     said,
-                                                    Toast.LENGTH_SHORT,
+                                                    if (outcome == BackdropOutcome.AllowanceUsed) {
+                                                        Toast.LENGTH_LONG
+                                                    } else {
+                                                        Toast.LENGTH_SHORT
+                                                    },
                                                 ).show()
                                             }
                                         }

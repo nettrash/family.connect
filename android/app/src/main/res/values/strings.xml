@@ -864,4 +864,21 @@
     <string name="s_leave_named_family">Leave “%s”?</string>
     <string name="s_leave_one_of_families_explanation">You\'ll lose access to this family\'s chats. Direct chats stay with anyone you share another family with.</string>
     <string name="s_new_family_explanation">Start your own family. You\'ll be its owner and can invite members of your other families.</string>
+    <!-- Paid families (#89; docs/protocol.md, "Paid families"). Android sells nothing and names no other
+         app or store (Google Play payments policy): it only says a family can't be started or renewed here. -->
+    <string name="s_gate_cannot_start_here">On this server, a new family can’t be started from this app.</string>
+    <string name="e_subscription_required">A new family on this server needs a subscription.</string>
+    <string name="s_banner_member">“%1$s” will be deleted on %2$s because its subscription has ended. Only %3$s, the owner, can renew it.</string>
+    <string name="s_banner_owner_not_here">“%1$s” will be deleted on %2$s because your subscription has ended. It can’t be renewed from this app.</string>
+    <string name="s_allowance_title">This Month’s Allowance</string>
+    <string name="s_allowance_storage">Storage</string>
+    <string name="s_allowance_assistant">Assistant</string>
+    <string name="s_allowance_pictures">Pictures</string>
+    <string name="s_allowance_transcripts">Transcripts</string>
+    <string name="s_allowance_of">%1$s of %2$s</string>
+    <string name="s_allowance_percent">%1$d%% used</string>
+    <string name="s_allowance_minutes">%1$d of %2$d min</string>
+    <string name="s_allowance_renews_on">Renews on %1$s</string>
+    <string name="e_storage_allowance_used">This family has used its storage allowance.</string>
+    <string name="e_ai_allowance_used">This family has used this month’s assistant allowance. It renews on %1$s.</string>
 </resources>

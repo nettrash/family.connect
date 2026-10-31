@@ -83,7 +83,7 @@ fn the_error_body_decodes_as_the_protocol_writes_it() {
 /// document is a code somebody deletes from a client that is still talking to an old server.
 #[test]
 fn the_canonical_codes_are_all_here_and_all_distinct() {
-    assert_eq!(error_codes::ALL.len(), 79);
+    assert_eq!(error_codes::ALL.len(), 85);
     // Several families' six (docs/protocol.md, "Several families", 2026-10-22), every one a
     // refusal.
     for (code, wire, status) in [
@@ -113,6 +113,37 @@ fn the_canonical_codes_are_all_here_and_all_distinct() {
         assert_eq!(code, wire);
         assert!(error_codes::ALL.contains(&code));
         assert!(!ApiError::new(code, "x", status).transient());
+    }
+    // Paid families' six (docs/protocol.md, "Paid families", 2026-10-30), every one a refusal —
+    // `storage_allowance_used` above all: an upload refused with it must FAIL, never be retried.
+    for (code, wire, status) in [
+        (
+            error_codes::SUBSCRIPTION_REQUIRED,
+            "subscription_required",
+            403,
+        ),
+        (
+            error_codes::SUBSCRIPTION_INVALID,
+            "subscription_invalid",
+            400,
+        ),
+        (error_codes::SUBSCRIPTION_TAKEN, "subscription_taken", 409),
+        (
+            error_codes::SUBSCRIPTIONS_DISABLED,
+            "subscriptions_disabled",
+            403,
+        ),
+        (
+            error_codes::STORAGE_ALLOWANCE_USED,
+            "storage_allowance_used",
+            403,
+        ),
+        (error_codes::AI_ALLOWANCE_USED, "ai_allowance_used", 403),
+    ] {
+        assert_eq!(code, wire);
+        assert!(error_codes::ALL.contains(&code));
+        assert!(!ApiError::new(code, "x", status).transient());
+        assert!(!ApiError::coded(code, "x").transient());
     }
     // Groups' two (docs/protocol.md, "Groups", 2026-10-22): refusals, with their status or
     // without it.

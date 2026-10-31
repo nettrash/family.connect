@@ -102,6 +102,10 @@ enum Outcome {
     /// The provider named no language — `not_transcribable` too, and never
     /// an answer of silence (speech contract only; see [`ai::Unheard`]).
     Unheard,
+    /// A PAID family has used this month's transcript minutes, and the
+    /// provider was not called (protocol.md, "Paid families") — terminal
+    /// until the month turns.
+    AllowanceUsed,
     /// Anything else — transient, `internal`.
     Failed,
 }
@@ -451,6 +455,10 @@ fn respond(outcome: Outcome) -> Result<Response, ApiError> {
         Outcome::Unheard => Err(not_transcribable(
             "the transcription provider could not tell which language this recording is in",
         )),
+        Outcome::AllowanceUsed => Err(ApiError::forbidden(
+            codes::AI_ALLOWANCE_USED,
+            "this family has used this month's transcript minutes",
+        )),
         Outcome::Failed => Err(ApiError::Internal(anyhow::anyhow!(
             "the transcription could not be made"
         ))),
@@ -698,6 +706,28 @@ fn multipart_error(error: axum::extract::multipart::MultipartError, max_bytes: u
 /// The provider call itself, and what it cost. Shared by both forms; what
 /// differs is only what happens to the answer afterwards.
 async fn call(state: &AppState, ask: &Ask, recording: Recording) -> Outcome {
+    // Here, at the call, and nowhere earlier: a transcript already stored is
+    // handed out whatever the allowance says, because handing it out calls
+    // nobody (protocol.md, "Paid families").
+    if let Some(family_id) = ask.family_id {
+        match crate::subscriptions::may_spend(
+            state,
+            family_id,
+            crate::subscriptions::Spend::Transcript,
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                log_outcome(ask, "allowance used");
+                return Outcome::AllowanceUsed;
+            }
+            Err(error) => {
+                warn!(?error, "could not read the family's allowance");
+                return Outcome::Failed;
+            }
+        }
+    }
     match ai::transcribe(&state.http, &ask.route, recording, ask.language.as_deref()).await {
         Ok(Transcription {
             transcript,

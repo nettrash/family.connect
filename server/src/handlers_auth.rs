@@ -817,6 +817,15 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+    // The App Store subscriptions it presented go too, for the same reason
+    // the devices do: `subscriptions.user_id` cascades only on a DELETE, and
+    // this row is scrubbed (protocol.md, "Deleting an account", amended
+    // 2026-10-30). Apple's subscription itself goes on until the person
+    // cancels it, which the apps tell them before asking for the password.
+    sqlx::query("DELETE FROM subscriptions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     // Out of every group first, with each group's admin hand-off — a group
     // outlives its admin, and the last one out takes it with them
     // (protocol.md, "Groups"). Their messages in it stay, like the family
@@ -946,7 +955,8 @@ pub async fn scrub_account(
                 familyless_since = NULL,
                 deleted_at = now(),
                 avatar_version = 0,
-                birthday = NULL
+                birthday = NULL,
+                app_account_token = NULL
           WHERE id = $1
           RETURNING id, username, display_name, avatar_version, birthday, deleted_at",
     )
@@ -1200,7 +1210,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
                 f.language, f.max_members, f.ai_history, f.ai_vision,
                 f.ai_history_photos, f.ai_greeting, f.ai_faces, f.ai_transcripts,
-                f.ai_lookups, f.greeting_places
+                f.ai_lookups, f.greeting_places, f.plan, f.unpaid_since
          FROM family_members fm
          JOIN families f ON f.id = fm.family_id
          WHERE fm.user_id = $1
@@ -1214,6 +1224,8 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
         .map(|row| {
             let owner_user_id: i64 = row.get("owner_user_id");
             let is_owner = owner_user_id == auth.user_id;
+            let plan: String = row.get("plan");
+            let paid = crate::subscriptions::plan_view(&state.cfg, &plan, row.get("unpaid_since"));
             let family = Family {
                 id: row.get("family_id"),
                 name: row.text(&state.keys, "family_name")?,
@@ -1259,6 +1271,11 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the place names the greeting sends to the weather
                 // provider — the owner's words, which every member may read.
                 greeting_places: row.json(&state.keys, "greeting_places")?,
+                // And what payment means for it (protocol.md, "Paid
+                // families"), from the one helper `to_api` uses too.
+                member_ceiling: paid.member_ceiling,
+                plan: paid.plan,
+                delete_at: paid.delete_at,
             };
             Ok((family, if is_owner { "owner" } else { "member" }))
         })
@@ -1310,9 +1327,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
         crate::handlers_invitation::invitations_for_user(&state.pool, &state.keys, auth.user_id)
             .await?;
 
-    Ok((
-        StatusCode::OK,
-        Json(json!({
+    let mut body = json!({
             "user": user,
             "family": family,
             "role": role,
@@ -1409,9 +1424,27 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             } else {
                 Value::Null
             },
-        })),
-    )
-        .into_response())
+    });
+    // Paid families (protocol.md, "Paid families"). The switch ALWAYS
+    // present — absent is a server from before it, and means off — and the
+    // rest only while it is on: the products to show, the token a purchase
+    // carries, the deadline's length, what a paid family gets, and the
+    // caller's own subscription.
+    body["subscriptions_enabled"] = json!(state.cfg.subscriptions.enabled);
+    if state.cfg.subscriptions.enabled {
+        body["subscription_products"] = json!(state.cfg.subscriptions.product_ids);
+        body["app_account_token"] = json!(
+            crate::subscriptions::app_account_token(&state, auth.user_id)
+                .await?
+                .to_string()
+        );
+        body["unpaid_days"] = json!(state.cfg.subscriptions.unpaid_days);
+        body["paid_family_limits"] = crate::subscriptions::paid_family_limits(&state.cfg);
+        body["subscription"] = json!(
+            crate::subscriptions::subscription_of(&state.pool, &state.cfg, auth.user_id).await?
+        );
+    }
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 /// Username: 3–32 chars from `[a-zA-Z0-9_.]` (protocol.md).

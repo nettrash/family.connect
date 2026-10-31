@@ -341,6 +341,27 @@ pub struct Family {
     /// so an object written before it existed still reads.
     #[serde(default)]
     pub greeting_places: Vec<String>,
+
+    /// The most members this family may have whatever its owner sets: the
+    /// operator's `max_family_members`, or a paid family's lower ceiling
+    /// (protocol.md, "Paid families"). ALWAYS present; a cap picker draws its
+    /// range from it. `default` on the way in, for objects from before it.
+    #[serde(default)]
+    pub member_ceiling: i64,
+
+    /// `"free"` or `"paid"` — present only while the server's subscriptions
+    /// are on, because with them off payment does not apply to anybody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+
+    /// When the server will delete this PAID family, present only while its
+    /// owner's subscription does not cover it (protocol.md, "Paid families").
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub delete_at: Option<OffsetDateTime>,
 }
 
 /// What a member says the ASSISTANT got wrong (docs/protocol.md, "Reporting
@@ -1681,6 +1702,9 @@ mod tests {
             ai_transcripts: false,
             ai_lookups: false,
             greeting_places: Vec::new(),
+            member_ceiling: 50,
+            plan: None,
+            delete_at: None,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -1710,6 +1734,9 @@ mod tests {
             ai_transcripts: false,
             ai_lookups: false,
             greeting_places: Vec::new(),
+            member_ceiling: 50,
+            plan: None,
+            delete_at: None,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1719,7 +1746,7 @@ mod tests {
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
                 "ai_transcripts": false, "ai_lookups": false,
-                "greeting_places": []
+                "greeting_places": [], "member_ceiling": 50
             })
         );
     }
@@ -1742,6 +1769,9 @@ mod tests {
             ai_transcripts: false,
             ai_lookups: false,
             greeting_places: Vec::new(),
+            member_ceiling: 50,
+            plan: None,
+            delete_at: None,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1752,7 +1782,7 @@ mod tests {
                 "ai_vision": false, "ai_history_photos": false,
                 "ai_greeting": false, "ai_faces": false,
                 "ai_transcripts": false, "ai_lookups": false,
-                "greeting_places": []
+                "greeting_places": [], "member_ceiling": 50
             })
         );
     }
@@ -1778,6 +1808,9 @@ mod tests {
             ai_transcripts: false,
             ai_lookups: false,
             greeting_places: Vec::new(),
+            member_ceiling: 50,
+            plan: None,
+            delete_at: None,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1787,7 +1820,7 @@ mod tests {
                 "max_members": 12, "ai_history": true, "ai_vision": false,
                 "ai_history_photos": false, "ai_greeting": false, "ai_faces": false,
                 "ai_transcripts": false, "ai_lookups": false,
-                "greeting_places": []
+                "greeting_places": [], "member_ceiling": 50
             })
         );
     }

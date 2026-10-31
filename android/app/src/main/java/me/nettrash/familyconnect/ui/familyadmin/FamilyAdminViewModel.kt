@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.GreetingPlaces
+import me.nettrash.familyconnect.util.MemberCap
 import javax.inject.Inject
 import me.nettrash.familyconnect.data.net.dto.ReportDto
 
@@ -206,7 +207,11 @@ class FamilyAdminViewModel @Inject constructor(
         val placeFields: List<String> = GreetingPlaces.fieldsFor(emptyList()),
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
-        /** The operator's ceiling; null on a server too old to say. */
+        /**
+         * The picker's bound: the family's `member_ceiling`, else the
+         * operator's ceiling ([MemberCap.ceiling]); null on a server too
+         * old to say either.
+         */
         val ceiling: Int? = null,
         /** Live members, for the caption and the seed. */
         val memberCount: Int = 0,
@@ -391,7 +396,10 @@ class FamilyAdminViewModel @Inject constructor(
                         greetingsEnabled = settings.state.first().greetingsEnabled,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
-                        ceiling = settings.state.first().maxFamilyMembers,
+                        // The family's own ceiling first — a paid family's
+                        // is lower — then the operator's (docs/protocol.md,
+                        // "Paid families").
+                        ceiling = MemberCap.ceiling(mine.family.memberCeiling, settings.state.first().maxFamilyMembers),
                         // `password_reset` is not taken from here: the read
                         // has already stored it on the roster, which is what
                         // [UiState.notResettable] follows.
@@ -453,7 +461,13 @@ class FamilyAdminViewModel @Inject constructor(
             _state.update { it.copy(busy = true, error = null) }
             when (val result = familyRepository.setMemberCap(cap)) {
                 is ApiResult.Ok ->
-                    _state.update { it.copy(busy = false, maxMembers = result.value.family.maxMembers) }
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            maxMembers = result.value.family.maxMembers,
+                            ceiling = MemberCap.ceiling(result.value.family.memberCeiling, it.ceiling),
+                        )
+                    }
                 is ApiResult.HttpError ->
                     _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_member_limit_failed)) }
                 is ApiResult.NetworkError ->

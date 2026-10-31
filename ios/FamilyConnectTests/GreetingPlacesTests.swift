@@ -70,7 +70,8 @@ struct GreetingPlacesWireTests {
         let family = FamilyDTO(
             id: 3, name: "S", joinPolicy: "open", createdAt: nil, inviteCode: nil,
             aiVision: false, aiHistoryPhotos: false, aiGreeting: true, aiFaces: false,
-            aiTranscripts: false, aiLookups: false, greetingPlaces: ["Oslo"], maxMembers: nil)
+            aiTranscripts: false, aiLookups: false, greetingPlaces: ["Oslo"], maxMembers: nil,
+            plan: nil, memberCeiling: nil, deleteAt: nil)
         let data = try APICoding.encoder().encode(family)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["greeting_places"] as? [String] == ["Oslo"])

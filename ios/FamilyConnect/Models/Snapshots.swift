@@ -432,13 +432,20 @@ nonisolated enum AssistantFailure: Equatable, Sendable {
     /// picture's description. Asking again in the same words will not work,
     /// so the sentence does not tell the member to.
     case refused
+    /// A paid family has used this month's assistant allowance (`reason:
+    /// "allowance_used"`, docs/protocol.md "Paid families"). Asking again
+    /// will not work until `renewsAt`, so the sentence names that day.
+    case allowanceUsed(renewsAt: Date)
 
     /// The frame's reason, read. Nil — absent, or a value this client does
     /// not know — is `.stopped`, the sentence every client showed before
-    /// `reason` existed.
-    init(reason: AIErrorReason?) {
+    /// `reason` existed. An allowance with no `renews_at` renews when the
+    /// server's month does: the 1st of the next one, UTC.
+    init(reason: AIErrorReason?, now: Date = .now) {
         switch reason {
         case .refused: self = .refused
+        case .allowanceUsed(let renewsAt):
+            self = .allowanceUsed(renewsAt: renewsAt ?? PaidFamilies.nextMonthStartUTC(after: now))
         case nil: self = .stopped
         }
     }
@@ -449,6 +456,8 @@ nonisolated enum AssistantFailure: Equatable, Sendable {
         switch self {
         case .stopped: "Couldn't answer that. Ask again."
         case .refused: "The assistant's provider refused that. Try putting it another way."
+        case .allowanceUsed(let renewsAt):
+            "This family has used this month’s assistant allowance. It renews on \(PaidFamilies.renewalDay(renewsAt))."
         }
     }
 }
