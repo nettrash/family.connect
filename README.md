@@ -95,6 +95,10 @@ cargo clippy --target wasm32-unknown-unknown --all-targets
 wasm-pack test --headless --chrome            # the tests run in a BROWSER, not `cargo test`
 ```
 
+Web reaction search and its real-server end-to-end checks are described in
+[`docs/reaction-search-116.md`](docs/reaction-search-116.md), including the pinned
+shared emoji data and review screenshots/video.
+
 ## Store builds with a predefined server
 
 Builds from this source ask for a server address on first run. The store builds instead ship

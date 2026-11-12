@@ -107,6 +107,7 @@ pub mod calendar;
 pub mod call_record;
 pub mod composer;
 pub mod emoji;
+pub mod emoji_search;
 pub mod emoji_typing;
 pub mod excerpt;
 pub mod families;

@@ -1,0 +1,91 @@
+{
+  "test": "reaction_search_two_accounts_e2e",
+  "status": "passed",
+  "familyId": 6,
+  "catalogueCount": 771,
+  "languageResults": [
+    {
+      "locale": "en",
+      "query": "fire",
+      "label": "fire"
+    },
+    {
+      "locale": "de",
+      "query": "Feuer",
+      "label": "Feuer"
+    },
+    {
+      "locale": "es",
+      "query": "fuego",
+      "label": "fuego"
+    },
+    {
+      "locale": "fr",
+      "query": "feu",
+      "label": "feu"
+    },
+    {
+      "locale": "ja",
+      "query": "火",
+      "label": "火"
+    },
+    {
+      "locale": "ru",
+      "query": "огонь",
+      "label": "огонь"
+    },
+    {
+      "locale": "sr",
+      "query": "ватра",
+      "label": "ватра"
+    },
+    {
+      "locale": "sr-Latn",
+      "query": "vatra",
+      "label": "vatra"
+    },
+    {
+      "locale": "zh-Hans",
+      "query": "火",
+      "label": "火焰"
+    }
+  ],
+  "recents": [
+    "🔥",
+    "❤️"
+  ],
+  "reactionEvents": 3,
+  "searchApiRequests": 0,
+  "mobileLayout": {
+    "dialog": {
+      "top": 64.5,
+      "bottom": 430,
+      "width": 390
+    },
+    "inputBottom": 167.890625,
+    "resultBottom": 266.875,
+    "navigationBottom": 366.25,
+    "cancelBottom": 418,
+    "viewportHeight": 430,
+    "pageWidth": 390
+  },
+  "assertions": [
+    "search focus",
+    "empty state",
+    "clear",
+    "category navigation",
+    "alias ranking",
+    "Unicode bytes",
+    "deduplication",
+    "client-only search",
+    "set/replace/remove delivered over WebSocket",
+    "account isolation",
+    "nine browser locales",
+    "dark/mobile/short viewport",
+    "recent order and reopening",
+    "Escape",
+    "logout clears data"
+  ],
+  "video_requested": true,
+  "video_started": true
+}

@@ -206,6 +206,17 @@ fn name_of(names: &HashMap<i64, String>, user: i64) -> String {
         .unwrap_or_else(|| t("Someone").to_string())
 }
 
+// The More-reactions menu item is gone when the picker closes. Return to
+// the message's durable actions button after the modal's own cleanup.
+fn restore_picker_focus(button: NodeRef) {
+    wasm_bindgen_futures::spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(0).await;
+        if let Some(button) = button.cast::<web_sys::HtmlElement>() {
+            let _ = button.focus();
+        }
+    });
+}
+
 #[function_component(Bubble)]
 pub fn bubble(props: &BubbleProps) -> Html {
     let menu_open = use_state(|| false);
@@ -215,6 +226,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
     let speed_redraw = use_state(|| 0u32);
     let loader = use_context::<crate::media::MediaLoader>();
     let picker_open = use_state(|| false);
+    let actions_button = use_node_ref();
     let reactors_open = use_state(|| false);
     // A mention's click, made once per `on_action`: a fresh one each draw
     // drew the body again — its markdown parsed, its links found — for a
@@ -757,8 +769,10 @@ pub fn bubble(props: &BubbleProps) -> Html {
             let on_action = props.on_action.clone();
             let picker_open = picker_open.clone();
             let mine_now = my_reaction.clone();
+            let actions_button = actions_button.clone();
             Callback::from(move |emoji: String| {
                 picker_open.set(false);
+                restore_picker_focus(actions_button.clone());
                 on_action.emit(if mine_now.as_deref() == Some(emoji.as_str()) {
                     Action::Unreact {
                         chat_id,
@@ -775,9 +789,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
         };
         let on_close = {
             let picker_open = picker_open.clone();
-            Callback::from(move |_: ()| picker_open.set(false))
+            let actions_button = actions_button.clone();
+            Callback::from(move |_: ()| {
+                picker_open.set(false);
+                restore_picker_focus(actions_button.clone());
+            })
         };
-        html! { <EmojiPicker {on_pick} {on_close} /> }
+        html! { <EmojiPicker my_user_id={me} {on_pick} {on_close} /> }
     });
 
     let meta = if let Some(reason) = props.failed.clone() {
@@ -962,7 +980,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
             }
             <div class="bubble-foot">
                 { meta }
-                <button class="more" aria-label={t("Message actions")} aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
+                <button ref={actions_button} class="more" aria-label={t("Message actions")} aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
             </div>
             { menu.unwrap_or_default() }
             { reactors.unwrap_or_default() }

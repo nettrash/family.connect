@@ -1,0 +1,17 @@
+{
+  "name": "family-connect-web-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "check-results": "node check-results.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  },
+  "packageManager": "npm@11.20.0",
+  "engines": {
+    "node": "26.13.0",
+    "npm": "11.20.0"
+  }
+}

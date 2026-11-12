@@ -49,11 +49,11 @@ __pycache__/
 .vscode/
 android/app/src/nettrash/google-services.json
 
-# Web (web/) — Trunk's output and the lock file this repo does not track for
-# an application, the same rule nettrash.me follows.
+# Web (web/) — build output. Cargo.lock is tracked for reproducible Web CI.
 web/dist/
 web/target/
-web/Cargo.lock
+# Browser evidence is selected explicitly for review, never staged wholesale.
+output/playwright/
 
 # Windows client (win/) — the .NET build output, and the board oracle's own Cargo output.
 # `bin/` and `obj/` are per-project and there are several, so they are globbed; the lock file
@@ -69,3 +69,6 @@ win/tools/board-oracle/Cargo.lock
 # the release branch in #64 holding nothing but a "can't open file" error and an
 # absolute developer path: a harness writes one per run and none is a fixture.
 mut-*.out
+
+# Pinned Web browser-test dependencies; reports live under output/playwright.
+web/e2e/node_modules/
