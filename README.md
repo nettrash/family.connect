@@ -44,6 +44,7 @@ family.connect/
 ├── tools/i18n/            # translation helper scripts
 ├── CHANGELOG              # plain-text release history
 ├── CODEOWNERS             # review ownership
+├── CONTRIBUTING.md        # repository rules every pull request is checked against
 └── LICENSE                # MIT
 ```
 
