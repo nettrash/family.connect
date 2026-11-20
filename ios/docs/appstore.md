@@ -215,23 +215,26 @@ Options → **Use App Name**, so Manage Subscriptions shows the app's name above
 
 | Language | Group display name | Monthly display name | Yearly display name | Description (both products) |
 | --- | --- | --- | --- | --- |
-| English (U.S.) — primary | Family Hosting (14) | Family Hosting, Monthly (23) | Family Hosting, Yearly (22) | Hosts your family. Members join for free. (41) |
-| German | Familien-Hosting (16) | Familien-Hosting, monatlich (27) | Familien-Hosting, jährlich (26) | Hostet deine Familie, Beitritt kostenlos. (41) |
-| Spanish (Spain), Spanish (Mexico) | Alojamiento familiar (20) | Alojamiento familiar, mensual (29) | Alojamiento familiar, anual (27) | Aloja a tu familia. Unirse es gratis. (37) |
-| French, French (Canada) | Hébergement familial (20) | Hébergement familial, mensuel (29) | Hébergement familial, annuel (28) | Hébergez votre famille. Adhésion gratuite. (42) |
-| Japanese | ファミリーホスティング (11) | ファミリーホスティング（月額） (15) | ファミリーホスティング（年額） (15) | ファミリーをホスト。メンバーは無料で参加できます。 (25) |
-| Russian | Хостинг семьи (13) | Хостинг семьи на месяц (22) | Хостинг семьи на год (20) | Ваша семья на сервере. Участникам бесплатно. (44) |
-| Chinese (Simplified) | 家庭托管 (4) | 家庭托管（月度） (8) | 家庭托管（年度） (8) | 托管您的家庭，成员免费加入。 (14) |
+| English (U.S.) — primary | Family Hosting (14) | Family Hosting, Monthly (23) | Family Hosting, Yearly (22) | Hosts your family's chat on our server. (39) |
+| German | Familien-Hosting (16) | Familien-Hosting, monatlich (27) | Familien-Hosting, jährlich (26) | Hostet den Familienchat auf unserem Server. (43) |
+| Spanish (Spain), Spanish (Mexico) | Alojamiento familiar (20) | Alojamiento familiar, mensual (29) | Alojamiento familiar, anual (27) | Aloja el chat familiar en nuestro servidor. (43) |
+| French, French (Canada) | Hébergement familial (20) | Hébergement familial, mensuel (29) | Hébergement familial, annuel (28) | Héberge le chat familial sur notre serveur. (43) |
+| Japanese | ファミリーホスティング (11) | ファミリーホスティング（月額） (15) | ファミリーホスティング（年額） (15) | ファミリーのチャットを当社サーバーでホスト。 (22) |
+| Russian | Хостинг семьи (13) | Хостинг семьи на месяц (22) | Хостинг семьи на год (20) | Семейный чат на нашем сервере. (30) |
+| Chinese (Simplified) | 家庭托管 (4) | 家庭托管（月度） (8) | 家庭托管（年度） (8) | 在我们的服务器上托管家庭聊天。 (15) |
 
 *Why the words are these. The in-app screen is Apple's `SubscriptionStoreView` under the app's
 own heading, "Host Your Family", and lists the products by these display names; the translations
 follow that heading and its sentence in `Localizable.xcstrings`, informal "du" in German included.
 No limit appears — 25 members, 10 GiB, the assistant allowance — because each is a server setting
 and the screen already shows the live values from `paid_family_limits`; a number typed here goes
-stale the first time an operator changes one. No price or period either: Apple's sheet shows both.
-And never "family plan" or "share with your family": it reads as Family Sharing, which is off for
-these products and cannot be turned off again once on. "Members join for free" is the true shape —
-only the owner pays.*
+stale the first time an operator changes one. No price or period either: Apple's sheet shows both. That includes the word FREE in any
+language: App Review rejected 1.3 (178) for the Mac on 2026-11-16 (guideline 2.3.2, submission
+b8dc6960) because the old description, "Hosts your family. Members join for free.", counts as a
+price reference in a promoted purchase's metadata. That members never pay belongs in the app's
+Description and the review notes, not here. And never "family plan" or "share with your family":
+it reads as Family Sharing, which is off for these products and cannot be turned off again once
+on.*
 
 *App Store Connect has no Serbian, so `sr` and `sr-Latn` devices, like any language without a row
 here, see the primary language. Each product also needs a review screenshot of that screen, from a

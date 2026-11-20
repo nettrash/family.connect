@@ -36,7 +36,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Hosts your family. Members join for free.",
+              "description" : "Hosts your family's chat on our server.",
               "displayName" : "Family Hosting, Monthly",
               "locale" : "en_US"
             }
@@ -61,7 +61,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Hosts your family. Members join for free.",
+              "description" : "Hosts your family's chat on our server.",
               "displayName" : "Family Hosting, Yearly",
               "locale" : "en_US"
             }

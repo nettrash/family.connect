@@ -213,6 +213,13 @@ final class ChatSyncCoordinator {
     /// it nil and touches nothing on disk.
     var onChatDropped: (@MainActor (Int64) -> Void)?
 
+    /// Called after a family roster has been written to the store — a
+    /// member joined, left, was renamed or deleted their account. Set by
+    /// the composition root, which uses it to tell the system that the
+    /// people its Shortcuts phrases name have changed (MessageIntents); the
+    /// coordinator itself knows nothing about Shortcuts.
+    var onRosterChanged: (@MainActor () -> Void)?
+
     /// Groups that changed by frame or by this device's own request while a
     /// `GET /chats` was in flight, and so cannot be judged by that response
     /// (docs/protocol.md, "Groups", 2026-10-22). The list was built before
@@ -5364,6 +5371,7 @@ final class ChatSyncCoordinator {
             applyMemberTombstone(former)
         }
         saveContext()
+        onRosterChanged?()
     }
 
     /// Write a deleted account's tombstone, DELIBERATELY.

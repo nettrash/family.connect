@@ -916,7 +916,7 @@ public sealed partial class SettingsView : UserControl
         {
             var assembly = typeof(SettingsView).Assembly.GetName().Version;
             return assembly is null
-                ? "1.3"
+                ? "1.4"
                 : AppVersionText.For(assembly.Major, assembly.Minor, assembly.Build);
         }
     }
