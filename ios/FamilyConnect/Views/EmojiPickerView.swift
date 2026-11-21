@@ -73,7 +73,7 @@ struct EmojiPickerView: View {
 
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                searchBar(first: sections.first?.firstCell, proxy: proxy)
+                searchBar(first: sections.first?.firstCell)
                 Divider()
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
@@ -90,7 +90,7 @@ struct EmojiPickerView: View {
                                     LazyVGrid(columns: columns, spacing: 4) {
                                         ForEach(section.emojis, id: \.self) { emoji in
                                             let cell = CellID(section: section.id, emoji: emoji)
-                                            emojiButton(cell, sections: sections, proxy: proxy).id(cell)
+                                            emojiButton(cell).id(cell)
                                         }
                                     }
                                 } header: {
@@ -128,7 +128,25 @@ struct EmojiPickerView: View {
                 requestedSection = nil
             }
             #if os(macOS)
-            .defaultFocus($focus, .search)
+            .onChange(of: focus) {
+                if let pendingCell, focus == .cell(pendingCell) { self.pendingCell = nil }
+            }
+            .background {
+                MacReactionPickerArrowKeys { key in
+                    switch focus {
+                    case .search where key == .downArrow:
+                        guard let cell = sections.first?.firstCell, !Self.hasMarkedText else { return false }
+                        moveFocus(to: cell, proxy: proxy)
+                    case .cell(let cell):
+                        navigate(from: cell, key: key, sections: sections, proxy: proxy)
+                    default:
+                        return false
+                    }
+                    return true
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
             #else
             .onChange(of: focus) {
                 if focus == .search { onSearchFocus() }
@@ -143,7 +161,7 @@ struct EmojiPickerView: View {
         }
     }
 
-    private func searchBar(first: CellID?, proxy: ScrollViewProxy) -> some View {
+    private func searchBar(first: CellID?) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -153,15 +171,6 @@ struct EmojiPickerView: View {
                 .focused($focus, equals: .search)
                 .accessibilityIdentifier("reactionSearch")
                 #if os(macOS)
-                .background {
-                    MacReactionPickerSearchKeys {
-                        guard focus == .search, let first, !Self.hasMarkedText else { return false }
-                        moveFocus(to: first, proxy: proxy)
-                        return true
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                }
                 .onSubmit {
                     if isSearching, let first, !Self.hasMarkedText { pick(first.emoji) }
                 }
@@ -214,7 +223,7 @@ struct EmojiPickerView: View {
         .padding(.horizontal, 8)
     }
 
-    private func emojiButton(_ cell: CellID, sections: [EmojiSection], proxy: ScrollViewProxy) -> some View {
+    private func emojiButton(_ cell: CellID) -> some View {
         Button {
             pick(cell.emoji)
         } label: {
@@ -235,18 +244,13 @@ struct EmojiPickerView: View {
             }
         }
         .task(id: pendingCell == cell) {
-            if pendingCell == cell {
-                focus = .cell(cell)
-                pendingCell = nil
-            }
+            guard pendingCell == cell else { return }
+            await Task.yield()
+            guard pendingCell == cell else { return }
+            focus = .cell(cell)
         }
         .onKeyPress(.return) {
             pick(cell.emoji)
-            return .handled
-        }
-        .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow], phases: [.down, .repeat]) { event in
-            guard event.modifiers.isEmpty else { return .ignored }
-            navigate(from: cell, key: event.key, sections: sections, proxy: proxy)
             return .handled
         }
         #endif
@@ -265,8 +269,12 @@ struct EmojiPickerView: View {
     }
 
     private func moveFocus(to cell: CellID, proxy: ScrollViewProxy) {
+        if focus == .search {
+            focus = nil
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
         pendingCell = cell
-        proxy.scrollTo(cell, anchor: .center)
+        proxy.scrollTo(cell)
     }
 
     private func navigate(from cell: CellID, key: KeyEquivalent, sections: [EmojiSection], proxy: ScrollViewProxy) {

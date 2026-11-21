@@ -140,7 +140,7 @@ struct MacMessageRow: View {
 
     @State private var reactionTarget: ReactionTarget?
     @State private var rowVisible = false
-    @FocusState private var messageActionsFocused: Bool
+    @FocusState private var reactionButtonFocused: Bool
     /// Who left what — the Mac's answer to long-pressing a chip.
     @State private var showsReactors = false
 
@@ -283,7 +283,7 @@ struct MacMessageRow: View {
                         })
                     .overlay(alignment: isMine ? .leading : .trailing) {
                         if message.serverID != nil {
-                            messageActions.offset(x: isMine ? -30 : 30)
+                            moreReactionsButton.offset(x: isMine ? -30 : 30)
                         }
                     }
                 }
@@ -396,29 +396,40 @@ struct MacMessageRow: View {
         }
     }
 
-    private var messageActions: some View {
-        Menu {
-            rowMenu
-        } label: {
-            Image(systemName: "ellipsis")
+    private var moreReactionsButton: some View {
+        Button(action: showReactionPicker) {
+            Image(systemName: "face.smiling")
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.plain)
         .focusable(interactions: .edit)
-        .focused($messageActionsFocused)
-        .opacity(hovering || messageActionsFocused || reactionTarget != nil ? 1 : 0.4)
-        .accessibilityLabel("Message actions")
-        .accessibilityIdentifier("reactionMessageActions")
+        .focused($reactionButtonFocused)
+        .onKeyPress(keys: [.return, .space]) { _ in
+            showReactionPicker()
+            return .handled
+        }
+        .opacity(hovering || reactionTarget != nil ? 1 : 0.5)
+        .help("More reactions…")
+        .accessibilityLabel("More reactions…")
+        .accessibilityIdentifier("messageMoreReactions")
+    }
+
+    private func showReactionPicker() {
+        guard reactionTarget == nil, let account = ReactionRecents.Account.current else { return }
+        reactionTarget = ReactionTarget(id: message.localID, account: account)
     }
 
     private func restoreReactionFocus() {
-        if rowVisible, !isHidden, message.serverID != nil {
-            messageActionsFocused = true
-        } else {
-            onReactionFocusFallback()
+        Task { @MainActor in
+            // Wait for AppKit to restore the parent window's key view.
+            await Task.yield()
+            guard reactionTarget == nil else { return }
+            if rowVisible, !isHidden, message.serverID != nil {
+                reactionButtonFocused = true
+            } else {
+                onReactionFocusFallback()
+            }
         }
     }
 
@@ -440,38 +451,47 @@ struct MacMessageRow: View {
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(details) { detail in
                 let isMineReaction = chips.first { $0.emoji == detail.emoji }?.includesMe == true
-                HStack(spacing: 8) {
-                    if let leadUserID = detail.leadUserID {
-                        InitialsAvatar(
-                            title: detail.names.first ?? "?",
-                            userID: leadUserID,
-                            avatarVersion: avatarVersionFor(leadUserID),
-                            size: 24)
+                if isMineReaction {
+                    Button {
+                        showsReactors = false
+                        Task {
+                            await coordinator.toggleReaction(
+                                localID: message.localID, emoji: detail.emoji)
+                        }
+                    } label: {
+                        reactorLabel(detail, offersRemoval: true)
+                            .contentShape(Rectangle())
                     }
-                    Text(detail.emoji)
-                    Text(detail.names.formatted(.list(type: .and)))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    if isMineReaction {
-                        Text("Click to remove")
-                            .font(.caption2)
-                            .foregroundStyle(.tint)
-                    }
+                    .buttonStyle(.plain)
+                    .hoverCursor(.pointingHand)
+                } else {
+                    reactorLabel(detail, offersRemoval: false)
                 }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard isMineReaction else { return }
-                    showsReactors = false
-                    Task {
-                        await coordinator.toggleReaction(
-                            localID: message.localID, emoji: detail.emoji)
-                    }
-                }
-                .hoverCursor(isMineReaction ? .pointingHand : .arrow)
             }
         }
         .padding(12)
         .frame(minWidth: 220, alignment: .leading)
+    }
+
+    private func reactorLabel(_ detail: ReactionDetail, offersRemoval: Bool) -> some View {
+        HStack(spacing: 8) {
+            if let leadUserID = detail.leadUserID {
+                InitialsAvatar(
+                    title: detail.names.first ?? "?",
+                    userID: leadUserID,
+                    avatarVersion: avatarVersionFor(leadUserID),
+                    size: 24)
+            }
+            Text(detail.emoji)
+            Text(detail.names.formatted(.list(type: .and)))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if offersRemoval {
+                Text("Click to remove")
+                    .font(.caption2)
+                    .foregroundStyle(.tint)
+            }
+        }
     }
 
     private func quickHeart() {
@@ -521,10 +541,7 @@ struct MacMessageRow: View {
                     }
                 }
                 Divider()
-                Button("More reactions…") {
-                    guard let account = ReactionRecents.Account.current else { return }
-                    reactionTarget = ReactionTarget(id: message.localID, account: account)
-                }
+                Button("More reactions…", action: showReactionPicker)
             }
             if !message.reactions.isEmpty {
                 Button("See who reacted") { showsReactors = true }
