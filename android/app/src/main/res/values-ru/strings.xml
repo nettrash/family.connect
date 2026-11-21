@@ -565,6 +565,10 @@
     <string name="s_emoji_activities">Занятия</string>
     <string name="s_emoji_travel">Путешествия и места</string>
     <string name="s_emoji_objects">Предметы и символы</string>
+    <string name="s_reaction_search">Поиск эмодзи</string>
+    <string name="s_reaction_search_clear">Очистить поиск</string>
+    <string name="s_reaction_search_empty">Эмодзи не найдены</string>
+    <string name="s_reaction_recents">Недавние эмодзи</string>
     <string name="s_thread">Ветка</string>
     <string name="s_view_thread">Показать ветку</string>
     <string name="s_reply_in_thread">Ответить в ветке</string>

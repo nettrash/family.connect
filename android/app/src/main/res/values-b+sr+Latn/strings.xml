@@ -537,6 +537,10 @@
     <string name="s_emoji_activities">Aktivnosti</string>
     <string name="s_emoji_travel">Putovanja i mesta</string>
     <string name="s_emoji_objects">Predmeti i simboli</string>
+    <string name="s_reaction_search">Pretraži emodžije</string>
+    <string name="s_reaction_search_clear">Obriši pretragu</string>
+    <string name="s_reaction_search_empty">Nema pronađenih emodžija</string>
+    <string name="s_reaction_recents">Nedavni emodiji</string>
     <string name="s_thread">Nit</string>
     <string name="s_view_thread">Prikaži nit</string>
     <string name="s_reply_in_thread">Odgovori u niti</string>

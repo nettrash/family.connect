@@ -502,6 +502,10 @@
     <string name="s_emoji_activities">アクティビティ</string>
     <string name="s_emoji_travel">旅行と場所</string>
     <string name="s_emoji_objects">モノと記号</string>
+    <string name="s_reaction_search">絵文字を検索</string>
+    <string name="s_reaction_search_clear">検索をクリア</string>
+    <string name="s_reaction_search_empty">絵文字が見つかりません</string>
+    <string name="s_reaction_recents">最近の絵文字</string>
     <string name="s_thread">スレッド</string>
     <string name="s_view_thread">スレッドを表示</string>
     <string name="s_reply_in_thread">スレッドに返信</string>

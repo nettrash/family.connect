@@ -25,6 +25,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import me.nettrash.familyconnect.util.reactionEmojiKey
 import me.nettrash.familyconnect.R
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.content.Context
@@ -1704,7 +1705,7 @@ class MessageRepository @Inject constructor(
     }
 
     /**
-     * A tap on an emoji (chip or quick-set): my current reaction equals
+     * A tap on an emoji: my current reaction equals
      * it → remove, else set. Optimistic rewrite of reactionsJson first
      * (never the seq — the authoritative state must still pass the
      * guard), then REST; failure reverts. No retry — mirrors postRead's
@@ -1714,7 +1715,8 @@ class MessageRepository @Inject constructor(
         val me = settings.state.first().myUserId ?: return
         val row = messageDao.findByServerId(messageServerId) ?: return
         val current = ReactionsCodec.decode(row.reactionsJson)
-        val removing = current.any { it.userId == me && it.emoji == emoji }
+        val selected = reactionEmojiKey(emoji)
+        val removing = current.any { it.userId == me && reactionEmojiKey(it.emoji) == selected }
         val optimistic = current.filterNot { it.userId == me } +
             if (removing) emptyList() else listOf(ReactionDto(userId = me, emoji = emoji))
         messageDao.setReactionsJson(

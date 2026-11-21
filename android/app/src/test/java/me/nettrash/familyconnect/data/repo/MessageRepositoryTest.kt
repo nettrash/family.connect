@@ -1577,6 +1577,50 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun togglingCanonicalHeartDeletesLegacyPresentationVariants() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        for ((position, legacy) in listOf("❤", "❤︎").withIndex()) {
+            val messageId = 100L + position
+            insertServerMessage(messageId)
+            val peer = ReactionDto(PEER, legacy)
+            messageDao.applyReactionState(
+                messageId,
+                ReactionsCodec.encode(listOf(ReactionDto(ME, legacy), peer)),
+                5L,
+            )
+            chatApi.deleteReactionHandler = { _, id -> ApiResult.Ok(reactionState(id, 8L, listOf(peer))) }
+
+            repository.toggleReaction(CHAT, messageId, "❤️")
+
+            assertThat(ReactionsCodec.decode(messageDao.findByServerId(messageId)!!.reactionsJson))
+                .containsExactly(peer)
+        }
+        assertThat(chatApi.deletedReactions).containsExactly(CHAT to 100L, CHAT to 101L).inOrder()
+        assertThat(chatApi.putReactions).isEmpty()
+    }
+
+    @Test
+    fun selectingDifferentEmojiReplacesLegacyReactionWithExactCatalogueBytes() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        val peer = ReactionDto(PEER, "❤")
+        messageDao.applyReactionState(
+            100L, ReactionsCodec.encode(listOf(ReactionDto(ME, "❤"), peer)), 5L,
+        )
+        val next = ReactionDto(ME, "✌️")
+        chatApi.putReactionHandler = { _, id, _ -> ApiResult.Ok(reactionState(id, 8L, listOf(peer, next))) }
+
+        repository.toggleReaction(CHAT, 100L, next.emoji)
+
+        assertThat(chatApi.putReactions).containsExactly(Triple(CHAT, 100L, "✌️"))
+        assertThat(chatApi.deletedReactions).isEmpty()
+        assertThat(ReactionsCodec.decode(messageDao.findByServerId(100L)!!.reactionsJson))
+            .containsExactly(peer, next)
+    }
+
+    @Test
     fun toggleReactionRevertsTheOptimisticChangeOnApiFailure() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()

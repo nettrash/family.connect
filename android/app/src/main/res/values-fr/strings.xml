@@ -544,6 +544,10 @@
     <string name="s_emoji_activities">Activités</string>
     <string name="s_emoji_travel">Voyages et lieux</string>
     <string name="s_emoji_objects">Objets et symboles</string>
+    <string name="s_reaction_search">Rechercher un emoji</string>
+    <string name="s_reaction_search_clear">Effacer la recherche</string>
+    <string name="s_reaction_search_empty">Aucun emoji trouvé</string>
+    <string name="s_reaction_recents">Emojis récents</string>
     <string name="s_thread">Fil</string>
     <string name="s_view_thread">Voir le fil</string>
     <string name="s_reply_in_thread">Répondre dans le fil</string>

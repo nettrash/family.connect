@@ -13,6 +13,7 @@ package me.nettrash.familyconnect.ui.chat
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import java.util.Locale
 
 class EmojiCatalogTest {
 
@@ -76,5 +77,76 @@ class EmojiCatalogTest {
         // Inside the quick set so the capsule shows it selected after
         // a double-tap. iOS pins the same value.
         assertThat(QUICK_REACTIONS).contains(DOUBLE_TAP_REACTION)
+    }
+
+    @Test
+    fun localizedIndexCoversEveryEmojiInAllNineLanguages() {
+        val fireNames = mapOf(
+            "en" to "fire", "de" to "Feuer", "es" to "fuego", "fr" to "feu", "ja" to "火",
+            "ru" to "огонь", "sr" to "ватра", "sr-Latn" to "vatra", "zh-Hans" to "火焰",
+        )
+        val catalogue = EMOJI_CATALOG.flatMap { it.emoji }.distinct()
+        assertThat(catalogue).hasSize(769)
+        for ((tag, fireName) in fireNames) {
+            val index = ReactionSearch.Index(tag)
+            assertThat(index.name("🔥")).isEqualTo(fireName)
+            assertThat(index.search(fireName)).contains("🔥")
+            for (emoji in catalogue) assertThat(index.name(emoji)).isNotEqualTo(emoji)
+        }
+        assertThat(ReactionSearch.Index("de").search("  FUSSBALL  ")).contains("⚽")
+        assertThat(ReactionSearch.Index("ja").search("火")).contains("🔥")
+    }
+
+    @Test
+    fun localeSelectionUsesTheFirstSupportedLanguageAndSerbianScript() {
+        fun choose(vararg tags: String) = ReactionSearch.localeTag(tags.map(Locale::forLanguageTag))
+        assertThat(choose("tr-TR", "sr-Latn-RS", "en-US")).isEqualTo("sr-Latn")
+        assertThat(choose("sr-RS")).isEqualTo("sr")
+        assertThat(choose("zh-CN")).isEqualTo("zh-Hans")
+        assertThat(choose("de-AT", "fr-CA")).isEqualTo("de")
+        assertThat(choose("tr-TR")).isEqualTo("en")
+    }
+
+    @Test
+    fun aliasesAndEnglishFallbackRankAheadOfKeywordMatches() {
+        val russian = ReactionSearch.Index("ru")
+        assertThat(russian.search("  :ICE:  ").first()).isEqualTo("🧊")
+        val prefixes = russian.search("ic")
+        assertThat(prefixes).containsAtLeast("🧊", "😀").inOrder()
+        assertThat(russian.search(":LIKE:").first()).isEqualTo("👍")
+        val english = ReactionSearch.Index("en")
+        assertThat(english.search("red_heart").first()).isEqualTo("❤️")
+        assertThat(english.search("fire nonexistentkeyword")).isEmpty()
+    }
+
+    @Test
+    fun exactVariantsReturnCatalogueBytesAndResultsDeduplicateInCatalogueOrder() {
+        val index = ReactionSearch.Index("en")
+        assertThat(index.search(" ❤ ")).containsExactly("❤️")
+        assertThat(index.search("❤︎")).containsExactly("❤️")
+        assertThat(index.search("❤️")).containsExactly("❤️")
+        assertThat(index.search("👍🏽")).isEmpty()
+        val stars = index.search("star")
+        assertThat(stars).containsNoDuplicates()
+        // Both names contain the keyword. Neither starts with it.
+        assertThat(stars).containsAtLeast("💫", "🌠").inOrder()
+    }
+
+    @Test
+    fun emptyQueriesRestoreBrowseAndUnmatchedQueriesAreStillSearches() {
+        val index = ReactionSearch.Index("en")
+        for (query in listOf("", "  ", "__::")) {
+            assertThat(ReactionSearch.normalize(query)).isEmpty()
+            assertThat(index.search(query)).isEmpty()
+        }
+        val query = "no-such-emoji-8372"
+        assertThat(ReactionSearch.normalize(query)).isNotEmpty()
+        assertThat(index.search(query)).isEmpty()
+    }
+
+    @Test
+    fun displayedRecentsCleanUnknownGlyphsAndResolveVariants() {
+        assertThat(ReactionSearch.recents(listOf("❤", "🔥", "❤️", "bogus", "👍🏽")))
+            .containsExactly("❤️", "🔥").inOrder()
     }
 }
