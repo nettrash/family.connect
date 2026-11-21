@@ -766,6 +766,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.packMaxItems)
         defaults.removeObject(forKey: Key.packMaxItemBytes)
         defaults.removeObject(forKey: Key.packRecents)
+        ReactionRecents(defaults: defaults).clear()
         // Video messages are a fact about THIS server, like the pack's
         // limits: a different server must not inherit the door.
         defaults.removeObject(forKey: Key.roundVideoMaxMS)
