@@ -3020,13 +3020,17 @@ internal fun ReactionSearchSheet(
     val searching = ReactionSearch.normalize(query).isNotEmpty()
     val results = remember(index, query) { index?.search(query).orEmpty() }
     val recent = remember(recents) { ReactionSearch.recents(recents) }
-    val catalogueScroll = rememberLazyGridState()
-    val resultsScroll = rememberLazyGridState()
+    val gridScroll = rememberLazyGridState()
     val keyboard = LocalSoftwareKeyboardController.current
     val sheetTitle = stringResource(R.string.s_react)
     val searchLabel = stringResource(R.string.s_reaction_search)
     val recentLabel = stringResource(R.string.s_reaction_recents)
     var picked by remember { mutableStateOf(false) }
+
+    fun jumpToSection(header: Int) {
+        query = ""
+        gridScroll.requestScrollToItem(header)
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -3044,7 +3048,7 @@ internal fun ReactionSearchSheet(
                 value = query,
                 onValueChange = {
                     query = it
-                    resultsScroll.requestScrollToItem(0)
+                    gridScroll.requestScrollToItem(0)
                 },
                 label = { Text(searchLabel) },
                 singleLine = true,
@@ -3052,7 +3056,7 @@ internal fun ReactionSearchSheet(
                 keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
                 trailingIcon = if (query.isNotEmpty()) {
                     {
-                        IconButton(onClick = { query = "" }) {
+                        IconButton(onClick = { jumpToSection(0) }) {
                             Icon(Icons.Default.Close, contentDescription = stringResource(R.string.s_reaction_search_clear))
                         }
                     }
@@ -3061,35 +3065,9 @@ internal fun ReactionSearchSheet(
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
-            if (!searching) {
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
-                    if (recent.isNotEmpty()) {
-                        item(key = "recent") {
-                            IconButton(onClick = { catalogueScroll.requestScrollToItem(0) }) {
-                                Icon(Icons.Default.Schedule, contentDescription = recentLabel)
-                            }
-                        }
-                    }
-                    var sectionStart = if (recent.isEmpty()) 0 else 1 + recent.size
-                    EMOJI_CATALOG.forEach { category ->
-                        val header = sectionStart
-                        item(key = category.name) {
-                            val title = stringResource(category.titleRes)
-                            IconButton(
-                                onClick = { catalogueScroll.requestScrollToItem(header) },
-                                modifier = Modifier.semantics { contentDescription = title },
-                            ) {
-                                Text(category.emoji.first(), modifier = Modifier.clearAndSetSemantics {})
-                            }
-                        }
-                        sectionStart += 1 + category.emoji.size
-                    }
-                }
-            }
-
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 48.dp),
-                state = if (searching) resultsScroll else catalogueScroll,
+                state = gridScroll,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
@@ -3119,6 +3097,30 @@ internal fun ReactionSearchSheet(
                     EMOJI_CATALOG.forEach { category ->
                         reactionSection(category.name, { stringResource(category.titleRes) }, category.emoji, index, pick)
                     }
+                }
+            }
+
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+                if (recent.isNotEmpty()) {
+                    item(key = "recent") {
+                        IconButton(onClick = { jumpToSection(0) }) {
+                            Icon(Icons.Default.Schedule, contentDescription = recentLabel)
+                        }
+                    }
+                }
+                var sectionStart = if (recent.isEmpty()) 0 else 1 + recent.size
+                EMOJI_CATALOG.forEach { category ->
+                    val header = sectionStart
+                    item(key = category.name) {
+                        val title = stringResource(category.titleRes)
+                        IconButton(
+                            onClick = { jumpToSection(header) },
+                            modifier = Modifier.semantics { contentDescription = title },
+                        ) {
+                            Text(category.emoji.first(), modifier = Modifier.clearAndSetSemantics {})
+                        }
+                    }
+                    sectionStart += 1 + category.emoji.size
                 }
             }
         }
