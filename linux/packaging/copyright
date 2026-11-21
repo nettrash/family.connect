@@ -13,7 +13,7 @@ Files: usr/bin/family-connect
 Copyright: 2026 nettrash
  the authors of each crate listed below
  the Rust project developers
-License: Expat and Zlib
+License: Expat and Zlib and Unicode-3.0
 Comment: Family Connect is written in Rust and its binary also contains these
  crates from crates.io, compiled in: atomic_refcell, bitflags, cairo-rs,
  cairo-sys-rs, cfg-if, deranged, either, fallible-iterator,
@@ -39,6 +39,12 @@ Comment: Family Connect is written in Rust and its binary also contains these
  hashbrown), is under the Zlib licence below, which asks nothing of a binary.
  scripts/package.sh refuses to build when the binary links a crate this list
  does not name, or one that offers neither MIT nor, for foldhash alone, Zlib.
+ The reaction picker embeds English CLDR 49 annotations under Unicode-3.0.
+
+Files: usr/share/family-connect/emoji-search/*.tsv
+Copyright: 2001–2026 Unicode, Inc.
+License: Unicode-3.0
+Comment: The eight other desktop locales ship as data alongside the app.
 
 License: Expat
  Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -75,3 +81,42 @@ License: Zlib
  2. Altered source versions must be plainly marked as such, and must not be
     misrepresented as being the original software.
  3. This notice may not be removed or altered from any source distribution.
+
+License: Unicode-3.0
+ COPYRIGHT AND PERMISSION NOTICE
+ .
+ Copyright © 2001–2026 Unicode, Inc.
+ .
+ NOTICE TO USER: Carefully read the following legal agreement. BY
+ DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+ SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+ TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+ DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+ .
+ Permission is hereby granted, free of charge, to any person obtaining a
+ copy of data files and any associated documentation (the "Data Files") or
+ software and any associated documentation (the "Software") to deal in the
+ Data Files or Software without restriction, including without limitation
+ the rights to use, copy, modify, merge, publish, distribute, and/or sell
+ copies of the Data Files or Software, and to permit persons to whom the
+ Data Files or Software are furnished to do so, provided that either (a)
+ this copyright and permission notice appear with all copies of the Data
+ Files or Software, or (b) this copyright and permission notice appear in
+ associated Documentation.
+ .
+ THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+ KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+ THIRD PARTY RIGHTS.
+ .
+ IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+ BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+ OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+ WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+ FILES OR SOFTWARE.
+ .
+ Except as contained in this notice, the name of a copyright holder shall
+ not be used in advertising or otherwise to promote the sale, use or other
+ dealings in these Data Files or Software without prior written
+ authorization of the copyright holder.

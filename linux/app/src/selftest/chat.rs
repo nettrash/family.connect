@@ -34,6 +34,7 @@ use crate::windows::main_window::{DEFAULT_SIZE, GatePage, MainWindow};
 
 /// The integration pass's checks, run after the conversation and the layout (§W.2's "P2/P3 into
 /// P1's slots, P6 onto P3/P5").
+mod reaction_picker;
 mod wiring;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -1063,6 +1064,8 @@ async fn conversation(
             h.check(check, true, "skipped: --no-input");
         }
     }
+
+    reaction_picker::run(h, shell, window, &page, world, &incoming).await;
 
     // React (the menu's action), reply, edit.
     act(

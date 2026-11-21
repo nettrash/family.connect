@@ -195,6 +195,16 @@ pub fn css(palette: &Palette) -> String {
   min-height: 36px;
   font-size: 18px;
 }}
+.fc-reaction-picker .fc-reaction-grid flowboxchild {{
+  padding: 0;
+}}
+.fc-reaction-picker .fc-reaction-grid button,
+.fc-reaction-picker .fc-reaction-categories button {{
+  min-width: 32px;
+  min-height: 36px;
+  padding: 0;
+  font-size: 18px;
+}}
 .fc-chat-system {{
   font-size: smaller;
   opacity: 0.8;
