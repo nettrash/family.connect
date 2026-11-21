@@ -1,134 +1,132 @@
 using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
-using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.System;
 
 namespace FamilyConnect.App.Views;
 
 /// <summary>The conversation's More reactions flyout.</summary>
-internal static class EmojiPicker
+public sealed partial class EmojiPicker : UserControl
 {
-    public static Flyout Create(IStringCatalog say, string language, IReadOnlyList<string> recent,
-        Action<string> pick, Action returnFocus)
+    // A recent and a catalogue item can show the same emoji. ScrollIntoView must find
+    // the exact cell for the section that was requested.
+    public sealed class Cell(ReactionSearchResult result)
     {
-        var search = new ReactionSearch(language);
-        var input = new TextBox { PlaceholderText = say.Get("Search emoji"), IsSpellCheckEnabled = false };
-        AutomationProperties.SetName(input, input.PlaceholderText);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        var recentPanel = new StackPanel { Spacing = 2 };
-        var heading = Heading();
-        var empty = new TextBlock
-        {
-            Text = say.Get("No emoji found"),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(6, 8, 6, 8),
-            Visibility = Visibility.Collapsed,
-        };
-        AutomationProperties.SetLiveSetting(empty, AutomationLiveSetting.Polite);
+        public string Emoji => result.Emoji;
+        public string Name => result.Name;
+    }
 
-        var panel = new StackPanel { Spacing = 4, Width = 344 };
-        AutomationProperties.SetName(panel, say.Get("More reactions"));
-        var flyout = new Flyout { Content = panel };
-        string? picked = null;
-        var restoreFocus = false;
-        void Pick(string emoji)
-        {
-            if (picked is not null)
-            {
-                return;
-            }
-            picked = emoji;
-            restoreFocus = true;
-            flyout.Hide();
-        }
+    private sealed record Section(string Name, string Symbol, IReadOnlyList<Cell> Cells);
 
-        var results = CreateGrid(240, Pick);
+    private readonly ReactionSearch search;
+    private readonly Cell firstBrowseItem;
+    private Cell browseStart;
+    private Cell? requestedFocus;
+
+    private EmojiPicker(IStringCatalog say, string language, IReadOnlyList<string> recent, Action<string> pick)
+    {
+        InitializeComponent();
+        search = new ReactionSearch(language);
+
+        AutomationProperties.SetName(this, say.Get("More reactions"));
+        SearchInput.PlaceholderText = say.Get("Search emoji");
+        AutomationProperties.SetName(SearchInput, SearchInput.PlaceholderText);
+        var clearName = say.Get("Clear search");
+        AutomationProperties.SetName(ClearSearch, clearName);
+        ToolTipService.SetToolTip(ClearSearch, clearName);
+        ResultsHeading.Text = say.Get("Search results");
+        AutomationProperties.SetName(Results, ResultsHeading.Text);
+        EmptyNotice.Text = say.Get("No emoji found");
+        AutomationProperties.SetName(Shortcuts, say.Get("Emoji categories"));
+
+        var sections = new List<Section>();
         if (recent.Count > 0)
         {
-            var recentName = say.Get("Recent emoji");
-            recentPanel.Children.Add(Heading(recentName));
-            var recentGrid = CreateGrid(120, Pick);
-            AutomationProperties.SetName(recentGrid, recentName);
-            recentGrid.ItemsSource = recent.Select(search.Describe).ToArray();
-            recentPanel.Children.Add(recentGrid);
+            sections.Add(new(say.Get("Recent emoji"), "◷", MakeCells(recent)));
         }
+        sections.AddRange(EmojiCatalog.Categories.Select(category =>
+            new Section(SectionName(category.Name, say), category.Emoji[0], MakeCells(category.Emoji))));
+        firstBrowseItem = sections[0].Cells[0];
+        browseStart = firstBrowseItem;
 
-        panel.Children.Add(input);
-        panel.Children.Add(recentPanel);
-        panel.Children.Add(tabs);
-        panel.Children.Add(heading);
-        panel.Children.Add(empty);
-        panel.Children.Add(results);
-
-        var categoryIndex = 0;
-        var buttons = new List<ToggleButton>();
-        void Render()
+        WireCells(Catalogue, pick);
+        WireCells(Results, pick);
+        Catalogue.ContainerContentChanging += (_, e) =>
         {
-            var searching = !string.IsNullOrWhiteSpace(input.Text);
-            var category = EmojiCatalog.Categories[categoryIndex];
-            var items = searching
-                ? search.Search(input.Text)
-                : category.Emoji.Distinct(StringComparer.Ordinal).Select(search.Describe).ToArray();
-            recentPanel.Visibility = !searching && recent.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            tabs.Visibility = searching ? Visibility.Collapsed : Visibility.Visible;
-            heading.Text = searching ? say.Get("Search results") : Name(category.Name, say);
-            AutomationProperties.SetName(results, heading.Text);
-            results.ItemsSource = items;
-            results.Visibility = items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-            empty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            if (items.Count > 0)
+            if (!e.InRecycleQueue && ReferenceEquals(e.Item, requestedFocus))
             {
-                results.ScrollIntoView(items[0], ScrollIntoViewAlignment.Leading);
+                // The container can be prepared before it enters the visual tree.
+                DispatcherQueue.TryEnqueue(FocusRequestedCell);
             }
-            else if (FrameworkElementAutomationPeer.FromElement(empty) is { } peer)
+        };
+        var groupView = new CollectionViewSource
+        {
+            IsSourceGrouped = true,
+            Source = sections.SelectMany(section => section.Cells.Select(cell => (section.Name, cell)))
+                .GroupBy(entry => entry.Name, entry => entry.cell)
+                .ToArray(),
+        };
+        Catalogue.ItemsSource = groupView.View;
+
+        foreach (var section in sections)
+        {
+            var button = new Button
             {
-                peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
-            }
+                Content = section.Symbol,
+                FontSize = 18,
+                Width = 36,
+                Height = 34,
+                MinWidth = 0,
+                Padding = new Thickness(0),
+            };
+            AutomationProperties.SetName(button, section.Name);
+            ToolTipService.SetToolTip(button, section.Name);
+            button.Click += (_, _) => Jump(section.Cells[0]);
+            Shortcuts.Children.Add(button);
         }
 
-        for (var index = 0; index < EmojiCatalog.Categories.Count; index++)
+        SearchInput.TextChanged += (_, _) => Render();
+        ClearSearch.Click += (_, _) =>
         {
-            var category = EmojiCatalog.Categories[index];
-            var at = index;
-            var tab = new ToggleButton
-            {
-                Content = new TextBlock { Text = category.Emoji[0], FontSize = 18 },
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(6, 2, 6, 2),
-                IsChecked = at == categoryIndex,
-            };
-            var name = Name(category.Name, say);
-            ToolTipService.SetToolTip(tab, name);
-            AutomationProperties.SetName(tab, name);
-            tab.Click += (_, _) =>
-            {
-                categoryIndex = at;
-                for (var i = 0; i < buttons.Count; i++)
-                {
-                    buttons[i].IsChecked = i == categoryIndex;
-                }
-                Render();
-            };
-            buttons.Add(tab);
-            tabs.Children.Add(tab);
-        }
-
-        input.TextChanged += (_, _) => Render();
-        input.PreviewKeyDown += (_, e) =>
+            browseStart = firstBrowseItem;
+            requestedFocus = null;
+            SearchInput.Focus(FocusState.Programmatic);
+            SearchInput.Text = string.Empty;
+        };
+        SearchInput.PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == VirtualKey.Down && results.Visibility == Visibility.Visible
-                && results.ContainerFromIndex(0) is GridViewItem first && first.Focus(FocusState.Keyboard))
+            var visibleGrid = SearchPane.Visibility == Visibility.Visible ? Results : Catalogue;
+            if (e.Key == VirtualKey.Down && visibleGrid.ContainerFromIndex(0) is GridViewItem item
+                && item.Focus(FocusState.Keyboard))
             {
                 e.Handled = true;
             }
         };
-        panel.PreviewKeyDown += (_, e) =>
+    }
+
+    internal static Flyout Create(IStringCatalog say, string language, IReadOnlyList<string> recent,
+        Action<string> pick, Action returnFocus)
+    {
+        var flyout = new Flyout();
+        string? picked = null;
+        var restoreFocus = false;
+        var view = new EmojiPicker(say, language, recent, emoji =>
+        {
+            if (picked is null)
+            {
+                picked = emoji;
+                restoreFocus = true;
+                flyout.Hide();
+            }
+        });
+        flyout.Content = view;
+        view.PreviewKeyDown += (_, e) =>
         {
             if (e.Key == VirtualKey.Escape)
             {
@@ -137,9 +135,10 @@ internal static class EmojiPicker
                 flyout.Hide();
             }
         };
-        flyout.Opened += (_, _) => input.Focus(FocusState.Programmatic);
+        flyout.Opened += (_, _) => view.SearchInput.Focus(FocusState.Programmatic);
         flyout.Closed += (_, _) =>
         {
+            view.requestedFocus = null;
             if (restoreFocus)
             {
                 returnFocus();
@@ -149,26 +148,105 @@ internal static class EmojiPicker
                 pick(picked);
             }
         };
-        Render();
         return flyout;
     }
 
-    private static GridView CreateGrid(double maxHeight, Action<string> pick)
+    private IReadOnlyList<Cell> MakeCells(IEnumerable<string> emoji) => emoji.Distinct(StringComparer.Ordinal)
+        .Select(value => new Cell(search.Describe(value)))
+        .ToArray();
+
+    private void Jump(Cell start)
     {
-        var grid = new GridView
+        browseStart = start;
+        requestedFocus = start;
+        if (SearchInput.Text.Length != 0)
         {
-            SelectionMode = ListViewSelectionMode.None,
-            IsItemClickEnabled = true,
-            DisplayMemberPath = nameof(ReactionSearchResult.Emoji),
-            FontSize = 22,
-            MaxHeight = maxHeight,
-        };
-        // GridView moves focus and scrolls through its realised items. Intercept Enter and
-        // Space at each cell before the grid's selection behavior sees them.
+            SearchInput.Text = string.Empty; // TextChanged renders directly at browseStart.
+        }
+        else
+        {
+            ShowCatalogue();
+        }
+    }
+
+    private void Render()
+    {
+        ClearSearch.Visibility = SearchInput.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (string.IsNullOrWhiteSpace(SearchInput.Text))
+        {
+            ShowCatalogue();
+            return;
+        }
+
+        browseStart = firstBrowseItem;
+        requestedFocus = null;
+        Catalogue.Visibility = Visibility.Collapsed;
+        SearchPane.Visibility = Visibility.Visible;
+        var items = search.Search(SearchInput.Text).Select(result => new Cell(result)).ToArray();
+        Results.ItemsSource = items;
+        Results.Visibility = items.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyNotice.Visibility = items.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (items.Length > 0)
+        {
+            Results.UpdateLayout();
+            Results.ScrollIntoView(items[0], ScrollIntoViewAlignment.Leading);
+        }
+        else
+        {
+            FrameworkElementAutomationPeer.FromElement(EmptyNotice)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
+    }
+
+    private void ShowCatalogue()
+    {
+        SearchPane.Visibility = Visibility.Collapsed;
+        Catalogue.Visibility = Visibility.Visible;
+        Catalogue.UpdateLayout();
+        if (ReferenceEquals(browseStart, firstBrowseItem) && FindScrollViewer(Catalogue) is { } scroll)
+        {
+            scroll.ChangeView(null, 0, null, disableAnimation: true);
+        }
+        else
+        {
+            Catalogue.ScrollIntoView(browseStart, ScrollIntoViewAlignment.Leading);
+        }
+        Catalogue.UpdateLayout();
+        FocusRequestedCell();
+    }
+
+    private void FocusRequestedCell()
+    {
+        if (requestedFocus is { } cell && Catalogue.ContainerFromItem(cell) is GridViewItem item
+            && item.Focus(FocusState.Keyboard))
+        {
+            requestedFocus = null;
+        }
+    }
+
+    private static ScrollViewer? FindScrollViewer(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer scroll)
+            {
+                return scroll;
+            }
+            if (FindScrollViewer(child) is { } found)
+            {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static void WireCells(GridView grid, Action<string> pick)
+    {
+        // GridView moves focus through all realised items. Invoke on Enter and Space
+        // before its selection behavior sees either key.
         void InvokeCell(object sender, KeyRoutedEventArgs e)
         {
-            if (e.Key is VirtualKey.Enter or VirtualKey.Space
-                && sender is GridViewItem { Content: ReactionSearchResult cell })
+            if (e.Key is VirtualKey.Enter or VirtualKey.Space && sender is GridViewItem { Content: Cell cell })
             {
                 e.Handled = true;
                 pick(cell.Emoji);
@@ -179,7 +257,7 @@ internal static class EmojiPicker
         {
             var container = e.ItemContainer;
             container.PreviewKeyDown -= InvokeCell;
-            if (!e.InRecycleQueue && e.Item is ReactionSearchResult cell)
+            if (!e.InRecycleQueue && e.Item is Cell cell)
             {
                 AutomationProperties.SetName(container, cell.Name);
                 ToolTipService.SetToolTip(container, cell.Name);
@@ -188,18 +266,14 @@ internal static class EmojiPicker
         };
         grid.ItemClick += (_, e) =>
         {
-            if (e.ClickedItem is ReactionSearchResult cell)
+            if (e.ClickedItem is Cell cell)
             {
                 pick(cell.Emoji);
             }
         };
-        return grid;
     }
 
-    private static TextBlock Heading(string text = "") =>
-        new() { Text = text, FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 4, 0, 2) };
-
-    private static string Name(string canonical, IStringCatalog say) => canonical switch
+    private static string SectionName(string canonical, IStringCatalog say) => canonical switch
     {
         "Smileys" => say.Get("Smileys"),
         "Gestures" => say.Get("Gestures"),
