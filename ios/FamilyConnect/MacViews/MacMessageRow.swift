@@ -50,6 +50,7 @@ struct MacMessageRow: View {
     /// delivery ladder beside the timestamp, exactly as on the phone.
     var isRead: Bool = false
     var onReply: () -> Void = {}
+    var onReactionFocusFallback: () -> Void = {}
     var onEdit: () -> Void = {}
     /// The chain (docs/protocol.md, "Threads"): "N replies" under a root,
     /// "View thread" in the menu of any member of one.
@@ -132,8 +133,14 @@ struct MacMessageRow: View {
     /// the reader has not scrolled to, and may never see.
     @State private var hasBeenVisible = false
     @State private var hovering = false
-    /// The full 771-entry catalogue, behind "More reactions…".
-    @State private var showsEmojiPicker = false
+    private struct ReactionTarget: Identifiable {
+        let id: String
+        let account: ReactionRecents.Account
+    }
+
+    @State private var reactionTarget: ReactionTarget?
+    @State private var rowVisible = false
+    @FocusState private var messageActionsFocused: Bool
     /// Who left what — the Mac's answer to long-pressing a chip.
     @State private var showsReactors = false
 
@@ -274,6 +281,11 @@ struct MacMessageRow: View {
                             handleLinkClick(url)
                             return .handled
                         })
+                    .overlay(alignment: isMine ? .leading : .trailing) {
+                        if message.serverID != nil {
+                            messageActions.offset(x: isMine ? -30 : 30)
+                        }
+                    }
                 }
                 if message.state == .failed {
                     // A send that failed is the one thing here the user has
@@ -341,6 +353,14 @@ struct MacMessageRow: View {
             if visible { hasBeenVisible = true }
         }
         .onHover { hovering = $0 }
+        .onAppear { rowVisible = true }
+        .onDisappear {
+            rowVisible = false
+            if reactionTarget != nil {
+                reactionTarget = nil
+                onReactionFocusFallback()
+            }
+        }
         .contextMenu { rowMenu }
         .alert("Couldn't save that file",
                isPresented: Binding(get: { saveFailure != nil },
@@ -349,27 +369,56 @@ struct MacMessageRow: View {
         } message: {
             if let saveFailure { Text(verbatim: saveFailure) }
         }
-        .sheet(isPresented: $showsEmojiPicker) {
+        .sheet(item: $reactionTarget, onDismiss: restoreReactionFocus) { target in
             VStack(spacing: 0) {
-                EmojiPickerView { emoji in
-                    showsEmojiPicker = false
+                EmojiPickerView(account: target.account) { emoji in
+                    reactionTarget = nil
                     Task {
-                        await coordinator.toggleReaction(
-                            localID: message.localID, emoji: emoji)
+                        guard target.account == ReactionRecents.Account.current else { return }
+                        await coordinator.toggleReaction(localID: target.id, emoji: emoji)
                     }
                 }
                 Divider()
                 HStack {
                     Spacer()
-                    Button("Cancel") { showsEmojiPicker = false }
+                    Button("Cancel") { reactionTarget = nil }
                         .keyboardShortcut(.cancelAction)
                 }
                 .padding(12)
             }
             .frame(width: 420, height: 460)
+            .onExitCommand {
+                if !EmojiPickerView.hasMarkedText { reactionTarget = nil }
+            }
         }
         .popover(isPresented: $showsReactors, arrowEdge: .bottom) {
             reactorList
+        }
+    }
+
+    private var messageActions: some View {
+        Menu {
+            rowMenu
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .focusable(interactions: .edit)
+        .focused($messageActionsFocused)
+        .opacity(hovering || messageActionsFocused || reactionTarget != nil ? 1 : 0.4)
+        .accessibilityLabel("Message actions")
+        .accessibilityIdentifier("reactionMessageActions")
+    }
+
+    private func restoreReactionFocus() {
+        if rowVisible, !isHidden, message.serverID != nil {
+            messageActionsFocused = true
+        } else {
+            onReactionFocusFallback()
         }
     }
 
@@ -472,10 +521,10 @@ struct MacMessageRow: View {
                     }
                 }
                 Divider()
-                // The server takes any emoji ≤ 32 bytes and
-                // EmojiPickerView is already platform-free, so the Mac was
-                // missing only the way in.
-                Button("More reactions…") { showsEmojiPicker = true }
+                Button("More reactions…") {
+                    guard let account = ReactionRecents.Account.current else { return }
+                    reactionTarget = ReactionTarget(id: message.localID, account: account)
+                }
             }
             if !message.reactions.isEmpty {
                 Button("See who reacted") { showsReactors = true }

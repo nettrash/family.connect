@@ -271,6 +271,7 @@ struct ThreadView: View {
             // reply from this surface answers the root. Edit and Report are
             // the chat's, and are not offered here rather than offered inert.
             onReply: { composerFocused = true },
+            onReactionFocusFallback: { composerFocused = true },
             canEdit: false,
             canReport: false,
             isHiddenByBlock: isHiddenByBlock(message),
