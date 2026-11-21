@@ -1,4 +1,4 @@
-//! The version the web client loads the rich-block renderer under (issue #97).
+//! Versions for Web assets loaded on demand.
 //!
 //! Trunk copies `rich/` into `dist/rich/` as it is (index.html's `copy-dir`),
 //! so its files keep their names — and nginx serves every `.js` and `.css`
@@ -20,10 +20,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let root = Path::new("rich");
+    assert!(
+        Path::new("rich/fc-rich.js").is_file(),
+        "rich/fc-rich.js is missing — the web client draws no rich block without it"
+    );
+    version_files("rich", "FC_RICH_VERSION");
+    version_files("text/data/emoji-search", "FC_EMOJI_SEARCH_VERSION");
+}
+
+fn version_files(directory: &str, variable: &str) {
+    let root = Path::new(directory);
     // A directory here makes Cargo re-run this script whenever anything
     // under it changes, recursively.
-    println!("cargo:rerun-if-changed=rich");
+    println!("cargo:rerun-if-changed={directory}");
     let mut files = Vec::new();
     collect(root, &mut files);
     // Sorted, so the walk order of the file system never changes the hash.
@@ -45,11 +54,7 @@ fn main() {
         hash.write(&(bytes.len() as u64).to_le_bytes());
         hash.write(&bytes);
     }
-    assert!(
-        files.iter().any(|file| file.ends_with("fc-rich.js")),
-        "rich/fc-rich.js is missing — the web client draws no rich block without it"
-    );
-    println!("cargo:rustc-env=FC_RICH_VERSION={:016x}", hash.finish());
+    println!("cargo:rustc-env={variable}={:016x}", hash.finish());
 }
 
 /// Every file under `dir`, at any depth.
