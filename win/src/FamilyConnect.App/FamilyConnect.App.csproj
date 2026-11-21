@@ -79,6 +79,8 @@
   <ItemGroup>
     <Content Include="Assets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../web/text/data/UNICODE-LICENSE.txt" Link="Assets/UNICODE-LICENSE.txt"
+             CopyToOutputDirectory="PreserveNewest" />
     <!-- The page a call's media runs in, served to the app's own browser engine from beside the executable. -->
     <Content Include="Assets\Call\*.html" CopyToOutputDirectory="PreserveNewest" />
     <!--

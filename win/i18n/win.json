@@ -427,6 +427,16 @@
       "sr-Latn": "Nova beleška",
       "zh-Hans": "新便签"
     },
+    "No emoji found": {
+      "de": "Keine Emoji gefunden",
+      "es": "No se encontraron emojis",
+      "fr": "Aucun emoji trouvé",
+      "ja": "絵文字が見つかりません",
+      "ru": "Эмодзи не найдены",
+      "sr": "Нема пронађених емоџија",
+      "sr-Latn": "Nema pronađenih emodžija",
+      "zh-Hans": "未找到表情符号"
+    },
     "Notifications": {
       "de": "Mitteilungen",
       "es": "Notificaciones",
@@ -527,6 +537,16 @@
       "sr-Latn": "Zatvori Family Connect",
       "zh-Hans": "退出 Family Connect"
     },
+    "Recent emoji": {
+      "de": "Zuletzt verwendete Emoji",
+      "es": "Emojis recientes",
+      "fr": "Emojis récents",
+      "ja": "最近の絵文字",
+      "ru": "Недавние эмодзи",
+      "sr": "Недавни емоџији",
+      "sr-Latn": "Nedavni emodžiji",
+      "zh-Hans": "最近使用的表情符号"
+    },
     "Renews on %@": {
       "de": "Erneuert sich am %@",
       "es": "Se renueva el %@",
@@ -556,6 +576,26 @@
       "sr": "Безбедност за %@",
       "sr-Latn": "Bezbednost za %@",
       "zh-Hans": "%@ 的安全"
+    },
+    "Search emoji": {
+      "de": "Emoji suchen",
+      "es": "Buscar emoji",
+      "fr": "Rechercher un emoji",
+      "ja": "絵文字を検索",
+      "ru": "Поиск эмодзи",
+      "sr": "Претражи емоџије",
+      "sr-Latn": "Pretraži emodžije",
+      "zh-Hans": "搜索表情符号"
+    },
+    "Search results": {
+      "de": "Suchergebnisse",
+      "es": "Resultados de búsqueda",
+      "fr": "Résultats de recherche",
+      "ja": "検索結果",
+      "ru": "Результаты поиска",
+      "sr": "Резултати претраге",
+      "sr-Latn": "Rezultati pretrage",
+      "zh-Hans": "搜索结果"
     },
     "Shows a map on a shared location. Drawing one asks OpenStreetMap for the map around that place, so OpenStreetMap sees a request from this device. With maps off, a shared location still shows its pin and opens in a map when you click it.": {
       "de": "Zeigt bei einem geteilten Standort eine Karte. Dafür wird OpenStreetMap nach der Karte rund um diesen Ort gefragt, daher sieht OpenStreetMap eine Anfrage von diesem Gerät. Ohne Karten zeigt ein geteilter Standort weiterhin seine Markierung und öffnet sich beim Klicken in einer Karte.",

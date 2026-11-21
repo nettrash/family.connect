@@ -289,6 +289,28 @@ public sealed class ThreadModelTests : IDisposable
         Assert.Equal(4, server.Asked.Count);
     }
 
+    [Fact]
+    public async Task PickerCanRemoveALegacyVariationFromAnUncachedReply()
+    {
+        var server = new Server()
+            .Then("/chats/42/messages/10/thread", Page(Message(10, replies: 1), Message(11, root: 10)))
+            .On("/chats/42/messages/11/reaction", """{"message_id":11,"reaction_seq":2,"reactions":[{"user_id":9,"emoji":"👍"}]}""");
+        var thread = Build(server, named: 10);
+        await thread.LoadAsync();
+        Assert.True(thread.Heard(Message(11, root: 10) with
+        {
+            ReactionSeq = 1,
+            Reactions = [new ReactionDto(Me, "❤"), new ReactionDto(9, "👍")],
+        }));
+
+        Assert.Null(await thread.ReactAsync(11, "❤️", fromPicker: true));
+
+        Assert.Empty(server.Bodies);
+        Assert.Equal("/api/v1/chats/42/messages/11/reaction", server.Asked[^1]);
+        Assert.Equal(9L, Assert.Single(thread.Bubbles()[1].Message.Reactions!).UserId);
+        Assert.Null(chats.Message(11));
+    }
+
     /// <summary>The root arriving is no reply to itself: it raises nothing, and the first reply after it raises one.</summary>
     [Fact]
     public void TheRootArrivingRaisesNothing()

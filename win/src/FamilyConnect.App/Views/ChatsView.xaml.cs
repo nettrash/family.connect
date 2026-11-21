@@ -62,6 +62,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
     private readonly Action<long> onMarks;
+    private Flyout? reactionPicker;
     /// <summary>A link's card landed, or the reader switched cards on or off.</summary>
     private readonly Action onPreviews;
     /// <summary>Card pictures decoded once, so a redraw reuses them instead of decoding (and flashing) again.</summary>
@@ -875,6 +876,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     internal void Detach(bool keep)
     {
+        reactionPicker?.Hide();
         typingTimer.Stop();
         pictures.Clear();
         stickers.Stop();
@@ -2208,6 +2210,8 @@ public sealed partial class ChatsView : UserControl
         }
         if (bubble.Reads)
         {
+            balloon.IsTabStop = true;
+            balloon.UseSystemFocusVisuals = true;
             balloon.ContextFlyout = MenuFor(chat, bubble, assistantChat, assistantId, balloon, inThread);
             // The Tapback-heart idiom, the same emoji on every client — on the balloon, not the row, so a double click beside
             // a message leaves nothing on it.
@@ -2588,7 +2592,7 @@ public sealed partial class ChatsView : UserControl
                     break;
                 }
                 case MessageAction.React:
-                    menu.Items.Add(ReactItem(chat, message, anchor, inThread));
+                    menu.Items.Add(ReactItem(menu, chat, message, anchor, inThread));
                     break;
                 case MessageAction.ShowText when textHost is not null
                                                  && MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) is not TextItem.None:
@@ -2679,7 +2683,7 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>React ▸: the capsule's emoji, the reader's own checked, and "More reactions…" for any other.</summary>
-    private MenuFlyoutSubItem ReactItem(ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
+    private MenuFlyoutSubItem ReactItem(MenuFlyout menu, ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
     {
         var say = services.Say;
         var react = new MenuFlyoutSubItem { Text = say.Get("React") };
@@ -2697,10 +2701,103 @@ public sealed partial class ChatsView : UserControl
         }
         react.Items.Add(new MenuFlyoutSeparator());
         var more = new MenuFlyoutItem { Text = say.Get("More reactions…") };
-        // Any emoji of the catalogue — the one already held takes it off, as a tap on it anywhere does.
-        more.Click += (_, _) => EmojiPicker.Show(anchor, say, emoji => _ = ActAsync(() => React(chat, inThread, message.Id, emoji)));
+        more.Click += (_, _) =>
+        {
+            var accountId = Reader;
+            void OpenPicker() => DispatcherQueue.TryEnqueue(() => OpenReactionPicker(chat, message.Id, anchor, inThread, accountId));
+            if (menu.IsOpen)
+            {
+                void MenuClosed(object? sender, object args)
+                {
+                    menu.Closed -= MenuClosed;
+                    OpenPicker();
+                }
+                menu.Closed += MenuClosed;
+                menu.Hide();
+            }
+            else
+            {
+                OpenPicker();
+            }
+        };
         react.Items.Add(more);
         return react;
+    }
+
+    private void OpenReactionPicker(ConversationModel chat, long messageId, FrameworkElement anchor,
+        ThreadModel? inThread, long accountId)
+    {
+        var family = connection.Session.State.CurrentFamilyId;
+        bool CanChoose() =>
+            !gone && services.Current == connection && accountId > 0 && Reader == accountId
+            && connection.Tokens.Token is not null && connection.Session.State.CanChat
+            && connection.Session.State.CurrentFamilyId == family && open == chat
+            && (inThread is null || thread == inThread);
+
+        if (!CanChoose() || !anchor.IsLoaded)
+        {
+            return;
+        }
+        reactionPicker?.Hide();
+
+        void ReturnFocus()
+        {
+            if (!CanChoose())
+            {
+                return;
+            }
+            var shown = inThread is null ? balloons : threadBalloons;
+            if (shown.TryGetValue(messageId, out var current) && current.Balloon.IsLoaded
+                && current.Balloon.Focus(FocusState.Keyboard))
+            {
+                return;
+            }
+            (inThread is null ? ComposerBox : ThreadComposer).Focus(FocusState.Keyboard);
+        }
+
+        var recent = connection.RecentReactions;
+        async Task PickAsync(string emoji)
+        {
+            if (!CanChoose())
+            {
+                return;
+            }
+            recent.Remember(accountId, emoji);
+            var keepFocus = false;
+            await ActAsync(async () =>
+            {
+                var error = await React(chat, inThread, messageId, emoji, fromPicker: true);
+                // Applying the answer can replace the focused bubble in the transcript.
+                keepFocus = CanChoose() && FocusManager.GetFocusedElement(XamlRoot) as FrameworkElement == anchor;
+                return error;
+            });
+            if (keepFocus)
+            {
+                ReturnFocus();
+            }
+        }
+
+        var picker = EmojiPicker.Create(services.Say, services.DisplayLanguage, recent.Read(accountId),
+            emoji => _ = PickAsync(emoji), ReturnFocus);
+        reactionPicker = picker;
+        void AnchorUnloaded(object sender, RoutedEventArgs args) =>
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!anchor.IsLoaded && reactionPicker == picker)
+                {
+                    picker.Hide();
+                }
+            });
+        anchor.Unloaded += AnchorUnloaded;
+        picker.Closed += (_, _) =>
+        {
+            anchor.Unloaded -= AnchorUnloaded;
+            if (reactionPicker == picker)
+            {
+                reactionPicker = null;
+            }
+        };
+        picker.ShowAt(anchor);
     }
 
     /// <summary>
@@ -3844,8 +3941,11 @@ public sealed partial class ChatsView : UserControl
     // ---- threads ------------------------------------------------------------------------------------
 
     /// <summary>A reaction from the conversation or the thread's panel, whose rows may be ones the cache does not hold.</summary>
-    private Task<ApiError?> React(ConversationModel chat, ThreadModel? inThread, long messageId, string emoji) =>
-        inThread is not null ? inThread.ReactAsync(messageId, emoji) : chat.ReactAsync(messageId, emoji);
+    private Task<ApiError?> React(ConversationModel chat, ThreadModel? inThread, long messageId, string emoji,
+        bool fromPicker = false) =>
+        inThread is not null
+            ? inThread.ReactAsync(messageId, emoji, fromPicker: fromPicker)
+            : chat.ReactAsync(messageId, emoji, fromPicker: fromPicker);
 
     /// <summary>
     /// Open a chain beside the conversation (docs/protocol.md, "Threads"): at once on what is held, then read whole. A read

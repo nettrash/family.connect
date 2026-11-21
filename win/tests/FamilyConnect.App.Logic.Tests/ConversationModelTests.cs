@@ -82,6 +82,48 @@ public class ConversationModelTests : IDisposable
         return new Rig(model, server, socket, posted);
     }
 
+    [Fact]
+    public async Task PickerAddsReplacesAndRemovesFromTheOriginalConversationMessage()
+    {
+        chats.Apply([Message(10), Message(11)]);
+        var server = new Server().Then("/chats/42/messages/10/reaction",
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":1,"reactions":[{"user_id":7,"emoji":"🔥"}]}"""),
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":2,"reactions":[{"user_id":7,"emoji":"❤️"}]}"""),
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":3,"reactions":[]}"""));
+        var chat = Build(server).Chat;
+        var search = new ReactionSearch("en");
+
+        Assert.Null(await chat.ReactAsync(10, search.Search("fire")[0].Emoji, fromPicker: true));
+        Assert.Equal("🔥", Assert.Single(chats.Message(10)!.Reactions!).Emoji);
+        Assert.Null(await chat.ReactAsync(10, search.Search("heart")[0].Emoji, fromPicker: true));
+        Assert.Equal("❤️", Assert.Single(chats.Message(10)!.Reactions!).Emoji);
+        Assert.Null(await chat.ReactAsync(10, search.Search("❤")[0].Emoji, fromPicker: true));
+        Assert.Empty(chats.Message(10)!.Reactions!);
+        Assert.Null(chats.Message(11)!.Reactions);
+        Assert.Equal(3, server.Asked.Count);
+        Assert.Equal(["🔥", "❤️"], server.Bodies.Select(body =>
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            return document.RootElement.GetProperty("emoji").GetString();
+        }));
+    }
+
+    [Theory]
+    [InlineData("❤")]
+    [InlineData("❤\uFE0E")]
+    public async Task PickerUsesTheStoredVariationWhenRemovingALegacyReaction(string legacy)
+    {
+        chats.Apply([Message(10) with { ReactionSeq = 1, Reactions = [new ReactionDto(Me, legacy)] }]);
+        var server = new Server().On("/chats/42/messages/10/reaction",
+            """{"message_id":10,"reaction_seq":2,"reactions":[]}""");
+
+        Assert.Null(await Build(server).Chat.ReactAsync(10, "❤️", fromPicker: true));
+
+        Assert.Single(server.Asked);
+        Assert.Empty(server.Bodies);
+        Assert.Empty(chats.Message(10)!.Reactions!);
+    }
+
     private static string PageOf(int count, long from) =>
         $$"""{"messages": [{{string.Join(",", Enumerable.Range(0, count).Select(at => Wire_(from + at)))}}]}""";
 

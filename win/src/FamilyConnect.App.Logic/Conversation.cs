@@ -351,13 +351,20 @@ public sealed class ConversationModel
     /// cache without a sequence of its own, and the next frame for the same message would be judged
     /// against a list the server never minted.
     /// </remarks>
-    public async Task<ApiError?> ReactAsync(long messageId, string emoji, CancellationToken ct = default)
+    public async Task<ApiError?> ReactAsync(long messageId, string emoji, CancellationToken ct = default,
+        bool fromPicker = false)
     {
         if (chats.Message(messageId) is not { } held)
         {
             return null;
         }
-        var toggle = Reactions.Toggle(held.Reactions ?? [], chats.Reader, emoji);
+        var reactions = held.Reactions ?? [];
+        var reader = chats.Reader;
+        if (fromPicker)
+        {
+            emoji = ReactionSearch.StoredChoice(emoji, Reactions.Mine(reactions, reader));
+        }
+        var toggle = Reactions.Toggle(reactions, reader, emoji);
         var answer = toggle.Removing
             ? await api.Unreact(ChatId, messageId, ct).ConfigureAwait(false)
             : await api.React(ChatId, messageId, emoji, ct).ConfigureAwait(false);

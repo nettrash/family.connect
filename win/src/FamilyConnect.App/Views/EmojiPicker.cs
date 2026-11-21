@@ -1,84 +1,204 @@
+using FamilyConnect.App.Logic;
 using FamilyConnect.Core;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
+using Windows.System;
 
 namespace FamilyConnect.App.Views;
 
-/// <summary>
-/// "More reactions…": the apps' whole catalogue, a section at a time — a row of tabs, each its section's first emoji,
-/// over a grid of the section's emoji (the web client's <c>EmojiPicker</c>). A flyout, so it opens over the conversation
-/// without taking it away.
-/// </summary>
+/// <summary>The conversation's More reactions flyout.</summary>
 internal static class EmojiPicker
 {
-    public static void Show(FrameworkElement anchor, IStringCatalog say, Action<string> pick)
+    public static Flyout Create(IStringCatalog say, string language, IReadOnlyList<string> recent,
+        Action<string> pick, Action returnFocus)
     {
+        var search = new ReactionSearch(language);
+        var input = new TextBox { PlaceholderText = say.Get("Search emoji"), IsSpellCheckEnabled = false };
+        AutomationProperties.SetName(input, input.PlaceholderText);
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        var heading = new TextBlock { FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 4, 0, 2) };
+        var recentPanel = new StackPanel { Spacing = 2 };
+        var heading = Heading();
+        var empty = new TextBlock
+        {
+            Text = say.Get("No emoji found"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(6, 8, 6, 8),
+            Visibility = Visibility.Collapsed,
+        };
+        AutomationProperties.SetLiveSetting(empty, AutomationLiveSetting.Polite);
+
+        var panel = new StackPanel { Spacing = 4, Width = 344 };
+        AutomationProperties.SetName(panel, say.Get("More reactions"));
+        var flyout = new Flyout { Content = panel };
+        string? picked = null;
+        var restoreFocus = false;
+        void Pick(string emoji)
+        {
+            if (picked is not null)
+            {
+                return;
+            }
+            picked = emoji;
+            restoreFocus = true;
+            flyout.Hide();
+        }
+
+        var results = CreateGrid(240, Pick);
+        if (recent.Count > 0)
+        {
+            var recentName = say.Get("Recent emoji");
+            recentPanel.Children.Add(Heading(recentName));
+            var recentGrid = CreateGrid(120, Pick);
+            AutomationProperties.SetName(recentGrid, recentName);
+            recentGrid.ItemsSource = recent.Select(search.Describe).ToArray();
+            recentPanel.Children.Add(recentGrid);
+        }
+
+        panel.Children.Add(input);
+        panel.Children.Add(recentPanel);
+        panel.Children.Add(tabs);
+        panel.Children.Add(heading);
+        panel.Children.Add(empty);
+        panel.Children.Add(results);
+
+        var categoryIndex = 0;
+        var buttons = new List<ToggleButton>();
+        void Render()
+        {
+            var searching = !string.IsNullOrWhiteSpace(input.Text);
+            var category = EmojiCatalog.Categories[categoryIndex];
+            var items = searching
+                ? search.Search(input.Text)
+                : category.Emoji.Distinct(StringComparer.Ordinal).Select(search.Describe).ToArray();
+            recentPanel.Visibility = !searching && recent.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            tabs.Visibility = searching ? Visibility.Collapsed : Visibility.Visible;
+            heading.Text = searching ? say.Get("Search results") : Name(category.Name, say);
+            AutomationProperties.SetName(results, heading.Text);
+            results.ItemsSource = items;
+            results.Visibility = items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            empty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (items.Count > 0)
+            {
+                results.ScrollIntoView(items[0], ScrollIntoViewAlignment.Leading);
+            }
+            else if (FrameworkElementAutomationPeer.FromElement(empty) is { } peer)
+            {
+                peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+            }
+        }
+
+        for (var index = 0; index < EmojiCatalog.Categories.Count; index++)
+        {
+            var category = EmojiCatalog.Categories[index];
+            var at = index;
+            var tab = new ToggleButton
+            {
+                Content = new TextBlock { Text = category.Emoji[0], FontSize = 18 },
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(6, 2, 6, 2),
+                IsChecked = at == categoryIndex,
+            };
+            var name = Name(category.Name, say);
+            ToolTipService.SetToolTip(tab, name);
+            AutomationProperties.SetName(tab, name);
+            tab.Click += (_, _) =>
+            {
+                categoryIndex = at;
+                for (var i = 0; i < buttons.Count; i++)
+                {
+                    buttons[i].IsChecked = i == categoryIndex;
+                }
+                Render();
+            };
+            buttons.Add(tab);
+            tabs.Children.Add(tab);
+        }
+
+        input.TextChanged += (_, _) => Render();
+        input.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Down && results.Visibility == Visibility.Visible
+                && results.ContainerFromIndex(0) is GridViewItem first && first.Focus(FocusState.Keyboard))
+            {
+                e.Handled = true;
+            }
+        };
+        panel.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Escape)
+            {
+                e.Handled = true;
+                restoreFocus = true;
+                flyout.Hide();
+            }
+        };
+        flyout.Opened += (_, _) => input.Focus(FocusState.Programmatic);
+        flyout.Closed += (_, _) =>
+        {
+            if (restoreFocus)
+            {
+                returnFocus();
+            }
+            if (picked is not null)
+            {
+                pick(picked);
+            }
+        };
+        Render();
+        return flyout;
+    }
+
+    private static GridView CreateGrid(double maxHeight, Action<string> pick)
+    {
         var grid = new GridView
         {
             SelectionMode = ListViewSelectionMode.None,
             IsItemClickEnabled = true,
-            Width = 344,
-            MaxHeight = 280,
+            DisplayMemberPath = nameof(ReactionSearchResult.Emoji),
+            FontSize = 22,
+            MaxHeight = maxHeight,
         };
-        var panel = new StackPanel { Spacing = 4 };
-        AutomationProperties.SetName(panel, say.Get("More reactions"));
-        panel.Children.Add(tabs);
-        panel.Children.Add(heading);
-        panel.Children.Add(grid);
-        var flyout = new Flyout { Content = panel };
+        // GridView moves focus and scrolls through its realised items. Intercept Enter and
+        // Space at each cell before the grid's selection behavior sees them.
+        void InvokeCell(object sender, KeyRoutedEventArgs e)
+        {
+            if (e.Key is VirtualKey.Enter or VirtualKey.Space
+                && sender is GridViewItem { Content: ReactionSearchResult cell })
+            {
+                e.Handled = true;
+                pick(cell.Emoji);
+            }
+        }
 
-        var buttons = new List<Button>();
-        void ShowSection(int index)
+        grid.ContainerContentChanging += (_, e) =>
         {
-            var section = EmojiCatalog.Categories[index];
-            heading.Text = Name(section.Name, say);
-            AutomationProperties.SetName(grid, heading.Text);
-            grid.Items.Clear();
-            foreach (var emoji in section.Emoji)
+            var container = e.ItemContainer;
+            container.PreviewKeyDown -= InvokeCell;
+            if (!e.InRecycleQueue && e.Item is ReactionSearchResult cell)
             {
-                grid.Items.Add(new TextBlock { Text = emoji, FontSize = 22, HorizontalAlignment = HorizontalAlignment.Center });
+                AutomationProperties.SetName(container, cell.Name);
+                ToolTipService.SetToolTip(container, cell.Name);
+                container.PreviewKeyDown += InvokeCell;
             }
-            for (var at = 0; at < buttons.Count; at++)
-            {
-                buttons[at].Background = at == index
-                    ? (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"]
-                    : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            }
-        }
-        for (var index = 0; index < EmojiCatalog.Categories.Count; index++)
-        {
-            var section = EmojiCatalog.Categories[index];
-            var at = index;
-            var tab = new Button
-            {
-                Content = new TextBlock { Text = section.Emoji.Count > 0 ? section.Emoji[0] : "·", FontSize = 18 },
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(6, 2, 6, 2),
-            };
-            ToolTipService.SetToolTip(tab, Name(section.Name, say));
-            AutomationProperties.SetName(tab, Name(section.Name, say));
-            tab.Click += (_, _) => ShowSection(at);
-            buttons.Add(tab);
-            tabs.Children.Add(tab);
-        }
+        };
         grid.ItemClick += (_, e) =>
         {
-            if (e.ClickedItem is TextBlock { Text: { Length: > 0 } emoji })
+            if (e.ClickedItem is ReactionSearchResult cell)
             {
-                flyout.Hide();
-                pick(emoji);
+                pick(cell.Emoji);
             }
         };
-        ShowSection(0);
-        flyout.ShowAt(anchor);
+        return grid;
     }
 
-    /// <summary>A section's header, in the reader's language — each spelled out, so the catalogue scan finds its key.</summary>
+    private static TextBlock Heading(string text = "") =>
+        new() { Text = text, FontWeight = FontWeights.SemiBold, Margin = new Thickness(6, 4, 0, 2) };
+
     private static string Name(string canonical, IStringCatalog say) => canonical switch
     {
         "Smileys" => say.Get("Smileys"),

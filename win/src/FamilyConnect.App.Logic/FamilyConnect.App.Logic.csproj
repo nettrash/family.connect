@@ -24,5 +24,9 @@
   -->
   <ItemGroup>
     <EmbeddedResource Include="emoji-names.tsv" LogicalName="FamilyConnect.App.Logic.emoji-names.tsv" />
+    <!-- Shared CLDR data, embedded from the canonical #116 files. Read one locale alongside English. -->
+    <EmbeddedResource Include="../../../web/text/data/emoji-search/*.tsv"
+                      LogicalName="FamilyConnect.App.Logic.ReactionSearch.%(Filename)%(Extension)"
+                      WithCulture="false" />
   </ItemGroup>
 </Project>

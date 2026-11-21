@@ -85,6 +85,8 @@ public static class EmojiTyping
     /// </summary>
     private static readonly Lazy<FrozenDictionary<string, string>> Names = new(LoadNames);
 
+    internal static IReadOnlyDictionary<string, string> Shortcodes => Names.Value;
+
     /// <summary>The emoji <paramref name="name"/> (no colons) stands for, or null. Names are matched exactly: <c>:Fire:</c> is not <c>:fire:</c>.</summary>
     public static string? EmojiNamed(string name) => Names.Value.TryGetValue(name, out var emoji) ? emoji : null;
 
