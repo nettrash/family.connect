@@ -14,15 +14,18 @@ namespace FamilyConnect.App.Views;
 /// <summary>The conversation's More reactions flyout.</summary>
 public sealed partial class EmojiPicker : UserControl
 {
-    // A recent and a catalogue item can show the same emoji. ScrollIntoView must find
-    // the exact cell for the section that was requested.
-    public sealed class Cell(ReactionSearchResult result)
+    // The same emoji can occur in recents and the catalogue. Each location needs its own cell.
+    private sealed class Cell(ReactionSearchResult result)
     {
         public string Emoji => result.Emoji;
         public string Name => result.Name;
     }
 
-    private sealed record Section(string Name, string Symbol, IReadOnlyList<Cell> Cells);
+    private sealed class Section(string name, string symbol, IEnumerable<Cell> cells) : List<Cell>(cells)
+    {
+        public string Name { get; } = name;
+        public string Symbol { get; } = symbol;
+    }
 
     private readonly ReactionSearch search;
     private readonly Cell firstBrowseItem;
@@ -52,7 +55,7 @@ public sealed partial class EmojiPicker : UserControl
         }
         sections.AddRange(EmojiCatalog.Categories.Select(category =>
             new Section(SectionName(category.Name, say), category.Emoji[0], MakeCells(category.Emoji))));
-        firstBrowseItem = sections[0].Cells[0];
+        firstBrowseItem = sections[0][0];
         browseStart = firstBrowseItem;
 
         WireCells(Catalogue, pick);
@@ -68,9 +71,7 @@ public sealed partial class EmojiPicker : UserControl
         var groupView = new CollectionViewSource
         {
             IsSourceGrouped = true,
-            Source = sections.SelectMany(section => section.Cells.Select(cell => (section.Name, cell)))
-                .GroupBy(entry => entry.Name, entry => entry.cell)
-                .ToArray(),
+            Source = sections,
         };
         Catalogue.ItemsSource = groupView.View;
 
@@ -87,7 +88,7 @@ public sealed partial class EmojiPicker : UserControl
             };
             AutomationProperties.SetName(button, section.Name);
             ToolTipService.SetToolTip(button, section.Name);
-            button.Click += (_, _) => Jump(section.Cells[0]);
+            button.Click += (_, _) => Jump(section[0]);
             Shortcuts.Children.Add(button);
         }
 
@@ -151,9 +152,8 @@ public sealed partial class EmojiPicker : UserControl
         return flyout;
     }
 
-    private IReadOnlyList<Cell> MakeCells(IEnumerable<string> emoji) => emoji.Distinct(StringComparer.Ordinal)
-        .Select(value => new Cell(search.Describe(value)))
-        .ToArray();
+    private IEnumerable<Cell> MakeCells(IEnumerable<string> emoji) => emoji.Distinct(StringComparer.Ordinal)
+        .Select(value => new Cell(search.Describe(value)));
 
     private void Jump(Cell start)
     {
@@ -239,6 +239,12 @@ public sealed partial class EmojiPicker : UserControl
         }
         return null;
     }
+
+    private void ShowSectionName(FrameworkElement sender, DataContextChangedEventArgs args) =>
+        ((TextBlock)sender).Text = args.NewValue is Section section ? section.Name : string.Empty;
+
+    private void ShowCellEmoji(FrameworkElement sender, DataContextChangedEventArgs args) =>
+        ((TextBlock)sender).Text = args.NewValue is Cell cell ? cell.Emoji : string.Empty;
 
     private static void WireCells(GridView grid, Action<string> pick)
     {
