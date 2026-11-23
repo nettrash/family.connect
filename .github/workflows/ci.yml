@@ -191,12 +191,15 @@ jobs:
 
       # Pinned rather than `stable`. The clippy step below is -D warnings, so
       # an unpinned toolchain turns "rustc shipped a new lint" into a red build
-      # with no commit to blame. 1.95.0 is what these gates were verified
-      # green on; bump it deliberately.
+      # with no commit to blame. 1.100.0 is what these gates were verified
+      # green on; bump it deliberately — and together with
+      # win/tools/board-oracle/rust-toolchain.toml, whose fixtures carry this
+      # compiler's Unicode tables (regenerate them, and UnicodeProperties.g.cs,
+      # in the same change: win/README.md, "The oracle").
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.100.0
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2

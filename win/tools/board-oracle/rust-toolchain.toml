@@ -1,4 +1,4 @@
 # Match Server CI's Unicode tables when generating Windows fixtures.
 [toolchain]
-channel = "1.95.0"
+channel = "1.100.0"
 profile = "minimal"

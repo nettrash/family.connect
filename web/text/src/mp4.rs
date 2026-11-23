@@ -318,9 +318,10 @@ pub fn layout(tracks: &[Track], brand: Brand) -> Layout {
     let mut at = media_start;
     for chunk in &chunks {
         offsets.push(at);
-        for sample in chunk.first..chunk.first + chunk.count {
+        let samples = &tracks[chunk.track].samples[chunk.first..chunk.first + chunk.count];
+        for (sample, entry) in (chunk.first..).zip(samples) {
             order.push((chunk.track, sample));
-            at += u64::from(tracks[chunk.track].samples[sample].size);
+            at += u64::from(entry.size);
         }
     }
     let moov = moov(tracks, &chunks, &offsets, wide);

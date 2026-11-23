@@ -3519,10 +3519,7 @@ fn foundation_accepts_url(url: &str) -> bool {
         }
         non_ascii = true;
     }
-    if non_ascii && !idna_labels_valid(host) {
-        return false;
-    }
-    true
+    !non_ascii || idna_labels_valid(host)
 }
 
 /// UTS #46 over a host with anything non-ASCII in it, label by label (IDNA
