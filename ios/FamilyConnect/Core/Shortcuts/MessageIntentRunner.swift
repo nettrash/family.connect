@@ -20,6 +20,17 @@
 //  merely tidy, it is the feature. A Shortcut that runs while the phone is
 //  locked therefore behaves like a send made by hand and abandoned halfway.
 //
+//  WHAT THE SHORTCUT IS TOLD. Queuing is not sending: `send` and
+//  `sendMedia` return once the row is written, with the delivery still
+//  running, and a process the system launched for this action may be
+//  suspended the moment `perform()` returns. So the runner waits — held
+//  awake (`UploadLifeline`), for at most `deliveryWait` — until the row is
+//  sent or failed, and only a row the server has is "Sent". One still
+//  going when the wait ends is reported as queued, which is the truth: it
+//  is in the outbox, and the next launch, the next run of this Shortcut or
+//  the system's own upload (`BackgroundUploads`) finishes it. One the
+//  server refused is the action's error, with the red bubble to retry from.
+//
 //  Nothing here asks the user anything: a Shortcut has no window, and the
 //  share extension's "nothing auto-sends" rule (ShareImport) is about the
 //  composer a share lands in, which this path has none of. The
@@ -49,6 +60,16 @@ nonisolated struct ShortcutFile {
 @MainActor
 final class MessageIntentRunner {
 
+    /// How a send ended, for the dialog.
+    struct Outcome: Equatable {
+        /// The server has it. False is a message still in the outbox when
+        /// the wait ran out — queued, not lost.
+        let delivered: Bool
+        /// Who it went to, for Siri to say ("Sent to Anna."), or nil when
+        /// this device cannot name them — the dialog then names nobody.
+        let name: String?
+    }
+
     /// Why the Shortcut was told no. The sentences are in the conformance
     /// below, where the failure is the only thing that knows them.
     enum Failure: Error {
@@ -61,6 +82,9 @@ final class MessageIntentRunner {
         /// staged, which the plan has already ruled out, so: a bug worth
         /// surfacing rather than reporting success.
         case refusedByStore
+        /// Queued, then refused by the server: the bubble is red in the
+        /// chat, with the composer's own tap-to-retry.
+        case notDelivered
     }
 
     // MARK: - Collaborators
@@ -76,10 +100,9 @@ final class MessageIntentRunner {
     var isActiveMember: (Int64) -> Bool = { _ in false }
     var isBlocked: (Int64) -> Bool = { _ in false }
     var directChatID: (Int64) -> Int64? = { _ in nil }
-    var familyChatID: () -> Int64? = { nil }
-    /// The family chat's title — the name the picker shows for it and Siri
-    /// says back.
-    var familyChatTitle: () -> String? = { nil }
+    /// Every family chat this device holds, one per family, the home
+    /// family's first; the title is what the picker shows and Siri says.
+    var familyChats: () -> [MessageIntentPlan.FamilyChat] = { [] }
     var memberName: (Int64) -> String? = { _ in nil }
     var isSignedIn: () -> Bool = { false }
     /// Bootstrap and connect if this launch did not: a Shortcut can start
@@ -90,13 +113,33 @@ final class MessageIntentRunner {
     }
     var sendText: (String, Int64) -> String? = { _, _ in nil }
     var sendFiles: ([MediaPrep.Prepared], String, Int64) -> String? = { _, _, _ in nil }
+    /// Where a queued row has got to, by its localID; nil for a row the
+    /// store does not hold.
+    var deliveryState: (String) -> MessageStatus? = { _ in nil }
+
+    // The seams below exist for the tests: the app keeps the defaults.
+
+    var prepareFile: (ShortcutFile) async throws -> MediaPrep.Prepared = { file in
+        try await MessageIntentRunner.prepare(file)
+    }
+    var discard: (MediaPrep.Prepared) -> Void = { MediaPrep.discard($0) }
+    var sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// How long a Shortcut waits for the server before saying "queued".
+    /// Under the system's own patience with an action, with room for the
+    /// launch, the bootstrap and the media preparation before it.
+    var deliveryWait: Duration = .seconds(15)
+    var pollInterval: Duration = .milliseconds(250)
 
     // MARK: - The picker
 
     /// What Shortcuts offers for "Recipient": the family chat, then the
     /// members. Empty while signed out, which is the honest list.
     func choices() -> [MessageIntentPlan.Choice] {
-        MessageIntentPlan.choices(familyChatTitle: familyChatTitle(), roster: roster())
+        MessageIntentPlan.choices(familyChats: familyChats(), roster: roster())
+    }
+
+    private func familyChatTitle(_ chatID: Int64) -> String? {
+        familyChats().first { $0.chatID == chatID }?.title
     }
 
     /// The name behind a picker id, for the entity the system shows again
@@ -107,16 +150,12 @@ final class MessageIntentRunner {
 
     // MARK: - Sending
 
-    /// Send what the Shortcut asked for.
-    ///
-    /// Returns the recipient's name for Siri to say ("Sent to Anna."), or
-    /// nil when this device cannot name them — the dialog then says only
-    /// that it went.
+    /// Send what the Shortcut asked for, and wait to learn whether it went.
     func send(
         recipient: MessageIntentPlan.Recipient,
         body: String?,
         files: [ShortcutFile]
-    ) async throws -> String? {
+    ) async throws -> Outcome {
         // FIRST, so that the plan's "signed out" means signed out and not
         // merely "this background launch has not read the keychain yet".
         await ensureReady()
@@ -131,47 +170,81 @@ final class MessageIntentRunner {
                 isBlocked: isBlocked,
                 roster: roster,
                 directChatID: directChatID,
-                familyChatID: familyChatID))
+                isFamilyChat: { [familyChats] chatID in familyChats().contains { $0.chatID == chatID } }))
+
+        // A refusal is answered before a single file is touched: converting
+        // ten clips only to say "sign in first" is minutes of work, and
+        // battery, for nothing.
+        if case .refuse(let refusal) = decision { throw Failure.refusal(refusal) }
 
         // Prepared BEFORE any chat is opened: a Shortcut whose photo turns
         // out to be unreadable must not leave behind a direct chat that was
         // created for a message that never arrived.
         var prepared: [MediaPrep.Prepared] = []
         do {
-            for file in files { prepared.append(try await Self.prepare(file)) }
+            for file in files { prepared.append(try await prepareFile(file)) }
         } catch {
-            for item in prepared { MediaPrep.discard(item) }
+            for item in prepared { discard(item) }
             throw error
         }
 
         let chatID: Int64
-        var label: String?
+        let name: String?
         switch decision {
         case .refuse(let refusal):
-            for item in prepared { MediaPrep.discard(item) }
+            // Answered above; the switch has to say so again.
+            for item in prepared { discard(item) }
             throw Failure.refusal(refusal)
         case .send(let id, let peerUserID):
             chatID = id
-            label = peerUserID.flatMap { memberName($0) } ?? familyChatTitle()
+            // A direct chat is named by its person and the family chat by
+            // its family — never one for the other.
+            name = peerUserID.map { memberName($0) } ?? familyChatTitle(id)
         case .openDirectThenSend(let userID):
             guard let id = try? await openDirectChat(userID) else {
-                for item in prepared { MediaPrep.discard(item) }
+                for item in prepared { discard(item) }
                 AppLog.app.info("Shortcut send stopped: the direct chat could not be opened")
                 throw Failure.couldNotOpenChat
             }
             chatID = id
-            label = memberName(userID) ?? familyChatTitle()
+            name = memberName(userID)
         }
 
         let text = trimmed ?? ""
         let queued = prepared.isEmpty
             ? sendText(text, chatID)
             : sendFiles(prepared, text, chatID)
-        guard queued != nil else {
+        guard let localID = queued else {
             AppLog.app.info("Shortcut send stopped: the queue refused the message")
             throw Failure.refusedByStore
         }
-        return label
+        switch await waitForDelivery(of: localID) {
+        case .sent:
+            return Outcome(delivered: true, name: name)
+        case .failed:
+            AppLog.app.info("Shortcut send: the server refused the queued message")
+            throw Failure.notDelivered
+        case .pending, nil:
+            AppLog.app.info("Shortcut send: still queued when the wait ended")
+            return Outcome(delivered: false, name: name)
+        }
+    }
+
+    /// Hold the process awake until the row settles or `deliveryWait` runs
+    /// out, whichever is first. The last read is what is reported, so a row
+    /// that went in the final interval still counts as sent.
+    private func waitForDelivery(of localID: String) async -> MessageStatus? {
+        await UploadLifeline.withLifeline(name: "FamilyConnect.shortcut") {
+            let polls = max(1, Int((deliveryWait / pollInterval).rounded(.up)))
+            for _ in 0..<polls {
+                switch deliveryState(localID) {
+                case .sent: return .sent
+                case .failed: return .failed
+                case .pending, nil: await sleep(pollInterval)
+                }
+            }
+            return deliveryState(localID)
+        }
     }
 
     /// One file from Shortcuts, made exactly the way the composer makes a
@@ -183,7 +256,7 @@ final class MessageIntentRunner {
     /// `animates: true` because a Shortcut can only aim at a family or a
     /// direct chat, never the assistant's, and in those an animated GIF or
     /// WebP is an animation (docs/protocol.md, "Animations", #96).
-    private static func prepare(_ file: ShortcutFile) async throws -> MediaPrep.Prepared {
+    static func prepare(_ file: ShortcutFile) async throws -> MediaPrep.Prepared {
         if let url = file.fileURL {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -236,6 +309,8 @@ extension MessageIntentRunner.Failure: CustomLocalizedStringResourceConvertible 
             return "The chat could not be opened. Check your connection and try again."
         case .refusedByStore:
             return "The message could not be queued."
+        case .notDelivered:
+            return "The message wasn't sent. Open the chat and tap it to retry."
         }
     }
 }

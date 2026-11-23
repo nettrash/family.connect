@@ -256,13 +256,24 @@ nonisolated enum SendShortcut {
         // handed over exactly the way CallIntentHandler hands its roster
         // resolution back. `.value` is where a refusal becomes the
         // Shortcut's error.
-        let name = try await Task { @MainActor in
+        let outcome = try await Task { @MainActor in
             try await runner.send(recipient: meant, body: body, files: handed)
         }.value
-        if let name, !name.isEmpty {
+        // "Sent" only for what the server has. A message still in the
+        // outbox when the runner stopped waiting is queued, and says so:
+        // telling a 03:00 automation "Sent" about a row that then sits on
+        // the phone until morning is the one answer worse than an error.
+        let name = outcome.name.flatMap { $0.isEmpty ? nil : $0 }
+        switch (outcome.delivered, name) {
+        case (true, let name?):
             return .result(dialog: IntentDialog("Sent to \(name)."))
+        case (true, nil):
+            return .result(dialog: IntentDialog("Sent."))
+        case (false, let name?):
+            return .result(dialog: IntentDialog("It will be sent to \(name) as soon as there is a connection."))
+        case (false, nil):
+            return .result(dialog: IntentDialog("It will be sent as soon as there is a connection."))
         }
-        return .result(dialog: IntentDialog("Sent."))
     }
 
     /// The bytes or the file, whichever Shortcuts actually has. The URL goes

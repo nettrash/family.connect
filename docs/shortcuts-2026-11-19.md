@@ -25,6 +25,9 @@ message**, exactly as the composer's "up to ten attachments as ONE message" does
 Nothing new is sent over the wire: the message is queued by `ChatSyncCoordinator.send` and
 `sendMedia`, the two every composer button already uses.
 
+*Amended 2026-11-23, after review: several families (§4a, **D9**), what the Shortcut is told
+(§2a, **D10**), and a refusal answered before any file is prepared (§6).*
+
 ## 2. Why the send is the composer's send — **D1**
 
 The scheduled case is the reason the whole feature exists, and it is the reason to reuse the
@@ -34,6 +37,24 @@ on an unreliable network"). So a Shortcut that runs at 03:00, with the app launc
 background by the system and killed the moment the send is queued, still delivers — and a
 failure is a red bubble with tap-to-retry in the chat, not a vanished intention. Reimplementing
 the send for Shortcuts would have thrown that away to save nothing.
+
+## 2a. "Sent" means the server has it — **D10**
+
+Queuing is not sending. `send` and `sendMedia` return once the row is written, with the delivery
+still running, and a process the system launched for an action can be suspended the moment
+`perform()` returns. The first build said "Sent to Anna." at that point, so a 03:00 automation
+could be told "Sent" about a row that then sat on the phone until morning.
+
+So the runner waits: held awake by `UploadLifeline`, it reads the row every 250 ms for at most
+15 s, which leaves room inside the system's patience with an action for the launch, the
+bootstrap and the media preparation before it.
+
+- **Sent** — the server has it: "Sent to Anna." / "Sent."
+- **Still pending** when the wait ends — queued, not lost: "It will be sent to Anna as soon as
+  there is a connection." The next launch, the next run of the Shortcut or the system's own
+  upload (`BackgroundUploads`) finishes it.
+- **Failed** — the server refused it: the action's error, "The message wasn't sent. Open the
+  chat and tap it to retry.", with the red bubble to retry from.
 
 ## 3. It sends without a composer, deliberately — **D2**
 
@@ -56,8 +77,8 @@ across the screen.
 ## 4. Who can be addressed — **D3**
 
 Family members (a direct chat, created get-or-create when this device has never opened one) and
-the **family chat**, which the issue does not name but which is where a scheduled "good
-morning", a reminder or a sensor reading most often belongs.
+the **family chat** — one per family the account is in (§4a) — which the issue does not name but
+which is where a scheduled "good morning", a reminder or a sensor reading most often belongs.
 
 Not addressable, and refused if an old Shortcut still points at one:
 
@@ -67,6 +88,24 @@ Not addressable, and refused if an old Shortcut still points at one:
   group concept yet. Follow-up, not an omission;
 - **a member who left, deleted their account, or is blocked** — the roster gate is the member
   pickers' rule, so an id that outlived the membership is not choosable at all.
+
+## 4a. Several families — **D9**
+
+An account may be in several families (docs/protocol.md, "Several families"), and the app shows
+one at a time. A Shortcut runs with no window, so "the family on screen" means nothing to it, and
+everything here is every family's:
+
+- **Each family chat this device holds is its own recipient**, listed in the session's family
+  order (the home family first) and named by its title. A chat the server lists in no family
+  (`"-"`) is not offered.
+- **A member is reachable while any family this device holds lists them**
+  (`MessageIntentPlan.isOnAHeldRoster`, over `MemberEntity.familyRoles`). `hasLeft` is the
+  projection onto the family on screen, so reading it refused a member of the other family as
+  unknown until the person switched back. A family this account leaves takes its roles out of
+  every row (`dropFamily`), which also tells the system the recipients changed.
+
+The first build read one family chat — whichever the store returned first — so "the family
+chat" could post into the wrong family.
 
 ## 5. Naming somebody with no picker — **D4**
 
@@ -82,9 +121,10 @@ in, because it is exact.
 
 The member's picker id **is** their `familyconnect:<id>` handle — `CallHandle`, the string the
 calling side already mints — so a person who resolves for a Siri call resolves for a message,
-and one identity is minted in one place. The family chat takes the handle-shaped id a member id
-can never be (`familyconnect:family`; a user id is a number), which keeps the two namespaces
-apart without a second scheme.
+and one identity is minted in one place. A family chat takes a handle-shaped id a member id can
+never be, `familyconnect:family:<chat id>` (what follows the scheme is not a number), which
+keeps the two namespaces apart without a second scheme. The chat id rather than the family id,
+because it is what the send needs and what the store answers for every family alike.
 
 ## 6. Attachments are prepared, not forwarded — **D5**
 
@@ -96,9 +136,11 @@ as an animation (#96), and everything else as the file it is. The ceiling is
 `MediaPrep.sizeLimit`; the count ceiling is `ShareHandoff.maxAttachmentsPerMessage`, shared with
 the share hand-off rather than restated.
 
-Files are prepared **before** any chat is created, so a Shortcut holding an unreadable photo
-does not leave behind a direct chat made for a message that never arrived; a failure discards
-what was already prepared, which is the same litter rule `MediaPrep.discard` exists for.
+A refusal (§3) is answered **before** any file is prepared: converting ten clips only to say
+"sign in first" is minutes of work, and battery, for nothing. Files are then prepared **before**
+any chat is created, so a Shortcut holding an unreadable photo does not leave behind a direct
+chat made for a message that never arrived; a failure discards what was already prepared, which
+is the same litter rule `MediaPrep.discard` exists for.
 
 ## 7. In the app, not in an App Intents extension — **D6**
 
@@ -112,7 +154,7 @@ because a background launch has neither.
 
 ## 8. Strings, and one known hole — **D7 / D8**
 
-20 new keys in `ios/FamilyConnect/Localizable.xcstrings`, in all nine languages, with the
+25 new keys in `ios/FamilyConnect/Localizable.xcstrings`, in all nine languages, with the
 Serbian Latin generated from the Cyrillic by `tools/i18n` as the repo requires. The refusal for
 a blocked member deliberately mirrors the existing call refusal's wording, register included, so
 the two doors do not say the same thing two ways.
@@ -154,15 +196,21 @@ or nothing at all — no message text, no name, no recipient, no file name (§12
 
 ## 10. How it was tested
 
-`ios/FamilyConnectTests/MessageIntentPlanTests.swift` — 15 tests, both lanes (iPhone simulator
-and `platform=macOS,arch=arm64`), pinning every branch of `decide` in the order the plan asks
-them, the attachment cap at and above the limit, the name matcher's four outcomes, and the
-picker's ids against `CallHandle`. The intent framework itself is not testable on the simulator,
+`ios/FamilyConnectTests/MessageIntentPlanTests.swift` — 23 tests, both lanes (iPhone simulator
+and `platform=macOS,arch=arm64`). The plan's 17 pin every branch of `decide` in the order the
+plan asks them, the attachment cap at and above the limit, the name matcher's four outcomes,
+several families' chats and rosters (§4a), and the picker's ids against `CallHandle`. The
+runner's 6 pin that a refusal prepares nothing (§6), that only a delivered row is "Sent" and a
+pending one is queued (§2a), that a server refusal is the action's error, that a direct chat is
+never named after a family, and that a member with no direct chat gets one opened. The intent framework itself is not testable on the simulator,
 which is why every decision above lives in `MessageIntentPlan`.
 
 ## 11. Follow-ups, listed rather than assumed
 
 - Groups as recipients (§4), and a Shortcut that opens a chat rather than posting to it.
+- Siri calls read the same on-screen projection: `CallIntentHandler`'s roster filters on
+  `hasLeft`, so a member of the family not on screen is not callable by name. The rule for
+  it is §4a's `isOnAHeldRoster`; not changed here, because calls are not this issue.
 - `check-strings.py` covering the App Intents positions (§8).
 - `tools/i18n/regenerate_serbian.py` currently dies on four `SR` keys the catalogue renamed
   during the groups work and around "Attach a File…" — unrelated to this issue, and worth its

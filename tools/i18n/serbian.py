@@ -584,6 +584,14 @@ SR = {
 "The chat could not be opened. Check your connection and try again.":
   "Ћаскање не може да се отвори. Провери везу и пробај поново.",
 "The message could not be queued.": "Порука не може да се стави у ред.",
+# What Siri says when the wait for the server ran out (queued, not lost),
+# and the error for a queued message the server refused.
+"It will be sent to %@ as soon as there is a connection.":
+  "Прималац: %@. Порука ће бити послата чим се успостави веза.",
+"It will be sent as soon as there is a connection.":
+  "Порука ће бити послата чим се успостави веза.",
+"The message wasn't sent. Open the chat and tap it to retry.":
+  "Порука није послата. Отвори ћаскање и додирни је да пробаш поново.",
 # --- end 2026-11-19 Shortcuts ---
 }
 

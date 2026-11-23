@@ -228,13 +228,13 @@ own heading, "Host Your Family", and lists the products by these display names; 
 follow that heading and its sentence in `Localizable.xcstrings`, informal "du" in German included.
 No limit appears — 25 members, 10 GiB, the assistant allowance — because each is a server setting
 and the screen already shows the live values from `paid_family_limits`; a number typed here goes
-stale the first time an operator changes one. No price or period either: Apple's sheet shows both. That includes the word FREE in any
-language: App Review rejected 1.3 (178) for the Mac on 2026-11-16 (guideline 2.3.2, submission
-b8dc6960) because the old description, "Hosts your family. Members join for free.", counts as a
-price reference in a promoted purchase's metadata. That members never pay belongs in the app's
-Description and the review notes, not here. And never "family plan" or "share with your family":
-it reads as Family Sharing, which is off for these products and cannot be turned off again once
-on.*
+stale the first time an operator changes one. No price or period either: Apple's sheet shows both.
+That includes the word FREE in any language: App Review rejected 1.3 (178) for the Mac on
+2026-11-16 (guideline 2.3.2, submission b8dc6960) because the old description, "Hosts your
+family. Members join for free.", counts as a price reference in a promoted purchase's metadata.
+That members never pay belongs in the app's Description and the review notes, not here. And never
+"family plan" or "share with your family": it reads as Family Sharing, which is off for these
+products and cannot be turned off again once on.*
 
 *App Store Connect has no Serbian, so `sr` and `sr-Latn` devices, like any language without a row
 here, see the primary language. Each product also needs a review screenshot of that screen, from a

@@ -428,14 +428,21 @@ struct FamilyConnectApp: App {
             // outbox — the same closure-wired idiom as CallIntentHandler's
             // roster, so the intent file never names SwiftData or the socket.
             //
-            // The roster gate is the member pickers' (not me, not left, not
-            // deleted, never the assistant), so a Shortcut saved last month
-            // cannot post into a chat with somebody who is gone.
+            // The roster gate: not me, not deleted, never the assistant, and
+            // on the roster of a family this device holds — ANY of them, not
+            // the one on screen (`MessageIntentPlan.isOnAHeldRoster`): a
+            // Shortcut has no screen, and `hasLeft` is that screen's
+            // projection. So a Shortcut saved last month cannot post into a
+            // chat with somebody who is gone, and one aimed at a member of
+            // the other family still reaches them.
             let shortcuts = MessageIntentRunner()
             func shortcutRoster() -> [CallRequestRouter.Candidate] {
                 let descriptor = FetchDescriptor<MemberEntity>(
-                    predicate: #Predicate { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted })
+                    predicate: #Predicate { !$0.isCurrentUser && !$0.accountDeleted })
                 return ((try? container.mainContext.fetch(descriptor)) ?? [])
+                    .filter {
+                        MessageIntentPlan.isOnAHeldRoster(familyRolesText: $0.familyRolesText, hasLeft: $0.hasLeft)
+                    }
                     .map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
             }
             shortcuts.roster = shortcutRoster
@@ -450,8 +457,9 @@ struct FamilyConnectApp: App {
                     predicate: #Predicate { $0.kind == "direct" && $0.peerUserID == peer })
                 return (try? container.mainContext.fetch(descriptor))?.first?.chatID
             }
-            shortcuts.familyChatID = { Self.shortcutFamilyChat(in: container)?.chatID }
-            shortcuts.familyChatTitle = { Self.shortcutFamilyChat(in: container)?.title }
+            shortcuts.familyChats = {
+                Self.shortcutFamilyChats(in: container, families: session.families.map(\.id))
+            }
             shortcuts.memberName = { userID in
                 let descriptor = FetchDescriptor<MemberEntity>(predicate: #Predicate { $0.userID == userID })
                 return (try? container.mainContext.fetch(descriptor))?.first?.resolvedDisplayName
@@ -472,6 +480,7 @@ struct FamilyConnectApp: App {
             shortcuts.openDirectChat = { try await coordinator.openDirectChat(with: $0) }
             shortcuts.sendText = { coordinator.send(body: $0, in: $1) }
             shortcuts.sendFiles = { coordinator.sendMedia($0, caption: $1, in: $2) }
+            shortcuts.deliveryState = { coordinator.fetchMessage(localID: $0)?.state }
             MessageIntents.runner = shortcuts
             // The phrases that name a person ("Send a message to Anna with
             // Family") are built by the system from the recipient list, and
@@ -796,17 +805,36 @@ extension Notification.Name {
 /// server can send again. That is the same promise the error view has
 /// always made to the reader.
 extension FamilyConnectApp {
-    /// The family chat this device holds, for the Shortcuts recipient list
+    /// Every family chat this device holds, for the Shortcuts recipient list
     /// and its send (MessageIntents): its id for the message, its title for
-    /// what Siri says back. nil when the store holds none — a device signed
+    /// what Siri says back. One per family the account is in — several
+    /// families means several family chats — in `families`' order (the
+    /// session's, home family first), so the picker lists them the way the
+    /// switcher does. Empty when the store holds none — a device signed
     /// into no family, or one that has never synced — which the plan
     /// refuses rather than inventing.
     ///
-    /// The kind is spelled out as it is in the store layer
+    /// A chat the server lists in NO family (`"-"`) is not offered; one
+    /// nobody described (`""`, a server from before several families) is
+    /// the home family's (`FamilyRules.isListed`), so it sorts first. The
+    /// kind is spelled out as it is in the store layer
     /// (ChatSyncCoordinator), where these are wire values being matched.
-    private static func shortcutFamilyChat(in container: ModelContainer) -> ChatEntity? {
-        let descriptor = FetchDescriptor<ChatEntity>(predicate: #Predicate { $0.kind == "family" })
-        return (try? container.mainContext.fetch(descriptor))?.first
+    private static func shortcutFamilyChats(
+        in container: ModelContainer, families: [Int64]
+    ) -> [MessageIntentPlan.FamilyChat] {
+        let descriptor = FetchDescriptor<ChatEntity>(
+            predicate: #Predicate { $0.kind == "family" },
+            sortBy: [SortDescriptor(\.chatID)])
+        let chats = ((try? container.mainContext.fetch(descriptor)) ?? [])
+            .filter { $0.familyIDsText != FamilyIDList.noFamily }
+        func rank(_ chat: ChatEntity) -> Int {
+            guard let listed = chat.familyIDs else { return 0 }
+            return listed.compactMap { families.firstIndex(of: $0) }.min() ?? families.count
+        }
+        return chats
+            .enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map { MessageIntentPlan.FamilyChat(chatID: $0.element.chatID, title: $0.element.title) }
     }
 
     static func storeFiles(for url: URL) -> [URL] {

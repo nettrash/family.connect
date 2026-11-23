@@ -38,6 +38,17 @@
 //     direct chat this device holds is used as it is, and one it does not
 //     hold has to be created first, which is the runner's business.
 //
+//  SEVERAL FAMILIES (docs/protocol.md, "Several families"). An account may
+//  be in more than one family, and the app shows one of them at a time —
+//  but a Shortcut runs with no window, so "the family on screen" means
+//  nothing to it. Everything here is therefore EVERY family's: each family
+//  chat this device holds is its own recipient, named by its chat id, and a
+//  member is reachable while any family this device holds lists them
+//  (`isOnAHeldRoster`). Reading the on-screen projection instead (`hasLeft`)
+//  posted "the family chat" into whichever family's chat the store returned
+//  first, and refused a member of the other family as unknown until the
+//  person switched back.
+//
 
 import Foundation
 
@@ -45,9 +56,10 @@ nonisolated enum MessageIntentPlan {
 
     /// Who the Shortcut named.
     enum Recipient: Equatable, Sendable {
-        /// The family's own chat — the ordinary target for a scheduled
-        /// "good morning" or a daily reminder.
-        case familyChat
+        /// One family's own chat — the ordinary target for a scheduled
+        /// "good morning" or a daily reminder. By chat id, because an
+        /// account in several families has one of these per family.
+        case familyChat(chatID: Int64)
         /// Somebody the picker resolved, or a handle the system handed back.
         case member(userID: Int64)
         /// A name as text: what a phrase or another action's output gives
@@ -67,8 +79,8 @@ nonisolated enum MessageIntentPlan {
         /// back out of it.
         case ambiguous([CallRequestRouter.Candidate])
         case blocked(Int64)
-        /// No family chat on this device — signed out of the family, or a
-        /// store that has never synced one.
+        /// That family chat is not on this device — the account left the
+        /// family, or the store has never synced it.
         case noFamilyChat
     }
 
@@ -97,7 +109,9 @@ nonisolated enum MessageIntentPlan {
         var isBlocked: (Int64) -> Bool
         var roster: () -> [CallRequestRouter.Candidate]
         var directChatID: (Int64) -> Int64?
-        var familyChatID: () -> Int64?
+        /// Whether this chat id is a family chat this device holds — of
+        /// any of its families, not only the one on screen.
+        var isFamilyChat: (Int64) -> Bool
     }
 
     /// The whole decision. `attachmentCount` is what the caller was handed,
@@ -119,8 +133,8 @@ nonisolated enum MessageIntentPlan {
             return .refuse(.tooManyAttachments)
         }
         switch recipient {
-        case .familyChat:
-            guard let chatID = directory.familyChatID() else { return .refuse(.noFamilyChat) }
+        case .familyChat(let chatID):
+            guard directory.isFamilyChat(chatID) else { return .refuse(.noFamilyChat) }
             return .send(chatID: chatID, peerUserID: nil)
         case .member(let userID):
             guard directory.isActiveMember(userID) else { return .refuse(.unknownRecipient) }
@@ -153,17 +167,41 @@ nonisolated enum MessageIntentPlan {
             ?? .openDirectThenSend(userID: userID)
     }
 
+    // MARK: - Who is reachable
+
+    /// Whether a roster row is somebody this device can message: on the
+    /// roster of ANY family it holds, not only the one on screen.
+    ///
+    /// `MemberEntity.hasLeft` is the projection onto the current family
+    /// (`project(onto:)`), so a member of the other family reads as having
+    /// left — right for a roster screen, wrong for a Shortcut, which has no
+    /// screen. The per-family roles are the whole truth: a family this
+    /// account leaves is taken out of every row's roles (`dropFamily`), so
+    /// a row whose roles name no family (`"-"`) is on no roster here. A row
+    /// nobody has described yet (`""`, from before several families) has
+    /// only the projection to go by, and keeps it.
+    static func isOnAHeldRoster(familyRolesText: String, hasLeft: Bool) -> Bool {
+        guard !familyRolesText.isEmpty else { return !hasLeft }
+        return !FamilyIDList.decodeRoles(familyRolesText).isEmpty
+    }
+
     // MARK: - The picker
 
     /// The id a Shortcuts picker hands back, and the recipient behind it.
     ///
     /// A member's id IS their handle (CallHandle) — the very string Siri
     /// carries for a call, so one identity is minted in one place and a
-    /// person who resolved for a call resolves for a message. The family
-    /// chat gets the handle-shaped id a member id can never be: a user id is
-    /// a number, so `familyconnect:family` cannot collide with one.
+    /// person who resolved for a call resolves for a message. A family chat
+    /// gets a handle-shaped id a member id can never be,
+    /// `familyconnect:family:<chat id>`: what follows the scheme is not a
+    /// number, so `CallHandle` reads it as no member at all. The chat id,
+    /// not the family id, because it is what the send needs and what the
+    /// store answers for every family alike, a server from before several
+    /// families included.
     enum RecipientID {
-        static let familyChat = "\(CallHandle.scheme):family"
+        static let familyChatPrefix = "\(CallHandle.scheme):family:"
+
+        static func familyChat(_ chatID: Int64) -> String { "\(familyChatPrefix)\(chatID)" }
 
         static func member(_ userID: Int64) -> String { CallHandle.value(userID: userID) }
 
@@ -171,10 +209,22 @@ nonisolated enum MessageIntentPlan {
         /// pointing at a member who deleted their account arrives here as
         /// an unknown id and is refused as one.
         static func recipient(from id: String) -> Recipient? {
-            if id.caseInsensitiveCompare(familyChat) == .orderedSame { return .familyChat }
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmed.hasPrefix(familyChatPrefix) {
+                guard let chatID = Int64(trimmed.dropFirst(familyChatPrefix.count)), chatID > 0
+                else { return nil }
+                return .familyChat(chatID: chatID)
+            }
             guard let userID = CallHandle.userID(from: id) else { return nil }
             return .member(userID: userID)
         }
+    }
+
+    /// A family chat the picker can offer: its id for the send, its title
+    /// (the family's name) to choose by.
+    struct FamilyChat: Equatable, Sendable {
+        let chatID: Int64
+        let title: String
     }
 
     /// One row of the Shortcuts picker: the id to hand back, the name to
@@ -184,16 +234,17 @@ nonisolated enum MessageIntentPlan {
         let name: String
     }
 
-    /// What the picker offers: the family chat first, where a scheduled
-    /// message most often belongs, then the members this app can start a
-    /// chat with. The roster arrives already gated by the caller — the
-    /// member pickers' rule (not me, not left, not deleted, never the
-    /// assistant) — because an id that outlived a membership must not be
-    /// choosable at all.
-    static func choices(familyChatTitle: String?, roster: [CallRequestRouter.Candidate]) -> [Choice] {
+    /// What the picker offers: the family chats first — one per family this
+    /// device holds, in the order given (the home family's first) — where a
+    /// scheduled message most often belongs, then the members this app can
+    /// start a chat with. The roster arrives already gated by the caller —
+    /// not me, not deleted, on a roster this device holds
+    /// (`isOnAHeldRoster`), never the assistant — because an id that
+    /// outlived a membership must not be choosable at all.
+    static func choices(familyChats: [FamilyChat], roster: [CallRequestRouter.Candidate]) -> [Choice] {
         var offered: [Choice] = []
-        if let familyChatTitle, !familyChatTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            offered.append(Choice(id: RecipientID.familyChat, name: familyChatTitle))
+        for chat in familyChats where !chat.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            offered.append(Choice(id: RecipientID.familyChat(chat.chatID), name: chat.title))
         }
         offered.append(contentsOf: roster.map { Choice(id: RecipientID.member($0.userID), name: $0.name) })
         return offered

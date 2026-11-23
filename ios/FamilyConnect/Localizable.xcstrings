@@ -50853,6 +50853,165 @@
           }
         }
       }
+    },
+    "It will be sent to %@ as soon as there is a connection." : {
+      "comment" : "What Siri says when a Shortcut's message is queued but not yet delivered; %@ is the recipient's name.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird an %@ gesendet, sobald eine Verbindung besteht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se enviará a %@ en cuanto haya conexión."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sera envoyé à %@ dès qu’une connexion sera disponible."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続でき次第、%@ に送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Получатель: %@. Сообщение уйдёт, как только появится соединение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прималац: %@. Порука ће бити послата чим се успостави веза."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primalac: %@. Poruka će biti poslata čim se uspostavi veza."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将在连接可用时发送给%@。"
+          }
+        }
+      }
+    },
+    "It will be sent as soon as there is a connection." : {
+      "comment" : "What Siri says when a Shortcut's message is queued but not yet delivered, and the recipient cannot be named.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird gesendet, sobald eine Verbindung besteht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se enviará en cuanto haya conexión."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sera envoyé dès qu’une connexion sera disponible."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続でき次第、送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение уйдёт, как только появится соединение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука ће бити послата чим се успостави веза."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka će biti poslata čim se uspostavi veza."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将在连接可用时发送。"
+          }
+        }
+      }
+    },
+    "The message wasn't sent. Open the chat and tap it to retry." : {
+      "comment" : "Shortcuts error when the server refused a message a Shortcut queued; the chat shows it as failed, with retry.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Nachricht wurde nicht gesendet. Öffne den Chat und tippe sie an, um es erneut zu versuchen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El mensaje no se envió. Abre el chat y tócalo para reintentarlo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le message n’a pas été envoyé. Ouvrez la discussion et touchez-le pour réessayer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージを送信できませんでした。チャットを開き、メッセージをタップして再試行してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение не отправлено. Откройте чат и нажмите на него, чтобы повторить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука није послата. Отвори ћаскање и додирни је да пробаш поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka nije poslata. Otvori ćaskanje i dodirni je da probaš ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消息未发送。请打开聊天并轻点该消息重试。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"
