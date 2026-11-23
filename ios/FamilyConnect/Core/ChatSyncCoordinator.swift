@@ -213,6 +213,14 @@ final class ChatSyncCoordinator {
     /// it nil and touches nothing on disk.
     var onChatDropped: (@MainActor (Int64) -> Void)?
 
+    /// Called after a family roster has been written to the store — a
+    /// member joined, left, was renamed or deleted their account — and
+    /// after this device dropped a family it is no longer in. Set by
+    /// the composition root, which uses it to tell the system that the
+    /// people its Shortcuts phrases name have changed (MessageIntents); the
+    /// coordinator itself knows nothing about Shortcuts.
+    var onRosterChanged: (@MainActor () -> Void)?
+
     /// Groups that changed by frame or by this device's own request while a
     /// `GET /chats` was in flight, and so cannot be judged by that response
     /// (docs/protocol.md, "Groups", 2026-10-22). The list was built before
@@ -1242,6 +1250,9 @@ final class ChatSyncCoordinator {
         AppSettings.setBoardMarks(BoardBadge.Marks(seenNoteID: 0, seenContentSeq: 0), family: familyKey)
         boardContentMarkChecked.remove(familyKey)
         saveContext()
+        // A family gone is its chat and its people gone from the Shortcuts
+        // recipients too (MessageIntents), and no roster write follows it.
+        onRosterChanged?()
     }
 
     /// The general repair: drop whatever this device holds of a family the
@@ -5364,6 +5375,7 @@ final class ChatSyncCoordinator {
             applyMemberTombstone(former)
         }
         saveContext()
+        onRosterChanged?()
     }
 
     /// Write a deleted account's tombstone, DELIBERATELY.

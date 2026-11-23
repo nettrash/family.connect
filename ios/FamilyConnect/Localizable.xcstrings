@@ -13,6 +13,59 @@
       "comment" : "A value shown on its own, such as a name or a count already formatted.",
       "shouldTranslate" : false
     },
+    "Family recipient" : {
+      "comment" : "The kind of value a Shortcuts recipient is: a family member, or the family chat.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Empfänger aus der Familie"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destinatario de la familia"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destinataire de la famille"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "家族の宛先"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Получатель в семье"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прималац из породице"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primalac iz porodice"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "家庭收件人"
+          }
+        }
+      }
+    },
     "%@ — %@ mentioned you" : {
       "comment" : "A Mac notification's title when a family-chat message names the reader: family name, sender.",
       "localizations" : {
@@ -448,6 +501,218 @@
         }
       }
     },
+    "Nobody in your family matches that recipient. Pick them again in Shortcuts." : {
+      "comment" : "Shortcuts error when the chosen member is gone or the typed name matches nobody.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kein Familienmitglied passt zu diesem Empfänger. Wähle ihn in Kurzbefehle erneut aus."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ningún miembro de tu familia coincide con ese destinatario. Elígelo de nuevo en Atajos."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucun membre de votre famille ne correspond à ce destinataire. Choisissez-le à nouveau dans Raccourcis."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "その宛先に一致する家族メンバーがいません。ショートカットで選び直してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Никто в семье не подходит под этого получателя. Выберите его заново в приложении «Команды»."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ниједан члан породице не одговара том примаоцу. Изабери га поново у Пречицама."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nijedan član porodice ne odgovara tom primaocu. Izaberi ga ponovo u Prečicama."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的家庭中没有与该收件人匹配的成员。请在“快捷指令”中重新选择。"
+          }
+        }
+      }
+    },
+    "One of the attachments could not be read." : {
+      "comment" : "Shortcuts error when a handed-over file cannot be read or prepared for upload.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Einer der Anhänge konnte nicht gelesen werden."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer uno de los adjuntos."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de lire l’une des pièces jointes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添付ファイルの1つを読み取れません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Одно из вложений не удалось прочитать."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Један од прилога не може да се прочита."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedan od priloga ne može da se pročita."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取其中一个附件。"
+          }
+        }
+      }
+    },
+    "Recipient" : {
+      "comment" : "The Shortcuts parameter naming who a message goes to.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Empfänger"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destinatario"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destinataire"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "宛先"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Получатель"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прималац"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primalac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收件人"
+          }
+        }
+      }
+    },
+    "Recipient name" : {
+      "comment" : "The Shortcuts parameter for a recipient typed as text rather than picked from the list.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Name des Empfängers"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nombre del destinatario"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nom du destinataire"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "宛先の名前"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Имя получателя"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Име примаоца"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ime primaoca"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收件人姓名"
+          }
+        }
+      }
+    },
     "%@ reported %@" : {
       "comment" : "Report row; the first %@ is the reporter, the second the member reported",
       "localizations" : {
@@ -550,6 +815,695 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "相同的文件只保存一份，节省了 %@。"
+          }
+        }
+      }
+    },
+    "Send a Message" : {
+      "comment" : "The name of the Shortcuts action that sends a message (issue #118).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachricht senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar mensaje"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer un message"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи поруку"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji poruku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送消息"
+          }
+        }
+      }
+    },
+    "Send an Attachment" : {
+      "comment" : "The name of the Shortcuts action that sends a photo, video, recording or file (issue #118).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anhang senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar adjunto"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer une pièce jointe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添付ファイルを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить вложение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи прилог"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji prilog"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送附件"
+          }
+        }
+      }
+    },
+    "Sends a message, and anything attached to it, to a family member or the family chat." : {
+      "comment" : "What the Shortcuts message action says it does.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sendet eine Nachricht und alles, was daran angehängt ist, an ein Familienmitglied oder den Familien-Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envía un mensaje, y todo lo que esté adjunto, a un miembro de la familia o al chat familiar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoie un message, et tout ce qui y est joint, à un membre de la famille ou à la discussion familiale."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージと、それに添付されたものを、家族メンバーまたは家族チャットに送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправляет сообщение и всё, что к нему приложено, участнику семьи или в семейный чат."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шаље поруку и све што је уз њу приложено — члану породице или породичном ћаскању."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šalje poruku i sve što je uz nju priloženo — članu porodice ili porodičnom ćaskanju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向家庭成员或家庭聊天发送消息及其所有附件。"
+          }
+        }
+      }
+    },
+    "Sends a photo, a video, a voice recording or any other file to a family member or the family chat." : {
+      "comment" : "What the Shortcuts attachment action says it does.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sendet ein Foto, ein Video, eine Sprachnachricht oder eine beliebige andere Datei an ein Familienmitglied oder den Familien-Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envía una foto, un vídeo, una nota de voz o cualquier otro archivo a un miembro de la familia o al chat familiar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoie une photo, une vidéo, un message vocal ou tout autre fichier à un membre de la famille ou à la discussion familiale."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写真、動画、ボイスメッセージ、その他のファイルを、家族メンバーまたは家族チャットに送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправляет фото, видео, голосовую запись или любой другой файл участнику семьи или в семейный чат."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шаље фотографију, видео, гласовну поруку или било коју другу датотеку — члану породице или породичном ћаскању."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šalje fotografiju, video, glasovnu poruku ili bilo koju drugu datoteku — članu porodice ili porodičnom ćaskanju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向家庭成员或家庭聊天发送照片、视频、语音消息或任何其他文件。"
+          }
+        }
+      }
+    },
+    "Sent." : {
+      "comment" : "What Siri says when a Shortcut's message went and this device cannot name the recipient.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviado."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "送信しました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправлено."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Послато."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poslato."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发送。"
+          }
+        }
+      }
+    },
+    "Sent to %@." : {
+      "comment" : "What Siri says when a Shortcut's message went; %@ is the recipient's name.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An %@ gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviado a %@."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyé à %@."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ に送信しました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправлено: %@."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Послато: %@."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poslato: %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发送给%@。"
+          }
+        }
+      }
+    },
+    "Sign in to Family first, then run this Shortcut again." : {
+      "comment" : "Shortcuts error shown when the app is signed out, so nothing can be sent (issue #118).",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Melde dich zuerst bei Family an, dann führe den Kurzbefehl erneut aus."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inicia sesión en Family primero y vuelve a ejecutar el atajo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connectez-vous d’abord à Family, puis relancez le raccourci."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "まず Family にサインインしてから、このショートカットをもう一度実行してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала войдите в Family, затем запустите эту команду снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прво се пријави на Family, па поново покрени пречицу."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prvo se prijavi na Family, pa ponovo pokreni prečicu."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先登录 Family，然后再运行此快捷指令。"
+          }
+        }
+      }
+    },
+    "The chat could not be opened. Check your connection and try again." : {
+      "comment" : "Shortcuts error when the direct chat with a member could not be created.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Chat konnte nicht geöffnet werden. Prüfe deine Verbindung und versuche es erneut."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo abrir el chat. Comprueba tu conexión e inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’ouvrir la discussion. Vérifiez votre connexion et réessayez."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "チャットを開けませんでした。接続を確認して再試行してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть чат. Проверьте соединение и попробуйте снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ћаскање не може да се отвори. Провери везу и пробај поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ćaskanje ne može da se otvori. Proveri vezu i probaj ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开聊天。请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "The message could not be queued." : {
+      "comment" : "Shortcuts error when the outbox refused the message it was handed — a bug worth naming rather than reporting success.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Nachricht konnte nicht in die Warteschlange gestellt werden."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo añadir el mensaje a la cola."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’ajouter le message à la file d’attente."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージをキューに追加できませんでした。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось поставить сообщение в очередь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука не може да се стави у ред."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka ne može da se stavi u red."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法将消息加入队列。"
+          }
+        }
+      }
+    },
+    "There is nothing to send. Add a message or an attachment." : {
+      "comment" : "Shortcuts error for a send with neither text nor an attachment, so a scheduled Shortcut posts no blank rows.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Es gibt nichts zu senden. Füge eine Nachricht oder einen Anhang hinzu."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay nada que enviar. Añade un mensaje o un archivo adjunto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rien à envoyer. Ajoutez un message ou une pièce jointe."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "送信する内容がありません。メッセージまたは添付ファイルを追加してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нечего отправлять. Добавь сообщение или вложение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нема шта да се пошаље. Додај поруку или прилог."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nema šta da se pošalje. Dodaj poruku ili prilog."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可发送的内容。请添加消息或附件。"
+          }
+        }
+      }
+    },
+    "This device has no family chat to send to." : {
+      "comment" : "Shortcuts error when the Shortcut aims at the family chat and this device holds none.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Gerät hat keinen Familien-Chat, an den es senden könnte."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este dispositivo no tiene ningún chat familiar al que enviar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cet appareil n’a pas de discussion familiale vers laquelle envoyer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このデバイスには送信先の家族チャットがありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "На этом устройстве нет семейного чата, в который можно отправить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овај уређај нема породично ћаскање у које би послао."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj uređaj nema porodično ćaskanje u koje bi poslao."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备没有可发送到的家庭聊天。"
+          }
+        }
+      }
+    },
+    "Too many attachments for one message." : {
+      "comment" : "Shortcuts error when the files handed over are more than one message holds; they are not truncated.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zu viele Anhänge für eine Nachricht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demasiados adjuntos para un solo mensaje."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trop de pièces jointes pour un seul message."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージ1通に対して添付ファイルが多すぎます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слишком много вложений для одного сообщения."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Превише прилога за једну поруку."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Previše priloga za jednu poruku."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一条消息的附件过多。"
+          }
+        }
+      }
+    },
+    "Two family members share that name. Pick one of them in Shortcuts." : {
+      "comment" : "Shortcuts error when a typed name matches two members: the app refuses rather than guess.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwei Familienmitglieder haben denselben Namen. Wähle einen davon in Kurzbefehle aus."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dos miembros de tu familia comparten ese nombre. Elige uno de ellos en Atajos."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deux membres de votre famille portent ce nom. Choisissez-en un dans Raccourcis."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同じ名前の家族メンバーが2人います。ショートカットでそのうち1人を選んでください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Двое участников семьи так называются. Выберите одного из них в приложении «Команды»."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Два члана породице имају исто име. Изабери једног од њих у Пречицама."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dva člana porodice imaju isto ime. Izaberi jednog od njih u Prečicama."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有两位家庭成员同名。请在“快捷指令”中选择其中一位。"
           }
         }
       }
@@ -46035,6 +46989,59 @@
         }
       }
     },
+    "You've blocked that member. Unblock them from the family roster to send them a message." : {
+      "comment" : "Alert shown when a Shortcut asked Family to message a blocked member; mirrors the wording of the call refusal.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du hast dieses Mitglied blockiert. Hebe die Blockierung in der Familienliste auf, um ihm zu schreiben."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Has bloqueado a ese miembro. Desbloquéalo en la lista de la familia para enviarle un mensaje."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vous avez bloqué ce membre. Débloquez cette personne dans la liste de la famille pour lui envoyer un message."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "そのメンバーをブロックしています。メッセージを送るには家族リストでブロックを解除してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы заблокировали этого участника. Чтобы отправить сообщение, разблокируйте его в списке семьи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Блокирали сте тог члана. Одблокирајте га на списку породице да бисте послали поруку."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Blokirali ste tog člana. Odblokirajte ga na spisku porodice da biste poslali poruku."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已屏蔽该成员。请在家庭成员列表中解除屏蔽后再发送消息。"
+          }
+        }
+      }
+    },
     "You've blocked %@. Unblock them from the family roster to call them." : {
       "comment" : "Alert shown when the Phone app or Siri asked Family to call a blocked member; %@ is their display name.",
       "localizations" : {
@@ -49684,6 +50691,324 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未找到可恢复的 App Store 订阅。"
+          }
+        }
+      }
+    },
+    "Who do you want to send it to?" : {
+      "comment" : "What Siri asks when a Shortcuts send action (issue #118) was started without a recipient. Informal.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An wen soll es gehen?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿A quién quieres enviarlo?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "À qui veux-tu l’envoyer ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誰に送りますか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кому отправить?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Коме да пошаљем?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kome da pošaljem?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要发给谁？"
+          }
+        }
+      }
+    },
+    "What do you want to say?" : {
+      "comment" : "What Siri asks when the Shortcuts action “Send a Message” (issue #118) was started with no text and no attachment. Informal.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Was möchtest du schreiben?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Qué quieres decir?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Que veux-tu dire ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージの内容は？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Что написать?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шта да напишем?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šta da napišem?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要说什么？"
+          }
+        }
+      }
+    },
+    "What do you want to send?" : {
+      "comment" : "What Siri asks when the Shortcuts action “Send an Attachment” (issue #118) was started with nothing attached. Informal.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Was möchtest du senden?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Qué quieres enviar?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Que veux-tu envoyer ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "何を送りますか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Что отправить?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шта да пошаљем?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šta da pošaljem?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要发送什么？"
+          }
+        }
+      }
+    },
+    "It will be sent to %@ as soon as there is a connection." : {
+      "comment" : "What Siri says when a Shortcut's message is queued but not yet delivered; %@ is the recipient's name.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird an %@ gesendet, sobald eine Verbindung besteht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se enviará a %@ en cuanto haya conexión."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sera envoyé à %@ dès qu’une connexion sera disponible."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続でき次第、%@ に送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Получатель: %@. Сообщение уйдёт, как только появится соединение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прималац: %@. Порука ће бити послата чим се успостави веза."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primalac: %@. Poruka će biti poslata čim se uspostavi veza."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将在连接可用时发送给%@。"
+          }
+        }
+      }
+    },
+    "It will be sent as soon as there is a connection." : {
+      "comment" : "What Siri says when a Shortcut's message is queued but not yet delivered, and the recipient cannot be named.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird gesendet, sobald eine Verbindung besteht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se enviará en cuanto haya conexión."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sera envoyé dès qu’une connexion sera disponible."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続でき次第、送信します。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение уйдёт, как только появится соединение."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука ће бити послата чим се успостави веза."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka će biti poslata čim se uspostavi veza."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将在连接可用时发送。"
+          }
+        }
+      }
+    },
+    "The message wasn't sent. Open the chat and tap it to retry." : {
+      "comment" : "Shortcuts error when the server refused a message a Shortcut queued; the chat shows it as failed, with retry.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Nachricht wurde nicht gesendet. Öffne den Chat und tippe sie an, um es erneut zu versuchen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El mensaje no se envió. Abre el chat y tócalo para reintentarlo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le message n’a pas été envoyé. Ouvrez la discussion et touchez-le pour réessayer."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージを送信できませんでした。チャットを開き、メッセージをタップして再試行してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение не отправлено. Откройте чат и нажмите на него, чтобы повторить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука није послата. Отвори ћаскање и додирни је да пробаш поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka nije poslata. Otvori ćaskanje i dodirni je da probaš ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消息未发送。请打开聊天并轻点该消息重试。"
           }
         }
       }

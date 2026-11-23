@@ -48,6 +48,11 @@ struct FamilyConnectApp: App {
     private let pushRegistrar: PushRegistrar?
     /// The voice-call state machine, one per process like the session.
     private let callManager: CallManager?
+    /// Shortcuts' send (issue #118): the door from "Send a Message" and
+    /// "Send an Attachment" to the ordinary outbox (MessageIntents). One
+    /// per process like the session, on both platforms — App Intents is
+    /// iOS, iPadOS and macOS alike.
+    private let messageIntentRunner: MessageIntentRunner?
     #if os(iOS)
     /// CallKit and PushKit, iOS only: the Mac holds its socket and draws
     /// its own window (docs/protocol.md, "Incoming calls").
@@ -418,6 +423,74 @@ struct FamilyConnectApp: App {
             #endif
             self.callManager = calls
 
+            // Shortcuts (issue #118). The intent types are the framework's
+            // shape; this is where they meet the store, the session and the
+            // outbox — the same closure-wired idiom as CallIntentHandler's
+            // roster, so the intent file never names SwiftData or the socket.
+            //
+            // The roster gate: not me, not deleted, never the assistant, and
+            // on the roster of a family this device holds — ANY of them, not
+            // the one on screen (`MessageIntentPlan.isOnAHeldRoster`): a
+            // Shortcut has no screen, and `hasLeft` is that screen's
+            // projection. So a Shortcut saved last month cannot post into a
+            // chat with somebody who is gone, and one aimed at a member of
+            // the other family still reaches them.
+            let shortcuts = MessageIntentRunner()
+            func shortcutRoster() -> [CallRequestRouter.Candidate] {
+                let descriptor = FetchDescriptor<MemberEntity>(
+                    predicate: #Predicate { !$0.isCurrentUser && !$0.accountDeleted })
+                return ((try? container.mainContext.fetch(descriptor)) ?? [])
+                    .filter {
+                        MessageIntentPlan.isOnAHeldRoster(familyRolesText: $0.familyRolesText, hasLeft: $0.hasLeft)
+                    }
+                    .map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
+            }
+            shortcuts.roster = shortcutRoster
+            // Re-read each time, as the roster closure does: a member who
+            // leaves mid-Shortcut must stop being a target at once.
+            shortcuts.isActiveMember = { userID in
+                shortcutRoster().contains { $0.userID == userID }
+            }
+            shortcuts.isBlocked = { coordinator.blockedUserIDs.contains($0) }
+            shortcuts.directChatID = { peer in
+                let descriptor = FetchDescriptor<ChatEntity>(
+                    predicate: #Predicate { $0.kind == "direct" && $0.peerUserID == peer })
+                return (try? container.mainContext.fetch(descriptor))?.first?.chatID
+            }
+            shortcuts.familyChats = {
+                Self.shortcutFamilyChats(in: container, families: session.families.map(\.id))
+            }
+            shortcuts.memberName = { userID in
+                let descriptor = FetchDescriptor<MemberEntity>(predicate: #Predicate { $0.userID == userID })
+                return (try? container.mainContext.fetch(descriptor))?.first?.resolvedDisplayName
+            }
+            // The phase the login screens would have left the app in. A
+            // Shortcut can launch this process with no window at all, so
+            // this is the only thing that knows whether there is a session
+            // to send with.
+            shortcuts.isSignedIn = { session.phase == .active }
+            // As `calls.ensureConnected`: a background launch has neither
+            // bootstrapped nor connected, and a send needs both — the token
+            // for the queue and the socket for the message to leave now
+            // rather than at the next resync.
+            shortcuts.ensureReady = {
+                if session.phase == .booting { await session.bootstrap() }
+                await coordinator.ensureConnected()
+            }
+            shortcuts.openDirectChat = { try await coordinator.openDirectChat(with: $0) }
+            shortcuts.sendText = { coordinator.send(body: $0, in: $1) }
+            shortcuts.sendFiles = { coordinator.sendMedia($0, caption: $1, in: $2) }
+            shortcuts.deliveryState = { coordinator.fetchMessage(localID: $0)?.state }
+            MessageIntents.runner = shortcuts
+            // The phrases that name a person ("Send a message to Anna with
+            // Family") are built by the system from the recipient list, and
+            // it only re-reads that list when told to: once now, for the
+            // roster the store already holds, and again whenever a roster
+            // is written.
+            MessageIntents.recipientsChanged()
+            coordinator.onRosterChanged = { MessageIntents.recipientsChanged() }
+            self.messageIntentRunner = shortcuts
+
             self.session = session
             self.coordinator = coordinator
             self.pushRegistrar = registrar
@@ -495,6 +568,9 @@ struct FamilyConnectApp: App {
             self.coordinator = nil
             self.pushRegistrar = nil
             self.callManager = nil
+            // No store, no roster, no outbox — and the Shortcuts actions
+            // say so instead of pretending to have sent (MessageIntents).
+            self.messageIntentRunner = nil
             #if os(iOS)
             self.callKit = nil
             self.voipRegistrar = nil
@@ -729,6 +805,38 @@ extension Notification.Name {
 /// server can send again. That is the same promise the error view has
 /// always made to the reader.
 extension FamilyConnectApp {
+    /// Every family chat this device holds, for the Shortcuts recipient list
+    /// and its send (MessageIntents): its id for the message, its title for
+    /// what Siri says back. One per family the account is in — several
+    /// families means several family chats — in `families`' order (the
+    /// session's, home family first), so the picker lists them the way the
+    /// switcher does. Empty when the store holds none — a device signed
+    /// into no family, or one that has never synced — which the plan
+    /// refuses rather than inventing.
+    ///
+    /// A chat the server lists in NO family (`"-"`) is not offered; one
+    /// nobody described (`""`, a server from before several families) is
+    /// the home family's (`FamilyRules.isListed`), so it sorts first. The
+    /// kind is spelled out as it is in the store layer
+    /// (ChatSyncCoordinator), where these are wire values being matched.
+    private static func shortcutFamilyChats(
+        in container: ModelContainer, families: [Int64]
+    ) -> [MessageIntentPlan.FamilyChat] {
+        let descriptor = FetchDescriptor<ChatEntity>(
+            predicate: #Predicate { $0.kind == "family" },
+            sortBy: [SortDescriptor(\.chatID)])
+        let chats = ((try? container.mainContext.fetch(descriptor)) ?? [])
+            .filter { $0.familyIDsText != FamilyIDList.noFamily }
+        func rank(_ chat: ChatEntity) -> Int {
+            guard let listed = chat.familyIDs else { return 0 }
+            return listed.compactMap { families.firstIndex(of: $0) }.min() ?? families.count
+        }
+        return chats
+            .enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map { MessageIntentPlan.FamilyChat(chatID: $0.element.chatID, title: $0.element.title) }
+    }
+
     static func storeFiles(for url: URL) -> [URL] {
         let directory = url.deletingLastPathComponent()
         let name = url.lastPathComponent

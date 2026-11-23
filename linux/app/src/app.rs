@@ -5,7 +5,7 @@
 //!
 //! | Option | Does |
 //! | --- | --- |
-//! | `--version` | prints `family-connect 1.3.0` and exits — before the bus or a display (the package checks run it in containers that have neither) |
+//! | `--version` | prints `family-connect 1.4.0` and exits — before the bus or a display (the package checks run it in containers that have neither) |
 //! | `--background` | the autostart entry's launch: the window starts hidden in the top bar when `StartupSetting::starts_hidden(true, an icon exists)`; a second `--background` launch while running does nothing |
 //! | `--toggle` | hands `app.toggle-window` to the running instance and exits; a first launch with it is an ordinary launch |
 //! | `FILE…` | `open`: the window comes forward and the files go to the inbox (P2, §8.6) |
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn the_version_line_is_the_executable_and_the_workspace_version() {
-        assert_eq!(VERSION_LINE, "family-connect 1.3.0");
+        assert_eq!(VERSION_LINE, "family-connect 1.4.0");
     }
 
     #[test]

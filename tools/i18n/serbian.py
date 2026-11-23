@@ -538,6 +538,61 @@ SR = {
 "Previous": "Претходна",
 "Next": "Следећа",
 # --- end 2026-08-27 photo albums ---
+
+# --- 2026-11-19 Shortcuts: send a message or an attachment (issue #118, iOS + macOS) ---
+# The two actions, their parameters and their refusals. Apple-only, so
+# Android never looks these up; they live here because Cyrillic is the
+# source of truth for the Apple catalogue too, and Latin is generated from
+# it. Register informal, except the blocked sentence, which is word-for-word
+# the sibling the call refusal already uses (formal) — the two must not say
+# the same refusal two ways.
+"Family recipient": "Прималац из породице",
+"Send a Message": "Пошаљи поруку",
+"Sends a message, and anything attached to it, to a family member or the family chat.":
+  "Шаље поруку и све што је уз њу приложено — члану породице или породичном ћаскању.",
+"Send an Attachment": "Пошаљи прилог",
+
+# The Siri phrases are NOT here: a phrase lives in AppShortcuts.xcstrings,
+# a table this dictionary does not write. Their Cyrillic is in that
+# catalogue and the Latin beside it is to_latin() of it.
+#
+# What Siri asks when an action was started with a value missing.
+"Who do you want to send it to?": "Коме да пошаљем?",
+"What do you want to say?": "Шта да напишем?",
+"What do you want to send?": "Шта да пошаљем?",
+"Sends a photo, a video, a voice recording or any other file to a family member or the family chat.":
+  "Шаље фотографију, видео, гласовну поруку или било коју другу датотеку — члану "
+  "породице или породичном ћаскању.",
+"Recipient": "Прималац",
+"Recipient name": "Име примаоца",
+"Sent to %@.": "Послато: %@.",
+"Sent.": "Послато.",
+"Sign in to Family first, then run this Shortcut again.":
+  "Прво се пријави на Family, па поново покрени пречицу.",
+"There is nothing to send. Add a message or an attachment.":
+  "Нема шта да се пошаље. Додај поруку или прилог.",
+"Too many attachments for one message.": "Превише прилога за једну поруку.",
+"Nobody in your family matches that recipient. Pick them again in Shortcuts.":
+  "Ниједан члан породице не одговара том примаоцу. Изабери га поново у Пречицама.",
+"Two family members share that name. Pick one of them in Shortcuts.":
+  "Два члана породице имају исто име. Изабери једног од њих у Пречицама.",
+"You've blocked that member. Unblock them from the family roster to send them a message.":
+  "Блокирали сте тог члана. Одблокирајте га на списку породице да бисте послали поруку.",
+"This device has no family chat to send to.":
+  "Овај уређај нема породично ћаскање у које би послао.",
+"One of the attachments could not be read.": "Један од прилога не може да се прочита.",
+"The chat could not be opened. Check your connection and try again.":
+  "Ћаскање не може да се отвори. Провери везу и пробај поново.",
+"The message could not be queued.": "Порука не може да се стави у ред.",
+# What Siri says when the wait for the server ran out (queued, not lost),
+# and the error for a queued message the server refused.
+"It will be sent to %@ as soon as there is a connection.":
+  "Прималац: %@. Порука ће бити послата чим се успостави веза.",
+"It will be sent as soon as there is a connection.":
+  "Порука ће бити послата чим се успостави веза.",
+"The message wasn't sent. Open the chat and tap it to retry.":
+  "Порука није послата. Отвори ћаскање и додирни је да пробаш поново.",
+# --- end 2026-11-19 Shortcuts ---
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other

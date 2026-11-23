@@ -1,0 +1,242 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Send a message with ${applicationName}" : {
+      "comment" : "A Siri / Spotlight phrase for a Shortcuts send action (issue #118). Keep ${applicationName} and ${recipient} exactly as written; the recipient is a name as the roster spells it, so use a construction that does not need it declined.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send a message with ${applicationName}"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachricht mit ${applicationName} senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar un mensaje con ${applicationName}"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer un message avec ${applicationName}"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "${applicationName}でメッセージを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить сообщение через ${applicationName}"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи поруку преко ${applicationName}"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji poruku preko ${applicationName}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用${applicationName}发送消息"
+          }
+        }
+      }
+    },
+    "Send a message to ${recipient} with ${applicationName}" : {
+      "comment" : "A Siri / Spotlight phrase for a Shortcuts send action (issue #118). Keep ${applicationName} and ${recipient} exactly as written; the recipient is a name as the roster spells it, so use a construction that does not need it declined.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send a message to ${recipient} with ${applicationName}"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachricht an ${recipient} mit ${applicationName} senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar un mensaje a ${recipient} con ${applicationName}"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer un message à ${recipient} avec ${applicationName}"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "${applicationName}で${recipient}にメッセージを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить сообщение через ${applicationName}, получатель ${recipient}"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи поруку преко ${applicationName}, прималац ${recipient}"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji poruku preko ${applicationName}, primalac ${recipient}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用${applicationName}给${recipient}发送消息"
+          }
+        }
+      }
+    },
+    "Send an attachment with ${applicationName}" : {
+      "comment" : "A Siri / Spotlight phrase for a Shortcuts send action (issue #118). Keep ${applicationName} and ${recipient} exactly as written; the recipient is a name as the roster spells it, so use a construction that does not need it declined.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send an attachment with ${applicationName}"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anhang mit ${applicationName} senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar un adjunto con ${applicationName}"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer une pièce jointe avec ${applicationName}"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "${applicationName}で添付ファイルを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить вложение через ${applicationName}"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи прилог преко ${applicationName}"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji prilog preko ${applicationName}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用${applicationName}发送附件"
+          }
+        }
+      }
+    },
+    "Send an attachment to ${recipient} with ${applicationName}" : {
+      "comment" : "A Siri / Spotlight phrase for a Shortcuts send action (issue #118). Keep ${applicationName} and ${recipient} exactly as written; the recipient is a name as the roster spells it, so use a construction that does not need it declined.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send an attachment to ${recipient} with ${applicationName}"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anhang an ${recipient} mit ${applicationName} senden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enviar un adjunto a ${recipient} con ${applicationName}"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer une pièce jointe à ${recipient} avec ${applicationName}"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "${applicationName}で${recipient}に添付ファイルを送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить вложение через ${applicationName}, получатель ${recipient}"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пошаљи прилог преко ${applicationName}, прималац ${recipient}"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošalji prilog preko ${applicationName}, primalac ${recipient}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用${applicationName}给${recipient}发送附件"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

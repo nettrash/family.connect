@@ -26,7 +26,7 @@ use futures_util::future::{Either, select};
 use glib::translate::IntoGlib;
 use soup::prelude::*;
 
-/// What every request of this app names itself: `FamilyConnect-Linux/1.3.0`.
+/// What every request of this app names itself: `FamilyConnect-Linux/1.4.0`.
 pub fn user_agent() -> String {
     format!("FamilyConnect-Linux/{}", env!("CARGO_PKG_VERSION"))
 }
@@ -350,6 +350,6 @@ mod tests {
 
     #[test]
     fn the_user_agent_names_the_port_and_its_version() {
-        assert_eq!(user_agent(), "FamilyConnect-Linux/1.3.0");
+        assert_eq!(user_agent(), "FamilyConnect-Linux/1.4.0");
     }
 }

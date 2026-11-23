@@ -72,6 +72,11 @@ cp -a %{fc_stage}/. %{buildroot}/
 %{_mandir}/man1/family-connect.1*
 
 %changelog
+* Mon Nov 23 2026 nettrash <nettrash@nettrash.me> - 1.4.0-1
+- Family Connect 1.4 for Fedora 44 and later, x86_64 and aarch64, at the
+  family's number. The family's release history is CHANGELOG beside this
+  package's documentation.
+
 * Wed Oct 28 2026 nettrash <nettrash@nettrash.me> - 1.3.0-1
 - First release for Linux: Family Connect for Fedora 44 and later, x86_64 and
   aarch64. The family's release history is CHANGELOG beside this package's
