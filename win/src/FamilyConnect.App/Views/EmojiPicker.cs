@@ -28,8 +28,8 @@ public sealed partial class EmojiPicker : UserControl
     }
 
     private readonly ReactionSearch search;
-    private readonly Cell firstBrowseItem;
-    private Cell browseStart;
+    private readonly Cell? firstBrowseItem;
+    private Cell? browseStart;
     private Cell? requestedFocus;
 
     private EmojiPicker(IStringCatalog say, string language, IReadOnlyList<string> recent, Action<string> pick)
@@ -53,9 +53,11 @@ public sealed partial class EmojiPicker : UserControl
         {
             sections.Add(new(say.Get("Recent emoji"), "◷", MakeCells(recent)));
         }
-        sections.AddRange(EmojiCatalog.Categories.Select(category =>
-            new Section(SectionName(category.Name, say), category.Emoji[0], MakeCells(category.Emoji))));
-        firstBrowseItem = sections[0][0];
+        sections.AddRange(EmojiCatalog.Categories
+            .Where(category => category.Emoji.Count > 0)
+            .Select(category => new Section(
+                SectionName(category.Name, say), category.Emoji[0], MakeCells(category.Emoji))));
+        firstBrowseItem = sections.FirstOrDefault()?.FirstOrDefault();
         browseStart = firstBrowseItem;
 
         WireCells(Catalogue, pick);
@@ -102,10 +104,19 @@ public sealed partial class EmojiPicker : UserControl
         };
         SearchInput.PreviewKeyDown += (_, e) =>
         {
-            var visibleGrid = SearchPane.Visibility == Visibility.Visible ? Results : Catalogue;
-            if (e.Key == VirtualKey.Down && visibleGrid.ContainerFromIndex(0) is GridViewItem item
-                && item.Focus(FocusState.Keyboard))
+            if (e.Key != VirtualKey.Down)
             {
+                return;
+            }
+            if (SearchPane.Visibility == Visibility.Visible)
+            {
+                e.Handled = Results.ContainerFromIndex(0) is GridViewItem item && item.Focus(FocusState.Keyboard);
+            }
+            else if (browseStart is { } start)
+            {
+                // The active category can be far below index zero, outside the realised containers.
+                requestedFocus = start;
+                ShowCatalogue();
                 e.Handled = true;
             }
         };
@@ -180,6 +191,7 @@ public sealed partial class EmojiPicker : UserControl
 
         browseStart = firstBrowseItem;
         requestedFocus = null;
+        var wasShowingEmpty = SearchPane.Visibility == Visibility.Visible && EmptyNotice.Visibility == Visibility.Visible;
         Catalogue.Visibility = Visibility.Collapsed;
         SearchPane.Visibility = Visibility.Visible;
         var items = search.Search(SearchInput.Text).Select(result => new Cell(result)).ToArray();
@@ -191,9 +203,11 @@ public sealed partial class EmojiPicker : UserControl
             Results.UpdateLayout();
             Results.ScrollIntoView(items[0], ScrollIntoViewAlignment.Leading);
         }
-        else
+        else if (!wasShowingEmpty)
         {
-            FrameworkElementAutomationPeer.FromElement(EmptyNotice)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+            (FrameworkElementAutomationPeer.FromElement(EmptyNotice)
+                ?? FrameworkElementAutomationPeer.CreatePeerForElement(EmptyNotice))
+                ?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         }
     }
 
@@ -206,9 +220,9 @@ public sealed partial class EmojiPicker : UserControl
         {
             scroll.ChangeView(null, 0, null, disableAnimation: true);
         }
-        else
+        else if (browseStart is { } start)
         {
-            Catalogue.ScrollIntoView(browseStart, ScrollIntoViewAlignment.Leading);
+            Catalogue.ScrollIntoView(start, ScrollIntoViewAlignment.Leading);
         }
         Catalogue.UpdateLayout();
         FocusRequestedCell();

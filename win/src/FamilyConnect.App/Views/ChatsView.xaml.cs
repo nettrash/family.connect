@@ -2210,8 +2210,6 @@ public sealed partial class ChatsView : UserControl
         }
         if (bubble.Reads)
         {
-            balloon.IsTabStop = true;
-            balloon.UseSystemFocusVisuals = true;
             balloon.ContextFlyout = MenuFor(chat, bubble, assistantChat, assistantId, balloon, inThread);
             // The Tapback-heart idiom, the same emoji on every client — on the balloon, not the row, so a double click beside
             // a message leaves nothing on it.
@@ -2748,7 +2746,7 @@ public sealed partial class ChatsView : UserControl
             }
             var shown = inThread is null ? balloons : threadBalloons;
             if (shown.TryGetValue(messageId, out var current) && current.Balloon.IsLoaded
-                && current.Balloon.Focus(FocusState.Keyboard))
+                && FocusReactionAnchor(current.Balloon))
             {
                 return;
             }
@@ -2766,7 +2764,7 @@ public sealed partial class ChatsView : UserControl
             var keepFocus = false;
             await ActAsync(async () =>
             {
-                var error = await React(chat, inThread, messageId, emoji, fromPicker: true);
+                var error = await React(chat, inThread, messageId, emoji);
                 // Applying the answer can replace the focused bubble in the transcript.
                 keepFocus = CanChoose() && FocusManager.GetFocusedElement(XamlRoot) as FrameworkElement == anchor;
                 return error;
@@ -2798,6 +2796,38 @@ public sealed partial class ChatsView : UserControl
             }
         };
         picker.ShowAt(anchor);
+    }
+
+    // Only the focused picker origin joins Tab navigation, and only until focus moves on.
+    private static bool FocusReactionAnchor(FrameworkElement balloon)
+    {
+        if (balloon.IsTabStop)
+        {
+            return balloon.Focus(FocusState.Keyboard);
+        }
+
+        var oldFocusVisuals = balloon.UseSystemFocusVisuals;
+        balloon.IsTabStop = true;
+        balloon.UseSystemFocusVisuals = true;
+        if (balloon.Focus(FocusState.Keyboard))
+        {
+            balloon.LostFocus += RestoreTabStop;
+            return true;
+        }
+
+        RestoreTabStop(balloon, null);
+        return false;
+
+        void RestoreTabStop(object sender, RoutedEventArgs? args)
+        {
+            if (args is not null && !ReferenceEquals(args.OriginalSource, balloon))
+            {
+                return;
+            }
+            balloon.LostFocus -= RestoreTabStop;
+            balloon.IsTabStop = false;
+            balloon.UseSystemFocusVisuals = oldFocusVisuals;
+        }
     }
 
     /// <summary>
@@ -3941,11 +3971,8 @@ public sealed partial class ChatsView : UserControl
     // ---- threads ------------------------------------------------------------------------------------
 
     /// <summary>A reaction from the conversation or the thread's panel, whose rows may be ones the cache does not hold.</summary>
-    private Task<ApiError?> React(ConversationModel chat, ThreadModel? inThread, long messageId, string emoji,
-        bool fromPicker = false) =>
-        inThread is not null
-            ? inThread.ReactAsync(messageId, emoji, fromPicker: fromPicker)
-            : chat.ReactAsync(messageId, emoji, fromPicker: fromPicker);
+    private Task<ApiError?> React(ConversationModel chat, ThreadModel? inThread, long messageId, string emoji) =>
+        inThread is not null ? inThread.ReactAsync(messageId, emoji) : chat.ReactAsync(messageId, emoji);
 
     /// <summary>
     /// Open a chain beside the conversation (docs/protocol.md, "Threads"): at once on what is held, then read whole. A read

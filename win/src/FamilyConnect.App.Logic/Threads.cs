@@ -182,20 +182,13 @@ public sealed class ThreadModel
     /// React on a row of the chain, held by the cache or not: decided against the freshest copy, and the answer applied to
     /// both — the cache as evidence, this surface's copy under its sequence.
     /// </summary>
-    public async Task<ApiError?> ReactAsync(long messageId, string emoji, CancellationToken ct = default,
-        bool fromPicker = false)
+    public async Task<ApiError?> ReactAsync(long messageId, string emoji, CancellationToken ct = default)
     {
         if ((chats.Message(messageId) ?? read.GetValueOrDefault(messageId)) is not { } copy)
         {
             return null;
         }
-        var reactions = copy.Reactions ?? [];
-        var reader = chats.Reader;
-        if (fromPicker)
-        {
-            emoji = ReactionSearch.StoredChoice(emoji, Reactions.Mine(reactions, reader));
-        }
-        var toggle = Reactions.Toggle(reactions, reader, emoji);
+        var toggle = Reactions.Toggle(copy.Reactions ?? [], chats.Reader, emoji);
         var answer = toggle.Removing
             ? await api.Unreact(ChatId, messageId, ct).ConfigureAwait(false)
             : await api.React(ChatId, messageId, emoji, ct).ConfigureAwait(false);

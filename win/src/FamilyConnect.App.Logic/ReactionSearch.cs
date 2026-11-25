@@ -14,10 +14,14 @@ public sealed class ReactionSearch
         .SelectMany(category => category.Emoji)
         .Distinct(StringComparer.Ordinal)
         .ToArray();
+    // The Rust index takes the last spelling when catalogue entries share a key.
     private static readonly Dictionary<string, string> EmojiByKey = Catalogue
-        .ToDictionary(Key, StringComparer.Ordinal);
+        .GroupBy(Key, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
     private static readonly Lazy<ILookup<string, string>> Aliases = new(() => EmojiTyping.Shortcodes
-        .ToLookup(pair => Key(pair.Value), pair => Normalise(pair.Key), StringComparer.Ordinal));
+        .Select(pair => (Emoji: CanonicalEmoji(pair.Value), Term: Normalise(pair.Key)))
+        .Where(alias => alias.Emoji is not null)
+        .ToLookup(alias => alias.Emoji!, alias => alias.Term, StringComparer.Ordinal));
     private static readonly Dictionary<string, Lazy<Dictionary<string, Annotation>?>> ByLanguage = Languages.All
         .ToDictionary(tag => tag, tag => new Lazy<Dictionary<string, Annotation>?>(() => ReadAnnotations(tag)),
             StringComparer.Ordinal);
@@ -52,7 +56,7 @@ public sealed class ReactionSearch
         {
             var localEntry = local?.GetValueOrDefault(emoji);
             var englishEntry = english?.GetValueOrDefault(emoji);
-            var aliases = Aliases.Value[Key(emoji)];
+            var aliases = Aliases.Value[emoji];
             var result = new ReactionSearchResult(emoji, localEntry?.Name ?? emoji);
             if (emoji == exactEmoji || localEntry?.NormalisedName == query || englishEntry?.NormalisedName == query
                 || aliases.Contains(query, StringComparer.Ordinal))
@@ -79,11 +83,6 @@ public sealed class ReactionSearch
     }
 
     internal static string? CanonicalEmoji(string emoji) => EmojiByKey.GetValueOrDefault(Key(emoji));
-
-    // The picker sends the catalogue sequence on add or replace. For removal, hand Toggle the
-    // actual stored sequence so its ordinal comparison still works with older, unqualified emoji.
-    internal static string StoredChoice(string picked, string? held) =>
-        held is not null && CanonicalEmoji(held.Replace("\uFE0E", "", StringComparison.Ordinal)) == picked ? held : picked;
 
     private static string Key(string emoji) => emoji.Replace("\uFE0F", "", StringComparison.Ordinal);
 
@@ -116,6 +115,6 @@ public sealed class ReactionSearch
                 return null;
             }
         }
-        return annotations.Count == Catalogue.Length ? annotations : null;
+        return annotations.Count == EmojiByKey.Count ? annotations : null;
     }
 }

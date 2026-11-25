@@ -1,19 +1,18 @@
-using System.Globalization;
-using System.Text.Json;
 using FamilyConnect.Core.Store;
-using Microsoft.Data.Sqlite;
 
 namespace FamilyConnect.App.Logic;
 
-/// <summary>Device-local picker choices. The cache wipes them when the session ends.</summary>
+/// <summary>Device-local picker choices for the active account.</summary>
 public sealed class RecentReactions(Database cache, Uri server, Func<long> signedInAccount)
 {
     public const int Limit = 24;
 
+    private readonly RecentReactionStore store = new(cache, server);
+
     public IReadOnlyList<string> Read(long accountId)
     {
         using var held = cache.Hold();
-        return IsCurrent(accountId) ? Clean(ReadSaved(Key(accountId))) : [];
+        return IsCurrent(accountId) ? Clean(store.Read(accountId)) : [];
     }
 
     public void Remember(long accountId, string emoji)
@@ -24,51 +23,15 @@ public sealed class RecentReactions(Database cache, Uri server, Func<long> signe
             return;
         }
 
+        // Keep the session check and update serialized with sign-out's cache wipe.
         using var held = cache.Hold();
-        if (!IsCurrent(accountId))
+        if (IsCurrent(accountId))
         {
-            return;
-        }
-        var key = Key(accountId);
-        var choices = Clean(ReadSaved(key).Prepend(picked));
-        try
-        {
-            using var command = cache.Connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO meta (key, value) VALUES ($key, $value)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """;
-            command.Parameters.AddWithValue("$key", key);
-            command.Parameters.AddWithValue("$value", JsonSerializer.Serialize(choices));
-            command.ExecuteNonQuery();
-        }
-        catch (SqliteException)
-        {
-            // A failed local history write must never prevent the reaction action.
+            store.Update(accountId, saved => Clean(saved.Prepend(picked)));
         }
     }
 
     private bool IsCurrent(long accountId) => accountId > 0 && accountId == signedInAccount();
-
-    private string Key(long accountId) =>
-        $"reaction-recents:{server.AbsoluteUri}\n{accountId.ToString(CultureInfo.InvariantCulture)}";
-
-    private IReadOnlyList<string?> ReadSaved(string key)
-    {
-        try
-        {
-            using var command = cache.Connection.CreateCommand();
-            command.CommandText = "SELECT value FROM meta WHERE key = $key";
-            command.Parameters.AddWithValue("$key", key);
-            return command.ExecuteScalar() is string json
-                ? JsonSerializer.Deserialize<string?[]>(json) ?? []
-                : [];
-        }
-        catch (Exception error) when (error is JsonException or SqliteException)
-        {
-            return [];
-        }
-    }
 
     private static string[] Clean(IEnumerable<string?> choices) => choices.OfType<string>()
         .Select(ReactionSearch.CanonicalEmoji)

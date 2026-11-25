@@ -290,11 +290,11 @@ public sealed class ThreadModelTests : IDisposable
     }
 
     [Fact]
-    public async Task PickerCanRemoveALegacyVariationFromAnUncachedReply()
+    public async Task PickerReplacesALegacyVariationOnAnUncachedReply()
     {
         var server = new Server()
             .Then("/chats/42/messages/10/thread", Page(Message(10, replies: 1), Message(11, root: 10)))
-            .On("/chats/42/messages/11/reaction", """{"message_id":11,"reaction_seq":2,"reactions":[{"user_id":9,"emoji":"👍"}]}""");
+            .On("/chats/42/messages/11/reaction", """{"message_id":11,"reaction_seq":2,"reactions":[{"user_id":7,"emoji":"❤️"},{"user_id":9,"emoji":"👍"}]}""");
         var thread = Build(server, named: 10);
         await thread.LoadAsync();
         Assert.True(thread.Heard(Message(11, root: 10) with
@@ -303,11 +303,15 @@ public sealed class ThreadModelTests : IDisposable
             Reactions = [new ReactionDto(Me, "❤"), new ReactionDto(9, "👍")],
         }));
 
-        Assert.Null(await thread.ReactAsync(11, "❤️", fromPicker: true));
+        var heart = Assert.Single(new ReactionSearch("en").Search("❤")).Emoji;
+        Assert.Null(await thread.ReactAsync(11, heart));
 
-        Assert.Empty(server.Bodies);
+        using var request = System.Text.Json.JsonDocument.Parse(Assert.Single(server.Bodies));
+        Assert.Equal("❤️", request.RootElement.GetProperty("emoji").GetString());
         Assert.Equal("/api/v1/chats/42/messages/11/reaction", server.Asked[^1]);
-        Assert.Equal(9L, Assert.Single(thread.Bubbles()[1].Message.Reactions!).UserId);
+        var reactions = thread.Bubbles()[1].Message.Reactions!;
+        Assert.Equal("❤️", Assert.Single(reactions, reaction => reaction.UserId == Me).Emoji);
+        Assert.Equal("👍", Assert.Single(reactions, reaction => reaction.UserId == 9).Emoji);
         Assert.Null(chats.Message(11));
     }
 
