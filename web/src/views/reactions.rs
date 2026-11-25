@@ -145,10 +145,11 @@ fn use_locale(lang: Lang) -> (Option<Rc<Annotations>>, bool) {
             .cloned()
             .flatten()
     });
-    let waiting = lang != Lang::En && loaded.is_none() && *finished != Some(lang);
+    let needs_load = lang != Lang::En && loaded.is_none();
+    let waiting = needs_load && *finished != Some(lang);
     use_effect_with(lang, move |&lang| {
         let active = Rc::new(Cell::new(true));
-        if lang != Lang::En {
+        if needs_load {
             let active = active.clone();
             spawn_local(async move {
                 start_locale_load(lang).await;
@@ -204,6 +205,15 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
     let recent = crate::session::reaction_recents(props.my_user_id);
     let searching = !query.trim().is_empty();
     let results = emoji_search::search(&query, local);
+    let status = if searching && results.is_empty() {
+        if waiting {
+            t("Loading…")
+        } else {
+            t("No emoji found")
+        }
+    } else {
+        ""
+    };
     let change = {
         let query = query.clone();
         Callback::from(move |event: InputEvent| {
@@ -259,9 +269,6 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
                     if searching {
                         <section aria-label={t("Search results")}>
                             <h3>{ t("Search results") }</h3>
-                            if results.is_empty() {
-                                <p class="emoji-empty" role="status">{ if waiting { t("Loading…") } else { t("No emoji found") } }</p>
-                            }
                             <div class="emoji-grid">
                                 { for results.iter().map(|found| {
                                     let name = AttrValue::from(found.name.to_owned());
@@ -296,6 +303,8 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
                             </section>
                         }) }
                     }
+                    // Keep the live region mounted while browsing so text updates can be announced.
+                    <p class="emoji-empty" role="status">{ status }</p>
                 </div>
                 <nav class="emoji-tabs" aria-label={t("Emoji categories")}>
                     if !recent.is_empty() {
@@ -411,6 +420,13 @@ mod tests {
                 .length(),
             8
         );
+        let status = picker
+            .root
+            .query_selector("[role=status]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.text_content().as_deref(), Some(""));
+
         picker.search("no-such-emoji-8372").await;
         assert_eq!(
             picker
@@ -421,15 +437,10 @@ mod tests {
             0
         );
         assert_eq!(
-            picker
-                .root
-                .query_selector("[role=status]")
-                .unwrap()
-                .unwrap()
-                .text_content()
-                .unwrap(),
-            "No emoji found"
+            picker.root.query_selector("[role=status]").unwrap(),
+            Some(status.clone())
         );
+        assert_eq!(status.text_content().as_deref(), Some("No emoji found"));
         picker.click(".emoji-clear");
         settle().await;
         assert_eq!(picker.input().value(), "");
@@ -441,7 +452,13 @@ mod tests {
                 .length(),
             8
         );
+        assert_eq!(status.text_content().as_deref(), Some(""));
         picker.search("  :HEART:  ").await;
+        assert_eq!(
+            picker.root.query_selector("[role=status]").unwrap(),
+            Some(status.clone())
+        );
+        assert_eq!(status.text_content().as_deref(), Some(""));
         let first = picker
             .root
             .query_selector(".emoji-content button")
@@ -662,6 +679,60 @@ mod tests {
         assert_eq!(server.lines(&[&prefix]), [request.clone(), request]);
         picker.finish();
         fc_text::i18n::use_lang(Lang::En);
+    }
+
+    #[derive(Properties, PartialEq)]
+    struct LocaleProbeProps {
+        renders: Rc<Cell<u32>>,
+    }
+
+    #[function_component(LocaleProbe)]
+    fn locale_probe(props: &LocaleProbeProps) -> Html {
+        let (locale, waiting) = use_locale(Lang::Ja);
+        let renders = props.renders.clone();
+        use_effect(move || renders.set(renders.get() + 1));
+        let name = emoji_search::name("🔥", locale.as_deref()).unwrap();
+        html! { <p data-waiting={waiting.to_string()}>{ name }</p> }
+    }
+
+    #[wasm_bindgen_test]
+    async fn opening_with_a_cached_locale_renders_once() {
+        let server = FakeServer::answering(|_| {
+            Answer::Bytes(
+                200,
+                include_bytes!("../../text/data/emoji-search/ja.tsv").to_vec(),
+                "text/tab-separated-values",
+            )
+        });
+        assert!(start_locale_load(Lang::Ja).await.is_some());
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root = document.create_element("div").unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let renders = Rc::new(Cell::new(0));
+        let handle = yew::Renderer::<LocaleProbe>::with_root_and_props(
+            root.clone(),
+            LocaleProbeProps {
+                renders: renders.clone(),
+            },
+        )
+        .render();
+        settle().await;
+        let text = root.text_content();
+        let waiting = root
+            .first_element_child()
+            .unwrap()
+            .get_attribute("data-waiting");
+        handle.destroy();
+        root.remove();
+        LOCALE_LOADS.with(|loads| loads.borrow_mut().remove(&Lang::Ja));
+
+        assert_eq!(text.as_deref(), Some("火"));
+        assert_eq!(waiting.as_deref(), Some("false"));
+        let origin = document.location().unwrap().origin().unwrap();
+        let prefix = format!("{origin}/emoji-search/");
+        assert_eq!(server.lines(&[&prefix]).len(), 1);
+        assert_eq!(renders.get(), 1);
     }
 
     #[wasm_bindgen_test]

@@ -1646,6 +1646,7 @@ button.pack-cell:disabled { cursor: default; }
 .emoji-content h3 { color: var(--muted); font-size: 14px; font-weight: 500; margin: 4px 4px 12px; }
 .emoji-content section + section { margin-top: 20px; }
 .emoji-empty { padding: 24px 4px; color: var(--muted); text-align: center; }
+.emoji-empty:empty { margin: 0; padding: 0; }
 .emoji-tabs { flex: none; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px; border-top: 1px solid var(--line); padding-top: 8px; }
 .emoji-tabs button { background: transparent; color: var(--ink); min-width: 32px; padding: 6px 4px; font-size: 19px; }
 .emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 2px; }

@@ -150,18 +150,14 @@ The consequences worth stating rather than discovering:
   READER's language and it is nobody else's: the family's language is what the assistant answers
   in, and the two are deliberately separate, so a Serbian grandmother reads a Russian family's
   chat in Serbian (see "The family's language", which says the same thing from the other end).
-- **The board's two seen-marks are one of the two things a browser keeps past the tab.** They live in
-  `localStorage`, under the account's user id, and they are two numbers — the highest note id and
-  the highest `content_seq` this browser has shown that account (see "Board") — which say how far
-  somebody has looked and nothing whatever about what the notes say. Kept for the tab alone, like
-  everything else here, they would be gone at every sign-in, and a badge that starts every session
-  by counting the whole wall as new is a badge that cries wolf until nobody reads it. Everything
-  that IS the board — its notes, their text, their pictures — lives in the tab's memory and goes
-  with it, and a browser reads the whole board again on every sign-in. A browser that has never
-  shown an account the board counts the whole wall, exactly as an app does on its first launch.
-  The other thing is which stickers this browser's person sent most recently (see "Sticker pack"):
-  pack item ids and nothing else, in `localStorage` for the same reason the marks are, and — unlike
-  the marks — removed at sign-out.
+- **The browser keeps some device state past the tab in `localStorage`.** The board's seen
+  marks are keyed by account and family. They record the highest note id and `content_seq`
+  shown to that account (see "Board"), so the badge can resume from where the reader left off.
+  The notes, text and pictures live in the tab's memory, and the browser reads the whole
+  board again on every sign-in. A browser that has never shown the account the board counts
+  the whole wall as new. Local state also includes the last family shown, sticker recents,
+  reaction recents (`fc.reaction.recents.<user_id>`), played video and voice message marks,
+  and voice playback speed. Sign-out clears sticker and reaction recents and played marks.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows,
 Linux and web are "not asked to draw" something yet, that is a statement about what has been BUILT,
@@ -1686,12 +1682,11 @@ id, which never names different bytes. A browser keeps both for the tab and no l
 almost everything else it holds. Which stickers somebody used most recently is that DEVICE's own
 business and is never on the wire: it says something about a person's habits and nothing about the
 family's pack. A client keeps the last 16 a person sent from it, newest first, and its panel shows
-them before the rest. They are kept PER DEVICE and they outlast a restart — in a browser that
-means `localStorage` and not the tab, the second thing a browser keeps past it (see "A browser is
-a client too") — because a list that emptied itself every time the app was closed would never
-hold the sticker somebody reaches for every day. They are CLEARED AT SIGN-OUT, on every client,
-so that they are not left on a shared machine for the next person who opens the panel. A recent
-whose item the pack no longer holds is simply not shown.
+them before the rest. They are kept per device and outlast a restart. The browser stores
+them in `localStorage` (see "A browser is a client too"), so the stickers somebody reaches for
+every day are available after closing and reopening the app. They are CLEARED AT SIGN-OUT, on
+every client, so that they are not left on a shared machine for the next person who opens the
+panel. A recent whose item the pack no longer holds is simply not shown.
 
 #### Sending one
 

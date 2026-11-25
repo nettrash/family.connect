@@ -3,11 +3,10 @@
 //! `sessionStorage`, NOT `localStorage` (docs/protocol.md, "A browser is a
 //! client too"): the token is the whole credential, and one that outlives
 //! the tab is one left behind on a shared machine. Closing the tab is a
-//! sign-out. Two small things are kept by the DEVICE instead, in
-//! `localStorage`, and none is a credential or a word anybody wrote: the
-//! board's seen-marks, which stickers were used last, which video and voice
-//! messages were played here — the last three of which a sign-out takes —
-//! and the speed voice messages play at.
+//! sign-out. Device state in `localStorage` includes the board's seen
+//! marks, the last family shown, sticker and reaction recents, played
+//! video and voice message marks, and voice playback speed. Sign-out clears
+//! sticker and reaction recents and the played marks.
 //!
 //! Every accessor is total. Storage can be absent or throw — a private
 //! window, a browser configured to block site data — and a chat client that
@@ -39,13 +38,10 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.session_storage().ok()?
 }
 
-/// The board's two seen-marks, under the account's id — one of the two
-/// things this client keeps past the tab (docs/protocol.md, "A browser is a
-/// client too"; the other is the sticker recents below, which a sign-out
-/// takes). Two numbers: how far this browser has shown that account the
-/// wall, and nothing of what is on it. Kept for the tab alone they would count the
-/// whole wall as new at every sign-in, and a badge that always cries wolf is
-/// a badge nobody reads.
+/// The two seen marks for each account and family's board persist in
+/// `localStorage` (docs/protocol.md, "A browser is a client too"). They record
+/// how far the browser has shown this account the board. Keeping the marks
+/// across sign-ins keeps the badge from counting the whole board as new.
 const BOARD_MARKS_KEY: &str = "fc.board.seen.";
 
 fn lasting() -> Option<web_sys::Storage> {
