@@ -198,7 +198,10 @@ pub fn css(palette: &Palette) -> String {
 .fc-reaction-picker .fc-reaction-grid flowboxchild {{
   padding: 0;
 }}
-.fc-reaction-picker .fc-reaction-grid button,
+.fc-reaction-picker .fc-reaction-grid flowboxchild:hover {{
+  background-color: {accent_soft};
+}}
+.fc-reaction-picker .fc-reaction-grid flowboxchild label,
 .fc-reaction-picker .fc-reaction-categories button {{
   min-width: 32px;
   min-height: 36px;

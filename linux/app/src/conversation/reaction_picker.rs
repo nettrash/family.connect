@@ -20,9 +20,12 @@ const HEIGHT: i32 = 285;
 
 type Pick = Rc<dyn Fn(&str)>;
 
-/// Open on the message menu's More button. Keep the selection local and hand
-/// the canonical emoji bytes back to the existing message action.
-pub(super) fn popup(anchor: &gtk::Button, on_pick: impl Fn(&str) + 'static) {
+/// Open on the message itself so closing the menu cannot take away the picker's focus owner.
+pub(super) fn popup(
+    anchor: &gtk::Widget,
+    point: &gtk::gdk::Rectangle,
+    on_pick: impl Fn(&str) -> bool + 'static,
+) {
     let shell = Shell::get();
     let account = shell.connection().and_then(|connection| {
         let id = connection.session.state().me?.id;
@@ -36,11 +39,12 @@ pub(super) fn popup(anchor: &gtk::Button, on_pick: impl Fn(&str) + 'static) {
         });
     let picker = gtk::Popover::new();
     picker.set_parent(anchor);
+    picker.set_pointing_to(Some(point));
     picker.set_widget_name("reaction-picker");
     picker.add_css_class("fc-reaction-picker");
     let weak_picker = picker.downgrade();
     let pick: Pick = Rc::new(move |emoji| {
-        if let Some((connection, id, key)) = &account {
+        if let Some((connection, id, _)) = &account {
             // A window or connection might have gone away while this menu was open.
             if !Shell::get().connection().is_some_and(|current| {
                 Rc::ptr_eq(&current, connection)
@@ -52,12 +56,16 @@ pub(super) fn popup(anchor: &gtk::Button, on_pick: impl Fn(&str) + 'static) {
             }) {
                 return;
             }
+        }
+        let Some(picker) = weak_picker.upgrade().filter(|picker| picker.is_visible()) else {
+            return;
+        };
+        picker.popdown();
+        if on_pick(emoji)
+            && let Some((connection, _, key)) = &account
+        {
             remember(&connection.cache, key, emoji);
         }
-        if let Some(picker) = weak_picker.upgrade() {
-            picker.popdown();
-        }
-        on_pick(emoji);
     });
     let local = desktop_annotations(shell.paths.data_dir());
     let (content, search) = panel(shell.say.as_ref(), recent, local, pick);
@@ -68,7 +76,18 @@ pub(super) fn popup(anchor: &gtk::Button, on_pick: impl Fn(&str) + 'static) {
             picker.popdown();
         }
     });
-    picker.connect_closed(|picker| {
+    let row = std::iter::successors(Some(anchor.clone()), |widget| widget.parent())
+        .find(|widget| widget.has_css_class("fc-chat-row"))
+        .map(|widget| widget.downgrade());
+    picker.connect_closed(move |picker| {
+        // Give GTK a live focus widget before it processes the popup's focus-out.
+        if let Some(row) = row
+            .as_ref()
+            .and_then(|row| row.upgrade())
+            .filter(|row| row.is_mapped())
+        {
+            row.grab_focus();
+        }
         let picker = picker.clone();
         glib::idle_add_local_once(move || {
             if picker.parent().is_some() {
@@ -104,6 +123,7 @@ fn panel(
     column.append(&heading);
     let results = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
+        .activate_on_single_click(true)
         .homogeneous(true)
         .min_children_per_line(COLUMNS)
         .max_children_per_line(COLUMNS)
@@ -111,6 +131,33 @@ fn panel(
         .css_classes(["fc-reaction-grid"])
         .build();
     results.set_widget_name("reaction-picker-grid");
+    results.connect_child_activated(move |_, cell| {
+        if let Some(label) = cell.child().and_downcast::<gtk::Label>() {
+            pick(label.text().as_str());
+        }
+    });
+    // GTK navigates and activates FlowBox children with arrows and Return. Give
+    // the focused result the same Space activation as a regular button.
+    let keys = gtk::EventControllerKey::new();
+    let grid = results.downgrade();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        if matches!(key, gtk::gdk::Key::space | gtk::gdk::Key::KP_Space)
+            && !state.intersects(
+                gtk::gdk::ModifierType::CONTROL_MASK
+                    | gtk::gdk::ModifierType::ALT_MASK
+                    | gtk::gdk::ModifierType::SUPER_MASK,
+            )
+            && let Some(cell) = grid
+                .upgrade()
+                .and_then(|grid| grid.focus_child())
+                .and_downcast::<gtk::FlowBoxChild>()
+        {
+            cell.activate();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    results.add_controller(keys);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .min_content_height(92)
@@ -148,7 +195,6 @@ fn panel(
         let category = category.clone();
         let labels = labels.clone();
         let recent_label = recent_label.clone();
-        let pick = pick.clone();
         let recent = recent.clone();
         move |query: &str| {
             let (Some(heading), Some(results), Some(scroll)) =
@@ -168,7 +214,6 @@ fn panel(
                         &results,
                         emoji,
                         emoji_search::name(emoji, local).unwrap_or(emoji),
-                        &pick,
                     );
                 }
             } else {
@@ -179,7 +224,7 @@ fn panel(
                     &search_label
                 });
                 for result in matches {
-                    add_emoji(&results, result.emoji, result.name, &pick);
+                    add_emoji(&results, result.emoji, result.name);
                 }
             }
             scroll.vadjustment().set_value(0.0);
@@ -227,9 +272,9 @@ fn panel(
                 }
             }
             if tab.has_focus()
-                && let Some(button) = results.upgrade().and_then(|flow| first_button(&flow))
+                && let Some(cell) = results.upgrade().and_then(|flow| flow.child_at_index(0))
             {
-                button.grab_focus();
+                cell.grab_focus();
             }
         });
         tabs.append(&tab);
@@ -237,36 +282,43 @@ fn panel(
     draw("");
     search.connect_changed(move |entry| draw(entry.text().as_str()));
     let results = results.downgrade();
-    search.connect_activate(move |_| {
-        if let Some(button) = results.upgrade().and_then(|flow| first_button(&flow)) {
-            button.emit_clicked();
+    search.connect_activate(move |entry| {
+        if !entry.text().trim().is_empty()
+            && let Some(cell) = results.upgrade().and_then(|flow| flow.child_at_index(0))
+        {
+            cell.activate();
         }
     });
     (column, search)
 }
 
-fn first_button(flow: &gtk::FlowBox) -> Option<gtk::Button> {
-    flow.child_at_index(0)?.child()?.downcast().ok()
-}
-
-fn add_emoji(flow: &gtk::FlowBox, emoji: &str, name: &str, pick: &Pick) {
-    let button = gtk::Button::builder()
-        .label(emoji)
+fn add_emoji(flow: &gtk::FlowBox, emoji: &str, name: &str) {
+    let glyph = gtk::Label::new(Some(emoji));
+    glyph.set_can_target(false);
+    let cell = gtk::FlowBoxChild::builder()
+        .accessible_role(gtk::AccessibleRole::Button)
+        .child(&glyph)
         .tooltip_text(name)
-        .css_classes(["flat"])
-        .height_request(36)
         .build();
-    button.update_property(&[gtk::accessible::Property::Label(name)]);
-    let (emoji, pick) = (emoji.to_owned(), pick.clone());
-    button.connect_clicked(move |_| pick(&emoji));
-    flow.append(&button);
+    cell.update_property(&[gtk::accessible::Property::Label(name)]);
+    flow.append(&cell);
 }
 
 fn desktop_annotations(data_dir: &Path) -> Option<&'static Annotations> {
     // Linux reads its desktop language once on startup. Only parse that catalogue.
     static LOCAL: OnceLock<Option<Annotations>> = OnceLock::new();
     LOCAL
-        .get_or_init(|| localized(data_dir, fc_text::i18n::lang()))
+        .get_or_init(|| {
+            let lang = fc_text::i18n::lang();
+            let annotations = localized(data_dir, lang);
+            if lang != Lang::En && annotations.is_none() {
+                crate::fc_warn!(
+                    "no usable {} emoji search table; English instead",
+                    lang.tag()
+                );
+            }
+            annotations
+        })
         .as_ref()
 }
 
@@ -296,8 +348,13 @@ fn recents(cache: &Database, key: &str) -> Vec<String> {
 
 fn remember(cache: &Database, key: &str, emoji: &str) {
     let values = emoji_search::recent_with(&recents(cache, key), emoji);
-    if let Ok(value) = serde_json::to_string(&values) {
-        let _ = cache.set_meta_text(key, &value);
+    if let Ok(value) = serde_json::to_string(&values)
+        && let Err(error) = cache.set_meta_text(key, &value)
+    {
+        crate::fc_warn!(
+            "saving recent reactions: {}",
+            crate::services::log::store_error(&error)
+        );
     }
 }
 

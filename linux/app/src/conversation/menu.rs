@@ -298,16 +298,30 @@ fn reaction_row(facts: &MenuFacts, prefix: &str, popover: &gtk::PopoverMenu) -> 
     more.update_property(&[gtk::accessible::Property::Label(say.get("More reactions…"))]);
     {
         let popover = popover.downgrade();
-        more.connect_clicked(move |button| {
-            let (popover, react, anchor) = (popover.clone(), react.clone(), button.downgrade());
-            super::reaction_picker::popup(button, move |emoji| {
-                if let Some(anchor) = anchor.upgrade() {
-                    let _ =
-                        anchor.activate_action(&react, Some(&(id, emoji.to_string()).to_variant()));
-                }
-                if let Some(popover) = popover.upgrade() {
-                    popover.popdown();
-                }
+        more.connect_clicked(move |_| {
+            let Some(popover) = popover.upgrade() else {
+                return;
+            };
+            let Some(anchor) = popover.parent() else {
+                return;
+            };
+            let (_, point) = popover.pointing_to();
+            let anchor = anchor.downgrade();
+            let react = react.clone();
+            popover.popdown();
+            // GTK must finish closing the menu before another popover takes focus.
+            glib::idle_add_local_once(move || {
+                let Some(anchor) = anchor.upgrade().filter(|anchor| anchor.is_mapped()) else {
+                    return;
+                };
+                let target = anchor.downgrade();
+                super::reaction_picker::popup(&anchor, &point, move |emoji| {
+                    target.upgrade().is_some_and(|target| {
+                        target
+                            .activate_action(&react, Some(&(id, emoji.to_string()).to_variant()))
+                            .is_ok()
+                    })
+                });
             });
         });
     }

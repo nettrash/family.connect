@@ -17,7 +17,7 @@ async fn open(
     window: &gtk::Window,
     page: &ConversationPage,
     message: &MessageDto,
-) -> Option<(gtk::Popover, gtk::Button)> {
+) -> Option<gtk::Popover> {
     let key = conversation_rows::message_key(message.id);
     if !page.timeline().scroll_to(&key, false) {
         return None;
@@ -68,24 +68,29 @@ async fn open(
     let more = more()?;
     more.emit_clicked();
     let picker = || {
-        find::<gtk::Popover>(&more)
+        find::<gtk::Popover>(&bubble)
             .into_iter()
             .find(|child| child.is_mapped() && child.widget_name() == "reaction-picker")
     };
     if !h.wait_until(SHORT, || picker().is_some()).await {
         return None;
     }
-    Some((picker()?, more))
+    picker()
 }
 
-fn result(picker: &gtk::Popover, emoji: &str) -> Option<gtk::Button> {
+fn grid(picker: &gtk::Popover) -> Option<gtk::FlowBox> {
     find::<gtk::FlowBox>(picker)
         .into_iter()
         .find(|w| w.widget_name() == "reaction-picker-grid")
-        .and_then(|flow| {
-            find::<gtk::Button>(&flow)
-                .into_iter()
-                .find(|w| w.label().as_deref() == Some(emoji))
+}
+
+fn result(picker: &gtk::Popover, emoji: &str) -> Option<gtk::FlowBoxChild> {
+    find::<gtk::FlowBoxChild>(&grid(picker)?)
+        .into_iter()
+        .find(|cell| {
+            cell.child()
+                .and_downcast::<gtk::Label>()
+                .is_some_and(|label| label.text() == emoji)
         })
 }
 
@@ -97,6 +102,15 @@ fn heading(picker: &gtk::Popover) -> String {
         .unwrap_or_default()
 }
 
+fn message_has_focus(page: &ConversationPage, window: &gtk::Window, id: i64) -> bool {
+    page.timeline()
+        .row(&conversation_rows::message_key(id))
+        .is_some_and(|row| {
+            gtk::prelude::RootExt::focus(window)
+                .is_some_and(|focus| focus == row || focus.is_ancestor(&row))
+        })
+}
+
 pub(super) async fn run(
     h: &Harness,
     shell: &Shell,
@@ -106,7 +120,7 @@ pub(super) async fn run(
     incoming: &MessageDto,
 ) {
     let say = &shell.say;
-    let Some((picker, _)) = open(h, window, page, incoming).await else {
+    let Some(picker) = open(h, window, page, incoming).await else {
         h.check(
             "reaction_picker_open",
             false,
@@ -141,6 +155,7 @@ pub(super) async fn run(
         },
         "empty search gives the localized status and clearing restores the category",
     );
+    search.set_text("fire");
     if let Some(tab) = find::<gtk::ToggleButton>(&picker)
         .into_iter()
         .find(|tab| tab.tooltip_text().as_deref() == Some(say.get("Hearts")))
@@ -149,8 +164,10 @@ pub(super) async fn run(
     }
     h.check(
         "reaction_picker_categories",
-        heading(&picker) == say.get("Hearts") && result(&picker, "❤️").is_some(),
-        "Hearts shortcut opens its category",
+        search.text().is_empty()
+            && heading(&picker) == say.get("Hearts")
+            && result(&picker, "❤️").is_some(),
+        "Hearts shortcut clears the active query and opens its category",
     );
     h.screenshot("reaction-picker-category").await;
 
@@ -176,16 +193,25 @@ pub(super) async fn run(
         );
     }
 
-    let (query, name) = match say.language() {
-        "ru" => ("огонь", "огонь"),
-        _ => ("fire", "fire"),
+    let name = match say.language() {
+        "de" => "Feuer",
+        "es" => "fuego",
+        "fr" => "feu",
+        "ja" => "火",
+        "ru" => "огонь",
+        "sr" => "ватра",
+        "sr-Latn" => "vatra",
+        "zh-Hans" => "火焰",
+        _ => "fire",
     };
-    search.set_text(query);
+    search.set_text("fire");
+    let english = result(&picker, "🔥").is_some();
+    search.set_text(name);
     let named =
-        result(&picker, "🔥").is_some_and(|button| button.tooltip_text().as_deref() == Some(name));
+        result(&picker, "🔥").is_some_and(|cell| cell.tooltip_text().as_deref() == Some(name));
     h.check(
         "reaction_picker_language",
-        named,
+        english && named,
         format!(
             "{} desktop finds {name} from the Hearts category",
             say.language()
@@ -220,7 +246,7 @@ pub(super) async fn run(
     );
     h.screenshot("reaction-picker-selected").await;
 
-    let Some((picker, _)) = open(h, window, page, incoming).await else {
+    let Some(picker) = open(h, window, page, incoming).await else {
         h.check(
             "reaction_picker_reopen",
             false,
@@ -234,30 +260,69 @@ pub(super) async fn run(
         "reopening shows Fire in the account's recent choices",
     );
     h.screenshot("reaction-picker-recent").await;
-    let search = find::<gtk::SearchEntry>(&picker)
-        .into_iter()
-        .next()
-        .unwrap();
+    let Some(search) = find::<gtk::SearchEntry>(&picker).into_iter().next() else {
+        h.check(
+            "reaction_picker_replaces_reaction",
+            false,
+            "no search entry after reopening",
+        );
+        picker.popdown();
+        return;
+    };
+    let route = format!("/messages/{}/reaction", incoming.id);
+    let reaction_requests = || {
+        world
+            .fake
+            .requests()
+            .iter()
+            .filter(|request| request.ends_with(&route))
+            .count()
+    };
+    let before = reaction_requests();
+    let mut stayed_open = true;
+    for text in ["", "   "] {
+        search.set_text(text);
+        if h.input() {
+            h.key("Return").await;
+        } else {
+            search.emit_by_name::<()>("activate", &[]);
+        }
+        stayed_open &= picker.is_mapped();
+    }
+    h.check(
+        "reaction_picker_blank_enter",
+        stayed_open && reaction_is(Some("🔥")) && reaction_requests() == before,
+        "Enter on empty and whitespace queries keeps the picker, the existing Fire reaction and the request count",
+    );
     search.set_text("  :HEART:  ");
     if let Some(heart) = result(&picker, "❤️") {
-        heart.emit_clicked();
+        if h.input() {
+            h.click_middle(window, &heart).await;
+        } else {
+            heart.activate();
+        }
     }
     let replaced = h.wait_until(WAIT, || reaction_is(Some("❤️"))).await;
     h.check(
         "reaction_picker_replaces_reaction",
-        replaced,
-        "the English shortcode replaces Fire with the exact red heart",
+        replaced && reaction_requests() == before + 1,
+        "one activation of the English shortcode replaces Fire with the exact red heart",
     );
     h.screenshot("reaction-picker-replaced").await;
 
-    if let Some((picker, _)) = open(h, window, page, incoming).await {
+    if let Some(picker) = open(h, window, page, incoming).await {
+        let before = reaction_requests();
         if let Some(heart) = result(&picker, "❤️") {
-            heart.emit_clicked();
+            if h.input() {
+                h.click_middle(window, &heart).await;
+            } else {
+                heart.activate();
+            }
         }
         let removed = h.wait_until(WAIT, || reaction_is(None)).await;
         h.check(
             "reaction_picker_removes_reaction",
-            removed,
+            removed && reaction_requests() == before + 1,
             "picking the current reaction again removes it",
         );
         h.screenshot("reaction-picker-removed").await;
@@ -268,37 +333,80 @@ pub(super) async fn run(
             "picker did not reopen for removal",
         );
     }
-    if let Some((picker, anchor)) = open(h, window, page, incoming).await {
+    if h.input() {
+        let mut selected = None;
+        if let Some(picker) = open(h, window, page, incoming).await
+            && let Some(search) = find::<gtk::SearchEntry>(&picker).into_iter().next()
+        {
+            search.set_text("fire");
+            if let Some(cell) = grid(&picker).and_then(|grid| grid.child_at_index(1))
+                && let Some(label) = cell.child().and_downcast::<gtk::Label>()
+            {
+                let before = reaction_requests();
+                let navigated = h.key("Tab").await && h.key("Right").await && cell.has_focus();
+                h.screenshot("reaction-picker-second-focused").await;
+                let emoji = label.text();
+                if navigated
+                    && h.key("Return").await
+                    && h.wait_until(WAIT, || reaction_is(Some(emoji.as_str())))
+                        .await
+                    && reaction_requests() == before + 1
+                    && !picker.is_mapped()
+                    && message_has_focus(page, window, incoming.id)
+                {
+                    selected = Some(emoji);
+                }
+            }
+            if picker.is_mapped() {
+                picker.popdown();
+            }
+        }
+        h.check(
+            "reaction_picker_focused_result_enter",
+            selected.is_some(),
+            format!("Tab then Right then Enter applies the focused second result to message {} and restores its focus (picked {selected:?})", incoming.id),
+        );
+        h.screenshot("reaction-picker-second-applied").await;
+
+        let mut removed = false;
+        if let Some(emoji) = selected
+            && let Some(picker) = open(h, window, page, incoming).await
+        {
+            let before = reaction_requests();
+            // The picked result heads Recents. Tab should focus that cell.
+            removed = h.key("Tab").await
+                && result(&picker, emoji.as_str()).is_some_and(|cell| cell.has_focus())
+                && h.key("space").await
+                && h.wait_until(WAIT, || reaction_is(None)).await
+                && reaction_requests() == before + 1
+                && !picker.is_mapped();
+            if picker.is_mapped() {
+                picker.popdown();
+            }
+        }
+        h.check(
+            "reaction_picker_focused_result_space",
+            removed,
+            "Space on the focused recent result removes that reaction",
+        );
+    }
+    if let Some(picker) = open(h, window, page, incoming).await {
         if h.input() {
             h.key("Escape").await;
         } else {
             picker.popdown();
         }
-        let row = page
-            .timeline()
-            .row(&conversation_rows::message_key(incoming.id));
         let restored = h
             .wait_until(SHORT, || {
-                !picker.is_mapped()
-                    && (anchor.has_focus()
-                        || gtk::prelude::RootExt::focus(window).is_some_and(|focus| {
-                            row.as_ref()
-                                .is_some_and(|row| focus == *row || focus.is_ancestor(row))
-                        }))
+                !picker.is_mapped() && message_has_focus(page, window, incoming.id)
             })
             .await;
         h.check(
             "reaction_picker_dismisses",
             restored,
-            "the picker closes and returns focus to the message or its More reactions button",
+            "the picker closes and returns focus to the same message row",
         );
         h.screenshot("reaction-picker-dismissed").await;
-        if let Some(menu) = anchor
-            .ancestor(gtk::PopoverMenu::static_type())
-            .and_downcast::<gtk::PopoverMenu>()
-        {
-            menu.popdown();
-        }
     } else {
         h.check(
             "reaction_picker_dismisses",
