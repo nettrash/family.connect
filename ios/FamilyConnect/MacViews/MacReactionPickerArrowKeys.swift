@@ -1,3 +1,10 @@
+//
+//  MacReactionPickerArrowKeys.swift
+//  FamilyConnect
+//
+//  Routes arrow keys inside the reaction picker.
+//
+
 #if os(macOS)
 import AppKit
 import Carbon.HIToolbox

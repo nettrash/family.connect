@@ -1,3 +1,10 @@
+//
+//  ReactionRecents.swift
+//  FamilyConnect
+//
+//  Stores recent picker choices per account and server.
+//
+
 import Foundation
 
 /// A device-local history of choices made in the full reaction picker.

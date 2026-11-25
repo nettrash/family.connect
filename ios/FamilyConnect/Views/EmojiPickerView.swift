@@ -1,3 +1,12 @@
+//
+//  EmojiPickerView.swift
+//  FamilyConnect
+//
+//  The full reaction picker. A pick calls the parent, which toggles the
+//  message reaction and dismisses the presentation. The catalogue tests
+//  enforce the server's 32-byte UTF-8 limit.
+//
+
 import SwiftUI
 
 #if os(macOS)
@@ -33,6 +42,8 @@ struct EmojiPickerView: View {
     }
 
     @State private var query = ""
+    @State private var search: ReactionEmojiSearch?
+    @State private var matches: [String] = []
     @State private var recent: [String] = []
     @State private var requestedSection: SectionID?
     @State private var picked = false
@@ -41,8 +52,6 @@ struct EmojiPickerView: View {
     @State private var pendingCell: CellID?
     private static let columnCount = 8
     #endif
-
-    private let search = ReactionEmojiSearch.bundled
 
     private var isSearching: Bool { !query.allSatisfy(\.isWhitespace) }
 
@@ -66,9 +75,8 @@ struct EmojiPickerView: View {
 
     var body: some View {
         let categories = categories
-        let matches = isSearching ? search.search(query) : []
         let sections = isSearching
-            ? [EmojiSection(id: .results, label: Text("Search results"), emojis: matches.map(\.emoji))]
+            ? [EmojiSection(id: .results, label: Text("Search results"), emojis: matches)]
             : categories
 
         ScrollViewReader { proxy in
@@ -79,7 +87,11 @@ struct EmojiPickerView: View {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
                         Color.clear.frame(height: 0).id("reactionPickerTop")
                             .accessibilityHidden(true)
-                        if isSearching && matches.isEmpty {
+                        if isSearching && search == nil {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 32)
+                        } else if isSearching && matches.isEmpty {
                             Text("No emoji found")
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity)
@@ -115,6 +127,7 @@ struct EmojiPickerView: View {
                 categoryBar(categories)
             }
             .onChange(of: query) {
+                updateMatches()
                 if requestedSection == nil { proxy.scrollTo("reactionPickerTop", anchor: .top) }
             }
             .task(id: requestedSection) {
@@ -158,7 +171,15 @@ struct EmojiPickerView: View {
             #if os(macOS)
             focus = .search
             #endif
+            let index = await ReactionEmojiSearch.bundled.value
+            guard !Task.isCancelled else { return }
+            search = index
+            updateMatches()
         }
+    }
+
+    private func updateMatches() {
+        matches = isSearching ? search?.search(query).map(\.emoji) ?? [] : []
     }
 
     private func searchBar(first: CellID?) -> some View {
@@ -233,7 +254,7 @@ struct EmojiPickerView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text(verbatim: search.name(for: cell.emoji)))
+        .accessibilityLabel(Text(verbatim: search?.name(for: cell.emoji) ?? cell.emoji))
         .accessibilityIdentifier("reactionEmoji-\(cell.emoji)")
         #if os(macOS)
         .focusable(interactions: .edit)

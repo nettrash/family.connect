@@ -50,7 +50,6 @@ struct MacMessageRow: View {
     /// delivery ladder beside the timestamp, exactly as on the phone.
     var isRead: Bool = false
     var onReply: () -> Void = {}
-    var onReactionFocusFallback: () -> Void = {}
     var onEdit: () -> Void = {}
     /// The chain (docs/protocol.md, "Threads"): "N replies" under a root,
     /// "View thread" in the menu of any member of one.
@@ -139,8 +138,7 @@ struct MacMessageRow: View {
     }
 
     @State private var reactionTarget: ReactionTarget?
-    @State private var rowVisible = false
-    @FocusState private var reactionButtonFocused: Bool
+    @State private var returnReactionFocus: (() -> Void)?
     /// Who left what — the Mac's answer to long-pressing a chip.
     @State private var showsReactors = false
 
@@ -281,11 +279,6 @@ struct MacMessageRow: View {
                             handleLinkClick(url)
                             return .handled
                         })
-                    .overlay(alignment: isMine ? .leading : .trailing) {
-                        if message.serverID != nil {
-                            moreReactionsButton.offset(x: isMine ? -30 : 30)
-                        }
-                    }
                 }
                 if message.state == .failed {
                     // A send that failed is the one thing here the user has
@@ -353,14 +346,6 @@ struct MacMessageRow: View {
             if visible { hasBeenVisible = true }
         }
         .onHover { hovering = $0 }
-        .onAppear { rowVisible = true }
-        .onDisappear {
-            rowVisible = false
-            if reactionTarget != nil {
-                reactionTarget = nil
-                onReactionFocusFallback()
-            }
-        }
         .contextMenu { rowMenu }
         .alert("Couldn't save that file",
                isPresented: Binding(get: { saveFailure != nil },
@@ -396,41 +381,30 @@ struct MacMessageRow: View {
         }
     }
 
-    private var moreReactionsButton: some View {
-        Button(action: showReactionPicker) {
-            Image(systemName: "face.smiling")
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusable(interactions: .edit)
-        .focused($reactionButtonFocused)
-        .onKeyPress(keys: [.return, .space]) { _ in
-            showReactionPicker()
-            return .handled
-        }
-        .opacity(hovering || reactionTarget != nil ? 1 : 0.5)
-        .help("More reactions…")
-        .accessibilityLabel("More reactions…")
-        .accessibilityIdentifier("messageMoreReactions")
-    }
-
     private func showReactionPicker() {
         guard reactionTarget == nil, let account = ReactionRecents.Account.current else { return }
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow, let first = window.firstResponder, first !== window {
+            // AppKit recycles its field editor. Restore the field that was using it.
+            let editor = (first as? NSTextView).flatMap { $0.isFieldEditor ? $0 : nil }
+            let responder = (editor?.delegate as? NSResponder) ?? first
+            let selection = editor?.selectedRange()
+            returnReactionFocus = { [weak window, weak responder] in
+                guard let window, let responder else { return }
+                if let view = responder as? NSView, view.window !== window { return }
+                guard window.makeFirstResponder(responder), let selection,
+                      let editor = window.firstResponder as? NSTextView, editor.isFieldEditor else { return }
+                let length = editor.string.utf16.count
+                let start = min(selection.location, length)
+                editor.setSelectedRange(NSRange(location: start, length: min(selection.length, length - start)))
+            }
+        }
         reactionTarget = ReactionTarget(id: message.localID, account: account)
     }
 
     private func restoreReactionFocus() {
-        Task { @MainActor in
-            // Wait for AppKit to restore the parent window's key view.
-            await Task.yield()
-            guard reactionTarget == nil else { return }
-            if rowVisible, !isHidden, message.serverID != nil {
-                reactionButtonFocused = true
-            } else {
-                onReactionFocusFallback()
-            }
-        }
+        let restore = returnReactionFocus
+        returnReactionFocus = nil
+        DispatchQueue.main.async { restore?() }
     }
 
     /// Who left what, one row per emoji in chip order.

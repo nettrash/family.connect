@@ -56,9 +56,11 @@ struct ReactionEmojiSearchTests {
         let russian = try String(contentsOf: russianURL, encoding: .utf8)
         let lines = russian.split(whereSeparator: \.isNewline)
         let last = try #require(lines.last)
-        let invalid = [english, lines.dropLast().joined(separator: "\n"), russian + last + "\n"]
+        let blankLine = lines.prefix(2).joined(separator: "\n")
+            + "\n\n" + lines.dropFirst(2).joined(separator: "\n") + "\n"
+        let invalid = [english, lines.dropLast().joined(separator: "\n"), russian + last + "\n", blankLine]
         for table in invalid {
-            let index = ReactionEmojiSearch(english: english, local: table, locale: "ru", aliases: Data())
+            let index = ReactionEmojiSearch(english: english, local: table, locale: "ru", aliases: [:])
             #expect(index.search("fire").first == .init(emoji: "🔥", name: "fire"))
             #expect(index.search("огонь").isEmpty)
         }

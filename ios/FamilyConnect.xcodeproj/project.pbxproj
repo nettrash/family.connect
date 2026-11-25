@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		FC0000A12EAB0010013FC000 /* emoji-search in Resources */ = {isa = PBXBuildFile; fileRef = FC0000A32EAB0010013FC000 /* emoji-search */; };
-		FC0000A22EAB0010013FC000 /* UNICODE-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = FC0000A42EAB0010013FC000 /* UNICODE-LICENSE.txt */; };
 		FC0000602EAB0010013FC000 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = FC0000622EAB0010013FC000 /* WebRTC */; };
 		FC0000802EAB0010013FC000 /* FamilyConnectShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FC0000812EAB0010013FC000 /* FamilyConnectShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -52,8 +50,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		FC0000A32EAB0010013FC000 /* emoji-search */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "emoji-search"; path = "../web/text/data/emoji-search"; sourceTree = SOURCE_ROOT; };
-		FC0000A42EAB0010013FC000 /* UNICODE-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "UNICODE-LICENSE.txt"; path = "../web/text/data/UNICODE-LICENSE.txt"; sourceTree = SOURCE_ROOT; };
 		FC0000112EAB0010013FC000 /* FamilyConnect.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FamilyConnect.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0000212EAB0010013FC000 /* FamilyConnectTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FamilyConnectTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC0000312EAB0010013FC000 /* FamilyConnectUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FamilyConnectUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -84,6 +80,9 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				FC0000192EAB0010013FC000 /* Exceptions for "FamilyConnect" folder in "FamilyConnect" target */,
+			);
+			explicitFolders = (
+				"Emoji/emoji-search",
 			);
 			path = FamilyConnect;
 			sourceTree = "<group>";
@@ -155,8 +154,6 @@
 				FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */,
 				FC00008F2EAB0010013FC000 /* FamilyConnectShared */,
 				FC0000902EAB0010013FC000 /* FamilyConnect.storekit */,
-				FC0000A32EAB0010013FC000 /* emoji-search */,
-				FC0000A42EAB0010013FC000 /* UNICODE-LICENSE.txt */,
 				FC0000402EAB0010013FC000 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -334,8 +331,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FC0000A12EAB0010013FC000 /* emoji-search in Resources */,
-				FC0000A22EAB0010013FC000 /* UNICODE-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,3 +1,10 @@
+//
+//  ReactionEmojiSearch.swift
+//  FamilyConnect
+//
+//  Indexes bundled catalogue annotations and shortcodes for reaction search.
+//
+
 import Foundation
 
 /// The Apple port of the shared reaction search in web/text/src/emoji_search.rs.
@@ -24,8 +31,9 @@ nonisolated struct ReactionEmojiSearch: Sendable {
     private let local: [String: Annotation]
     private let aliases: [String: [String]]
 
-    static let bundled = ReactionEmojiSearch(
-        bundle: .main, language: Bundle.main.preferredLocalizations.first ?? "en")
+    static let bundled = Task.detached(priority: .userInitiated) {
+        ReactionEmojiSearch(bundle: .main, language: PushRegistrationLogic.shownLanguage)
+    }
 
     init(bundle: Bundle, language: String) {
         let locale = Self.tag(for: language)
@@ -34,18 +42,24 @@ nonisolated struct ReactionEmojiSearch: Sendable {
             else { return nil }
             return try? String(contentsOf: url, encoding: .utf8)
         }
-        let aliasData = bundle.url(forResource: "emoji-names", withExtension: "tsv")
-            .flatMap { try? Data(contentsOf: $0) }
+        let aliases: [[UInt8]: String]
+        if bundle == .main {
+            aliases = EmojiTyping.names
+        } else {
+            aliases = bundle.url(forResource: "emoji-names", withExtension: "tsv")
+                .flatMap { try? Data(contentsOf: $0) }
+                .map(EmojiTyping.parseNames) ?? [:]
+        }
         self.init(english: annotations("en"), local: locale == "en" ? nil : annotations(locale),
-                  locale: locale, aliases: aliasData ?? Data())
+                  locale: locale, aliases: aliases)
     }
 
-    init(english: String?, local: String?, locale: String, aliases: Data) {
+    init(english: String?, local: String?, locale: String, aliases: [[UInt8]: String]) {
         self.english = english.flatMap { Self.parse($0, locale: "en") } ?? [:]
         self.local = local.flatMap { Self.parse($0, locale: locale) } ?? [:]
 
         var byEmoji: [String: [String]] = [:]
-        for (alias, glyph) in EmojiTyping.parseNames(aliases) {
+        for (alias, glyph) in aliases {
             guard let emoji = Self.catalogEmoji(for: glyph) else { continue }
             byEmoji[emoji, default: []].append(Self.normalize(String(decoding: alias, as: UTF8.self)))
         }
@@ -96,8 +110,7 @@ nonisolated struct ReactionEmojiSearch: Sendable {
         switch parts.first {
         case "sr": return parts.contains("latn") ? "sr-Latn" : "sr"
         case "zh": return parts.contains("hant") ? "en" : "zh-Hans"
-        case "de", "es", "fr", "ja", "ru": return String(parts[0])
-        default: return "en"
+        default: return PushRegistrationLogic.pushLanguage(shown: parts.first.map(String.init))
         }
     }
 
@@ -114,7 +127,12 @@ nonisolated struct ReactionEmojiSearch: Sendable {
 
     private static func parse(_ tsv: String, locale: String) -> [String: Annotation]? {
         var annotations: [String: Annotation] = [:]
-        for line in tsv.split(whereSeparator: \.isNewline) where !line.hasPrefix("#") {
+        var lines = tsv.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)[...]
+        if lines.last?.isEmpty == true { lines = lines.dropLast() }
+        for rawLine in lines {
+            let bytes = rawLine.last == UInt8(ascii: "\r") ? rawLine.dropLast() : rawLine
+            let line = String(decoding: bytes, as: UTF8.self)
+            if line.hasPrefix("#") { continue }
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard fields.count == 4, fields[0] == locale,
                   let emoji = catalogEmoji(for: String(fields[1])),

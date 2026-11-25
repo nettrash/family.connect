@@ -972,7 +972,6 @@ struct MacConversationView: View {
                                     othersReadUpTo: chat?.othersReadUpTo ?? 0,
                                     isFamilyOrGroup: isFamilyOrGroup),
                                 onReply: { beginReply(row.message) },
-                                onReactionFocusFallback: { composerFocused = true },
                                 onEdit: { beginEdit(row.message) },
                                 replyCount: row.message.replyCount,
                                 canViewThread: row.message.serverID != nil
