@@ -540,7 +540,7 @@
     <string name="s_reaction_search">Претражи емоџије</string>
     <string name="s_reaction_search_clear">Обриши претрагу</string>
     <string name="s_reaction_search_empty">Нема пронађених емоџија</string>
-    <string name="s_reaction_recents">Недавни емодији</string>
+    <string name="s_reaction_recents">Недавни емоџији</string>
     <string name="s_thread">Нит</string>
     <string name="s_view_thread">Прикажи нит</string>
     <string name="s_reply_in_thread">Одговори у нити</string>

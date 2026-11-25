@@ -1577,7 +1577,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun togglingCanonicalHeartDeletesLegacyPresentationVariants() = runTest(dispatcher) {
+    fun tappingCanonicalHeartReplacesLegacyPresentationVariants() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         for ((position, legacy) in listOf("❤", "❤︎").withIndex()) {
@@ -1589,15 +1589,19 @@ class MessageRepositoryTest {
                 ReactionsCodec.encode(listOf(ReactionDto(ME, legacy), peer)),
                 5L,
             )
-            chatApi.deleteReactionHandler = { _, id -> ApiResult.Ok(reactionState(id, 8L, listOf(peer))) }
+            val canonical = ReactionDto(ME, "❤️")
+            chatApi.putReactionHandler = { _, id, _ ->
+                ApiResult.Ok(reactionState(id, 8L, listOf(peer, canonical)))
+            }
 
-            repository.toggleReaction(CHAT, messageId, "❤️")
+            repository.toggleReaction(CHAT, messageId, canonical.emoji)
 
             assertThat(ReactionsCodec.decode(messageDao.findByServerId(messageId)!!.reactionsJson))
-                .containsExactly(peer)
+                .containsExactly(peer, canonical)
         }
-        assertThat(chatApi.deletedReactions).containsExactly(CHAT to 100L, CHAT to 101L).inOrder()
-        assertThat(chatApi.putReactions).isEmpty()
+        assertThat(chatApi.deletedReactions).isEmpty()
+        assertThat(chatApi.putReactions)
+            .containsExactly(Triple(CHAT, 100L, "❤️"), Triple(CHAT, 101L, "❤️")).inOrder()
     }
 
     @Test

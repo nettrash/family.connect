@@ -1,3 +1,10 @@
+/*
+ * ReactionRecentsPersistenceTest.kt
+ * Family Connect (Android)
+ *
+ * Recent picker choices written through the real settings store.
+ */
+
 package me.nettrash.familyconnect.data.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -18,15 +25,15 @@ class ReactionRecentsPersistenceTest {
     val folder = TemporaryFolder()
 
     private val url = "https://first.example.invalid"
-    private val session = ReactionRecents.scope(url, 1L, "session-one")!!
+    private val owner = ReactionRecents.Scope(url, 1L)
 
-    private fun <T> launch(block: suspend (ReactionRecents) -> T): T = runBlocking {
+    private fun <T> launch(block: suspend (DataStoreSettingsRepository) -> T): T = runBlocking {
         val job = Job()
         val store = PreferenceDataStoreFactory.create(scope = CoroutineScope(Dispatchers.IO + job)) {
-            folder.root.resolve("reaction-recents.preferences_pb")
+            folder.root.resolve("settings.preferences_pb")
         }
         try {
-            block(ReactionRecents(store))
+            block(DataStoreSettingsRepository(store))
         } finally {
             job.cancelAndJoin()
         }
@@ -36,38 +43,36 @@ class ReactionRecentsPersistenceTest {
     fun newestChoicesSurviveRestartAndKeepAtMostTwentyFourUniqueEntries() {
         val emoji = EMOJI_CATALOG.first().emoji.take(26)
         launch { store ->
-            for (glyph in emoji) store.record(session, glyph) { session }
-            store.record(session, "❤") { session }
-            store.record(session, "❤️") { session }
+            store.setServerUrl(url)
+            store.setProfile(1, "one", "One", 0)
+            for (glyph in emoji) store.recordRecentReaction(owner, glyph)
+            store.recordRecentReaction(owner, "❤")
+            store.recordRecentReaction(owner, "❤️")
         }
 
-        val saved = launch { it.observe(session).first().choices }
-        assertThat(saved).containsExactlyElementsIn(listOf("❤️") + emoji.takeLast(23).reversed()).inOrder()
+        val saved = launch { it.reactionRecents.first() }
+        assertThat(saved.scope).isEqualTo(owner)
+        assertThat(saved.choices)
+            .containsExactlyElementsIn(listOf("❤️") + emoji.takeLast(23).reversed()).inOrder()
     }
 
     @Test
-    fun sessionsAccountsAndServersCannotReadOrOverwriteOneAnothersRecents() = launch { store ->
-        store.record(session, "🔥") { session }
-        for (other in listOf(
-            ReactionRecents.scope(url, 1L, "session-two")!!,
-            ReactionRecents.scope(url, 2L, "session-one")!!,
-            ReactionRecents.scope("https://second.example.invalid", 1L, "session-one")!!,
-        )) {
-            assertThat(store.observe(other).first().choices).isEmpty()
-            store.record(other, "👍") { session }
-            store.record(session, "👍") { other }
-            assertThat(store.observe(session).first().choices).containsExactly("🔥")
-        }
-    }
+    fun changingAccountOrServerClearsChoicesAndRejectsWritesForTheOldOwner() = launch { store ->
+        store.setServerUrl(url)
+        store.setProfile(1, "one", "One", 0)
+        store.recordRecentReaction(owner, "🔥")
 
-    @Test
-    fun signOutClearsChoicesAndLateWritesAreIgnored() = launch { store ->
-        store.record(session, "🔥") { session }
-        store.clear()
-        store.record(session, "👍") { null }
-        assertThat(store.observe(session).first().choices).isEmpty()
-        assertThat(ReactionRecents.scope(url, 1L, null)).isNull()
-        assertThat(ReactionRecents.scope(url, 0L, "session-one")).isNull()
-        assertThat(ReactionRecents.scope(null, 1L, "session-one")).isNull()
+        store.setProfile(2, "two", "Two", 0)
+        store.recordRecentReaction(owner, "👍")
+        val second = ReactionRecents.Scope(url, 2)
+        assertThat(store.reactionRecents.first()).isEqualTo(ReactionRecents(second))
+        store.recordRecentReaction(second, "🧊")
+        assertThat(store.reactionRecents.first().choices).containsExactly("🧊")
+
+        val secondUrl = "https://second.example.invalid"
+        store.setServerUrl(secondUrl)
+        store.recordRecentReaction(second, "👍")
+        assertThat(store.reactionRecents.first())
+            .isEqualTo(ReactionRecents(ReactionRecents.Scope(secondUrl, 2)))
     }
 }

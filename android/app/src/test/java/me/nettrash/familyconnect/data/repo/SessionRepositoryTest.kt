@@ -37,9 +37,18 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.userDto
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
+import me.nettrash.familyconnect.data.settings.ReactionRecents
+import me.nettrash.familyconnect.data.settings.SettingsRepository
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryTest {
+    @get:Rule
+    val folder = TemporaryFolder()
+
 
     private val dispatcher = StandardTestDispatcher()
 
@@ -52,11 +61,14 @@ class SessionRepositoryTest {
     private val wiper = RecordingWiper()
     private val unauthorized = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
-    private fun TestScope.newRepository(defaultServerUrl: String? = null): SessionRepository {
+    private fun TestScope.newRepository(
+        defaultServerUrl: String? = null,
+        settingsRepository: SettingsRepository = settings,
+    ): SessionRepository {
         val repository = SessionRepository(
             authApi = authApi,
             tokenStore = tokenStore,
-            settings = settings,
+            settings = settingsRepository,
             wiper = wiper,
             unauthorizedEvents = unauthorized,
             scope = repoScope,
@@ -219,6 +231,45 @@ class SessionRepositoryTest {
         assertThat(tokenStore.token).isNull()
         assertThat(wiper.wipeCount).isEqualTo(1)
         assertThat(settings.state.first().serverUrl).isEqualTo("https://chat.example.com")
+    }
+
+    @Test
+    fun signOutClearsPersistedReactionRecents() = runTest(dispatcher) {
+        checkRecentReactionsClearOnSessionEnd(expire = false)
+    }
+
+    @Test
+    fun unauthorizedEventClearsPersistedReactionRecents() = runTest(dispatcher) {
+        checkRecentReactionsClearOnSessionEnd(expire = true)
+    }
+
+    private suspend fun TestScope.checkRecentReactionsClearOnSessionEnd(expire: Boolean) {
+        val store = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            folder.root.resolve("reaction-settings.preferences_pb")
+        }
+        val settings = DataStoreSettingsRepository(store)
+        val repository = newRepository(settingsRepository = settings)
+        val url = "https://chat.example.com"
+        val owner = ReactionRecents.Scope(url, 7)
+        settings.setServerUrl(url)
+        settings.setProfile(7, "anna", "Anna", 0)
+        tokenStore.save("tok")
+        settings.recordRecentReaction(owner, "🔥")
+        assertThat(settings.reactionRecents.first().choices).containsExactly("🔥")
+
+        if (expire) {
+            val expired = async { repository.sessionEvents.first() }
+            runCurrent()
+            unauthorized.emit(Unit)
+            assertThat(expired.await()).isEqualTo(SessionEvent.Expired)
+        } else {
+            repository.logout()
+        }
+
+        settings.recordRecentReaction(owner, "👍")
+        assertThat(settings.reactionRecents.first()).isEqualTo(ReactionRecents())
+        settings.setProfile(7, "anna", "Anna", 0)
+        assertThat(settings.reactionRecents.first()).isEqualTo(ReactionRecents(owner))
     }
 
     // -- Auth flow ------------------------------------------------------------------------

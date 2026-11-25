@@ -1,8 +1,16 @@
+/*
+ * ReactionSearch.kt
+ * Family Connect (Android)
+ *
+ * Localized reaction search using the shared catalogue and ranking rules.
+ */
+
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.util.EmojiTyping
 import me.nettrash.familyconnect.util.reactionEmojiKey
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /** Android's implementation of the shared Web search rules in emoji_search.rs. */
 internal object ReactionSearch {
@@ -23,18 +31,6 @@ internal object ReactionSearch {
         .replace(separators, " ")
         .replace(whitespace, " ")
         .trim()
-
-    fun localeTag(locales: Iterable<Locale>): String {
-        for (locale in locales) {
-            when (locale.language) {
-                "en", "de", "es", "fr", "ja", "ru" -> return locale.language
-                "sr", "sh" -> return if (locale.script == "Latn") "sr-Latn" else "sr"
-                "hr", "bs" -> return "sr-Latn"
-                "zh" -> return "zh-Hans"
-            }
-        }
-        return "en"
-    }
 
     private data class Annotation(val name: String, val normalizedName: String, val terms: String)
 
@@ -57,8 +53,18 @@ internal object ReactionSearch {
 
     private val english by lazy { readAnnotations("en").orEmpty() }
 
-    class Index(tag: String) {
-        private val local = if (tag == "en") english else readAnnotations(tag) ?: english
+    private val indices = ConcurrentHashMap<String, Index>()
+
+    fun cachedIndex(tag: String): Index? = indices[tag]
+
+    // Called on Dispatchers.Default so opening the picker does the resource
+    // and shortcode work before search is used by the text field.
+    fun index(tag: String): Index = indices.computeIfAbsent(tag, ::Index)
+
+    class Index internal constructor(val tag: String) {
+        private val englishAnnotations = english
+        private val local = if (tag == "en") englishAnnotations else readAnnotations(tag) ?: englishAnnotations
+        private val shortcodesByEmoji = aliases
 
         fun name(emoji: String): String = local[emoji]?.name ?: emoji
 
@@ -66,17 +72,17 @@ internal object ReactionSearch {
             val query = normalize(rawQuery)
             if (query.isEmpty()) return emptyList()
             val words = query.split(' ')
-            val queryKey = reactionEmojiKey(query)
+            val exactEmoji = canonical[reactionEmojiKey(query)]
             // One bucket per rank, so ties stay in catalogue order.
             val exact = mutableListOf<String>()
             val prefixes = mutableListOf<String>()
             val keywords = mutableListOf<String>()
             for (emoji in catalogue) {
                 val localized = local[emoji]
-                val fallback = english[emoji]
-                val shortcodes = aliases[emoji].orEmpty()
+                val fallback = englishAnnotations[emoji]
+                val shortcodes = shortcodesByEmoji[emoji].orEmpty()
                 when {
-                    emoji == canonical[queryKey] || localized?.normalizedName == query ||
+                    emoji == exactEmoji || localized?.normalizedName == query ||
                         fallback?.normalizedName == query || query in shortcodes -> exact.add(emoji)
                     localized?.normalizedName?.startsWith(query) == true ||
                         fallback?.normalizedName?.startsWith(query) == true -> prefixes.add(emoji)

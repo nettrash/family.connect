@@ -118,6 +118,14 @@ class FakeTokenStore(initial: String? = null) : TokenStore {
 class FakeSettingsRepository(initial: SettingsState = SettingsState()) : SettingsRepository {
     private val _state = MutableStateFlow(initial)
     override val state: Flow<SettingsState> = _state
+    override val reactionRecents = kotlinx.coroutines.flow.flowOf(
+        me.nettrash.familyconnect.data.settings.ReactionRecents(),
+    )
+
+    override suspend fun recordRecentReaction(
+        scope: me.nettrash.familyconnect.data.settings.ReactionRecents.Scope,
+        emoji: String,
+    ) = Unit
 
     val current: SettingsState get() = _state.value
 

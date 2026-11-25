@@ -11,7 +11,7 @@ ANDROID_ONLY = {
 "s_reaction_search": "Претражи емоџије",
 "s_reaction_search_clear": "Обриши претрагу",
 "s_reaction_search_empty": "Нема пронађених емоџија",
-"s_reaction_recents": "Недавни емодији",
+"s_reaction_recents": "Недавни емоџији",
 
 # Birthdays and the assistant's family settings. The four Android words the
 # iOS catalogue already has — Birthday, Not set, Month, Day — are found by

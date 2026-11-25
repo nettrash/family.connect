@@ -139,6 +139,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.text.input.ImeAction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import me.nettrash.familyconnect.data.push.PushLanguage
 import me.nettrash.familyconnect.data.settings.ReactionRecents
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -444,7 +445,7 @@ fun ChatScreen(
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
-    val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle(ReactionRecents.Snapshot(null))
+    val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle(ReactionRecents())
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val callsEnabled by viewModel.callsEnabled.collectAsStateWithLifecycle()
@@ -3011,11 +3012,11 @@ internal fun ReactionSearchSheet(
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val locales = LocalConfiguration.current.locales
-    val language = ReactionSearch.localeTag(List(locales.size()) { locales[it] })
-    val index by produceState<ReactionSearch.Index?>(null, language) {
-        value = withContext(Dispatchers.Default) { ReactionSearch.Index(language) }
+    val language = PushLanguage.of(stringResource(R.string.push_language))
+    val loadedIndex by produceState(ReactionSearch.cachedIndex(language), language) {
+        value = withContext(Dispatchers.Default) { ReactionSearch.index(language) }
     }
+    val index = loadedIndex?.takeIf { it.tag == language }
     var query by rememberSaveable { mutableStateOf("") }
     val searching = ReactionSearch.normalize(query).isNotEmpty()
     val results = remember(index, query) { index?.search(query).orEmpty() }

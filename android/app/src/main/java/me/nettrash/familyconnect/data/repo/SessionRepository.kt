@@ -41,15 +41,12 @@
 package me.nettrash.familyconnect.data.repo
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -63,7 +60,6 @@ import me.nettrash.familyconnect.data.net.dto.PendingJoinRequestDto
 import me.nettrash.familyconnect.data.push.PushLanguageProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenRepository
-import me.nettrash.familyconnect.data.settings.ReactionRecents
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -156,7 +152,6 @@ class SessionRepository @Inject constructor(
     // Same trick once more: a test that never holds two families gets the
     // no-op; production drops one family's rows through Room.
     private val familyData: FamilyLocalData = FamilyLocalData.NONE,
-    private val reactionRecents: ReactionRecents? = null,
 ) {
 
     // Bumped on every token save/clear so sessionFlow re-emits — the
@@ -168,20 +163,7 @@ class SessionRepository @Inject constructor(
 
     /** Live session view — ChatSocketManager keys its connect policy off this. */
     val sessionFlow: Flow<SessionSnapshot> =
-        combine(settings.state, tokenVersion) { state, _ -> snapshotFrom(state) }
-
-    private fun reactionScope(session: SessionSnapshot): String? =
-        ReactionRecents.scope(session.serverUrl, session.myUserId, session.token)
-
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    internal val recentReactions = sessionFlow.map(::reactionScope).distinctUntilChanged()
-        .flatMapLatest { owner ->
-            owner?.let { reactionRecents?.observe(it) } ?: flowOf(ReactionRecents.Snapshot(null))
-        }
-
-    internal suspend fun recordRecentReaction(owner: String, emoji: String) {
-        reactionRecents?.record(owner, emoji) { reactionScope(sessionFlow.first()) }
-    }
+        combine(settings.state.distinctUntilChanged(), tokenVersion) { state, _ -> snapshotFrom(state) }
 
     init {
         // Any authenticated 401, from any endpoint: wipe once, reroute once.
@@ -320,7 +302,6 @@ class SessionRepository @Inject constructor(
     suspend fun clearSession() {
         tokenStore.clear()
         tokenVersion.update { it + 1 }
-        reactionRecents?.clear()
         wipe()
         settings.resetKeepingServerUrl()
     }

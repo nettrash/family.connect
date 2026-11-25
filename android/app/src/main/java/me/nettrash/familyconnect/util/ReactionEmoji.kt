@@ -1,5 +1,10 @@
+/*
+ * ReactionEmoji.kt
+ * Family Connect (Android)
+ *
+ * Emoji keys for search and recents, matching the shared Rust search.
+ */
+
 package me.nettrash.familyconnect.util
 
-/** Compare presentation variants while preserving the selected catalogue sequence on the wire. */
-internal fun reactionEmojiKey(emoji: String): String =
-    emoji.replace("\uFE0E", "").replace("\uFE0F", "")
+internal fun reactionEmojiKey(emoji: String): String = emoji.replace("\uFE0F", "")
