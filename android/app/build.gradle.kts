@@ -266,46 +266,6 @@ android {
     }
 }
 
-// Package the shared CLDR tables and their notice byte for byte. Java resources
-// make the same files available to the plain JVM tests and the installed app.
-abstract class StageReactionSearchData : DefaultTask() {
-    @get:InputDirectory
-    @get:PathSensitive(PathSensitivity.RELATIVE)
-    abstract val catalogue: DirectoryProperty
-
-    @get:InputFile
-    @get:PathSensitive(PathSensitivity.NAME_ONLY)
-    abstract val notice: RegularFileProperty
-
-    @get:OutputDirectory
-    abstract val outputDirectory: DirectoryProperty
-
-    @get:javax.inject.Inject
-    abstract val fileSystem: FileSystemOperations
-
-    @TaskAction
-    fun stage() {
-        fileSystem.sync {
-            from(catalogue) { into("emoji-search") }
-            from(notice) { into("emoji-search") }
-            into(outputDirectory)
-        }
-    }
-}
-
-androidComponents {
-    onVariants { variant ->
-        val sharedData = rootProject.layout.projectDirectory.dir("../web/text/data")
-        val stage = tasks.register<StageReactionSearchData>(
-            "stage${variant.name.replaceFirstChar { it.uppercaseChar() }}ReactionSearchData",
-        ) {
-            catalogue.set(sharedData.dir("emoji-search"))
-            notice.set(sharedData.file("UNICODE-LICENSE.txt"))
-        }
-        variant.sources.resources?.addGeneratedSourceDirectory(stage, StageReactionSearchData::outputDirectory)
-    }
-}
-
 // ---- Firebase / google-services (conditional) ----------------------------
 //
 // The repo deliberately ships WITHOUT a google-services.json — it is the

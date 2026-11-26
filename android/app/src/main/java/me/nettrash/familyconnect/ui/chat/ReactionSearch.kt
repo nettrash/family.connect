@@ -28,9 +28,11 @@ internal object ReactionSearch {
 
     fun normalize(query: String): String = query.lowercase(Locale.ROOT)
         .replace("ß", "ss")
+        .replace('ё', 'е')
+        .replace("е\u0308", "е")
         .replace(separators, " ")
         .replace(whitespace, " ")
-        .trim()
+        .trim(' ')
 
     private data class Annotation(val name: String, val normalizedName: String, val terms: String)
 

@@ -12,6 +12,11 @@
 package me.nettrash.familyconnect.ui.chat
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 
 class EmojiCatalogTest {
@@ -97,6 +102,28 @@ class EmojiCatalogTest {
     }
 
     @Test
+    fun searchMatchesSharedOracleResultsAndLocalizedNames() {
+        val stream = requireNotNull(javaClass.getResourceAsStream("/reaction-search-vectors.json")) {
+            "reaction-search-vectors.json is missing from the test classpath"
+        }
+        val vectors = stream.bufferedReader(Charsets.UTF_8).use { Json.parseToJsonElement(it.readText()) }
+        val cases = vectors.jsonObject.getValue("search").jsonArray
+        assertThat(cases.size).isAtLeast(32)
+        for (case in cases.map { it.jsonObject }) {
+            val id = case.getValue("id").jsonPrimitive.content
+            val locale = case.getValue("locale").jsonPrimitive.content
+            val query = case.getValue("query").jsonPrimitive.content
+            val expected = case.getValue("matches").jsonArray.map {
+                val match = it.jsonObject
+                match.getValue("emoji").jsonPrimitive.content to match.getValue("name").jsonPrimitive.content
+            }
+            val index = ReactionSearch.index(locale)
+            val actual = index.search(query).map { emoji -> emoji to index.name(emoji) }
+            assertWithMessage("%s/%s", locale, id).that(actual).containsExactlyElementsIn(expected).inOrder()
+        }
+    }
+
+    @Test
     fun preparedIndexIsReusedWhenReopeningAndKeepingLocalesSeparate() {
         val russian = ReactionSearch.index("ru")
         val english = ReactionSearch.index("en")
@@ -142,6 +169,13 @@ class EmojiCatalogTest {
         val query = "no-such-emoji-8372"
         assertThat(ReactionSearch.normalize(query)).isNotEmpty()
         assertThat(index.search(query)).isEmpty()
+    }
+
+    @Test
+    fun searchUsesTheSameWhitespaceAsRust() {
+        val index = ReactionSearch.index("en")
+        assertThat(index.search("\u0085red\u00a0heart\u2003")).containsExactly("❤️")
+        assertThat(index.search("\u001cfire")).isEmpty()
     }
 
     @Test
