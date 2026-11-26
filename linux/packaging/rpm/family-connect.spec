@@ -60,6 +60,7 @@ cp -a %{fc_stage}/. %{buildroot}/
 %files
 %dir %{_datadir}/licenses/%{name}
 %license %{_datadir}/licenses/%{name}/copyright
+%license %{_datadir}/licenses/%{name}/UNICODE-LICENSE.txt
 %dir %{_docdir}/%{name}
 %doc %{_docdir}/%{name}/CHANGELOG
 %{_bindir}/family-connect
