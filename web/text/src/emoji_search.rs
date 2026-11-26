@@ -14,7 +14,13 @@ pub const RECENT_LIMIT: usize = 24;
 
 struct Entry {
     emoji: &'static str,
+    key: String,
     aliases: Vec<String>,
+}
+
+struct Catalogue {
+    entries: Vec<Entry>,
+    positions: HashMap<String, usize>,
 }
 
 struct Annotation {
@@ -80,14 +86,17 @@ fn normalise(text: &str) -> String {
     text.to_lowercase()
         // German uppercase SS and lowercase ß must find the same keywords.
         .replace('ß', "ss")
+        // CLDR often spells Russian words with е where readers type ё.
+        .replace('ё', "е")
+        .replace("е\u{0308}", "е")
         .replace(['_', '-', ':', '|'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn entries() -> &'static [Entry] {
-    static INDEX: OnceLock<Vec<Entry>> = OnceLock::new();
+fn catalogue() -> &'static Catalogue {
+    static INDEX: OnceLock<Catalogue> = OnceLock::new();
     INDEX.get_or_init(|| {
         let mut seen = HashSet::new();
         let mut entries: Vec<_> = EMOJI_CATALOG
@@ -96,13 +105,14 @@ fn entries() -> &'static [Entry] {
             .filter(|emoji| seen.insert(*emoji))
             .map(|emoji| Entry {
                 emoji,
+                key: key(emoji),
                 aliases: Vec::new(),
             })
             .collect();
         let positions: HashMap<_, _> = entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| (key(entry.emoji), index))
+            .map(|(index, entry)| (entry.key.clone(), index))
             .collect();
         for line in ALIASES.lines().filter(|line| !line.starts_with('#')) {
             if let Some((name, emoji)) = line.split_once('\t') {
@@ -111,20 +121,20 @@ fn entries() -> &'static [Entry] {
                 }
             }
         }
-        entries
+        Catalogue { entries, positions }
     })
 }
 
+fn entries() -> &'static [Entry] {
+    &catalogue().entries
+}
+
 fn known(emoji: &str) -> Option<&'static Entry> {
-    static POSITIONS: OnceLock<HashMap<String, usize>> = OnceLock::new();
-    let positions = POSITIONS.get_or_init(|| {
-        entries()
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (key(entry.emoji), index))
-            .collect()
-    });
-    positions.get(&key(emoji)).map(|&index| &entries()[index])
+    let catalogue = catalogue();
+    catalogue
+        .positions
+        .get(&key(emoji))
+        .map(|&index| &catalogue.entries[index])
 }
 
 /// Name used by buttons and screen readers, independent of how it was found.
@@ -151,7 +161,7 @@ pub fn search<'a>(query: &str, local: Option<&'a Annotations>) -> Vec<Match<'a>>
     for entry in entries() {
         let local = &local.0[entry.emoji];
         let english = &english.0[entry.emoji];
-        let exact_emoji = key(entry.emoji) == query_emoji;
+        let exact_emoji = entry.key == query_emoji;
         if !exact_emoji
             && !words.iter().all(|word| {
                 local.terms.contains(word)
@@ -253,6 +263,30 @@ mod tests {
         }
         assert_eq!(name("🔥", None), Some("fire"));
         assert_eq!(name("not emoji", None), None);
+    }
+
+    #[test]
+    fn serbian_cyrillic_queries_match_corrected_keywords() {
+        let sr = Some(localized(Lang::Sr));
+        for (query, expected) in [
+            ("пламен", "🔥"),
+            ("сузе", "😂"),
+            ("слатко", "🎂"),
+            ("торта", "🎂"),
+        ] {
+            assert!(search(query, sr)
+                .iter()
+                .any(|result| result.emoji == expected));
+        }
+    }
+
+    #[test]
+    fn russian_yo_matches_e_in_both_input_forms() {
+        let ru = Some(localized(Lang::Ru));
+        let expected = search("елка", ru);
+        assert!(expected.iter().any(|result| result.emoji == "🎄"));
+        assert_eq!(search("ЁЛКА", ru), expected);
+        assert_eq!(search("е\u{0308}лка", ru), expected);
     }
 
     #[test]
