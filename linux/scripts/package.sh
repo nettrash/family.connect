@@ -177,6 +177,8 @@ build_inside() {
     # reads /usr/share/family-connect, and the tarball's bin/ finds ../share/family-connect.
     mkdir -p "$stage/usr/share/$PKG"
     cp -R data/. "$stage/usr/share/$PKG/"
+    # English is embedded in fc-text. Keep the generated notice beside the other locales.
+    rm -f "$stage/usr/share/$PKG/emoji-search/en.tsv"
 
     # Modes and owners: directories 0755, files 0644, the binary and the scripts 0755; dpkg-deb
     # --root-owner-group makes every entry root:root.
@@ -387,7 +389,8 @@ EOF
         # shellcheck disable=SC2086 # one path per word
         printf '%s\n' $LAYOUT_FILES
         (cd packaging/icons && find hicolor -type f) | sed 's#^#usr/share/icons/#'
-        (cd data && find . -type f) | sed "s#^\./#usr/share/$PKG/#"
+        # The embedded English catalogue has no installed data file.
+        (cd data && find . -type f ! -path './emoji-search/en.tsv') | sed "s#^\./#usr/share/$PKG/#"
     } | LC_ALL=C sort > "$tmp/expected"
     if ! cmp -s "$tmp/expected" "$tmp/actual"; then
         say "contents differ from docs/packaging.md §1 (< expected, > in the .deb):"

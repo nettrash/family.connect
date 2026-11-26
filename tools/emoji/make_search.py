@@ -16,10 +16,28 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "96e54b273d2da4ec6fbad350ba19ff23fa24a588"
+CANONICAL = ROOT / "web/text/data"
+COPIES = [
+    ROOT / "ios/FamilyConnect/Emoji/emoji-search",
+    ROOT / "android/app/src/main/resources/emoji-search",
+    ROOT / "win/src/FamilyConnect.App.Logic/emoji-search",
+    ROOT / "linux/data/emoji-search",
+]
 LOCALES = {
     "en": "en", "de": "de", "es": "es", "fr": "fr", "ja": "ja",
     "ru": "ru", "sr": "sr", "sr-Latn": "sr_Latn", "zh-Hans": "zh",
 }
+SERBIAN_LOOKALIKES = str.maketrans("JTaejo", "ЈТаејо")
+WORD = re.compile(r"[^\W\d_]+")
+CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+
+
+def fix_serbian(text):
+    def fix_word(match):
+        word = match[0]
+        return word.translate(SERBIAN_LOOKALIKES) if CYRILLIC.search(word) else word
+
+    return WORD.sub(fix_word, text)
 
 
 def catalogue():
@@ -42,9 +60,10 @@ def generate(source):
         f"# Unicode CLDR 49, commit {COMMIT}. Unicode-3.0; see UNICODE-LICENSE.txt.\n"
         "# locale<TAB>catalogue emoji<TAB>localised name<TAB>keywords separated by |\n"
     )
-    files = {
-        ROOT / "web/text/data/UNICODE-LICENSE.txt": (source / "LICENSE").read_text(encoding="utf-8"),
-    }
+    license_bytes = (source / "LICENSE").read_bytes()
+    files = {CANONICAL / "UNICODE-LICENSE.txt": license_bytes}
+    for directory in COPIES:
+        files[directory / "UNICODE-LICENSE.txt"] = license_bytes
     for locale, cldr in LOCALES.items():
         rows = []
         path = source / f"common/annotations/{cldr}.xml"
@@ -59,11 +78,15 @@ def generate(source):
             keywords = entry.get("keywords", "")
             if not name or not keywords or "↑↑↑" in (name, keywords):
                 raise ValueError(f"Missing {locale} annotations for {glyph!r}")
+            if locale == "sr":
+                name = fix_serbian(name)
+                keywords = fix_serbian(keywords)
             if any(char in name + keywords for char in "\t\r\n"):
                 raise ValueError(f"Invalid TSV annotation for {glyph!r}")
             rows.append(f"{locale}\t{glyph}\t{name}\t{keywords}\n")
-        output = ROOT / "web/text/data/emoji-search" / f"{locale}.tsv"
-        files[output] = header + "".join(rows)
+        data = (header + "".join(rows)).encode("utf-8")
+        for directory in [CANONICAL / "emoji-search", *COPIES]:
+            files[directory / f"{locale}.tsv"] = data
     return files
 
 
@@ -86,13 +109,13 @@ def main():
                     full.write_bytes(response.read())
             if hashlib.sha256(full.read_bytes()).hexdigest() != hashes[path]:
                 raise ValueError(f"Source checksum mismatch: {path}")
-        for path, text in generate(source).items():
+        for path, data in generate(source).items():
             if args.check:
-                if not path.exists() or path.read_text(encoding="utf-8") != text:
+                if not path.exists() or path.read_bytes() != data:
                     raise SystemExit(f"Stale generated file: {path.relative_to(ROOT)}")
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text, encoding="utf-8")
+                path.write_bytes(data)
         print(f"CLDR 49: {len(catalogue())} emoji × {len(LOCALES)} locales; "
               + ("generated files verified" if args.check else "generated files written"))
 

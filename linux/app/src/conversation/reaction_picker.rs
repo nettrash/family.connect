@@ -365,14 +365,49 @@ mod tests {
     #[test]
     fn shipped_locale_files_match_the_shared_catalogue() {
         let app = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let shared = app.join("../../web/text/data/emoji-search");
+        let shared_data = app.join("../../web/text/data");
+        let shared = shared_data.join("emoji-search");
         let shipped = app.join("../data/emoji-search");
-        for tag in ["de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans"] {
-            let file = format!("{tag}.tsv");
+        for file in [
+            "de.tsv",
+            "en.tsv",
+            "es.tsv",
+            "fr.tsv",
+            "ja.tsv",
+            "ru.tsv",
+            "sr.tsv",
+            "sr-Latn.tsv",
+            "zh-Hans.tsv",
+        ] {
             assert!(
-                std::fs::read(shipped.join(&file)).unwrap()
-                    == std::fs::read(shared.join(&file)).unwrap(),
+                std::fs::read(shipped.join(file)).unwrap()
+                    == std::fs::read(shared.join(file)).unwrap(),
                 "{file} differs from the shared catalogue"
+            );
+        }
+        let notice = "UNICODE-LICENSE.txt";
+        assert!(
+            std::fs::read(shipped.join(notice)).unwrap()
+                == std::fs::read(shared_data.join(notice)).unwrap(),
+            "the Linux Unicode notice differs from the shared notice"
+        );
+    }
+
+    #[test]
+    fn linux_catalogues_use_serbian_corrections_and_russian_yo_folding() {
+        let data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data");
+        let serbian = localized(&data_dir, Lang::Sr).expect("Serbian locale file");
+        let russian = localized(&data_dir, Lang::Ru).expect("Russian locale file");
+        for (catalogue, query, emoji) in [
+            (&serbian, "пламен", "🔥"),
+            (&serbian, "сузе", "😂"),
+            (&russian, "ёлка", "🎄"),
+        ] {
+            assert!(
+                emoji_search::search(query, Some(catalogue))
+                    .iter()
+                    .any(|result| result.emoji == emoji),
+                "{query} should find {emoji}"
             );
         }
     }

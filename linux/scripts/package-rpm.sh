@@ -97,6 +97,8 @@ build_inside() {
     # The data folder, as the .deb's (docs/shell-design.md §2.3): /usr/share/family-connect.
     mkdir -p "$stage/usr/share/$PKG"
     cp -R data/. "$stage/usr/share/$PKG/"
+    # English is embedded in fc-text. Keep the generated notice beside the other locales.
+    rm -f "$stage/usr/share/$PKG/emoji-search/en.tsv"
     find "$stage" -type d -exec chmod 0755 {} +
     find "$stage" -type f -exec chmod 0644 {} +
     chmod 0755 "$stage/usr/bin/$PKG"
