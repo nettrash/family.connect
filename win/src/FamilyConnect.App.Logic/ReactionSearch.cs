@@ -88,6 +88,9 @@ public sealed class ReactionSearch
 
     private static string Normalise(string text) => string.Join(' ', text.ToLowerInvariant()
         .Replace("ß", "ss", StringComparison.Ordinal)
+        // Match the Rust oracle's Russian ё folding for both Unicode spellings.
+        .Replace('ё', 'е')
+        .Replace("е\u0308", "е", StringComparison.Ordinal)
         .Replace('_', ' ').Replace('-', ' ').Replace(':', ' ').Replace('|', ' ')
         .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 

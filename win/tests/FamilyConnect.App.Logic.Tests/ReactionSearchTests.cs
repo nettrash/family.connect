@@ -1,9 +1,46 @@
+using System.Text.Json;
 using FamilyConnect.Core;
 
 namespace FamilyConnect.App.Logic.Tests;
 
 public sealed class ReactionSearchTests
 {
+    private sealed record SearchVector(string Id, string Locale, string Query, ReactionSearchResult[] Matches);
+    private sealed record OracleFixture(SearchVector[] Search);
+
+    private static readonly Dictionary<(string Locale, string Id), SearchVector> Vectors = LoadOracleVectors();
+
+    public static TheoryData<string, string> OracleCases
+    {
+        get
+        {
+            var cases = new TheoryData<string, string>();
+            foreach (var (locale, id) in Vectors.Keys)
+            {
+                cases.Add(locale, id);
+            }
+            return cases;
+        }
+    }
+
+    private static Dictionary<(string Locale, string Id), SearchVector> LoadOracleVectors()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "reaction-search-vectors.json");
+        using var stream = File.OpenRead(path);
+        var fixture = JsonSerializer.Deserialize<OracleFixture>(stream, JsonSerializerOptions.Web)
+            ?? throw new InvalidDataException("Missing reaction-search oracle vectors.");
+        return fixture.Search.ToDictionary(vector => (vector.Locale, vector.Id));
+    }
+
+    [Theory]
+    [MemberData(nameof(OracleCases))]
+    public void SearchMatchesTheRustOracle(string locale, string id)
+    {
+        var vector = Vectors[(locale, id)];
+
+        Assert.Equal(vector.Matches, new ReactionSearch(locale).Search(vector.Query).ToArray());
+    }
+
     [Theory]
     [InlineData("en-US", "litaf", "fire")]
     [InlineData("de-AT", "brennen", "Feuer")]
@@ -11,7 +48,7 @@ public sealed class ReactionSearchTests
     [InlineData("fr", "fournaise", "feu")]
     [InlineData("ja", "燃える", "火")]
     [InlineData("ru", "костер", "огонь")]
-    [InlineData("sr-Cyrl-RS", "плaмeн", "ватра")]
+    [InlineData("sr-Cyrl-RS", "пламен", "ватра")]
     [InlineData("sr-Latn-RS", "plamen", "vatra")]
     [InlineData("zh-CN", "燃烧", "火焰")]
     public void AllNineLanguagesFindKeywordsAndNameCatalogueCells(string locale, string keyword, string name)
