@@ -49,13 +49,14 @@ here. Facts were measured on 2026-10-28 in the images named below.
 | `/usr/share/doc/family-connect/CHANGELOG.gz` | 0644 | the repository's `CHANGELOG` → `gzip -9n` | the family's user-facing release history |
 | `/usr/share/dbus-1/services/me.nettrash.FamilyConnect.service` | 0644 | `packaging/dbus/me.nettrash.FamilyConnect.service` | §2: `DBusActivatable` |
 | `/usr/share/icons/hicolor/symbolic/apps/me.nettrash.FamilyConnect-symbolic.svg` | 0644 | `packaging/icons/hicolor/symbolic/…` | the top-bar icon (shell-design §16.2) |
-| `/usr/share/family-connect/…` | 0644 (folders 0755) | `linux/data/…` | translation tables, the rich page, and the eight additional reaction catalogues with the Unicode notice |
+| `/usr/share/family-connect/…` | 0644 (folders 0755) | `linux/data/…` | translation tables, the rich page, and the eight additional reaction catalogues |
 | `DEBIAN/control`, `md5sums`, `conffiles`, `postinst`, `postrm` | 0644 / scripts 0755 | `packaging/control.in`, `packaging/postinst`, `packaging/postrm` | §7, §8 |
 
 Nothing is installed under `/usr/lib`, `/var` or `/opt`; nothing in the user's home is created by the
 package. The data folder `/usr/share/family-connect` comes from `linux/data`. The packages omit
 `emoji-search/en.tsv` because the shared Rust crate embeds English. They ship the other eight
-generated reaction catalogues and `emoji-search/UNICODE-LICENSE.txt`. The binary finds the data
+generated reaction catalogues. The DEB and portable archive put `UNICODE-LICENSE.txt` in
+`share/doc/family-connect/`, and the RPM puts it in `share/licenses/family-connect/`. The binary finds the data
 **beside the executable** — `<prefix>/share/family-connect` for `<prefix>/bin/family-connect` — before
 `/usr/share` (`app/src/services/paths.rs`), so the portable archive works too (§12). Without it the
 client runs in English and logs a warning.

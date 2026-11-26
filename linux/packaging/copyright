@@ -42,7 +42,8 @@ Comment: Family Connect is written in Rust and its binary also contains these
  The reaction picker embeds English CLDR 49 annotations under Unicode-3.0.
 
 Files: usr/share/family-connect/emoji-search/*.tsv
-       usr/share/family-connect/emoji-search/UNICODE-LICENSE.txt
+       usr/share/doc/family-connect/UNICODE-LICENSE.txt
+       usr/share/licenses/family-connect/UNICODE-LICENSE.txt
 Copyright: 2001–2026 Unicode, Inc.
 License: Unicode-3.0
 Comment: The eight other desktop locales ship as data alongside the app.
