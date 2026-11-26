@@ -13,6 +13,8 @@
 //! - [`emoji_typing`] — emoji as you type (#101): `:-)` and Telegram's other
 //!   emoticons, and `:name:` shortcodes, become emoji the moment they are
 //!   typed; a Backspace straight after takes one back.
+//! - [`emoji_search`] — localized reaction names, keyword and shortcode ranking,
+//!   and recent reaction choices (#116).
 //! - [`reactions`] — a message's reactions as chips and as "See who reacted".
 //! - [`mentions`] — `@Name`: the composer's trigger and suggestions, who a
 //!   text names at send, and which tokens an incoming body highlights.
