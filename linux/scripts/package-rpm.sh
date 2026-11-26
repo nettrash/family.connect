@@ -95,11 +95,7 @@ build_inside() {
     install -D -m 0644 ../CHANGELOG "$stage/usr/share/doc/$PKG/CHANGELOG"
     install -D -m 0644 packaging/copyright "$stage/usr/share/licenses/$PKG/copyright"
     # The data folder, as the .deb's (docs/shell-design.md §2.3): /usr/share/family-connect.
-    mkdir -p "$stage/usr/share/$PKG"
-    cp -R data/. "$stage/usr/share/$PKG/"
-    # English is embedded in fc-text. The Unicode notice is an RPM licence file.
-    rm -f "$stage/usr/share/$PKG/emoji-search/en.tsv"
-    mv "$stage/usr/share/$PKG/emoji-search/UNICODE-LICENSE.txt" "$stage/usr/share/licenses/$PKG/"
+    stage_data "$stage/usr/share/$PKG" "$stage/usr/share/licenses/$PKG"
     find "$stage" -type d -exec chmod 0755 {} +
     find "$stage" -type f -exec chmod 0644 {} +
     chmod 0755 "$stage/usr/bin/$PKG"
