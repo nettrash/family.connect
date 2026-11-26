@@ -13,6 +13,14 @@
 # the `linux` path filter of .github/workflows/ci.yml.
 SOURCE_PATHS=(linux web/text CHANGELOG ':(exclude)linux/tools/rtc-spike')
 
+# Copy runtime assets and stage the CLDR notice with the package's other licences.
+stage_data() {
+    local runtime="$1" licences="$2"
+    mkdir -p "$runtime"
+    cp -R data/. "$runtime/"
+    mv "$runtime/emoji-search/UNICODE-LICENSE.txt" "$licences/"
+}
+
 # The workspace's version: [workspace.package] in $1/Cargo.toml.
 tree_version() {
     sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$1/Cargo.toml"
