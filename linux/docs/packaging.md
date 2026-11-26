@@ -45,6 +45,7 @@ here. Facts were measured on 2026-10-28 in the images named below.
 | `/etc/apparmor.d/family-connect` | 0644, conffile | `packaging/apparmor/family-connect` | §7 |
 | `/usr/share/man/man1/family-connect.1.gz` | 0644 | `packaging/family-connect.1` → `gzip -9n` | lintian wants a manual page |
 | `/usr/share/doc/family-connect/copyright` | 0644 | `packaging/copyright` | §6 |
+| `/usr/share/doc/family-connect/UNICODE-LICENSE.txt` | 0644 | Generated CLDR notice from `data/emoji-search/` | Unicode-3.0 |
 | `/usr/share/doc/family-connect/changelog.gz` | 0644 | `packaging/changelog` (Debian format) → `gzip -9n` | the native package's changelog |
 | `/usr/share/doc/family-connect/CHANGELOG.gz` | 0644 | the repository's `CHANGELOG` → `gzip -9n` | the family's user-facing release history |
 | `/usr/share/dbus-1/services/me.nettrash.FamilyConnect.service` | 0644 | `packaging/dbus/me.nettrash.FamilyConnect.service` | §2: `DBusActivatable` |
@@ -446,7 +447,7 @@ time and file times are still `SOURCE_DATE_EPOCH`.
 | | `.deb` (§1) | `.rpm` (`packaging/rpm/family-connect.spec`) |
 | --- | --- | --- |
 | Binary, desktop entry, metainfo, icons, man page | as §1 | the same paths (rpm gzips the man page) |
-| Documents | `copyright`, `changelog.gz`, `CHANGELOG.gz` | `CHANGELOG` (`%doc`); `/usr/share/licenses/family-connect/copyright` (`%license`); `License: MIT` |
+| Documents | `copyright`, `UNICODE-LICENSE.txt`, `changelog.gz`, `CHANGELOG.gz` | `CHANGELOG` (`%doc`); `copyright` and `UNICODE-LICENSE.txt` in `/usr/share/licenses/family-connect/` (`%license`) |
 | AppArmor profile | `/etc/apparmor.d/family-connect` | none: Fedora confines with SELinux and does not restrict user namespaces |
 | Linked libraries | `dpkg-shlibdeps`, floors raised | rpm's soname generators |
 | SQLite, libsecret (not yet linked) | `libsqlite3-0`, `libsecret-1-0` | `libsqlite3.so.0()(64bit)`, `libsecret-1.so.0()(64bit)` |
