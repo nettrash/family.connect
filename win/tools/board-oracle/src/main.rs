@@ -17,6 +17,8 @@
 use fc_text::board as b;
 use fc_text::{calendar, call_record, media, notify};
 
+mod reaction_search;
+
 fn q(text: &str) -> String {
     serde_json::to_string(text).unwrap()
 }
@@ -46,6 +48,10 @@ fn main() {
     // whole; copied likewise.
     if std::env::args().nth(1).as_deref() == Some("emoji-typing") {
         emoji_typing_vectors();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("reaction-search") {
+        reaction_search::print_vectors();
         return;
     }
     // `animation-plan` prints fc_text::animation — an animated picture sent as a silent looping video (issue #96):
