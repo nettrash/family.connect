@@ -23,7 +23,7 @@ The checked-in package copies come from the same generator.
 | Client | How the app PR ships the catalogue and notice | Uncompressed data |
 | --- | --- | ---: |
 | Web | English is compiled into WebAssembly. The other languages are versioned static assets loaded on demand. `UNICODE-LICENSE.txt` is a static asset. | 53,752 bytes built in, 536,703 bytes of locale assets, 3,193 bytes for the notice |
-| Linux | English is compiled into the shared Rust crate. Packaging uses the locale files in `linux/data/emoji-search/` and records Unicode-3.0 attribution in the package copyright. | 53,752 bytes built in, 536,703 bytes for the eight additional locale tables, 3,193 bytes for the full notice |
+| Linux | English is compiled into the shared Rust crate. Packaging uses the locale files in `linux/data/emoji-search/` and installs the notice under the package's documentation on Debian and in the tarball, or under its licenses directory on Fedora. | 53,752 bytes built in, 536,703 bytes for the eight additional locale tables, 3,193 bytes for the full notice |
 | iOS and macOS | The Xcode targets use the generated `Emoji/emoji-search` resources in the app bundle, including the notice. | 593,648 bytes per app |
 | Android | The app packages the generated `emoji-search` resources on the classpath, including the notice. | 593,648 bytes |
 | Windows | App.Logic embeds the TSVs. The MSIX packages the notice as an asset. | 593,648 bytes before MSIX compression |
