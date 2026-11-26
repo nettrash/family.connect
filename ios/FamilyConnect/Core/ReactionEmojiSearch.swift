@@ -75,7 +75,8 @@ nonisolated struct ReactionEmojiSearch: Sendable {
         let normalized = Self.normalize(query)
         guard !normalized.isEmpty else { return [] }
 
-        let words = normalized.split(separator: " ")
+        let words = normalized.split(separator: " ").map(String.init)
+        let bytes = normalized.utf8
         let exactGlyph = Self.catalogEmoji(for: normalized)
         var exact: [Match] = []
         var prefixes: [Match] = []
@@ -85,15 +86,19 @@ nonisolated struct ReactionEmojiSearch: Sendable {
             let english = english[emoji]
             let aliases = aliases[emoji, default: []]
             let match = Match(emoji: emoji, name: local?.name ?? english?.name ?? emoji)
-            if exactGlyph == emoji || local?.normalizedName == normalized
-                || english?.normalizedName == normalized || aliases.contains(normalized) {
+            // Swift's string equality ignores canonical spelling differences.
+            // The reference keeps the input's code points apart from its explicit folds.
+            if exactGlyph == emoji || local?.normalizedName.utf8.elementsEqual(bytes) == true
+                || english?.normalizedName.utf8.elementsEqual(bytes) == true
+                || aliases.contains(where: { $0.utf8.elementsEqual(bytes) }) {
                 exact.append(match)
-            } else if local?.normalizedName.hasPrefix(normalized) == true
-                || english?.normalizedName.hasPrefix(normalized) == true {
+            } else if local?.normalizedName.utf8.starts(with: bytes) == true
+                || english?.normalizedName.utf8.starts(with: bytes) == true {
                 prefixes.append(match)
             } else if words.allSatisfy({ word in
-                local?.terms.contains(word) == true || english?.terms.contains(word) == true
-                    || aliases.contains { $0.contains(word) }
+                local?.terms.range(of: word, options: .literal) != nil
+                    || english?.terms.range(of: word, options: .literal) != nil
+                    || aliases.contains { $0.range(of: word, options: .literal) != nil }
             }) {
                 keywords.append(match)
             }
@@ -114,14 +119,18 @@ nonisolated struct ReactionEmojiSearch: Sendable {
         }
     }
 
-    private static func key(_ emoji: String) -> String {
-        emoji.replacingOccurrences(of: "\u{FE0F}", with: "", options: .literal)
+    private static func key(_ emoji: String) -> [UInt8] {
+        Array(emoji.replacingOccurrences(of: "\u{FE0F}", with: "", options: .literal).utf8)
     }
 
     private static func normalize(_ text: String) -> String {
         text.lowercased()
-            .replacingOccurrences(of: "ß", with: "ss")
-            .split { $0.isWhitespace || "_-:|".contains($0) }
+            .replacingOccurrences(of: "ß", with: "ss", options: .literal)
+            .replacingOccurrences(of: "ё", with: "е", options: .literal)
+            .replacingOccurrences(of: "е\u{0308}", with: "е", options: .literal)
+            .unicodeScalars
+            .split { $0.properties.isWhitespace || "_-:|".unicodeScalars.contains($0) }
+            .map(String.init)
             .joined(separator: " ")
     }
 

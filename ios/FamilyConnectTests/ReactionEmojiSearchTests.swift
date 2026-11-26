@@ -4,6 +4,42 @@ import Testing
 
 @Suite("Reaction emoji search")
 struct ReactionEmojiSearchTests {
+    private final class FixtureBundleAnchor {}
+
+    private struct Oracle: Decodable {
+        struct Search: Decodable {
+            struct Match: Decodable {
+                let emoji: String
+                let name: String
+            }
+
+            let id: String
+            let locale: String
+            let query: String
+            let matches: [Match]
+        }
+
+        let search: [Search]
+    }
+
+    @Test func matchesSharedOracleVectors() throws {
+        let bundle = Bundle(for: FixtureBundleAnchor.self)
+        let url = try #require(bundle.url(forResource: "reaction-search-vectors", withExtension: "json"))
+        let oracle = try JSONDecoder().decode(Oracle.self, from: Data(contentsOf: url))
+        try #require(!oracle.search.isEmpty)
+        for (locale, cases) in Dictionary(grouping: oracle.search, by: \.locale) {
+            let index = ReactionEmojiSearch(bundle: .main, language: locale)
+            for vector in cases {
+                let actual = index.search(vector.query)
+                let description = "\(locale): \(vector.id)"
+                #expect(actual.map { Array($0.emoji.utf8) } == vector.matches.map { Array($0.emoji.utf8) },
+                        "Emoji sequences and order for \(description)")
+                #expect(actual.map { Array($0.name.utf8) } == vector.matches.map { Array($0.name.utf8) },
+                        "Localized names for \(description)")
+            }
+        }
+    }
+
     @Test(arguments: [
         ("en", "fire", "fire"),
         ("de", "Feuer", "Feuer"),
@@ -70,7 +106,8 @@ struct ReactionEmojiSearchTests {
         #expect(ReactionEmojiSearch.tag(for: "sr-Latn-RS") == "sr-Latn")
         #expect(ReactionEmojiSearch.tag(for: "sr-Cyrl-RS") == "sr")
         #expect(ReactionEmojiSearch.tag(for: "zh-Hans-CN") == "zh-Hans")
-        #expect(Bundle.main.url(forResource: "UNICODE-LICENSE", withExtension: "txt") != nil)
+        #expect(Bundle.main.url(
+            forResource: "UNICODE-LICENSE", withExtension: "txt", subdirectory: "emoji-search") != nil)
     }
 
     @Test func recentsAreBoundedCanonicalAndScopedUntilSessionPurge() throws {
