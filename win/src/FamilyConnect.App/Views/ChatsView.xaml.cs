@@ -62,6 +62,7 @@ public sealed partial class ChatsView : UserControl
     private readonly Action<Link> onLink;
     private readonly Action<OutboxRow, ApiError> onRefused;
     private readonly Action<long> onMarks;
+    private Flyout? reactionPicker;
     /// <summary>A link's card landed, or the reader switched cards on or off.</summary>
     private readonly Action onPreviews;
     /// <summary>Card pictures decoded once, so a redraw reuses them instead of decoding (and flashing) again.</summary>
@@ -875,6 +876,7 @@ public sealed partial class ChatsView : UserControl
     /// </summary>
     internal void Detach(bool keep)
     {
+        reactionPicker?.Hide();
         typingTimer.Stop();
         pictures.Clear();
         stickers.Stop();
@@ -2599,7 +2601,7 @@ public sealed partial class ChatsView : UserControl
                     break;
                 }
                 case MessageAction.React:
-                    menu.Items.Add(ReactItem(chat, message, anchor, inThread));
+                    menu.Items.Add(ReactItem(menu, chat, message, anchor, inThread));
                     break;
                 case MessageAction.ShowText when textHost is not null
                                                  && MessageMenu.TextItemFor(connection.Transcripts.Look(textHost.Attachment.Id)) is not TextItem.None:
@@ -2690,7 +2692,7 @@ public sealed partial class ChatsView : UserControl
     }
 
     /// <summary>React ▸: the capsule's emoji, the reader's own checked, and "More reactions…" for any other.</summary>
-    private MenuFlyoutSubItem ReactItem(ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
+    private MenuFlyoutSubItem ReactItem(MenuFlyout menu, ConversationModel chat, MessageDto message, FrameworkElement anchor, ThreadModel? inThread)
     {
         var say = services.Say;
         var react = new MenuFlyoutSubItem { Text = say.Get("React") };
@@ -2708,10 +2710,135 @@ public sealed partial class ChatsView : UserControl
         }
         react.Items.Add(new MenuFlyoutSeparator());
         var more = new MenuFlyoutItem { Text = say.Get("More reactions…") };
-        // Any emoji of the catalogue — the one already held takes it off, as a tap on it anywhere does.
-        more.Click += (_, _) => EmojiPicker.Show(anchor, say, emoji => _ = ActAsync(() => React(chat, inThread, message.Id, emoji)));
+        more.Click += (_, _) =>
+        {
+            var accountId = Reader;
+            void OpenPicker() => DispatcherQueue.TryEnqueue(() => OpenReactionPicker(chat, message.Id, anchor, inThread, accountId));
+            if (menu.IsOpen)
+            {
+                void MenuClosed(object? sender, object args)
+                {
+                    menu.Closed -= MenuClosed;
+                    OpenPicker();
+                }
+                menu.Closed += MenuClosed;
+                menu.Hide();
+            }
+            else
+            {
+                OpenPicker();
+            }
+        };
         react.Items.Add(more);
         return react;
+    }
+
+    private void OpenReactionPicker(ConversationModel chat, long messageId, FrameworkElement anchor,
+        ThreadModel? inThread, long accountId)
+    {
+        var family = connection.Session.State.CurrentFamilyId;
+        bool CanChoose() =>
+            !gone && services.Current == connection && accountId > 0 && Reader == accountId
+            && connection.Tokens.Token is not null && connection.Session.State.CanChat
+            && connection.Session.State.CurrentFamilyId == family && open == chat
+            && (inThread is null || thread == inThread);
+
+        if (!CanChoose() || !anchor.IsLoaded)
+        {
+            return;
+        }
+        reactionPicker?.Hide();
+
+        void ReturnFocus()
+        {
+            if (!CanChoose())
+            {
+                return;
+            }
+            var shown = inThread is null ? balloons : threadBalloons;
+            if (shown.TryGetValue(messageId, out var current) && current.Balloon.IsLoaded
+                && FocusReactionAnchor(current.Balloon))
+            {
+                return;
+            }
+            (inThread is null ? ComposerBox : ThreadComposer).Focus(FocusState.Keyboard);
+        }
+
+        var recent = connection.RecentReactions;
+        async Task PickAsync(string emoji)
+        {
+            if (!CanChoose())
+            {
+                return;
+            }
+            recent.Remember(accountId, emoji);
+            var keepFocus = false;
+            await ActAsync(async () =>
+            {
+                var error = await React(chat, inThread, messageId, emoji);
+                // Applying the answer can replace the focused bubble in the transcript.
+                keepFocus = CanChoose() && FocusManager.GetFocusedElement(XamlRoot) as FrameworkElement == anchor;
+                return error;
+            });
+            if (keepFocus)
+            {
+                ReturnFocus();
+            }
+        }
+
+        var picker = EmojiPicker.Create(services.Say, services.DisplayLanguage, recent.Read(accountId),
+            emoji => _ = PickAsync(emoji), ReturnFocus);
+        reactionPicker = picker;
+        void AnchorUnloaded(object sender, RoutedEventArgs args) =>
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!anchor.IsLoaded && reactionPicker == picker)
+                {
+                    picker.Hide();
+                }
+            });
+        anchor.Unloaded += AnchorUnloaded;
+        picker.Closed += (_, _) =>
+        {
+            anchor.Unloaded -= AnchorUnloaded;
+            if (reactionPicker == picker)
+            {
+                reactionPicker = null;
+            }
+        };
+        picker.ShowAt(anchor);
+    }
+
+    // Only the focused picker origin joins Tab navigation, and only until focus moves on.
+    private static bool FocusReactionAnchor(FrameworkElement balloon)
+    {
+        if (balloon.IsTabStop)
+        {
+            return balloon.Focus(FocusState.Keyboard);
+        }
+
+        var oldFocusVisuals = balloon.UseSystemFocusVisuals;
+        balloon.IsTabStop = true;
+        balloon.UseSystemFocusVisuals = true;
+        if (balloon.Focus(FocusState.Keyboard))
+        {
+            balloon.LostFocus += RestoreTabStop;
+            return true;
+        }
+
+        RestoreTabStop(balloon, null);
+        return false;
+
+        void RestoreTabStop(object sender, RoutedEventArgs? args)
+        {
+            if (args is not null && !ReferenceEquals(args.OriginalSource, balloon))
+            {
+                return;
+            }
+            balloon.LostFocus -= RestoreTabStop;
+            balloon.IsTabStop = false;
+            balloon.UseSystemFocusVisuals = oldFocusVisuals;
+        }
     }
 
     /// <summary>

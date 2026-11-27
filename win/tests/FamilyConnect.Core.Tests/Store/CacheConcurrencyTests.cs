@@ -25,6 +25,7 @@ public class CacheConcurrencyTests : IDisposable
     private readonly OutboxStore outbox;
     private readonly PackStore pack;
     private readonly TranscriptStore transcripts;
+    private readonly RecentReactionStore recentReactions;
 
     public CacheConcurrencyTests()
     {
@@ -34,6 +35,7 @@ public class CacheConcurrencyTests : IDisposable
         outbox = new OutboxStore(cache);
         pack = new PackStore(cache);
         transcripts = new TranscriptStore(cache);
+        recentReactions = new RecentReactionStore(cache, new Uri("https://chat.example.test/"));
         transcripts.Keep(new KeptTranscript(34, "See you at six"), DateTimeOffset.UnixEpoch);
         pack.Replace([PackItem(1, 5)], 5);
         chats.Replace([new ChatRowDto(new ChatDto(42, "family", "The Smiths"))]);
@@ -133,6 +135,8 @@ public class CacheConcurrencyTests : IDisposable
         ["pack.SetLimits"] = () => pack.SetLimits(new PackLimits(200, 524_288)),
         ["pack.Used"] = () => pack.Used(1, DateTimeOffset.UnixEpoch),
         ["pack.Recents"] = () => pack.Recents(),
+        ["recentReactions.Read"] = () => recentReactions.Read(7),
+        ["recentReactions.Update"] = () => recentReactions.Update(7, _ => ["🔥"]),
         ["transcripts.Find"] = () => transcripts.Find(34),
         ["transcripts.Keep"] = () => transcripts.Keep(new KeptTranscript(35, ""), DateTimeOffset.UnixEpoch),
         ["outbox.Queue"] = () => outbox.Queue(new OutboxRow("c-10", 42, "more", QueuedAt: DateTimeOffset.UnixEpoch)),
@@ -172,6 +176,7 @@ public class CacheConcurrencyTests : IDisposable
         "pack.Items", "pack.Item", "pack.Count", "pack.Replace", "pack.Apply(item)", "pack.Apply(page)", "pack.Removed",
         "pack.Cursor", "pack.Reconnected", "pack.Connection", "pack.CaughtUp", "pack.IsCaughtUp", "pack.Limits", "pack.SetLimits",
         "pack.Used", "pack.Recents",
+        "recentReactions.Read", "recentReactions.Update",
         "transcripts.Find", "transcripts.Keep",
         "outbox.Queue", "outbox.All", "outbox.ForChat", "outbox.Due", "outbox.Find",
         "outbox.Delivered", "outbox.Failed", "outbox.Uploaded", "outbox.Refuse", "outbox.Reupload",
@@ -241,6 +246,7 @@ public class CacheConcurrencyTests : IDisposable
                  {
                      ("chats", typeof(ChatStore)), ("board", typeof(BoardStore)), ("outbox", typeof(OutboxStore)),
                      ("pack", typeof(PackStore)), ("transcripts", typeof(TranscriptStore)),
+                     ("recentReactions", typeof(RecentReactionStore)),
                  })
         {
             var members = type

@@ -289,6 +289,32 @@ public sealed class ThreadModelTests : IDisposable
         Assert.Equal(4, server.Asked.Count);
     }
 
+    [Fact]
+    public async Task PickerReplacesALegacyVariationOnAnUncachedReply()
+    {
+        var server = new Server()
+            .Then("/chats/42/messages/10/thread", Page(Message(10, replies: 1), Message(11, root: 10)))
+            .On("/chats/42/messages/11/reaction", """{"message_id":11,"reaction_seq":2,"reactions":[{"user_id":7,"emoji":"❤️"},{"user_id":9,"emoji":"👍"}]}""");
+        var thread = Build(server, named: 10);
+        await thread.LoadAsync();
+        Assert.True(thread.Heard(Message(11, root: 10) with
+        {
+            ReactionSeq = 1,
+            Reactions = [new ReactionDto(Me, "❤"), new ReactionDto(9, "👍")],
+        }));
+
+        var heart = Assert.Single(new ReactionSearch("en").Search("❤")).Emoji;
+        Assert.Null(await thread.ReactAsync(11, heart));
+
+        using var request = System.Text.Json.JsonDocument.Parse(Assert.Single(server.Bodies));
+        Assert.Equal("❤️", request.RootElement.GetProperty("emoji").GetString());
+        Assert.Equal("/api/v1/chats/42/messages/11/reaction", server.Asked[^1]);
+        var reactions = thread.Bubbles()[1].Message.Reactions!;
+        Assert.Equal("❤️", Assert.Single(reactions, reaction => reaction.UserId == Me).Emoji);
+        Assert.Equal("👍", Assert.Single(reactions, reaction => reaction.UserId == 9).Emoji);
+        Assert.Null(chats.Message(11));
+    }
+
     /// <summary>The root arriving is no reply to itself: it raises nothing, and the first reply after it raises one.</summary>
     [Fact]
     public void TheRootArrivingRaisesNothing()

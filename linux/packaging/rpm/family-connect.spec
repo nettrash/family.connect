@@ -14,8 +14,8 @@ Version:        %{fc_version}
 Release:        1%{?dist}
 Summary:        Family chat and calls on the family's own server
 # Family Connect and every crate linked into it: MIT, but foldhash (rusqlite's statement-cache
-# hash): Zlib. The copyright file names each crate.
-License:        MIT AND Zlib
+# hash): Zlib. The reaction catalogue is Unicode-3.0. The copyright file gives the details.
+License:        MIT AND Zlib AND Unicode-3.0
 URL:            https://nettrash.me/linux/familyconnect/support.html
 
 # The libraries the binary links are found by rpm's generators (by soname). What it loads at run
@@ -60,6 +60,7 @@ cp -a %{fc_stage}/. %{buildroot}/
 %files
 %dir %{_datadir}/licenses/%{name}
 %license %{_datadir}/licenses/%{name}/copyright
+%license %{_datadir}/licenses/%{name}/UNICODE-LICENSE.txt
 %dir %{_docdir}/%{name}
 %doc %{_docdir}/%{name}/CHANGELOG
 %{_bindir}/family-connect

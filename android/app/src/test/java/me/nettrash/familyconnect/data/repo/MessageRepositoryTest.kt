@@ -1577,6 +1577,54 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun tappingCanonicalHeartReplacesLegacyPresentationVariants() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        for ((position, legacy) in listOf("❤", "❤︎").withIndex()) {
+            val messageId = 100L + position
+            insertServerMessage(messageId)
+            val peer = ReactionDto(PEER, legacy)
+            messageDao.applyReactionState(
+                messageId,
+                ReactionsCodec.encode(listOf(ReactionDto(ME, legacy), peer)),
+                5L,
+            )
+            val canonical = ReactionDto(ME, "❤️")
+            chatApi.putReactionHandler = { _, id, _ ->
+                ApiResult.Ok(reactionState(id, 8L, listOf(peer, canonical)))
+            }
+
+            repository.toggleReaction(CHAT, messageId, canonical.emoji)
+
+            assertThat(ReactionsCodec.decode(messageDao.findByServerId(messageId)!!.reactionsJson))
+                .containsExactly(peer, canonical)
+        }
+        assertThat(chatApi.deletedReactions).isEmpty()
+        assertThat(chatApi.putReactions)
+            .containsExactly(Triple(CHAT, 100L, "❤️"), Triple(CHAT, 101L, "❤️")).inOrder()
+    }
+
+    @Test
+    fun selectingDifferentEmojiReplacesLegacyReactionWithExactCatalogueBytes() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        val peer = ReactionDto(PEER, "❤")
+        messageDao.applyReactionState(
+            100L, ReactionsCodec.encode(listOf(ReactionDto(ME, "❤"), peer)), 5L,
+        )
+        val next = ReactionDto(ME, "✌️")
+        chatApi.putReactionHandler = { _, id, _ -> ApiResult.Ok(reactionState(id, 8L, listOf(peer, next))) }
+
+        repository.toggleReaction(CHAT, 100L, next.emoji)
+
+        assertThat(chatApi.putReactions).containsExactly(Triple(CHAT, 100L, "✌️"))
+        assertThat(chatApi.deletedReactions).isEmpty()
+        assertThat(ReactionsCodec.decode(messageDao.findByServerId(100L)!!.reactionsJson))
+            .containsExactly(peer, next)
+    }
+
+    @Test
     fun toggleReactionRevertsTheOptimisticChangeOnApiFailure() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()

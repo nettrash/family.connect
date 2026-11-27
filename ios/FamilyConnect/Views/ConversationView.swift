@@ -79,6 +79,7 @@ struct ConversationView: View {
     /// stable identity of a bubble is its localID string.
     private struct ReactionTarget: Identifiable {
         let localID: String
+        let account: ReactionRecents.Account
         var id: String { localID }
     }
 
@@ -366,6 +367,7 @@ struct ConversationView: View {
     @State private var assistantReportTarget: AssistantReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
+    @State private var fullPickerDetent: PresentationDetent = .medium
     /// Text handed to the share sheet, nil while it is closed.
     @State private var shareText: ShareText?
     /// An attachment (and any caption) handed to the share sheet.
@@ -1018,11 +1020,15 @@ struct ConversationView: View {
                 onCancel: { showPollComposer = false })
         }
         .sheet(item: $fullPickerTarget) { target in
-            EmojiPickerView { emoji in
-                toggleReaction(localID: target.localID, emoji: emoji)
+            EmojiPickerView(account: target.account, onSearchFocus: { fullPickerDetent = .large }) { emoji in
                 fullPickerTarget = nil
+                Task {
+                    guard target.account == ReactionRecents.Account.current else { return }
+                    await coordinator.toggleReaction(localID: target.localID, emoji: emoji)
+                }
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $fullPickerDetent)
+            .presentationContentInteraction(.scrolls)
             .presentationDragIndicator(.visible)
         }
         .navigationTitle(chat?.title ?? "")
@@ -3568,7 +3574,10 @@ struct ConversationView: View {
                                 },
                                 onMore: {
                                     dismissReactionPicker()
-                                    fullPickerTarget = ReactionTarget(localID: localID)
+                                    if let account = ReactionRecents.Account.current {
+                                        fullPickerDetent = .medium
+                                        fullPickerTarget = ReactionTarget(localID: localID, account: account)
+                                    }
                                 })
                         }
                         // The actions go UNDER the bubble, so the capsule

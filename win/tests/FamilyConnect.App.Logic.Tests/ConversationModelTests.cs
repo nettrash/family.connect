@@ -82,6 +82,50 @@ public class ConversationModelTests : IDisposable
         return new Rig(model, server, socket, posted);
     }
 
+    [Fact]
+    public async Task PickerAddsReplacesAndRemovesFromTheOriginalConversationMessage()
+    {
+        chats.Apply([Message(10), Message(11)]);
+        var server = new Server().Then("/chats/42/messages/10/reaction",
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":1,"reactions":[{"user_id":7,"emoji":"🔥"}]}"""),
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":2,"reactions":[{"user_id":7,"emoji":"❤️"}]}"""),
+            (HttpStatusCode.OK, """{"message_id":10,"reaction_seq":3,"reactions":[]}"""));
+        var chat = Build(server).Chat;
+        var search = new ReactionSearch("en");
+
+        Assert.Null(await chat.ReactAsync(10, search.Search("fire")[0].Emoji));
+        Assert.Equal("🔥", Assert.Single(chats.Message(10)!.Reactions!).Emoji);
+        Assert.Null(await chat.ReactAsync(10, search.Search("heart")[0].Emoji));
+        Assert.Equal("❤️", Assert.Single(chats.Message(10)!.Reactions!).Emoji);
+        Assert.Null(await chat.ReactAsync(10, search.Search("❤")[0].Emoji));
+        Assert.Empty(chats.Message(10)!.Reactions!);
+        Assert.Null(chats.Message(11)!.Reactions);
+        Assert.Equal(3, server.Asked.Count);
+        Assert.Equal(["🔥", "❤️"], server.Bodies.Select(body =>
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            return document.RootElement.GetProperty("emoji").GetString();
+        }));
+    }
+
+    [Theory]
+    [InlineData("❤")]
+    [InlineData("❤\uFE0E")]
+    public async Task PickerReplacesALegacyVariationWithTheCanonicalReaction(string legacy)
+    {
+        chats.Apply([Message(10) with { ReactionSeq = 1, Reactions = [new ReactionDto(Me, legacy)] }]);
+        var server = new Server().On("/chats/42/messages/10/reaction",
+            """{"message_id":10,"reaction_seq":2,"reactions":[{"user_id":7,"emoji":"❤️"}]}""");
+        var heart = Assert.Single(new ReactionSearch("en").Search("❤")).Emoji;
+
+        Assert.Null(await Build(server).Chat.ReactAsync(10, heart));
+
+        Assert.Equal("/api/v1/chats/42/messages/10/reaction", Assert.Single(server.Asked));
+        using var request = System.Text.Json.JsonDocument.Parse(Assert.Single(server.Bodies));
+        Assert.Equal("❤️", request.RootElement.GetProperty("emoji").GetString());
+        Assert.Equal("❤️", Assert.Single(chats.Message(10)!.Reactions!).Emoji);
+    }
+
     private static string PageOf(int count, long from) =>
         $$"""{"messages": [{{string.Join(",", Enumerable.Range(0, count).Select(at => Wire_(from + at)))}}]}""";
 

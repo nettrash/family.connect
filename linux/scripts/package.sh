@@ -123,6 +123,7 @@ LAYOUT_FILES="etc/apparmor.d/$PKG usr/bin/$PKG
 usr/share/applications/$APP_ID.desktop usr/share/metainfo/$APP_ID.metainfo.xml
 usr/share/dbus-1/services/$APP_ID.service
 usr/share/doc/$PKG/CHANGELOG.gz usr/share/doc/$PKG/changelog.gz usr/share/doc/$PKG/copyright
+usr/share/doc/$PKG/UNICODE-LICENSE.txt
 usr/share/man/man1/$PKG.1.gz"
 
 # ---------------------------------------------------------------------------------------------
@@ -175,8 +176,7 @@ build_inside() {
     install -m 0644 packaging/copyright "$stage/usr/share/doc/$PKG/copyright"
     # The data folder (docs/shell-design.md §2.3: the catalogue's tables, the rich page): the binary
     # reads /usr/share/family-connect, and the tarball's bin/ finds ../share/family-connect.
-    mkdir -p "$stage/usr/share/$PKG"
-    cp -R data/. "$stage/usr/share/$PKG/"
+    stage_data "$stage/usr/share/$PKG" "$stage/usr/share/doc/$PKG"
 
     # Modes and owners: directories 0755, files 0644, the binary and the scripts 0755; dpkg-deb
     # --root-owner-group makes every entry root:root.
@@ -253,7 +253,8 @@ make_tarball() {
     for want in "bin/$PKG" README "share/applications/$APP_ID.desktop" \
         "share/metainfo/$APP_ID.metainfo.xml" "share/man/man1/$PKG.1.gz" \
         "share/doc/$PKG/copyright" "share/doc/$PKG/changelog.gz" "share/doc/$PKG/CHANGELOG.gz" \
-        "share/doc/$PKG/apparmor-profile" "share/$PKG/i18n/plurals.json" \
+        "share/doc/$PKG/apparmor-profile" "share/doc/$PKG/UNICODE-LICENSE.txt" \
+        "share/$PKG/i18n/plurals.json" \
         "share/dbus-1/services/$APP_ID.service" "share/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"; do
         printf '%s\n' "$listing" | grep -qF " $name/$want" || { say "tarball: no $name/$want"; status=1; }
     done
@@ -387,7 +388,8 @@ EOF
         # shellcheck disable=SC2086 # one path per word
         printf '%s\n' $LAYOUT_FILES
         (cd packaging/icons && find hicolor -type f) | sed 's#^#usr/share/icons/#'
-        (cd data && find . -type f) | sed "s#^\./#usr/share/$PKG/#"
+        (cd data && find . -type f ! -path './emoji-search/UNICODE-LICENSE.txt' ! -path './emoji-search/en.tsv') |
+            sed "s#^\./#usr/share/$PKG/#"
     } | LC_ALL=C sort > "$tmp/expected"
     if ! cmp -s "$tmp/expected" "$tmp/actual"; then
         say "contents differ from docs/packaging.md §1 (< expected, > in the .deb):"

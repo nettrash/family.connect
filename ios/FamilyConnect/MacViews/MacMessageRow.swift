@@ -132,8 +132,13 @@ struct MacMessageRow: View {
     /// the reader has not scrolled to, and may never see.
     @State private var hasBeenVisible = false
     @State private var hovering = false
-    /// The full 771-entry catalogue, behind "More reactions…".
-    @State private var showsEmojiPicker = false
+    private struct ReactionTarget: Identifiable {
+        let id: String
+        let account: ReactionRecents.Account
+    }
+
+    @State private var reactionTarget: ReactionTarget?
+    @State private var returnReactionFocus: (() -> Void)?
     /// Who left what — the Mac's answer to long-pressing a chip.
     @State private var showsReactors = false
 
@@ -349,24 +354,27 @@ struct MacMessageRow: View {
         } message: {
             if let saveFailure { Text(verbatim: saveFailure) }
         }
-        .sheet(isPresented: $showsEmojiPicker) {
+        .sheet(item: $reactionTarget, onDismiss: restoreReactionFocus) { target in
             VStack(spacing: 0) {
-                EmojiPickerView { emoji in
-                    showsEmojiPicker = false
+                EmojiPickerView(account: target.account) { emoji in
+                    reactionTarget = nil
                     Task {
-                        await coordinator.toggleReaction(
-                            localID: message.localID, emoji: emoji)
+                        guard target.account == ReactionRecents.Account.current else { return }
+                        await coordinator.toggleReaction(localID: target.id, emoji: emoji)
                     }
                 }
                 Divider()
                 HStack {
                     Spacer()
-                    Button("Cancel") { showsEmojiPicker = false }
+                    Button("Cancel") { reactionTarget = nil }
                         .keyboardShortcut(.cancelAction)
                 }
                 .padding(12)
             }
             .frame(width: 420, height: 460)
+            .onExitCommand {
+                if !EmojiPickerView.hasMarkedText { reactionTarget = nil }
+            }
         }
         .popover(isPresented: $showsReactors, arrowEdge: .bottom) {
             reactorList
@@ -385,6 +393,32 @@ struct MacMessageRow: View {
             blockedUserIDs: coordinator.blockedUserIDs)
     }
 
+    private func showReactionPicker() {
+        guard reactionTarget == nil, let account = ReactionRecents.Account.current else { return }
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow, let first = window.firstResponder, first !== window {
+            // AppKit recycles its field editor. Restore the field that was using it.
+            let editor = (first as? NSTextView).flatMap { $0.isFieldEditor ? $0 : nil }
+            let responder = (editor?.delegate as? NSResponder) ?? first
+            let selection = editor?.selectedRange()
+            returnReactionFocus = { [weak window, weak responder] in
+                guard let window, let responder else { return }
+                if let view = responder as? NSView, view.window !== window { return }
+                guard window.makeFirstResponder(responder), let selection,
+                      let editor = window.firstResponder as? NSTextView, editor.isFieldEditor else { return }
+                let length = editor.string.utf16.count
+                let start = min(selection.location, length)
+                editor.setSelectedRange(NSRange(location: start, length: min(selection.length, length - start)))
+            }
+        }
+        reactionTarget = ReactionTarget(id: message.localID, account: account)
+    }
+
+    private func restoreReactionFocus() {
+        let restore = returnReactionFocus
+        returnReactionFocus = nil
+        DispatchQueue.main.async { restore?() }
+    }
+
     /// Who left what, one row per emoji in chip order.
     ///
     /// My own row is the remove control — the only way a reaction comes
@@ -398,38 +432,47 @@ struct MacMessageRow: View {
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(details) { detail in
                 let isMineReaction = chips.first { $0.emoji == detail.emoji }?.includesMe == true
-                HStack(spacing: 8) {
-                    if let leadUserID = detail.leadUserID {
-                        InitialsAvatar(
-                            title: detail.names.first ?? "?",
-                            userID: leadUserID,
-                            avatarVersion: avatarVersionFor(leadUserID),
-                            size: 24)
+                if isMineReaction {
+                    Button {
+                        showsReactors = false
+                        Task {
+                            await coordinator.toggleReaction(
+                                localID: message.localID, emoji: detail.emoji)
+                        }
+                    } label: {
+                        reactorLabel(detail, offersRemoval: true)
+                            .contentShape(Rectangle())
                     }
-                    Text(detail.emoji)
-                    Text(detail.names.formatted(.list(type: .and)))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    if isMineReaction {
-                        Text("Click to remove")
-                            .font(.caption2)
-                            .foregroundStyle(.tint)
-                    }
+                    .buttonStyle(.plain)
+                    .hoverCursor(.pointingHand)
+                } else {
+                    reactorLabel(detail, offersRemoval: false)
                 }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard isMineReaction else { return }
-                    showsReactors = false
-                    Task {
-                        await coordinator.toggleReaction(
-                            localID: message.localID, emoji: detail.emoji)
-                    }
-                }
-                .hoverCursor(isMineReaction ? .pointingHand : .arrow)
             }
         }
         .padding(12)
         .frame(minWidth: 220, alignment: .leading)
+    }
+
+    private func reactorLabel(_ detail: ReactionDetail, offersRemoval: Bool) -> some View {
+        HStack(spacing: 8) {
+            if let leadUserID = detail.leadUserID {
+                InitialsAvatar(
+                    title: detail.names.first ?? "?",
+                    userID: leadUserID,
+                    avatarVersion: avatarVersionFor(leadUserID),
+                    size: 24)
+            }
+            Text(detail.emoji)
+            Text(detail.names.formatted(.list(type: .and)))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if offersRemoval {
+                Text("Click to remove")
+                    .font(.caption2)
+                    .foregroundStyle(.tint)
+            }
+        }
     }
 
     private func quickHeart() {
@@ -479,10 +522,7 @@ struct MacMessageRow: View {
                     }
                 }
                 Divider()
-                // The server takes any emoji ≤ 32 bytes and
-                // EmojiPickerView is already platform-free, so the Mac was
-                // missing only the way in.
-                Button("More reactions…") { showsEmojiPicker = true }
+                Button("More reactions…", action: showReactionPicker)
             }
             if !message.reactions.isEmpty {
                 Button("See who reacted") { showsReactors = true }

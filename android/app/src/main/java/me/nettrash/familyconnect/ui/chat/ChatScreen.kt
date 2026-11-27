@@ -128,6 +128,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.LazyGridScope
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.text.input.ImeAction
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import me.nettrash.familyconnect.data.push.PushLanguage
+import me.nettrash.familyconnect.data.settings.ReactionRecents
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -432,6 +445,7 @@ fun ChatScreen(
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
+    val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle(ReactionRecents())
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val callsEnabled by viewModel.callsEnabled.collectAsStateWithLifecycle()
@@ -539,7 +553,7 @@ fun ChatScreen(
 
     // The message the floating capsule is open for, and the one the "+"
     // full-picker sheet is open for. Both are transient snapshots.
-    var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
+    var pickerTarget by remember(recentReactions.scope) { mutableStateOf<ReactionPickerTarget?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
     // The assistant reply being reported, by server id. Its own state
     // because it goes to its own endpoint and its own reader — the people
@@ -559,7 +573,7 @@ fun ChatScreen(
 
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
     val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
-    var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
+    var fullPickerTarget by remember(recentReactions.scope) { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
     // Whether the thread's moving pictures hold still: while it scrolls,
     // and while a full-screen viewer is over it (LocalMotionHold says why,
@@ -2202,25 +2216,17 @@ fun ChatScreen(
     }
 
     fullPickerTarget?.let { target ->
-        ModalBottomSheet(
-            onDismissRequest = { fullPickerTarget = null },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ) {
-            Text(
-                text = stringResource(R.string.s_react),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-            )
-            EmojiCatalogGrid(
-                onPick = { emoji ->
-                    target.entity.serverId?.let { applyToggle(it, emoji) }
-                    fullPickerTarget = null
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f, fill = false),
-            )
-        }
+        ReactionSearchSheet(
+            recents = recentReactions.choices,
+            onPick = { emoji ->
+                target.entity.serverId?.let { serverId ->
+                    applyToggle(serverId, emoji)
+                    recentReactions.scope?.let { viewModel.recordRecentReaction(it, emoji) }
+                }
+                fullPickerTarget = null
+            },
+            onDismiss = { fullPickerTarget = null },
+        )
     }
 
     pollDraft?.let { draft ->
@@ -2999,53 +3005,173 @@ private fun ReactionCapsule(
     }
 }
 
-/**
- * The categorized full-picker grid behind the capsule's "+": full-span
- * section headers over an adaptive emoji grid, straight from
- * EMOJI_CATALOG (kept byte-identical with iOS — see EmojiCatalog.kt).
- */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EmojiCatalogGrid(
+internal fun ReactionSearchSheet(
+    recents: List<String>,
     onPick: (String) -> Unit,
-    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit,
 ) {
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 48.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-        modifier = modifier,
+    val language = PushLanguage.of(stringResource(R.string.push_language))
+    val loadedIndex by produceState(ReactionSearch.cachedIndex(language), language) {
+        value = withContext(Dispatchers.Default) { ReactionSearch.index(language) }
+    }
+    val index = loadedIndex?.takeIf { it.tag == language }
+    var query by rememberSaveable { mutableStateOf("") }
+    val searching = ReactionSearch.normalize(query).isNotEmpty()
+    val results = remember(index, query) { index?.search(query).orEmpty() }
+    val recent = remember(recents) { ReactionSearch.recents(recents) }
+    val gridScroll = rememberLazyGridState()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val sheetTitle = stringResource(R.string.s_react)
+    val searchLabel = stringResource(R.string.s_reaction_search)
+    val recentLabel = stringResource(R.string.s_reaction_recents)
+    var picked by remember { mutableStateOf(false) }
+
+    fun jumpToSection(header: Int) {
+        query = ""
+        gridScroll.requestScrollToItem(header)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.semantics { paneTitle = sheetTitle },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        EMOJI_CATALOG.forEach { category ->
-            item(key = "header:${category.name}", span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    text = stringResource(category.titleRes),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp, bottom = 4.dp),
-                )
-            }
-            items(category.emoji, key = { "${category.name}:$it" }) { emoji ->
-                val pressSource = remember { MutableInteractionSource() }
-                val pressScale = emojiPressScale(pressSource)
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .aspectRatio(1f)
-                        .graphicsLayer {
-                            scaleX = pressScale.value
-                            scaleY = pressScale.value
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .heightIn(max = 520.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    gridScroll.requestScrollToItem(0)
+                },
+                label = { Text(searchLabel) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { jumpToSection(0) }) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.s_reaction_search_clear))
                         }
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(
-                            interactionSource = pressSource,
-                            indication = ripple(),
-                        ) { onPick(emoji) },
-                ) {
-                    Text(emoji, style = MaterialTheme.typography.headlineSmall)
+                    }
+                } else {
+                    null
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            )
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 48.dp),
+                state = gridScroll,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            ) {
+                val pick: (String) -> Unit = { emoji ->
+                    if (!picked) {
+                        picked = true
+                        keyboard?.hide()
+                        onPick(emoji)
+                    }
+                }
+                if (searching) {
+                    if (results.isEmpty() && index != null) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Text(
+                                stringResource(R.string.s_reaction_search_empty),
+                                modifier = Modifier.padding(vertical = 16.dp),
+                            )
+                        }
+                    }
+                    items(results, key = { "result:$it" }) { emoji ->
+                        ReactionEmojiCell(emoji, index?.name(emoji) ?: emoji, pick)
+                    }
+                } else {
+                    if (recent.isNotEmpty()) {
+                        reactionSection("recent", { recentLabel }, recent, index, pick)
+                    }
+                    EMOJI_CATALOG.forEach { category ->
+                        reactionSection(category.name, { stringResource(category.titleRes) }, category.emoji, index, pick)
+                    }
+                }
+            }
+
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+                if (recent.isNotEmpty()) {
+                    item(key = "recent") {
+                        IconButton(onClick = { jumpToSection(0) }) {
+                            Icon(Icons.Default.Schedule, contentDescription = recentLabel)
+                        }
+                    }
+                }
+                var sectionStart = if (recent.isEmpty()) 0 else 1 + recent.size
+                EMOJI_CATALOG.forEach { category ->
+                    val header = sectionStart
+                    item(key = category.name) {
+                        val title = stringResource(category.titleRes)
+                        IconButton(
+                            onClick = { jumpToSection(header) },
+                            modifier = Modifier.semantics { contentDescription = title },
+                        ) {
+                            Text(category.emoji.first(), modifier = Modifier.clearAndSetSemantics {})
+                        }
+                    }
+                    sectionStart += 1 + category.emoji.size
                 }
             }
         }
+    }
+}
+
+private fun LazyGridScope.reactionSection(
+    key: String,
+    title: @Composable () -> String,
+    emoji: List<String>,
+    index: ReactionSearch.Index?,
+    onPick: (String) -> Unit,
+) {
+    item(key = "header:$key", span = { GridItemSpan(maxLineSpan) }) {
+        Text(
+            text = title(),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp, bottom = 4.dp)
+                .semantics { heading() },
+        )
+    }
+    items(emoji, key = { "$key:$it" }) { glyph ->
+        ReactionEmojiCell(glyph, index?.name(glyph) ?: glyph, onPick)
+    }
+}
+
+@Composable
+private fun ReactionEmojiCell(emoji: String, label: String, onPick: (String) -> Unit) {
+    val pressSource = remember { MutableInteractionSource() }
+    val pressScale = emojiPressScale(pressSource)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .height(48.dp)
+            .graphicsLayer {
+                scaleX = pressScale.value
+                scaleY = pressScale.value
+            }
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(
+                interactionSource = pressSource,
+                indication = ripple(),
+                role = Role.Button,
+            ) { onPick(emoji) }
+            .semantics { contentDescription = label },
+    ) {
+        Text(emoji, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.clearAndSetSemantics {})
     }
 }
 

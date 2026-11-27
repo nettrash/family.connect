@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -162,7 +163,7 @@ class SessionRepository @Inject constructor(
 
     /** Live session view — ChatSocketManager keys its connect policy off this. */
     val sessionFlow: Flow<SessionSnapshot> =
-        combine(settings.state, tokenVersion) { state, _ -> snapshotFrom(state) }
+        combine(settings.state.distinctUntilChanged(), tokenVersion) { state, _ -> snapshotFrom(state) }
 
     init {
         // Any authenticated 401, from any endpoint: wipe once, reroute once.

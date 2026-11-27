@@ -48,6 +48,8 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import me.nettrash.familyconnect.data.settings.ReactionRecents
+import me.nettrash.familyconnect.data.repo.SessionEpoch
 import me.nettrash.familyconnect.data.repo.TranscriptRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import me.nettrash.familyconnect.R
@@ -208,6 +210,7 @@ class ChatViewModel @Inject constructor(
      * app-wide singleton the share flow deposited into.
      */
     private val shareStash: ShareStash = ShareStash(),
+    private val sessionEpoch: SessionEpoch = SessionEpoch(),
     /**
      * Whether a call is on, in any phase (#79, S1.2's **call**): nothing
      * records during one, and one starting stops and keeps a recording.
@@ -3641,6 +3644,15 @@ class ChatViewModel @Inject constructor(
 
     fun deleteFailed(clientMsgId: String) {
         viewModelScope.launch { messageRepository.deleteFailed(clientMsgId) }
+    }
+
+    internal val recentReactions = settings.reactionRecents
+
+    internal fun recordRecentReaction(owner: ReactionRecents.Scope, emoji: String) {
+        val startedAt = sessionEpoch.current()
+        viewModelScope.launch {
+            sessionEpoch.whileCurrent(startedAt) { settings.recordRecentReaction(owner, emoji) }
+        }
     }
 
     /**

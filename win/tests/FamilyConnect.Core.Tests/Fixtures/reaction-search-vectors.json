@@ -1,0 +1,1098 @@
+{
+  "search": [
+    {
+      "id": "localized_fire",
+      "locale": "en",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "fire"
+        },
+        {
+          "emoji": "🚒",
+          "name": "fire engine"
+        },
+        {
+          "emoji": "🎆",
+          "name": "fireworks"
+        },
+        {
+          "emoji": "🧯",
+          "name": "fire extinguisher"
+        },
+        {
+          "emoji": "🧨",
+          "name": "firecracker"
+        },
+        {
+          "emoji": "🎇",
+          "name": "sparkler"
+        }
+      ],
+      "query": "fire"
+    },
+    {
+      "id": "shortcode_whitespace_case",
+      "locale": "en",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "fire"
+        },
+        {
+          "emoji": "🚒",
+          "name": "fire engine"
+        },
+        {
+          "emoji": "🎆",
+          "name": "fireworks"
+        },
+        {
+          "emoji": "🧯",
+          "name": "fire extinguisher"
+        },
+        {
+          "emoji": "🧨",
+          "name": "firecracker"
+        },
+        {
+          "emoji": "🎇",
+          "name": "sparkler"
+        }
+      ],
+      "query": "  :FIRE:  "
+    },
+    {
+      "id": "two_words",
+      "locale": "en",
+      "matches": [
+        {
+          "emoji": "❤️",
+          "name": "red heart"
+        }
+      ],
+      "query": "red heart"
+    },
+    {
+      "id": "exact_emoji",
+      "locale": "en",
+      "matches": [
+        {
+          "emoji": "❤️",
+          "name": "red heart"
+        }
+      ],
+      "query": "❤️"
+    },
+    {
+      "id": "emoji_without_selector",
+      "locale": "en",
+      "matches": [
+        {
+          "emoji": "❤️",
+          "name": "red heart"
+        }
+      ],
+      "query": "❤"
+    },
+    {
+      "id": "text_presentation_selector",
+      "locale": "en",
+      "matches": [],
+      "query": "❤︎"
+    },
+    {
+      "id": "uncatalogued_skin_tone",
+      "locale": "en",
+      "matches": [],
+      "query": "👍🏽"
+    },
+    {
+      "id": "empty",
+      "locale": "en",
+      "matches": [],
+      "query": ""
+    },
+    {
+      "id": "separators_only",
+      "locale": "en",
+      "matches": [],
+      "query": "__::"
+    },
+    {
+      "id": "no_match",
+      "locale": "en",
+      "matches": [],
+      "query": "no-such-emoji-8372"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "de",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "Feuer"
+        },
+        {
+          "emoji": "🚒",
+          "name": "Feuerwehrauto"
+        },
+        {
+          "emoji": "🎆",
+          "name": "Feuerwerk"
+        },
+        {
+          "emoji": "🧯",
+          "name": "Feuerlöscher"
+        },
+        {
+          "emoji": "🧨",
+          "name": "Feuerwerkskörper"
+        },
+        {
+          "emoji": "🎇",
+          "name": "Wunderkerze"
+        }
+      ],
+      "query": "Feuer"
+    },
+    {
+      "id": "sharp_s",
+      "locale": "de",
+      "matches": [
+        {
+          "emoji": "⚽",
+          "name": "Fußball"
+        },
+        {
+          "emoji": "🥅",
+          "name": "Tor"
+        }
+      ],
+      "query": "FUSSBALL"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "es",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "fuego"
+        },
+        {
+          "emoji": "🎆",
+          "name": "fuegos artificiales"
+        },
+        {
+          "emoji": "🚒",
+          "name": "coche de bomberos"
+        },
+        {
+          "emoji": "🎇",
+          "name": "bengala"
+        },
+        {
+          "emoji": "🧨",
+          "name": "petardo"
+        }
+      ],
+      "query": "fuego"
+    },
+    {
+      "id": "accents_preserved",
+      "locale": "es",
+      "matches": [
+        {
+          "emoji": "❤️",
+          "name": "corazón rojo"
+        },
+        {
+          "emoji": "🧡",
+          "name": "corazón naranja"
+        },
+        {
+          "emoji": "💛",
+          "name": "corazón amarillo"
+        },
+        {
+          "emoji": "💚",
+          "name": "corazón verde"
+        },
+        {
+          "emoji": "💙",
+          "name": "corazón azul"
+        },
+        {
+          "emoji": "💜",
+          "name": "corazón morado"
+        },
+        {
+          "emoji": "🖤",
+          "name": "corazón negro"
+        },
+        {
+          "emoji": "🤍",
+          "name": "corazón blanco"
+        },
+        {
+          "emoji": "🤎",
+          "name": "corazón marrón"
+        },
+        {
+          "emoji": "💔",
+          "name": "corazón roto"
+        },
+        {
+          "emoji": "💓",
+          "name": "corazón latiendo"
+        },
+        {
+          "emoji": "💗",
+          "name": "corazón creciente"
+        },
+        {
+          "emoji": "💖",
+          "name": "corazón brillante"
+        },
+        {
+          "emoji": "💘",
+          "name": "corazón con flecha"
+        },
+        {
+          "emoji": "💝",
+          "name": "corazón con lazo"
+        },
+        {
+          "emoji": "😍",
+          "name": "cara sonriendo con ojos de corazón"
+        },
+        {
+          "emoji": "🖕",
+          "name": "dedo corazón hacia arriba"
+        },
+        {
+          "emoji": "❣️",
+          "name": "exclamación de corazón"
+        },
+        {
+          "emoji": "💕",
+          "name": "dos corazones"
+        },
+        {
+          "emoji": "💞",
+          "name": "corazones giratorios"
+        },
+        {
+          "emoji": "💟",
+          "name": "adorno de corazón"
+        },
+        {
+          "emoji": "💌",
+          "name": "carta de amor"
+        }
+      ],
+      "query": "corazón"
+    },
+    {
+      "id": "unaccented_query",
+      "locale": "es",
+      "matches": [
+        {
+          "emoji": "💞",
+          "name": "corazones giratorios"
+        },
+        {
+          "emoji": "🥰",
+          "name": "cara sonriendo con corazones"
+        },
+        {
+          "emoji": "💕",
+          "name": "dos corazones"
+        },
+        {
+          "emoji": "♥️",
+          "name": "palo de corazones"
+        }
+      ],
+      "query": "corazon"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "fr",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "feu"
+        },
+        {
+          "emoji": "🌿",
+          "name": "feuille"
+        },
+        {
+          "emoji": "🍁",
+          "name": "feuille d’érable"
+        },
+        {
+          "emoji": "🚦",
+          "name": "feu tricolore vertical"
+        },
+        {
+          "emoji": "🚥",
+          "name": "feu tricolore horizontal"
+        },
+        {
+          "emoji": "🎆",
+          "name": "feu d’artifice"
+        },
+        {
+          "emoji": "✋",
+          "name": "main levée"
+        },
+        {
+          "emoji": "🌲",
+          "name": "conifère"
+        },
+        {
+          "emoji": "🌳",
+          "name": "arbre à feuilles caduques"
+        },
+        {
+          "emoji": "🍀",
+          "name": "trèfle à quatre feuilles"
+        },
+        {
+          "emoji": "🥬",
+          "name": "légume à feuilles vertes"
+        },
+        {
+          "emoji": "🏌️",
+          "name": "joueur de golf"
+        },
+        {
+          "emoji": "🎇",
+          "name": "cierge magique"
+        },
+        {
+          "emoji": "🧯",
+          "name": "extincteur"
+        },
+        {
+          "emoji": "🔫",
+          "name": "pistolet à eau"
+        },
+        {
+          "emoji": "🧨",
+          "name": "pétard"
+        },
+        {
+          "emoji": "💈",
+          "name": "enseigne de barbier"
+        }
+      ],
+      "query": "feu"
+    },
+    {
+      "id": "composed_query",
+      "locale": "fr",
+      "matches": [
+        {
+          "emoji": "🥳",
+          "name": "visage festif"
+        },
+        {
+          "emoji": "🎉",
+          "name": "cotillons"
+        },
+        {
+          "emoji": "🎊",
+          "name": "confettis"
+        },
+        {
+          "emoji": "🎈",
+          "name": "ballon gonflable"
+        },
+        {
+          "emoji": "🎂",
+          "name": "gâteau d’anniversaire"
+        },
+        {
+          "emoji": "🎁",
+          "name": "cadeau"
+        },
+        {
+          "emoji": "🎄",
+          "name": "sapin de Noël"
+        },
+        {
+          "emoji": "🎍",
+          "name": "bambou décoratif"
+        },
+        {
+          "emoji": "🥂",
+          "name": "trinquer"
+        },
+        {
+          "emoji": "🍹",
+          "name": "cocktail tropical"
+        },
+        {
+          "emoji": "🍾",
+          "name": "bouteille de champagne"
+        },
+        {
+          "emoji": "🎇",
+          "name": "cierge magique"
+        },
+        {
+          "emoji": "🎆",
+          "name": "feu d’artifice"
+        },
+        {
+          "emoji": "🎀",
+          "name": "ruban"
+        },
+        {
+          "emoji": "🎏",
+          "name": "koinobori"
+        }
+      ],
+      "query": "fête"
+    },
+    {
+      "id": "decomposed_query",
+      "locale": "fr",
+      "matches": [],
+      "query": "fête"
+    },
+    {
+      "id": "ligature_preserved",
+      "locale": "fr",
+      "matches": [
+        {
+          "emoji": "❤️",
+          "name": "cœur rouge"
+        },
+        {
+          "emoji": "🧡",
+          "name": "cœur orange"
+        },
+        {
+          "emoji": "💛",
+          "name": "cœur jaune"
+        },
+        {
+          "emoji": "💚",
+          "name": "cœur vert"
+        },
+        {
+          "emoji": "💙",
+          "name": "cœur bleu"
+        },
+        {
+          "emoji": "💜",
+          "name": "cœur violet"
+        },
+        {
+          "emoji": "🖤",
+          "name": "cœur noir"
+        },
+        {
+          "emoji": "🤍",
+          "name": "cœur blanc"
+        },
+        {
+          "emoji": "🤎",
+          "name": "cœur marron"
+        },
+        {
+          "emoji": "💔",
+          "name": "cœur brisé"
+        },
+        {
+          "emoji": "❣️",
+          "name": "cœur point d’exclamation"
+        },
+        {
+          "emoji": "💞",
+          "name": "cœurs qui tournent"
+        },
+        {
+          "emoji": "💓",
+          "name": "cœur battant"
+        },
+        {
+          "emoji": "💗",
+          "name": "cœur grandissant"
+        },
+        {
+          "emoji": "💖",
+          "name": "cœur étincelant"
+        },
+        {
+          "emoji": "💘",
+          "name": "cœur et flèche"
+        },
+        {
+          "emoji": "💝",
+          "name": "cœur avec ruban"
+        },
+        {
+          "emoji": "♥️",
+          "name": "cœur cartes"
+        },
+        {
+          "emoji": "🥰",
+          "name": "visage souriant avec cœurs"
+        },
+        {
+          "emoji": "😍",
+          "name": "visage souriant avec yeux en forme de cœur"
+        },
+        {
+          "emoji": "😘",
+          "name": "visage envoyant un bisou"
+        },
+        {
+          "emoji": "🤢",
+          "name": "visage nauséeux"
+        },
+        {
+          "emoji": "💕",
+          "name": "deux cœurs"
+        },
+        {
+          "emoji": "💟",
+          "name": "décoration avec cœur"
+        },
+        {
+          "emoji": "💌",
+          "name": "lettre d’amour"
+        },
+        {
+          "emoji": "🏩",
+          "name": "love hotel"
+        },
+        {
+          "emoji": "💒",
+          "name": "mariage"
+        }
+      ],
+      "query": "cœur"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "ja",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "火"
+        },
+        {
+          "emoji": "🌋",
+          "name": "火山"
+        },
+        {
+          "emoji": "🎇",
+          "name": "線香花火"
+        },
+        {
+          "emoji": "🎆",
+          "name": "打ち上げ花火"
+        },
+        {
+          "emoji": "🧯",
+          "name": "消火器"
+        },
+        {
+          "emoji": "🧨",
+          "name": "爆竹"
+        }
+      ],
+      "query": "火"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "ru",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "огонь"
+        },
+        {
+          "emoji": "🚒",
+          "name": "пожарная машина"
+        },
+        {
+          "emoji": "🎇",
+          "name": "бенгальский огонь"
+        },
+        {
+          "emoji": "🕯",
+          "name": "свеча"
+        },
+        {
+          "emoji": "🧯",
+          "name": "огнетушитель"
+        }
+      ],
+      "query": "огонь"
+    },
+    {
+      "id": "english_shortcode",
+      "locale": "ru",
+      "matches": [
+        {
+          "emoji": "🧊",
+          "name": "кубик льда"
+        },
+        {
+          "emoji": "🍨",
+          "name": "мороженое"
+        },
+        {
+          "emoji": "🏒",
+          "name": "хоккей"
+        },
+        {
+          "emoji": "⛸",
+          "name": "коньки"
+        },
+        {
+          "emoji": "😀",
+          "name": "широко улыбается"
+        },
+        {
+          "emoji": "😁",
+          "name": "светится от счастья"
+        },
+        {
+          "emoji": "😛",
+          "name": "показывает язык"
+        },
+        {
+          "emoji": "👏",
+          "name": "аплодисменты"
+        },
+        {
+          "emoji": "💪",
+          "name": "бицепс"
+        },
+        {
+          "emoji": "🌾",
+          "name": "колос"
+        },
+        {
+          "emoji": "🍕",
+          "name": "пицца"
+        },
+        {
+          "emoji": "🍛",
+          "name": "рис с карри"
+        },
+        {
+          "emoji": "🍙",
+          "name": "онигири"
+        },
+        {
+          "emoji": "🍚",
+          "name": "рис"
+        },
+        {
+          "emoji": "🍘",
+          "name": "рисовый крекер"
+        },
+        {
+          "emoji": "🍧",
+          "name": "мороженое в креманке"
+        },
+        {
+          "emoji": "🍦",
+          "name": "мороженое в стаканчике"
+        },
+        {
+          "emoji": "🥧",
+          "name": "пирог"
+        },
+        {
+          "emoji": "🍰",
+          "name": "кусочек торта"
+        },
+        {
+          "emoji": "🧃",
+          "name": "пакетик сока"
+        },
+        {
+          "emoji": "🥤",
+          "name": "стакан с соломинкой"
+        },
+        {
+          "emoji": "🎲",
+          "name": "игральная кость"
+        },
+        {
+          "emoji": "🚓",
+          "name": "полицейская машина"
+        },
+        {
+          "emoji": "🚨",
+          "name": "мигалка"
+        },
+        {
+          "emoji": "🚔",
+          "name": "полицейская машина спереди"
+        },
+        {
+          "emoji": "🏢",
+          "name": "офисное здание"
+        },
+        {
+          "emoji": "🏣",
+          "name": "японская почта"
+        },
+        {
+          "emoji": "🏤",
+          "name": "почта"
+        },
+        {
+          "emoji": "💻",
+          "name": "ноутбук"
+        },
+        {
+          "emoji": "🗜",
+          "name": "компрессор"
+        },
+        {
+          "emoji": "⚖️",
+          "name": "весы"
+        }
+      ],
+      "query": ":ice:"
+    },
+    {
+      "id": "russian_e",
+      "locale": "ru",
+      "matches": [
+        {
+          "emoji": "🌲",
+          "name": "елка"
+        },
+        {
+          "emoji": "🎄",
+          "name": "новогодняя елка"
+        },
+        {
+          "emoji": "🍲",
+          "name": "кастрюля с горячей едой"
+        },
+        {
+          "emoji": "🍚",
+          "name": "рис"
+        },
+        {
+          "emoji": "🥏",
+          "name": "летающий диск"
+        },
+        {
+          "emoji": "🛸",
+          "name": "летающая тарелка"
+        }
+      ],
+      "query": "елка"
+    },
+    {
+      "id": "russian_yo",
+      "locale": "ru",
+      "matches": [
+        {
+          "emoji": "🌲",
+          "name": "елка"
+        },
+        {
+          "emoji": "🎄",
+          "name": "новогодняя елка"
+        },
+        {
+          "emoji": "🍲",
+          "name": "кастрюля с горячей едой"
+        },
+        {
+          "emoji": "🍚",
+          "name": "рис"
+        },
+        {
+          "emoji": "🥏",
+          "name": "летающий диск"
+        },
+        {
+          "emoji": "🛸",
+          "name": "летающая тарелка"
+        }
+      ],
+      "query": "ёлка"
+    },
+    {
+      "id": "russian_decomposed_yo",
+      "locale": "ru",
+      "matches": [
+        {
+          "emoji": "🌲",
+          "name": "елка"
+        },
+        {
+          "emoji": "🎄",
+          "name": "новогодняя елка"
+        },
+        {
+          "emoji": "🍲",
+          "name": "кастрюля с горячей едой"
+        },
+        {
+          "emoji": "🍚",
+          "name": "рис"
+        },
+        {
+          "emoji": "🥏",
+          "name": "летающий диск"
+        },
+        {
+          "emoji": "🛸",
+          "name": "летающая тарелка"
+        }
+      ],
+      "query": "ёлка"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "sr",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "ватра"
+        }
+      ],
+      "query": "ватра"
+    },
+    {
+      "id": "serbian_flame",
+      "locale": "sr",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "ватра"
+        }
+      ],
+      "query": "пламен"
+    },
+    {
+      "id": "serbian_tears",
+      "locale": "sr",
+      "matches": [
+        {
+          "emoji": "😂",
+          "name": "лице са сузама радосницама"
+        },
+        {
+          "emoji": "😢",
+          "name": "лице које плаче"
+        },
+        {
+          "emoji": "😭",
+          "name": "лице које рида"
+        }
+      ],
+      "query": "сузе"
+    },
+    {
+      "id": "serbian_sweet",
+      "locale": "sr",
+      "matches": [
+        {
+          "emoji": "😄",
+          "name": "лице које се слатко смеје"
+        },
+        {
+          "emoji": "😛",
+          "name": "лице које се плази"
+        },
+        {
+          "emoji": "🎂",
+          "name": "рођенданска торта"
+        },
+        {
+          "emoji": "🍡",
+          "name": "данго"
+        },
+        {
+          "emoji": "🍧",
+          "name": "сорбе"
+        },
+        {
+          "emoji": "🍨",
+          "name": "сладолед"
+        },
+        {
+          "emoji": "🍦",
+          "name": "сладолед у корнету"
+        },
+        {
+          "emoji": "🧁",
+          "name": "капкејк"
+        },
+        {
+          "emoji": "🍰",
+          "name": "парче торте"
+        },
+        {
+          "emoji": "🍮",
+          "name": "кремпита"
+        },
+        {
+          "emoji": "🍭",
+          "name": "лизалица"
+        },
+        {
+          "emoji": "🍬",
+          "name": "бомбона"
+        },
+        {
+          "emoji": "🍫",
+          "name": "чоколадица"
+        },
+        {
+          "emoji": "🍩",
+          "name": "крофна"
+        },
+        {
+          "emoji": "🍪",
+          "name": "колачић"
+        },
+        {
+          "emoji": "🍯",
+          "name": "ћуп са медом"
+        },
+        {
+          "emoji": "🧃",
+          "name": "пиће у тетрапаку"
+        }
+      ],
+      "query": "слатко"
+    },
+    {
+      "id": "serbian_cake",
+      "locale": "sr",
+      "matches": [
+        {
+          "emoji": "🎂",
+          "name": "рођенданска торта"
+        },
+        {
+          "emoji": "🍰",
+          "name": "парче торте"
+        }
+      ],
+      "query": "торта"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "sr-Latn",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "vatra"
+        }
+      ],
+      "query": "vatra"
+    },
+    {
+      "id": "localized_fire",
+      "locale": "zh-Hans",
+      "matches": [
+        {
+          "emoji": "🔥",
+          "name": "火焰"
+        },
+        {
+          "emoji": "🚆",
+          "name": "火车"
+        },
+        {
+          "emoji": "🚀",
+          "name": "火箭"
+        },
+        {
+          "emoji": "🌋",
+          "name": "火山"
+        },
+        {
+          "emoji": "😡",
+          "name": "怒火中烧"
+        },
+        {
+          "emoji": "💢",
+          "name": "怒"
+        },
+        {
+          "emoji": "✨",
+          "name": "闪亮"
+        },
+        {
+          "emoji": "🍗",
+          "name": "家禽的腿"
+        },
+        {
+          "emoji": "🚒",
+          "name": "消防车"
+        },
+        {
+          "emoji": "🚞",
+          "name": "山区铁路"
+        },
+        {
+          "emoji": "🚝",
+          "name": "单轨"
+        },
+        {
+          "emoji": "🚄",
+          "name": "高速列车"
+        },
+        {
+          "emoji": "🚅",
+          "name": "子弹头高速列车"
+        },
+        {
+          "emoji": "🚈",
+          "name": "轻轨"
+        },
+        {
+          "emoji": "🚂",
+          "name": "蒸汽火车"
+        },
+        {
+          "emoji": "🚉",
+          "name": "车站"
+        },
+        {
+          "emoji": "🎇",
+          "name": "烟花"
+        },
+        {
+          "emoji": "🎆",
+          "name": "焰火"
+        },
+        {
+          "emoji": "🕯",
+          "name": "蜡烛"
+        },
+        {
+          "emoji": "🧯",
+          "name": "灭火器"
+        },
+        {
+          "emoji": "🧨",
+          "name": "爆竹"
+        }
+      ],
+      "query": "火"
+    }
+  ]
+}

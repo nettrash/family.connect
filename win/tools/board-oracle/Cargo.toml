@@ -35,6 +35,11 @@
 # keys typed into a field with what it then holds. Every port is held to all of it; copy it to the
 # same two places, and CI compares all three.
 #
+#     cd win/tools/board-oracle && cargo run --quiet -- reaction-search > ../../tests/FamilyConnect.Core.Tests/Fixtures/reaction-search-vectors.json
+#
+# The reaction search vectors (#116) record the ordered results and accessible names for each
+# locale. Copy this fixture into the Apple and Android test resources for their ports.
+#
 #     cd win/tools/board-oracle && cargo run --quiet -- animation-plan > ../../tests/FamilyConnect.Core.Tests/Fixtures/animation-plan-vectors.json
 #
 # The seventh prints fc_text::animation — an animated GIF, WebP or PNG sent as a silent looping video
