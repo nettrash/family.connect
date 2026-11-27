@@ -37,6 +37,7 @@
   -->
   <ItemGroup>
     <None Include="..\FamilyConnect.Core.Tests\Fixtures\emoji-typing-vectors.json" Link="Fixtures\emoji-typing-vectors.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\FamilyConnect.Core.Tests\Fixtures\reaction-search-vectors.json" Link="Fixtures\reaction-search-vectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!--
     The animation-plan vectors (issue #96), printed by tools/board-oracle (its animation-plan command), for

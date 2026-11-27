@@ -25,6 +25,8 @@ internal sealed class Connection : IAsyncDisposable
         Api = new ApiClient(Http, server, Tokens);
         Cache = Database.Open(cachePath);
         Session = new AppSession(Api, Tokens, Cache, new AwaitingJoinFile(server), new CurrentFamilyFile(server));
+        RecentReactions = new RecentReactions(Cache, server, () =>
+            Tokens.Token is not null && Session.State is { CanChat: true, Me.Id: > 0 and var id } ? id : 0);
         // The reader is whoever `GET /me` last said: read when asked, never captured, because a
         // sign-in as somebody else must not be drawn as the previous person's "You". The family shown, the same way: the
         // chat list, the roster, the wall and the stickers are the shown family's (docs/protocol.md, "Several families").
@@ -117,6 +119,8 @@ internal sealed class Connection : IAsyncDisposable
     public ApiClient Api { get; }
 
     public Database Cache { get; }
+
+    public RecentReactions RecentReactions { get; }
 
     public ChatStore Chats { get; }
 

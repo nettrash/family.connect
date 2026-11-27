@@ -10,8 +10,11 @@ internal sealed class AppServices : IAsyncDisposable
     /// The window's language is the DEVICE's — never the family's, which is what the assistant
     /// answers in (docs/protocol.md, "The family's language").
     /// </summary>
-    public IStringCatalog Say { get; } =
-        JsonCatalog.For(Languages.ForDisplay(CultureInfo.CurrentUICulture.Name));
+    public string DisplayLanguage { get; } = Languages.ForDisplay(CultureInfo.CurrentUICulture.Name);
+
+    public IStringCatalog Say { get; }
+
+    public AppServices() => Say = JsonCatalog.For(DisplayLanguage);
 
     /// <summary>Numbers, dates and times in the reader's own format.</summary>
     public CultureInfo Culture => CultureInfo.CurrentCulture;
