@@ -149,4 +149,17 @@ public static class Reactions
                 : new ReactionDetail(row.Emoji, row.Others, row.OtherIds.Count > 0 ? row.OtherIds[0] : null))
             .ToList();
     }
+
+    /// <summary>
+    /// What hovering a chip says (issue #134, as the Linux client has it): who chose that emoji, named exactly as
+    /// "See who reacted" names them — the same rows (<see cref="Details"/>), so "You" leads and a blocked member is
+    /// not named — and joined as that flyout joins them.
+    /// </summary>
+    /// <returns>Null when the chip has nobody it may name — every reactor blocked, or no row for the emoji: a tooltip
+    /// that is empty is noise, not information.</returns>
+    public static string? WhoReacted(IReadOnlyList<ReactionDetail> details, string emoji)
+    {
+        var row = details.FirstOrDefault(detail => string.Equals(detail.Emoji, emoji, StringComparison.Ordinal));
+        return row is null || row.Names.Count == 0 ? null : string.Join(", ", row.Names);
+    }
 }

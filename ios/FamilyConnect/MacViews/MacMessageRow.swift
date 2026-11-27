@@ -373,18 +373,25 @@ struct MacMessageRow: View {
         }
     }
 
+    /// Who chose which emoji, one row per emoji in chip order: what "See
+    /// who reacted" lists, and what hovering a chip says (issue #134) — one
+    /// reading for both, so the two can never name different people.
+    private var reactionDetails: [ReactionDetail] {
+        MessagePresentation.reactionDetails(
+            message.reactions,
+            names: Dictionary(
+                uniqueKeysWithValues: message.reactions.map { ($0.userID, nameFor($0.userID)) }),
+            currentUserID: coordinator.currentUserID,
+            blockedUserIDs: coordinator.blockedUserIDs)
+    }
+
     /// Who left what, one row per emoji in chip order.
     ///
     /// My own row is the remove control — the only way a reaction comes
     /// off, so it can never happen by accident. Same rule the phone
     /// settled on, and the same wording.
     private var reactorList: some View {
-        let details = MessagePresentation.reactionDetails(
-            message.reactions,
-            names: Dictionary(
-                uniqueKeysWithValues: message.reactions.map { ($0.userID, nameFor($0.userID)) }),
-            currentUserID: coordinator.currentUserID,
-            blockedUserIDs: coordinator.blockedUserIDs)
+        let details = reactionDetails
         // The chips below are deliberately not given the blocked set.
         let chips = MessagePresentation.reactionChips(
             message.reactions, currentUserID: coordinator.currentUserID)
@@ -735,7 +742,9 @@ struct MacMessageRow: View {
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
-                MacReactionRow(chips: chips, onTintedBalloon: isMine && !isBare) { chip in
+                MacReactionRow(
+                    chips: chips, details: reactionDetails, onTintedBalloon: isMine && !isBare
+                ) { chip in
                     // A click never takes a reaction away. On a chip I am
                     // not part of, join it; on one I AM part of, show who
                     // reacted — where my own row is the explicit remove.
@@ -1248,6 +1257,9 @@ private struct DoubleCheckmark: View {
 /// deliberate, through "See who reacted".
 private struct MacReactionRow: View {
     let chips: [ReactionChip]
+    /// Who chose each emoji, as "See who reacted" lists them: what a chip
+    /// says when the pointer rests on it (issue #134).
+    let details: [ReactionDetail]
     /// True on my own tint-filled balloon — where an accent-colored ring
     /// would sit on an accent-colored ground. The phone's lesson
     /// (MessageBubbleView): stroke with the balloon's CONTENT color.
@@ -1284,9 +1296,27 @@ private struct MacReactionRow: View {
                             lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                // Who reacted, on hover — Linux's tooltip (issue #134). A
+                // chip with nobody to name (all of them blocked) says
+                // nothing rather than showing an empty tip.
+                .modifier(ReactorsHelp(text: MessagePresentation.reactorsHelp(details, emoji: chip.emoji)))
             }
         }
         .padding(.top, 2)
+    }
+}
+
+/// A tooltip when there is something to say, and no tooltip at all when
+/// there is not — `.help("")` is not the same thing as no help.
+private struct ReactorsHelp: ViewModifier {
+    let text: String?
+
+    func body(content: Content) -> some View {
+        if let text {
+            content.help(text)
+        } else {
+            content
+        }
     }
 }
 

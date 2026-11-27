@@ -2476,6 +2476,11 @@ public sealed partial class ChatsView : UserControl
     private FrameworkElement ChipsElement(ConversationModel chat, MessageDto message, ReactionDto[] reactions, ThreadModel? inThread)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        // Who chose each emoji, read once for the row and exactly as "See who reacted" reads it (WhoReacted below),
+        // so a chip's tooltip and its flyout can never name different people (issue #134).
+        var details = Reactions.Details(
+            reactions, id => connection.Chats.Member(id)?.DisplayName, Reader,
+            connection.Chats.Blocked().ToHashSet(), services.Say);
         foreach (var chip in Reactions.Chips(reactions, Reader))
         {
             var button = new Button
@@ -2489,6 +2494,12 @@ public sealed partial class ChatsView : UserControl
             {
                 button.BorderBrush = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"];
                 button.BorderThickness = new Thickness(2);
+            }
+            // Who reacted, when the pointer rests on the chip — the Linux client's tooltip. A chip with nobody to name
+            // (all of them blocked) gets none rather than an empty one.
+            if (Reactions.WhoReacted(details, chip.Emoji) is { } who)
+            {
+                ToolTipService.SetToolTip(button, who);
             }
             var emoji = chip.Emoji;
             // A tap JOINS and never removes: on the reader's own chip it shows who reacted, where their

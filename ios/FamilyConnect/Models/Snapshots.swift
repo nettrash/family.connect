@@ -972,4 +972,21 @@ nonisolated enum MessagePresentation {
             return ReactionDetail(emoji: emoji, names: all, leadUserID: lead)
         }
     }
+
+    /// What hovering a chip says on the Mac (issue #134, as the Linux
+    /// client has it): who chose that emoji, named exactly as "See who
+    /// reacted" names them — the same rows (`reactionDetails`), so "You"
+    /// leads and a blocked member is not named — and joined the way that
+    /// popover joins them. Nil when the chip has nobody it may name: every
+    /// reactor blocked, or no row for the emoji at all — a tooltip that is
+    /// empty is noise, not information.
+    static func reactorsHelp(
+        _ details: [ReactionDetail],
+        emoji: String,
+        locale: Locale = .current
+    ) -> String? {
+        guard let names = details.first(where: { $0.emoji == emoji })?.names, !names.isEmpty
+        else { return nil }
+        return names.formatted(.list(type: .and).locale(locale))
+    }
 }
