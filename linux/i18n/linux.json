@@ -9,6 +9,46 @@
     "into linux/data/i18n/*.json; its --check is the CI string gate."
   ],
   "strings": {
+    "No emoji found": {
+      "de": "Keine Emoji gefunden",
+      "es": "No se encontraron emojis",
+      "fr": "Aucun emoji trouvé",
+      "ja": "絵文字が見つかりません",
+      "ru": "Эмодзи не найдены",
+      "sr": "Нема пронађених емоџија",
+      "sr-Latn": "Nema pronađenih emodžija",
+      "zh-Hans": "未找到表情符号"
+    },
+    "Recent emoji": {
+      "de": "Zuletzt verwendete Emoji",
+      "es": "Emojis recientes",
+      "fr": "Emojis récents",
+      "ja": "最近の絵文字",
+      "ru": "Недавние эмодзи",
+      "sr": "Недавни емоџији",
+      "sr-Latn": "Nedavni emodžiji",
+      "zh-Hans": "最近使用的表情符号"
+    },
+    "Search emoji": {
+      "de": "Emoji suchen",
+      "es": "Buscar emoji",
+      "fr": "Rechercher un emoji",
+      "ja": "絵文字を検索",
+      "ru": "Поиск эмодзи",
+      "sr": "Претражи емоџије",
+      "sr-Latn": "Pretraži emodžije",
+      "zh-Hans": "搜索表情符号"
+    },
+    "Search results": {
+      "de": "Suchergebnisse",
+      "es": "Resultados de búsqueda",
+      "fr": "Résultats de recherche",
+      "ja": "検索結果",
+      "ru": "Результаты поиска",
+      "sr": "Резултати претраге",
+      "sr-Latn": "Rezultati pretrage",
+      "zh-Hans": "搜索结果"
+    },
     "About Family Connect": {
       "de": "Über Family Connect",
       "es": "Acerca de Family Connect",

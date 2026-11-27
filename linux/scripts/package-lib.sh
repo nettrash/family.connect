@@ -19,6 +19,8 @@ stage_data() {
     mkdir -p "$runtime"
     cp -R data/. "$runtime/"
     mv "$runtime/emoji-search/UNICODE-LICENSE.txt" "$licences/"
+    # The shared crate already embeds English.
+    rm -f "$runtime/emoji-search/en.tsv"
 }
 
 # The workspace's version: [workspace.package] in $1/Cargo.toml.

@@ -269,6 +269,18 @@ impl Timeline {
         let drawn = self.marks.borrow().clone();
         let plan = conversation_rows::plan(&drawn, &wanted, None);
         let old: Vec<gtk::Widget> = self.shown.borrow().clone();
+        // Picking a reaction returns focus to its row. A redraw that replaces that row
+        // must move focus to the new widget before GTK falls back to another message.
+        let focused_replacement =
+            old.iter()
+                .position(|widget| widget.is_focus())
+                .and_then(|index| {
+                    let key = &drawn.get(index)?.key;
+                    wanted
+                        .iter()
+                        .position(|mark| &mark.key == key)
+                        .filter(|at| plan[*at] != Some(index))
+                });
         let widgets: Vec<gtk::Widget> = plan
             .iter()
             .enumerate()
@@ -277,6 +289,9 @@ impl Timeline {
                 None => build(index),
             })
             .collect();
+        let replacement_focus = focused_replacement
+            .and_then(|index| widgets.get(index))
+            .cloned();
         let prepended = match (drawn.first(), wanted.first()) {
             (Some(was), Some(now)) => was.key != now.key && wanted.iter().any(|m| m.key == was.key),
             _ => false,
@@ -317,6 +332,9 @@ impl Timeline {
         }
         drop(shown);
         *self.marks.borrow_mut() = wanted;
+        if let Some(widget) = replacement_focus {
+            widget.grab_focus();
+        }
     }
 
     /// Forget every drawn row: the next update builds them all (the roster, the block list or the

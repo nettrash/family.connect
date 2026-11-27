@@ -388,7 +388,7 @@ EOF
         # shellcheck disable=SC2086 # one path per word
         printf '%s\n' $LAYOUT_FILES
         (cd packaging/icons && find hicolor -type f) | sed 's#^#usr/share/icons/#'
-        (cd data && find . -type f ! -path './emoji-search/UNICODE-LICENSE.txt') |
+        (cd data && find . -type f ! -path './emoji-search/UNICODE-LICENSE.txt' ! -path './emoji-search/en.tsv') |
             sed "s#^\./#usr/share/$PKG/#"
     } | LC_ALL=C sort > "$tmp/expected"
     if ! cmp -s "$tmp/expected" "$tmp/actual"; then

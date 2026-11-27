@@ -8,6 +8,7 @@ pub mod markup;
 pub mod menu;
 pub mod page;
 pub mod polls;
+mod reaction_picker;
 pub mod safety;
 pub mod style;
 pub mod thread;
