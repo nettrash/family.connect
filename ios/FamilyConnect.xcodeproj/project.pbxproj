@@ -81,6 +81,9 @@
 			exceptions = (
 				FC0000192EAB0010013FC000 /* Exceptions for "FamilyConnect" folder in "FamilyConnect" target */,
 			);
+			explicitFolders = (
+				"Emoji/emoji-search",
+			);
 			path = FamilyConnect;
 			sourceTree = "<group>";
 		};

@@ -351,6 +351,28 @@ struct AppSessionTransitionTests {
         #expect(UserDefaults.standard.object(forKey: "v1.pack.recents") == nil)
     }
 
+    @Test("Reaction recents survive leaving a family and are cleared at sign-out")
+    func reactionRecentsClearedAtSignOut() throws {
+        resetGlobals()
+        defer { resetGlobals() }
+        let server = try #require(URL(string: "https://family.example"))
+        AppSettings.serverURL = server
+        let (session, _) = makeSession()
+        session.apply(me: MeResponse(user: Self.user, family: Self.family, role: "member", pendingJoinRequest: nil))
+        let account = try #require(ReactionRecents.Account.current)
+        let other = ReactionRecents.Account(server: server, userID: account.userID + 1)
+        ReactionRecents().remember("🔥", for: account)
+        ReactionRecents().remember("❤️", for: other)
+
+        session.apply(me: MeResponse(user: Self.user, family: nil, role: nil, pendingJoinRequest: nil))
+        #expect(ReactionRecents().choices(for: account) == ["🔥"])
+        #expect(ReactionRecents().choices(for: other) == ["❤️"])
+
+        session.handleUnauthorized()
+        #expect(ReactionRecents().choices(for: account).isEmpty)
+        #expect(ReactionRecents().choices(for: other).isEmpty)
+    }
+
     @Test("handleUnauthorized: token gone, server kept, chat data purged, → needsAuth")
     func unauthorizedTransition() throws {
         resetGlobals()

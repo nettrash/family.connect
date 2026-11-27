@@ -106,7 +106,7 @@ nonisolated enum EmojiTyping {
     ///
     /// Keyed by the name's UTF-8 bytes rather than a String, whose hashing
     /// and equality are canonical — see the file's header.
-    private static let names: [[UInt8]: String] = loadNames()
+    static let names: [[UInt8]: String] = loadNames()
 
     private static func loadNames() -> [[UInt8]: String] {
         guard let url = Bundle.main.url(forResource: "emoji-names", withExtension: "tsv"),
