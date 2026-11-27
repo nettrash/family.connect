@@ -3,11 +3,10 @@
 //! `sessionStorage`, NOT `localStorage` (docs/protocol.md, "A browser is a
 //! client too"): the token is the whole credential, and one that outlives
 //! the tab is one left behind on a shared machine. Closing the tab is a
-//! sign-out. Two small things are kept by the DEVICE instead, in
-//! `localStorage`, and none is a credential or a word anybody wrote: the
-//! board's seen-marks, which stickers were used last, which video and voice
-//! messages were played here — the last three of which a sign-out takes —
-//! and the speed voice messages play at.
+//! sign-out. Device state in `localStorage` includes the board's seen
+//! marks, the last family shown, sticker and reaction recents, played
+//! video and voice message marks, and voice playback speed. Sign-out clears
+//! sticker and reaction recents and the played marks.
 //!
 //! Every accessor is total. Storage can be absent or throw — a private
 //! window, a browser configured to block site data — and a chat client that
@@ -39,13 +38,10 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.session_storage().ok()?
 }
 
-/// The board's two seen-marks, under the account's id — one of the two
-/// things this client keeps past the tab (docs/protocol.md, "A browser is a
-/// client too"; the other is the sticker recents below, which a sign-out
-/// takes). Two numbers: how far this browser has shown that account the
-/// wall, and nothing of what is on it. Kept for the tab alone they would count the
-/// whole wall as new at every sign-in, and a badge that always cries wolf is
-/// a badge nobody reads.
+/// The two seen marks for each account and family's board persist in
+/// `localStorage` (docs/protocol.md, "A browser is a client too"). They record
+/// how far the browser has shown this account the board. Keeping the marks
+/// across sign-ins keeps the badge from counting the whole board as new.
 const BOARD_MARKS_KEY: &str = "fc.board.seen.";
 
 fn lasting() -> Option<web_sys::Storage> {
@@ -417,20 +413,51 @@ pub fn set_token(token: &str) {
     }
 }
 
+const REACTION_RECENTS_KEY: &str = "fc.reaction.recents.";
+
+/// Per-account, per-origin choices. Malformed or unavailable storage is empty.
+pub fn reaction_recents(user_id: i64) -> Vec<String> {
+    if user_id <= 0 {
+        return Vec::new();
+    }
+    let saved = lasting()
+        .and_then(|storage| {
+            storage
+                .get_item(&format!("{REACTION_RECENTS_KEY}{user_id}"))
+                .ok()?
+        })
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .unwrap_or_default();
+    fc_text::emoji_search::recent_with(&saved, "")
+}
+
+/// A deliberate picker choice, including an optimistic choice before the API
+/// answers. Opening/searching the picker and other members' reactions do not count.
+pub fn remember_reaction(user_id: i64, emoji: &str) {
+    if user_id <= 0 {
+        return;
+    }
+    let recent = fc_text::emoji_search::recent_with(&reaction_recents(user_id), emoji);
+    if let (Some(storage), Ok(json)) = (lasting(), serde_json::to_string(&recent)) {
+        let _ = storage.set_item(&format!("{REACTION_RECENTS_KEY}{user_id}"), &json);
+    }
+}
+
 pub fn clear() {
     if let Some(storage) = storage() {
         let _ = storage.remove_item(TOKEN_KEY);
         let _ = storage.remove_item(OUTBOX_KEY);
         let _ = storage.remove_item(AWAITING_KEY);
     }
-    // The one thing a sign-out takes from `localStorage`: which stickers
-    // this person reached for. The board's marks stay — that is what they
-    // are for.
+    // Sign-out takes personal sticker/reaction choices and played marks.
+    // The board's seen-marks stay, as before.
     if let Some(storage) = lasting() {
         // Every family's, and the one list kept before several families.
         let keys: Vec<String> = (0..storage.length().unwrap_or(0))
             .filter_map(|index| storage.key(index).ok().flatten())
-            .filter(|key| key.starts_with(PACK_RECENTS_KEY))
+            .filter(|key| {
+                key.starts_with(PACK_RECENTS_KEY) || key.starts_with(REACTION_RECENTS_KEY)
+            })
             .collect();
         for key in keys {
             let _ = storage.remove_item(&key);
