@@ -111,6 +111,8 @@ object EmojiTyping {
         }
     }
 
+    internal val shortcodes: Map<String, String> get() = names
+
     /** How many shortcode names the table holds. */
     val nameCount: Int get() = names.size
 

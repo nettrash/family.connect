@@ -12,6 +12,11 @@
 package me.nettrash.familyconnect.ui.chat
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
 
 class EmojiCatalogTest {
@@ -76,5 +81,106 @@ class EmojiCatalogTest {
         // Inside the quick set so the capsule shows it selected after
         // a double-tap. iOS pins the same value.
         assertThat(QUICK_REACTIONS).contains(DOUBLE_TAP_REACTION)
+    }
+
+    @Test
+    fun localizedIndexCoversEveryEmojiInAllNineLanguages() {
+        val fireNames = mapOf(
+            "en" to "fire", "de" to "Feuer", "es" to "fuego", "fr" to "feu", "ja" to "火",
+            "ru" to "огонь", "sr" to "ватра", "sr-Latn" to "vatra", "zh-Hans" to "火焰",
+        )
+        val catalogue = EMOJI_CATALOG.flatMap { it.emoji }.distinct()
+        assertThat(catalogue).hasSize(769)
+        for ((tag, fireName) in fireNames) {
+            val index = ReactionSearch.index(tag)
+            assertThat(index.name("🔥")).isEqualTo(fireName)
+            assertThat(index.search(fireName)).contains("🔥")
+            for (emoji in catalogue) assertThat(index.name(emoji)).isNotEqualTo(emoji)
+        }
+        assertThat(ReactionSearch.index("de").search("  FUSSBALL  ")).contains("⚽")
+        assertThat(ReactionSearch.index("ja").search("火")).contains("🔥")
+    }
+
+    @Test
+    fun searchMatchesSharedOracleResultsAndLocalizedNames() {
+        val stream = requireNotNull(javaClass.getResourceAsStream("/reaction-search-vectors.json")) {
+            "reaction-search-vectors.json is missing from the test classpath"
+        }
+        val vectors = stream.bufferedReader(Charsets.UTF_8).use { Json.parseToJsonElement(it.readText()) }
+        val cases = vectors.jsonObject.getValue("search").jsonArray
+        assertThat(cases.size).isAtLeast(32)
+        for (case in cases.map { it.jsonObject }) {
+            val id = case.getValue("id").jsonPrimitive.content
+            val locale = case.getValue("locale").jsonPrimitive.content
+            val query = case.getValue("query").jsonPrimitive.content
+            val expected = case.getValue("matches").jsonArray.map {
+                val match = it.jsonObject
+                match.getValue("emoji").jsonPrimitive.content to match.getValue("name").jsonPrimitive.content
+            }
+            val index = ReactionSearch.index(locale)
+            val actual = index.search(query).map { emoji -> emoji to index.name(emoji) }
+            assertWithMessage("%s/%s", locale, id).that(actual).containsExactlyElementsIn(expected).inOrder()
+        }
+    }
+
+    @Test
+    fun preparedIndexIsReusedWhenReopeningAndKeepingLocalesSeparate() {
+        val russian = ReactionSearch.index("ru")
+        val english = ReactionSearch.index("en")
+        assertThat(ReactionSearch.cachedIndex("ru")).isSameInstanceAs(russian)
+        assertThat(ReactionSearch.index("en")).isSameInstanceAs(english)
+        assertThat(russian.name("🔥")).isEqualTo("огонь")
+        assertThat(english.name("🔥")).isEqualTo("fire")
+        assertThat(russian.search(":ICE:").first()).isEqualTo("🧊")
+    }
+
+    @Test
+    fun aliasesAndEnglishFallbackRankAheadOfKeywordMatches() {
+        val russian = ReactionSearch.index("ru")
+        assertThat(russian.search("  :ICE:  ").first()).isEqualTo("🧊")
+        val prefixes = russian.search("ic")
+        assertThat(prefixes).containsAtLeast("🧊", "😀").inOrder()
+        assertThat(russian.search(":LIKE:").first()).isEqualTo("👍")
+        val english = ReactionSearch.index("en")
+        assertThat(english.search("red_heart").first()).isEqualTo("❤️")
+        assertThat(english.search("fire nonexistentkeyword")).isEmpty()
+    }
+
+    @Test
+    fun exactVariantsReturnCatalogueBytesAndResultsDeduplicateInCatalogueOrder() {
+        val index = ReactionSearch.index("en")
+        assertThat(index.search(" ❤ ")).containsExactly("❤️")
+        assertThat(index.search("❤︎")).isEmpty()
+        assertThat(index.search("❤️")).containsExactly("❤️")
+        assertThat(index.search("👍🏽")).isEmpty()
+        val stars = index.search("star")
+        assertThat(stars).containsNoDuplicates()
+        // Both names contain the keyword. Neither starts with it.
+        assertThat(stars).containsAtLeast("💫", "🌠").inOrder()
+    }
+
+    @Test
+    fun emptyQueriesRestoreBrowseAndUnmatchedQueriesAreStillSearches() {
+        val index = ReactionSearch.index("en")
+        for (query in listOf("", "  ", "__::")) {
+            assertThat(ReactionSearch.normalize(query)).isEmpty()
+            assertThat(index.search(query)).isEmpty()
+        }
+        val query = "no-such-emoji-8372"
+        assertThat(ReactionSearch.normalize(query)).isNotEmpty()
+        assertThat(index.search(query)).isEmpty()
+    }
+
+    @Test
+    fun searchUsesTheSameWhitespaceAsRust() {
+        val index = ReactionSearch.index("en")
+        assertThat(index.search("\u0085red\u00a0heart\u2003")).containsExactly("❤️")
+        assertThat(index.search("\u001cfire")).isEmpty()
+    }
+
+    @Test
+    fun displayedRecentsCleanUnknownGlyphsAndResolveVariants() {
+        assertThat(ReactionSearch.recents(listOf("❤", "🔥", "❤️", "bogus", "👍🏽")))
+            .containsExactly("❤️", "🔥").inOrder()
     }
 }

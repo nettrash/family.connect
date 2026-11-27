@@ -523,6 +523,10 @@
     <string name="s_emoji_activities">Aktivitäten</string>
     <string name="s_emoji_travel">Reisen &amp; Orte</string>
     <string name="s_emoji_objects">Objekte &amp; Symbole</string>
+    <string name="s_reaction_search">Emoji suchen</string>
+    <string name="s_reaction_search_clear">Suche löschen</string>
+    <string name="s_reaction_search_empty">Keine Emoji gefunden</string>
+    <string name="s_reaction_recents">Zuletzt verwendete Emoji</string>
     <string name="s_thread">Thread</string>
     <string name="s_view_thread">Thread anzeigen</string>
     <string name="s_reply_in_thread">Im Thread antworten</string>

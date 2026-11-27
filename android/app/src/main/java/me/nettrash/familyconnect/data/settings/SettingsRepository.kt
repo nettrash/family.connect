@@ -34,6 +34,9 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
+import java.io.IOException
+import me.nettrash.familyconnect.util.reactionEmojiKey
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.ParkedRecording
@@ -455,6 +458,9 @@ suspend fun SettingsRepository.mirrorFamilySwitches(family: FamilyDto) {
 
 interface SettingsRepository {
     val state: Flow<SettingsState>
+    val reactionRecents: Flow<ReactionRecents>
+
+    suspend fun recordRecentReaction(scope: ReactionRecents.Scope, emoji: String)
 
     suspend fun setServerUrl(url: String)
     suspend fun setFamilyStatus(status: FamilyStatus)
@@ -758,6 +764,7 @@ class DataStoreSettingsRepository @Inject constructor(
         // One joined string rather than a string SET: the order is the
         // whole meaning of "recent", and a set has none.
         val PACK_RECENTS = stringPreferencesKey("pack_recents")
+        val REACTION_RECENTS = stringPreferencesKey("reaction_recents")
         // Stored inverted so a missing key reads as "on", like the link
         // preview key above.
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
@@ -891,8 +898,33 @@ class DataStoreSettingsRepository @Inject constructor(
         )
     }
 
+    private fun Preferences.reactionScope() =
+        ReactionRecents.Scope.of(this[Keys.SERVER_URL], this[Keys.MY_USER_ID])
+
+    private fun Preferences.recentReactions() =
+        this[Keys.REACTION_RECENTS]?.split(',').orEmpty()
+
+    override val reactionRecents: Flow<ReactionRecents> = dataStore.data
+        .map { prefs -> ReactionRecents(prefs.reactionScope(), prefs.recentReactions()) }
+        .distinctUntilChanged()
+
+    override suspend fun recordRecentReaction(scope: ReactionRecents.Scope, emoji: String) {
+        try {
+            dataStore.edit { prefs ->
+                if (prefs.reactionScope() != scope) return@edit
+                prefs[Keys.REACTION_RECENTS] = (listOf(emoji) + prefs.recentReactions())
+                    .distinctBy(::reactionEmojiKey).take(24).joinToString(",")
+            }
+        } catch (_: IOException) {
+            // Local picker history must not interfere with sending the reaction.
+        }
+    }
+
     override suspend fun setServerUrl(url: String) {
-        dataStore.edit { it[Keys.SERVER_URL] = url }
+        dataStore.edit {
+            if (it[Keys.SERVER_URL] != url) it.remove(Keys.REACTION_RECENTS)
+            it[Keys.SERVER_URL] = url
+        }
     }
 
     override suspend fun setFamilyStatus(status: FamilyStatus) {
@@ -906,6 +938,7 @@ class DataStoreSettingsRepository @Inject constructor(
         avatarVersion: Long,
     ) {
         dataStore.edit {
+            if (it[Keys.MY_USER_ID] != userId) it.remove(Keys.REACTION_RECENTS)
             it[Keys.MY_USER_ID] = userId
             it[Keys.MY_USERNAME] = username
             it[Keys.MY_DISPLAY_NAME] = displayName

@@ -571,6 +571,10 @@
     <string name="s_emoji_activities">Activities</string>
     <string name="s_emoji_travel">Travel &amp; Places</string>
     <string name="s_emoji_objects">Objects &amp; Symbols</string>
+    <string name="s_reaction_search">Search emoji</string>
+    <string name="s_reaction_search_clear">Clear search</string>
+    <string name="s_reaction_search_empty">No emoji found</string>
+    <string name="s_reaction_recents">Recent emoji</string>
     <!-- Threads: a chain of replies on a screen of its own (docs/protocol.md, "Threads"). -->
     <string name="s_thread">Thread</string>
     <string name="s_view_thread">View thread</string>
