@@ -217,6 +217,23 @@ pub fn reaction_details(
         .collect()
 }
 
+/// What hovering a chip says (issue #134): who chose `emoji`, named exactly
+/// as "See who reacted" names them — the same rows ([`reaction_details`]),
+/// so "You" leads and a blocked reactor is not named — joined with ", " as
+/// that popover joins them. `None` when the chip has nobody it may name:
+/// every reactor blocked, or no row for the emoji at all — an empty tooltip
+/// is noise, not information.
+///
+/// Swift: `MessagePresentation.reactorsHelp(_:emoji:)` (joined as a
+/// localised list, as the Mac's popover is); C#: `Reactions.WhoReacted`.
+pub fn who_reacted(details: &[ReactionDetail], emoji: &str) -> Option<String> {
+    details
+        .iter()
+        .find(|detail| detail.emoji == emoji)
+        .filter(|detail| !detail.names.is_empty())
+        .map(|detail| detail.names.join(", "))
+}
+
 /// The reader's own reaction on a message — the capsule marks it selected
 /// and offers it even when it is not a quick one.
 ///
@@ -432,6 +449,45 @@ mod tests {
                 "position {position}"
             );
         }
+    }
+
+    /// A chip's tooltip is its "See who reacted" row, "You" first (#134).
+    #[test]
+    fn who_reacted_names_the_row() {
+        let reactions = [
+            Reaction::new(9, HEART),
+            Reaction::new(7, HEART),
+            Reaction::new(11, THUMBS_UP),
+        ];
+        let details = reaction_details(
+            &reactions,
+            &roster(&[(9, "Anna"), (11, "Ben")]),
+            7,
+            &nobody_blocked(),
+        );
+        assert_eq!(who_reacted(&details, HEART).as_deref(), Some("You, Anna"));
+        assert_eq!(who_reacted(&details, THUMBS_UP).as_deref(), Some("Ben"));
+    }
+
+    /// A chip whose every reactor is blocked keeps its count and has no
+    /// tooltip — not an empty one; nor has an emoji with no chip (#134).
+    #[test]
+    fn who_reacted_says_nothing_rather_than_nothing() {
+        let reactions = [
+            Reaction::new(9, HEART),
+            Reaction::new(11, HEART),
+            Reaction::new(12, THUMBS_UP),
+        ];
+        let blocked: HashSet<i64> = [9, 11].into_iter().collect();
+        let details = reaction_details(
+            &reactions,
+            &roster(&[(9, "Anna"), (11, "Ben"), (12, "Kim")]),
+            7,
+            &blocked,
+        );
+        assert_eq!(who_reacted(&details, HEART), None);
+        assert_eq!(who_reacted(&details, JOY), None);
+        assert_eq!(who_reacted(&details, THUMBS_UP).as_deref(), Some("Kim"));
     }
 
     /// Swift: reactionDetailsYouPerEmoji — "You substitutes only in the

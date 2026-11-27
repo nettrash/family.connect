@@ -1,7 +1,7 @@
 //! One drawn row of a conversation (shell-design §5.2): the day pill, the unread divider, the
 //! sender's face and name, the bubble and the reactions under it — every decision fc-logic's
-//! (`timeline`, `bubble_body`, `bubble_rules`, `quotes`, `doorway::bubble_text`, `poll_text`,
-//! `assistant_answers`), every block that is not words drawn by P2 and P3 through
+//! (`timeline`, `bubble_body`, `bubble_rules`, `quotes`, `doorway::bubble_text`,
+//! `assistant_answers`; the reaction chips' names are `fc_text::reactions`'), every block that is not words drawn by P2 and P3 through
 //! `Shell::slots()` (tiles, voice, circles, stickers, rich blocks, link cards, places).
 //!
 //! The row is focusable (Up/Down walk the bubbles, §24) and an `AccessibleRole::Group` named
@@ -9,6 +9,7 @@
 //! long press, Shift+F10 or the Menu key; a double click is the heart (Windows' rule).
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -23,11 +24,10 @@ use fc_logic::groups::{ChatFace, chat_kinds};
 use fc_logic::lookups;
 use fc_logic::message_menu::{self, RecordingKind};
 use fc_logic::paid_families::Days;
-use fc_logic::poll_text;
 use fc_logic::quotes::{self, Quote, QuoteLevel};
 use fc_logic::rich_drawing::RichLook;
 use fc_logic::timeline::{self, TimelineRow};
-use fc_text::reactions::{ChipTap, Reaction, reaction_chips};
+use fc_text::reactions::{ChipTap, Reaction, reaction_chips, reaction_details, who_reacted};
 
 use super::markup::{self, Piece};
 use crate::chats::avatar;
@@ -76,10 +76,6 @@ pub struct BubbleContext {
 }
 
 impl BubbleContext {
-    fn is_blocked(&self, user_id: i64) -> bool {
-        self.blocked.contains(&user_id)
-    }
-
     /// What, beyond the message itself and its place, a row is drawn from — the rest of its
     /// `conversation_rows::signature`. The read tick counts only where the row draws its time
     /// (Windows' rule): a peer reading a burst draws its last row again, not the burst.
@@ -926,7 +922,16 @@ fn reactions_row(ctx: &BubbleContext, message: &MessageDto, own: bool) -> Option
         })
         .css_classes(["fc-chat-reactions"])
         .build();
-    let names = names_of(ctx, &reactions);
+    // Who chose each emoji, read exactly as "See who reacted" reads it (`reaction_details`, the
+    // popover's own rows): "You" first and a blocked member not named, so a chip's tooltip and its
+    // popover never name different people — the rule the Mac and Windows tooltips follow (#134).
+    let names: HashMap<i64, String> = ctx
+        .members
+        .iter()
+        .map(|member| (member.id, member.display_name.clone()))
+        .collect();
+    let blocked: HashSet<i64> = ctx.blocked.iter().copied().collect();
+    let details = reaction_details(&reactions, &names, ctx.me, &blocked);
     for chip in reaction_chips(&reactions, ctx.me) {
         let label = if chip.shows_count() {
             format!("{} {}", chip.emoji, chip.count)
@@ -940,12 +945,8 @@ fn reactions_row(ctx: &BubbleContext, message: &MessageDto, own: bool) -> Option
         if chip.includes_me {
             button.add_css_class("fc-chat-mine");
         }
-        let who: Vec<String> = reactions
-            .iter()
-            .filter(|r| r.emoji == chip.emoji && !ctx.is_blocked(r.user_id))
-            .map(|r| names(r.user_id))
-            .collect();
-        button.set_tooltip_text(Some(&who.join(", ")));
+        // None when every reactor is blocked: no tooltip, rather than an empty one.
+        button.set_tooltip_text(who_reacted(&details, &chip.emoji).as_deref());
         let (host, message, emoji) = (Rc::clone(&ctx.host), message.clone(), chip.emoji.clone());
         let tap = chip.tap();
         button.connect_clicked(move |button| match tap {
@@ -955,19 +956,6 @@ fn reactions_row(ctx: &BubbleContext, message: &MessageDto, own: bool) -> Option
         flow.append(&button);
     }
     Some(flow.upcast())
-}
-
-/// A reactor's name: "You", the roster's, or "Someone".
-fn names_of(ctx: &BubbleContext, _reactions: &[Reaction]) -> impl Fn(i64) -> String + use<> {
-    let (me, members, say) = (ctx.me, Rc::clone(&ctx.members), Rc::clone(&ctx.shell.say));
-    move |user_id| {
-        poll_text::name(
-            user_id,
-            me,
-            |id| members.iter().find(|member| member.id == id).cloned(),
-            say.as_ref(),
-        )
-    }
 }
 
 /// A call record's glyph (the Mac's `CallRecordView.glyph`): a video call's camera, struck out when

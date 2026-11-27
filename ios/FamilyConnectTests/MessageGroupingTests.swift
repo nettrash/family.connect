@@ -319,6 +319,42 @@ struct MessageGroupingTests {
         ])
     }
 
+    // MARK: - Who reacted, on hover (issue #134)
+
+    @Test("a chip's tooltip names who chose it, as See who reacted does")
+    func reactorsHelpNamesTheRow() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 7, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "👍"),
+        ]
+        let details = MessagePresentation.reactionDetails(
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7, blockedUserIDs: [])
+        let english = Locale(identifier: "en_US")
+        #expect(
+            MessagePresentation.reactorsHelp(details, emoji: "❤️", locale: english) == "You and Anna",
+            "the popover's names, You first, joined as the popover joins them")
+        #expect(MessagePresentation.reactorsHelp(details, emoji: "👍", locale: english) == "Ben")
+    }
+
+    @Test("a chip with nobody it may name has no tooltip at all")
+    func reactorsHelpSaysNothingRatherThanNothing() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "❤️"),
+            ReactionSnapshot(userID: 12, emoji: "👍"),
+        ]
+        let details = MessagePresentation.reactionDetails(
+            reactions, names: [9: "Anna", 11: "Ben", 12: "Kim"], currentUserID: 7,
+            blockedUserIDs: [9, 11])
+        // Both hearts are from blocked members: the chip still counts two,
+        // and hovering it names nobody — not an empty tip.
+        #expect(MessagePresentation.reactorsHelp(details, emoji: "❤️") == nil)
+        #expect(MessagePresentation.reactorsHelp(details, emoji: "😂") == nil, "no chip, no tooltip")
+        #expect(
+            MessagePresentation.reactorsHelp(details, emoji: "👍", locale: Locale(identifier: "en_US")) == "Kim")
+    }
+
     @Test("You substitutes only in the emoji I chose, others keep their names")
     func reactionDetailsYouPerEmoji() {
         let reactions = [
