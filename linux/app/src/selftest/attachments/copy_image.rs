@@ -70,6 +70,7 @@ pub(super) async fn run(
 
     let mut message = MessageDto::new(8044, chat, author, None, "", "2026-11-28T09:00:00Z");
     message.attachments = Some(vec![cold.clone(), warm.clone(), evicted.clone()]);
+    let before_viewer = fake.requests().len();
     fake.delay_next_response(COLD_PATH, std::time::Duration::from_secs(3));
     viewer::open_message(&message, 0);
     let Some(viewer) = viewer::find((message.id, 0)) else {
@@ -87,6 +88,12 @@ pub(super) async fn run(
                     .any(|r| r == &format!("GET {COLD_PATH}"))
         })
         .await;
+    let viewer_load_requests = fake.requests()[before_viewer..].to_vec();
+    h.check(
+        "copy_image_full_viewer_load_is_counted_separately",
+        preview_only && viewer_load_requests == [format!("GET {COLD_PATH}")],
+        format!("full-image viewer-load requests: {viewer_load_requests:?}"),
+    );
     clipboard.set_text(SENTINEL);
     let before_unavailable = fake.requests().len();
     let window: gtk::Window = viewer.window.window.clone().upcast();
