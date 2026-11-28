@@ -111,6 +111,7 @@ struct MacAttachmentViewer: View {
                     .help("Share")
                 }
             }
+            .modifier(MacViewerCopyImage(attachment: attachment))
     }
 
     /// A page turn is also a zoom reset: the next picture is a different
