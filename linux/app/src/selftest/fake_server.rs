@@ -52,6 +52,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use fc_core::protocol::{
     AllowanceDto, AuthResponse, BoardResponse, ChatRowDto, ChatsResponse, ErrorBody, ErrorEnvelope,
@@ -268,6 +269,7 @@ pub struct FakeServer {
     /// Text frames the clients sent, each with the socket's user.
     received: Rc<RefCell<Vec<(Option<i64>, String)>>>,
     requests: RefCell<Vec<String>>,
+    response_delays: RefCell<HashMap<String, Duration>>,
     unhandled: RefCell<Vec<String>>,
     down: Cell<bool>,
 }
@@ -305,6 +307,7 @@ impl FakeServer {
             sockets: Rc::new(RefCell::new(Vec::new())),
             received: Rc::new(RefCell::new(Vec::new())),
             requests: RefCell::new(Vec::new()),
+            response_delays: RefCell::new(HashMap::new()),
             unhandled: RefCell::new(Vec::new()),
             down: Cell::new(false),
         });
@@ -408,6 +411,11 @@ impl FakeServer {
                 &response.body,
             );
         }
+        if let Some(delay) = self.response_delays.borrow_mut().remove(path) {
+            message.pause();
+            let message = message.clone();
+            glib::timeout_add_local_once(delay, move || message.unpause());
+        }
     }
 
     fn answer(&self, request: &FakeRequest) -> FakeResponse {
@@ -443,6 +451,11 @@ impl FakeServer {
             pattern: segments(pattern),
             handler,
         });
+    }
+
+    /// Delay the next HTTP response for this exact path after recording the request.
+    pub fn delay_next_response(&self, path: &str, delay: Duration) {
+        self.response_delays.borrow_mut().insert(path.into(), delay);
     }
 
     /// The state, to read or change.

@@ -77,7 +77,7 @@ impl ViewerWindow {
         let next = icon_button("go-next-symbolic", say.get("Next"));
         let save = icon_button("document-save-symbolic", say.get("Save…"));
         save.set_tooltip_text(Some(say.get("Save a copy")));
-        let copy = icon_button("edit-copy-symbolic", say.get("Copy"));
+        let copy = icon_button("edit-copy-symbolic", say.get("Copy Image"));
         let zoom_out = icon_button("zoom-out-symbolic", say.get("Zoom out"));
         let zoom_in = icon_button("zoom-in-symbolic", say.get("Zoom in"));
         let full_screen = icon_button("view-fullscreen-symbolic", say.get("Open Full Screen"));

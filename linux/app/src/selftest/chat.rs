@@ -1283,6 +1283,7 @@ async fn conversation(
         .find(|m| m.reply_count.unwrap_or(0) > 0)
         .map(|m| m.id);
     if let Some(root) = root {
+        let photo_reply = copy_image_reply(&shell, world, root);
         act(main, "win.message-view-thread", Some(&root.to_variant()));
         let open = h
             .wait_until(SHORT, || main.window().visible_dialog().is_some())
@@ -1309,6 +1310,7 @@ async fn conversation(
                 })
                 .await;
             h.check("thread_reply", answered, format!("{:?}", world.last_send()));
+            verify_thread_image_copy(h, &world.fake, &thread, photo_reply).await;
             thread.close();
         }
         let _ = h
@@ -1389,6 +1391,84 @@ async fn conversation(
         page.composer().staging().take_all();
         page.composer().refresh();
     }
+}
+
+/// A received photo whose original is already in the local attachment cache.
+fn copy_image_reply(shell: &Shell, world: &World, root: i64) -> Option<i64> {
+    let connection = shell.connection()?;
+    let photo = fc_core::protocol::AttachmentDto {
+        mime: Some("image/png".into()),
+        width: Some(28),
+        height: Some(18),
+        ..fc_core::protocol::AttachmentDto::new(7444, "photo")
+    };
+    let pixels = glib::Bytes::from_owned(vec![255u8; 28 * 18 * 4]);
+    let png =
+        gtk::gdk::MemoryTexture::new(28, 18, gtk::gdk::MemoryFormat::R8g8b8a8, &pixels, 28 * 4)
+            .save_to_png_bytes();
+    connection.attachments.remember(&photo, png.as_ref());
+    let mut message = MessageDto::new(0, world.family_chat, world.finn, None, "", &now_rfc3339());
+    message.thread_root_id = Some(root);
+    message.attachments = Some(vec![photo]);
+    Some(world.insert(message))
+}
+
+async fn verify_thread_image_copy(
+    h: &Harness,
+    fake: &FakeServer,
+    thread: &crate::conversation::thread::ThreadDialog,
+    reply: Option<i64>,
+) {
+    let Some(id) = reply else {
+        h.check(
+            "thread_image_copy_stages_offline",
+            false,
+            "no photo reply fixture",
+        );
+        return;
+    };
+    let drawable = h
+        .wait_until(WAIT, || thread.timeline().keys().len() >= 3)
+        .await;
+    let opened = WidgetExt::activate_action(
+        thread.timeline().widget(),
+        "thread.message-open-full-screen",
+        Some(&id.to_variant()),
+    )
+    .is_ok();
+    let Some(viewer) = crate::viewer::find((id, 0)) else {
+        h.check(
+            "thread_image_copy_stages_offline",
+            false,
+            format!("opening reply {id}: action accepted {opened}"),
+        );
+        return;
+    };
+    let ready = h
+        .wait_until(WAIT, || viewer.window.copy.is_sensitive())
+        .await;
+    fake.set_down(true);
+    let before = fake.requests().len();
+    viewer.window.copy.emit_clicked();
+    viewer.window.window.close();
+    drop(viewer);
+    let composer = thread.composer();
+    composer.paste_attachment();
+    let staged = h.wait_until(SHORT, || composer.staging().len() == 1).await;
+    let matches = composer.staging().items().first().is_some_and(|item| {
+        item.kind == "photo" && (item.width, item.height) == (Some(28), Some(18))
+    });
+    h.check(
+        "thread_image_copy_stages_offline",
+        drawable && opened && ready && staged && matches && fake.requests().len() == before,
+        format!(
+            "reply {id}, staged 28 × 18 still {matches}, extra requests {:?}",
+            &fake.requests()[before..]
+        ),
+    );
+    composer.staging().take_all();
+    composer.refresh();
+    fake.set_down(false);
 }
 
 /// Activates a `win.*` action on the main window, as a menu item would.

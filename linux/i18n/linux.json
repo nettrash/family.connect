@@ -9,6 +9,36 @@
     "into linux/data/i18n/*.json; its --check is the CI string gate."
   ],
   "strings": {
+    "Copy Image": {
+      "de": "Bild kopieren",
+      "es": "Copiar imagen",
+      "fr": "Copier l’image",
+      "ja": "画像をコピー",
+      "ru": "Копировать изображение",
+      "sr": "Копирај слику",
+      "sr-Latn": "Kopiraj sliku",
+      "zh-Hans": "复制图片"
+    },
+    "Loading full image…": {
+      "de": "Bild in voller Auflösung wird geladen …",
+      "es": "Cargando imagen en tamaño completo…",
+      "fr": "Chargement de l’image en taille réelle…",
+      "ja": "フルサイズの画像を読み込み中…",
+      "ru": "Загрузка полноразмерного изображения…",
+      "sr": "Учитавање слике у пуној величини…",
+      "sr-Latn": "Učitavanje slike u punoj veličini…",
+      "zh-Hans": "正在加载完整图片…"
+    },
+    "Full image unavailable": {
+      "de": "Bild in voller Auflösung nicht verfügbar",
+      "es": "La imagen en tamaño completo no está disponible",
+      "fr": "Image en taille réelle indisponible",
+      "ja": "フルサイズの画像は利用できません",
+      "ru": "Полноразмерное изображение недоступно",
+      "sr": "Слика у пуној величини није доступна",
+      "sr-Latn": "Slika u punoj veličini nije dostupna",
+      "zh-Hans": "完整图片不可用"
+    },
     "No emoji found": {
       "de": "Keine Emoji gefunden",
       "es": "No se encontraron emojis",
