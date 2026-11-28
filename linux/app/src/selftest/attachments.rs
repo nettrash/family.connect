@@ -12,6 +12,8 @@
 //! from a second loopback server of its own (OpenStreetMap is never asked); link previews from
 //! memory through fc-logic's real `LinkPreviews` (its https rule cannot be met on loopback).
 
+mod copy_image;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -382,6 +384,7 @@ pub async fn run(h: &Harness) {
         format!("closed {closed} (real keys: {keyed})"),
     );
     drop(viewer);
+    copy_image::run(h, FAMILY_CHAT, eli, &blobs).await;
 
     // ---- stickers ------------------------------------------------------------------------------
     let mut sticker = AttachmentDto::new(7101, "photo");

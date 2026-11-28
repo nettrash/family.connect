@@ -193,7 +193,7 @@ impl Viewer {
         }
 
         // Keys: ← → page, Escape leaves full screen or closes, Space plays, F11 full screen,
-        // Ctrl+plus/minus/0 zoom. Captured, so a focused button does not take Space or an arrow.
+        // Ctrl+C copies a photo and Ctrl+plus/minus/0 zoom. Capture before a focused button.
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         {
@@ -293,6 +293,13 @@ impl Viewer {
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl {
             match key {
+                gdk::Key::c | gdk::Key::C
+                    if state & gtk::accelerator_get_default_mod_mask()
+                        == gdk::ModifierType::CONTROL_MASK
+                        && !self.album.borrow().is_video() =>
+                {
+                    self.copy();
+                }
                 gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
                     self.zoom_with(MediaAlbum::zoom_in)
                 }
@@ -364,6 +371,12 @@ impl Viewer {
         w.next.set_sensitive(album.has_next());
         let photo = !album.is_video();
         w.copy.set_visible(photo);
+        w.copy.set_sensitive(false);
+        w.title.set_subtitle(if photo {
+            say.get("Loading full image…")
+        } else {
+            ""
+        });
         w.zoom_in.set_visible(photo);
         w.zoom_out.set_visible(photo);
         self.apply_zoom();
@@ -403,17 +416,24 @@ impl Viewer {
                 Some(texture) => {
                     viewer.window.photo.set_paintable(Some(&texture));
                     *viewer.texture.borrow_mut() = Some(texture);
+                    viewer.window.copy.set_sensitive(true);
+                    viewer.window.title.set_subtitle("");
                     viewer.window.stack.set_visible_child_name(PAGE_PHOTO);
                 }
-                None if viewer.window.photo.paintable().is_none() => {
+                None => {
                     let shell = Shell::get();
                     viewer
                         .window
-                        .failed
-                        .set_title(shell.say.get("The file could not be downloaded."));
-                    viewer.window.stack.set_visible_child_name(PAGE_FAILED);
+                        .title
+                        .set_subtitle(shell.say.get("Full image unavailable"));
+                    if viewer.window.photo.paintable().is_none() {
+                        viewer
+                            .window
+                            .failed
+                            .set_title(shell.say.get("The file could not be downloaded."));
+                        viewer.window.stack.set_visible_child_name(PAGE_FAILED);
+                    }
                 }
-                None => {}
             }
         });
     }
@@ -655,10 +675,21 @@ impl Viewer {
         });
     }
 
-    /// Copy: the whole photo onto the clipboard.
+    /// Publish only the current page's held texture as PNG. Keeping one PNG representation avoids
+    /// a lower-priority format such as WebP winning Family Connect's general paste preference.
     fn copy(self: &Rc<Self>) {
         if let Some(texture) = self.texture.borrow().as_ref() {
-            self.window.window.clipboard().set_texture(texture);
+            let png = texture.save_to_png_bytes();
+            let provider = gdk::ContentProvider::for_bytes("image/png", &png);
+            if self
+                .window
+                .window
+                .clipboard()
+                .set_content(Some(&provider))
+                .is_err()
+            {
+                crate::fc_warn!("viewer: could not set the image clipboard");
+            }
         }
     }
 
