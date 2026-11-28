@@ -48,6 +48,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -89,6 +90,7 @@ class AttachmentRepository @Inject constructor(
     /** Whole-file downloads in flight, keyed by attachment id. */
     private val fileFetches = HashMap<Long, Deferred<File?>>()
     private val guard = Mutex()
+    private val photoTransferGuard = Mutex()
 
     /** One poster-repair pass at a time; a flapping network must not
      *  start a second over the same markers. */
@@ -137,6 +139,46 @@ class AttachmentRepository @Inject constructor(
      *  call from composition; [load] is what fetches. */
     fun cached(attachmentId: Long, preview: Boolean): ImageBitmap? =
         hot[Key(attachmentId, preview)]
+
+    /** A viewer hint only. The file can still disappear before the user taps. */
+    suspend fun hasCachedFullPhoto(attachment: AttachmentDto): Boolean =
+        withContext(Dispatchers.IO) { cachedFullPhoto(attachment) != null }
+
+    /**
+     * Prepare and deliver a photo from disk only. No part of this path uses
+     * load(), originalFile(), or the downloading fileFor(AttachmentDto).
+     * The provider subsequently opens the completed local snapshot.
+     */
+    suspend fun transferCachedPhoto(attachment: AttachmentDto, deliver: (File) -> Boolean): Boolean =
+        photoTransferGuard.withLock {
+            val startedAt = guard.withLock { generation }
+            var staged: File? = null
+            var delivered = false
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    val source = cachedFullPhoto(attachment) ?: return@withContext null
+                    PhotoTransfer.stage(source, attachment.size, File(directory, PhotoTransfer.DIRECTORY))
+                        .also { staged = it }
+                } ?: return@withLock false
+                delivered = guard.withLock {
+                    startedAt == generation && snapshot.isFile && deliver(snapshot)
+                }
+                delivered
+            } finally {
+                staged?.let { snapshot ->
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        if (delivered) PhotoTransfer.pruneAfterTransfer(snapshot) else snapshot.delete()
+                    }
+                }
+            }
+        }
+
+    private fun cachedFullPhoto(attachment: AttachmentDto): File? {
+        if (!PhotoTransfer.accepts(attachment)) return null
+        return fileFor(Key(attachment.id, preview = false))
+            .takeIf { PhotoTransfer.isComplete(it, attachment.size) }
+            ?: namedFileFor(attachment).takeIf { PhotoTransfer.isComplete(it, attachment.size) }
+    }
 
     /**
      * Make sure the image is in memory: from the hot map, from the disk
@@ -525,16 +567,18 @@ class AttachmentRepository @Inject constructor(
     }
 
     private suspend fun downloadFile(attachment: AttachmentDto): File? = withContext(Dispatchers.IO) {
-        // Shadowing `directory` here would read as recursion; the folder
-        // is per-attachment so two `Invoice.pdf`s stay apart.
-        val folder = File(File(directory, FILES_DIR), attachment.id.toString())
-        val destination = File(folder, safeFileName(attachment.name ?: attachment.fallbackFileName))
+        val destination = namedFileFor(attachment)
         if (destination.isFile) return@withContext destination
-        folder.mkdirs()
+        destination.parentFile?.mkdirs()
         when (attachmentApi.download(attachment.id, preview = false, destination = destination)) {
             is ApiResult.Ok -> destination
             else -> null
         }
+    }
+
+    private fun namedFileFor(attachment: AttachmentDto): File {
+        val folder = File(File(directory, FILES_DIR), attachment.id.toString())
+        return File(folder, safeFileName(attachment.name ?: attachment.fallbackFileName))
     }
 
     /**

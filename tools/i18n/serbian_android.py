@@ -307,4 +307,8 @@ ANDROID_ONLY = {
 # "Previous" and "Next" ARE found by the English match and are not repeated.
 "s_n_of_m": "%1$d од %2$d",
 # --- end photo albums ---
+
+# Received photos in the Android attachment viewer.
+"s_copy_image": "Копирај слику",
+"s_full_image_unavailable": "Слика у пуној величини није доступна на овом уређају",
 }

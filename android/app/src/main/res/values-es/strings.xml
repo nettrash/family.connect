@@ -852,4 +852,6 @@
     <string name="s_allowance_renews_on">Se renueva el %1$s</string>
     <string name="e_storage_allowance_used">Esta familia ha agotado su almacenamiento.</string>
     <string name="e_ai_allowance_used">Esta familia ha agotado el límite del asistente de este mes. Se renueva el %1$s.</string>
+    <string name="s_copy_image">Copiar imagen</string>
+    <string name="s_full_image_unavailable">La imagen completa no está disponible en este dispositivo</string>
 </resources>

@@ -2,15 +2,16 @@
 <!--
   What FileProvider may hand out.
 
-  Deliberately ONE directory, not the whole cache: the only files this app
-  shares are the attachments it downloaded for the user to open. Anything
-  broader would let a malformed Uri reach the message database or the
-  session cache that sit beside it.
+  Only purpose-built directories, never the whole cache or the raw
+  attachment cache that sits next to them.
 -->
 <paths>
     <cache-path
         name="attachment_files"
         path="attachments/files/" />
+    <cache-path
+        name="photo_transfers"
+        path="attachments/photo-transfers/" />
     <!--
       Where the camera writes. Its own directory, not shared with the one
       above: the capture intent needs WRITE access to the Uri it is handed,

@@ -852,4 +852,6 @@
     <string name="s_allowance_renews_on">Renouvellement le %1$s</string>
     <string name="e_storage_allowance_used">Cette famille a épuisé son espace de stockage.</string>
     <string name="e_ai_allowance_used">Cette famille a épuisé le forfait de l’assistant pour ce mois. Il se renouvelle le %1$s.</string>
+    <string name="s_copy_image">Copier l’image</string>
+    <string name="s_full_image_unavailable">L’image complète est indisponible sur cet appareil</string>
 </resources>

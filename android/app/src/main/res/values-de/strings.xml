@@ -822,4 +822,6 @@
     <string name="s_allowance_renews_on">Erneuert sich am %1$s</string>
     <string name="e_storage_allowance_used">Diese Familie hat ihr Speicherkontingent aufgebraucht.</string>
     <string name="e_ai_allowance_used">Diese Familie hat ihr Assistenten-Kontingent für diesen Monat aufgebraucht. Es erneuert sich am %1$s.</string>
+    <string name="s_copy_image">Bild kopieren</string>
+    <string name="s_full_image_unavailable">Das vollständige Bild ist auf diesem Gerät nicht verfügbar</string>
 </resources>

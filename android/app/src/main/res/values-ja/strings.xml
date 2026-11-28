@@ -792,4 +792,6 @@
     <string name="s_allowance_renews_on">%1$s にリセット</string>
     <string name="e_storage_allowance_used">このファミリーはストレージの上限に達しました。</string>
     <string name="e_ai_allowance_used">このファミリーは今月のアシスタントの上限に達しました。%1$s にリセットされます。</string>
+    <string name="s_copy_image">画像をコピー</string>
+    <string name="s_full_image_unavailable">この端末にフルサイズの画像がありません</string>
 </resources>
