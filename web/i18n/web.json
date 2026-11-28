@@ -550,6 +550,26 @@
       "sr-Latn": "Povezano",
       "zh-Hans": "已连接"
     },
+    "Copy Image": {
+      "de": "Bild kopieren",
+      "es": "Copiar imagen",
+      "fr": "Copier l’image",
+      "ja": "画像をコピー",
+      "ru": "Копировать изображение",
+      "sr": "Копирај слику",
+      "sr-Latn": "Kopiraj sliku",
+      "zh-Hans": "复制图片"
+    },
+    "Could not copy image": {
+      "de": "Bild konnte nicht kopiert werden",
+      "es": "No se pudo copiar la imagen",
+      "fr": "Impossible de copier l’image",
+      "ja": "画像をコピーできませんでした",
+      "ru": "Не удалось скопировать изображение",
+      "sr": "Копирање слике није успело",
+      "sr-Latn": "Kopiranje slike nije uspelo",
+      "zh-Hans": "无法复制图片"
+    },
     "Couldn't move the note.": {
       "de": "Die Notiz konnte nicht verschoben werden.",
       "es": "No se pudo mover la nota.",
@@ -693,6 +713,16 @@
       "sr-Latn": "Traži se tvoja lokacija…",
       "zh-Hans": "正在获取你的位置…"
     },
+    "Full image unavailable": {
+      "de": "Bild in voller Größe nicht verfügbar",
+      "es": "Imagen completa no disponible",
+      "fr": "Image en taille réelle indisponible",
+      "ja": "フルサイズの画像を利用できません",
+      "ru": "Полноразмерное изображение недоступно",
+      "sr": "Слика у пуној величини није доступна",
+      "sr-Latn": "Slika u punoj veličini nije dostupna",
+      "zh-Hans": "原尺寸图片不可用"
+    },
     "Give at least two options.": {
       "de": "Gib mindestens zwei Antworten an.",
       "es": "Da al menos dos respuestas.",
@@ -702,6 +732,16 @@
       "sr": "Унеси најмање два одговора.",
       "sr-Latn": "Unesi najmanje dva odgovora.",
       "zh-Hans": "至少提供两个选项。"
+    },
+    "Image copied": {
+      "de": "Bild kopiert",
+      "es": "Imagen copiada",
+      "fr": "Image copiée",
+      "ja": "画像をコピーしました",
+      "ru": "Изображение скопировано",
+      "sr": "Слика је копирана",
+      "sr-Latn": "Slika je kopirana",
+      "zh-Hans": "图片已复制"
     },
     "Jump to the newest message": {
       "de": "Zur neuesten Nachricht springen",

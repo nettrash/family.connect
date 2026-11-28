@@ -327,8 +327,14 @@ impl MediaLoader {
     /// a sticker is SENT from: the pack's own bytes, as cached, uploaded
     /// again untouched (docs/protocol.md, "Sending one").
     pub fn held(&self, id: i64, variant: Variant) -> Option<Blob> {
-        if let Some(entry) = self.cache.borrow().entries.get(&(id, variant)) {
-            return Some(entry.blob.clone());
+        {
+            let cache = self.cache.borrow();
+            if cache.session != self.live.session() {
+                return None;
+            }
+            if let Some(entry) = cache.entries.get(&(id, variant)) {
+                return Some(entry.blob.clone());
+            }
         }
         self.live.read(|state| {
             state

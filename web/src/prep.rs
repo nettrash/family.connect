@@ -376,16 +376,22 @@ pub async fn first_frame_if_animated(picture: &Blob) -> Option<Blob> {
     }
     // The spec's own still: `createImageBitmap` of an animated picture is
     // its default image, or its first frame.
-    let bitmap = decode(picture).await?;
-    let (width, height) = (bitmap.width().max(1), bitmap.height().max(1));
+    full_png(picture).await
+}
+
+/// A PNG of the local image at its oriented dimensions, with alpha retained.
+pub async fn full_png(picture: &Blob) -> Option<Blob> {
     let document = web_sys::window()?.document()?;
     let canvas: HtmlCanvasElement = document.create_element("canvas").ok()?.dyn_into().ok()?;
-    canvas.set_width(width);
-    canvas.set_height(height);
-    let context: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
-    let drawn = context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0);
+    let bitmap = decode(picture).await?;
+    canvas.set_width(bitmap.width().max(1));
+    canvas.set_height(bitmap.height().max(1));
+    let drawn = (|| {
+        let context: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
+        context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).ok()
+    })();
     bitmap.close();
-    drawn.ok()?;
+    drawn?;
     to_blob(&canvas, "image/png", 1.0).await
 }
 

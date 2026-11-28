@@ -490,6 +490,7 @@ fn app() -> Html {
             <Viewer
                 items={viewing.items}
                 index={viewing.index}
+                copy_images={!state.board_open}
                 on_step={on_action.reform(Action::StepViewer)}
                 on_close={on_action.reform(|_: ()| Action::CloseViewer)}
             />

@@ -688,11 +688,17 @@ button.link, .link {
     color: #f2f2f6;
     outline: none;
 }
-.viewer-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.viewer-bar { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
 .viewer-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-position { font-size: 13px; opacity: .7; }
 .viewer .secondary { background: rgb(255 255 255 / 12%); color: #f2f2f6; }
 .viewer .link { color: #f2f2f6; font-size: 18px; }
+.viewer-copy-status {
+    position: absolute; inset-inline-end: 16px; top: 100%; max-width: calc(100% - 32px);
+    padding: 6px 10px; border-radius: 8px; background: #212128; font-size: 13px;
+    pointer-events: none;
+}
+.viewer-copy-status:empty { padding: 0; }
 .viewer-stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; }
 /* THE PICTURE FITS THE WINDOW, both ways.
  *

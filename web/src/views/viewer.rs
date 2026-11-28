@@ -9,11 +9,13 @@
 //! never the preview a bubble draws.
 
 use fc_text::i18n::{t, t2};
-use wasm_bindgen::JsCast;
-use web_sys::HtmlElement;
+use js_sys::{Array, Object, Promise, Reflect};
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
+use web_sys::{Blob, Clipboard, ClipboardItem, HtmlElement};
 use yew::prelude::*;
 
-use crate::media::{download, use_media, Variant};
+use crate::media::{download, use_media, MediaLoader, Variant};
 use crate::model::Attachment;
 use crate::views::animation::AnimationView;
 use crate::views::attachments::file_name;
@@ -37,6 +39,8 @@ pub struct ViewerProps {
     pub index: usize,
     pub on_step: Callback<usize>,
     pub on_close: Callback<()>,
+    #[prop_or_default]
+    pub copy_images: bool,
 }
 
 #[function_component(Viewer)]
@@ -85,7 +89,8 @@ pub fn viewer(props: &ViewerProps) -> Html {
                 if count > 1 {
                     <span class="viewer-position">{ t2("%lld of %lld", &(index + 1).to_string(), &count.to_string()) }</span>
                 }
-                <SaveButton attachment={item.clone()} />
+                <FileActions key={item.id} attachment={item.clone()}
+                    copy_image={props.copy_images && item.id > 0 && item.kind == "photo" && !item.sticker} />
                 <button class="link" onclick={close} aria-label={t("Close")}>{ "✕" }</button>
             </header>
             <div class="viewer-stage">
@@ -112,18 +117,142 @@ struct ItemProps {
     attachment: Attachment,
 }
 
-/// Save — the original's bytes, once this tab has them.
-#[function_component(SaveButton)]
-fn save_button(props: &ItemProps) -> Html {
-    let url = use_media(props.attachment.id, Variant::Original, true);
+#[derive(Properties, PartialEq)]
+struct FileActionsProps {
+    attachment: Attachment,
+    copy_image: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyImageState {
+    Idle,
+    Writing,
+    Copied,
+    Failed,
+}
+
+fn image_clipboard() -> Option<Clipboard> {
+    let window = web_sys::window()?;
+    if !window.is_secure_context()
+        || !Reflect::get(window.as_ref(), &"ClipboardItem".into())
+            .ok()?
+            .is_function()
+    {
+        return None;
+    }
+    let clipboard = Reflect::get(window.navigator().as_ref(), &"clipboard".into()).ok()?;
+    if !Reflect::get(&clipboard, &"write".into())
+        .ok()?
+        .is_function()
+    {
+        return None;
+    }
+    clipboard.dyn_into().ok()
+}
+
+fn write_image(clipboard: &Clipboard, original: Blob) -> Result<Promise, JsValue> {
+    // Start the clipboard write in the click handler. Safari can lose the
+    // gesture if we await decoding first. The promise owns the bytes even
+    // if the viewer closes or the cache revokes its URL.
+    let png = future_to_promise(async move {
+        crate::prep::full_png(&original)
+            .await
+            .map(JsValue::from)
+            .ok_or_else(|| JsValue::from_str("Could not encode PNG"))
+    });
+    let formats = Object::new();
+    Reflect::set(&formats, &"image/png".into(), &png)?;
+    let item = ClipboardItem::new_with_record_from_str_to_blob_promise(&formats)?;
+    Ok(clipboard.write(&Array::of1(&item)))
+}
+
+#[function_component(FileActions)]
+fn file_actions(props: &FileActionsProps) -> Html {
+    let id = props.attachment.id;
+    let url = use_media(id, Variant::Original, true);
+    let loaded = url.is_some();
     let name = file_name(&props.attachment);
-    let save = url
-        .clone()
-        .map(|url| Callback::from(move |_: MouseEvent| download(&url, &name)));
+    let save = url.map(|url| Callback::from(move |_: MouseEvent| download(&url, &name)));
     html! {
-        <button class="secondary" onclick={save.clone().unwrap_or_default()} disabled={save.is_none()}>
-            { t("Save…") }
-        </button>
+        <>
+            if props.copy_image {
+                <CopyImageButton {id} {loaded} />
+            }
+            <button class="secondary" onclick={save.clone().unwrap_or_default()} disabled={save.is_none()}>
+                { t("Save…") }
+            </button>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct CopyImageProps {
+    id: i64,
+    loaded: bool,
+}
+
+#[function_component(CopyImageButton)]
+fn copy_image_button(props: &CopyImageProps) -> Html {
+    // Own the feedback in a child with no media-loading hook. Updating this
+    // state must not restart Save or the viewer's normal load after eviction.
+    let id = props.id;
+    let loader = use_context::<MediaLoader>();
+    let state = use_state(|| CopyImageState::Idle);
+    let clipboard = image_clipboard();
+    let available = props.loaded
+        && loader
+            .as_ref()
+            .and_then(|media| media.held(id, Variant::Original))
+            .is_some_and(|blob| blob.size() > 0.0);
+    let writing = *state == CopyImageState::Writing;
+
+    let copy = clipboard.as_ref().map(|clipboard| {
+        let clipboard = clipboard.clone();
+        let state = state.clone();
+        Callback::from(move |_: MouseEvent| {
+            let Some(original) = loader
+                .as_ref()
+                .and_then(|media| media.held(id, Variant::Original))
+                .filter(|blob| blob.size() > 0.0)
+            else {
+                // An earlier render may still have an enabled button after eviction.
+                state.set(CopyImageState::Idle);
+                return;
+            };
+            let Ok(done) = write_image(&clipboard, original) else {
+                state.set(CopyImageState::Failed);
+                return;
+            };
+            state.set(CopyImageState::Writing);
+            let state = state.clone();
+            spawn_local(async move {
+                state.set(if JsFuture::from(done).await.is_ok() {
+                    CopyImageState::Copied
+                } else {
+                    CopyImageState::Failed
+                });
+            });
+        })
+    });
+    let status = match (*state, available) {
+        (CopyImageState::Writing, _) => "",
+        (_, false) => t("Full image unavailable"),
+        (CopyImageState::Copied, _) => t("Image copied"),
+        (CopyImageState::Failed, _) => t("Could not copy image"),
+        (CopyImageState::Idle, _) => "",
+    };
+
+    let Some(copy) = copy else {
+        return Html::default();
+    };
+    html! {
+        <>
+            <button class="secondary" onclick={copy} disabled={!available || writing}
+                aria-describedby="viewer-copy-status">
+                { t("Copy Image") }
+            </button>
+            <span id="viewer-copy-status" class="viewer-copy-status" role="status">{ status }</span>
+        </>
     }
 }
 
@@ -267,6 +396,280 @@ fn video_view(props: &ItemProps) -> Html {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gloo_timers::future::TimeoutFuture;
+    use wasm_bindgen::closure::Closure;
+    use web_sys::{BlobPropertyBag, CanvasRenderingContext2d, HtmlCanvasElement, ImageBitmap};
+
+    use crate::fake_server::{Answer, FakeServer};
+    use crate::live::{AppState, Live};
+
+    #[derive(Properties, PartialEq)]
+    struct TestViewerProps {
+        loader: MediaLoader,
+        items: Vec<Attachment>,
+    }
+
+    #[function_component(TestViewer)]
+    fn test_viewer(props: &TestViewerProps) -> Html {
+        let index = use_state(|| 0);
+        let on_step = {
+            let index = index.clone();
+            Callback::from(move |next| index.set(next))
+        };
+        html! {
+            <ContextProvider<MediaLoader> context={props.loader.clone()}>
+                <Viewer items={props.items.clone()} index={*index} {on_step}
+                    on_close={Callback::noop()} copy_images={true} />
+            </ContextProvider<MediaLoader>>
+        }
+    }
+
+    struct ClipboardWrite {
+        clipboard: Clipboard,
+        _write: Closure<dyn FnMut(Array) -> Promise>,
+        payloads: Rc<RefCell<Vec<Promise>>>,
+    }
+
+    impl ClipboardWrite {
+        fn record() -> Self {
+            let clipboard = image_clipboard().expect("test browser has an image clipboard");
+            let payloads = Rc::new(RefCell::new(Vec::new()));
+            let captured = payloads.clone();
+            let write = Closure::<dyn FnMut(Array) -> Promise>::new(move |items: Array| {
+                let item: ClipboardItem = items.get(0).dyn_into().unwrap();
+                let payload = item.get_type("image/png");
+                captured.borrow_mut().push(payload.clone());
+                payload
+            });
+            assert!(Reflect::set(clipboard.as_ref(), &"write".into(), write.as_ref()).unwrap());
+            Self {
+                clipboard,
+                _write: write,
+                payloads,
+            }
+        }
+    }
+
+    impl Drop for ClipboardWrite {
+        fn drop(&mut self) {
+            let _ =
+                Reflect::delete_property::<Object>(self.clipboard.unchecked_ref(), &"write".into());
+        }
+    }
+
+    fn mount_viewer(
+        photos: &[(i64, bool)],
+        loader: &MediaLoader,
+    ) -> (HtmlElement, yew::AppHandle<TestViewer>) {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
+        document.body().unwrap().append_child(&root).unwrap();
+        let items = photos
+            .iter()
+            .map(|&(id, has_preview)| Attachment {
+                id,
+                has_preview,
+                kind: "photo".into(),
+                ..Default::default()
+            })
+            .collect();
+        let viewer = yew::Renderer::<TestViewer>::with_root_and_props(
+            root.clone().into(),
+            TestViewerProps {
+                loader: loader.clone(),
+                items,
+            },
+        )
+        .render();
+        (root, viewer)
+    }
+
+    fn loader() -> MediaLoader {
+        MediaLoader::new(Live::new(
+            AppState {
+                token: Some("test".into()),
+                ..Default::default()
+            },
+            Rc::new(|| {}),
+        ))
+    }
+
+    fn png(width: u32, height: u32) -> Blob {
+        let window = web_sys::window().unwrap();
+        let canvas: HtmlCanvasElement = window
+            .document()
+            .unwrap()
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(width);
+        canvas.set_height(height);
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        context.set_fill_style_str("#c32756");
+        context.fill_rect(
+            1.0,
+            1.0,
+            f64::from(width.saturating_sub(1)),
+            f64::from(height.saturating_sub(1)),
+        );
+        let url = canvas.to_data_url_with_type("image/png").unwrap();
+        let base64 = url.split_once(',').unwrap().1;
+        let bytes: Vec<u8> = window
+            .atob(base64)
+            .unwrap()
+            .chars()
+            .map(|byte| byte as u8)
+            .collect();
+        let parts = Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
+        let options = BlobPropertyBag::new();
+        options.set_type("image/png");
+        Blob::new_with_u8_array_sequence_and_options(&parts, &options).unwrap()
+    }
+
+    fn copy_button(root: &HtmlElement) -> HtmlElement {
+        root.query_selector("button[aria-describedby=viewer-copy-status]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_preview_cannot_write_to_the_clipboard() {
+        let server = FakeServer::answering(|_| Answer::Hang);
+        let clipboard = ClipboardWrite::record();
+        let loader = loader();
+        loader.seed(9711, Variant::Preview, png(2, 1));
+        let (root, viewer) = mount_viewer(&[(9711, true)], &loader);
+        TimeoutFuture::new(60).await;
+
+        let button = copy_button(&root);
+        assert!(button.has_attribute("disabled"));
+        assert!(root
+            .text_content()
+            .unwrap()
+            .contains(t("Full image unavailable")));
+        button.click();
+        TimeoutFuture::new(50).await;
+        assert!(clipboard.payloads.borrow().is_empty());
+        assert_eq!(
+            server.lines(&["/attachments/9711"]),
+            ["GET /attachments/9711"]
+        );
+        viewer.destroy();
+        root.remove();
+    }
+
+    #[wasm_bindgen_test]
+    async fn an_evicted_original_cannot_write_or_restart_the_download() {
+        let server = FakeServer::answering(|_| Answer::Hang);
+        let clipboard = ClipboardWrite::record();
+        let loader = loader();
+        loader.seed(9712, Variant::Original, png(4, 3));
+        let (root, viewer) = mount_viewer(&[(9712, false)], &loader);
+        TimeoutFuture::new(60).await;
+
+        let button = copy_button(&root);
+        assert!(!button.has_attribute("disabled"));
+        loader.clear();
+        button.click();
+        TimeoutFuture::new(60).await;
+        assert!(copy_button(&root).has_attribute("disabled"));
+        assert!(root
+            .text_content()
+            .unwrap()
+            .contains(t("Full image unavailable")));
+        assert!(clipboard.payloads.borrow().is_empty());
+        assert!(server.lines(&["/attachments/9712"]).is_empty());
+        viewer.destroy();
+        root.remove();
+    }
+
+    #[wasm_bindgen_test]
+    async fn copy_captures_the_current_album_photo_until_the_payload_is_read() {
+        let server = FakeServer::answering(|_| Answer::Hang);
+        let clipboard = ClipboardWrite::record();
+        let loader = loader();
+        loader.seed(9713, Variant::Original, png(4, 3));
+        loader.seed(9714, Variant::Original, png(9, 5));
+        let (root, viewer) = mount_viewer(&[(9713, false), (9714, false)], &loader);
+        TimeoutFuture::new(60).await;
+        root.query_selector(".viewer-arrow.is-next")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        TimeoutFuture::new(60).await;
+
+        let button = copy_button(&root);
+        assert!(!button.has_attribute("disabled"));
+        button.click();
+        assert_eq!(
+            clipboard.payloads.borrow().len(),
+            1,
+            "write starts in the click"
+        );
+        let payload = clipboard.payloads.borrow()[0].clone();
+        viewer.destroy();
+        root.remove();
+        loader.clear();
+
+        let blob: Blob = JsFuture::from(payload).await.unwrap().dyn_into().unwrap();
+        assert_eq!(blob.type_(), "image/png");
+        let bitmap: ImageBitmap = JsFuture::from(
+            web_sys::window()
+                .unwrap()
+                .create_image_bitmap_with_blob(&blob)
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+        assert_eq!((bitmap.width(), bitmap.height()), (9, 5));
+        let canvas: HtmlCanvasElement = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        canvas.set_width(bitmap.width());
+        canvas.set_height(bitmap.height());
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        context
+            .draw_image_with_image_bitmap(&bitmap, 0.0, 0.0)
+            .unwrap();
+        assert_eq!(
+            context.get_image_data(0.0, 0.0, 1.0, 1.0).unwrap().data().0[3],
+            0
+        );
+        assert_eq!(
+            context.get_image_data(1.0, 1.0, 1.0, 1.0).unwrap().data().0[3],
+            255
+        );
+        bitmap.close();
+        assert!(server
+            .lines(&["/attachments/9713", "/attachments/9714"])
+            .is_empty());
+    }
 
     #[wasm_bindgen_test]
     fn zoom_goes_from_one_to_six_and_no_further() {
