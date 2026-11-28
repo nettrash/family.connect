@@ -199,6 +199,7 @@ public sealed partial class ChatsView : UserControl
     /// <summary>The album the viewer is showing, and a count that makes a load for an earlier page land nowhere.</summary>
     private MediaAlbum? viewing;
     private int viewerShown;
+    private bool copyingViewerPhoto;
     private long lastHeart;
 
     /// <summary>The viewer's video, muted while something records and given back as it was (S1.7).</summary>
@@ -524,6 +525,8 @@ public sealed partial class ChatsView : UserControl
         ViewerShare.Content = say.Get("Share…");
         ToolTipService.SetToolTip(ViewerShare, say.Get("Share"));
         ViewerShare.Click += (_, _) => _ = ShareViewedAsync();
+        ViewerCopyImage.Content = say.Get("Copy Image");
+        ViewerCopyImage.Click += (_, _) => _ = CopyViewedPhotoAsync();
         foreach (var (button, name) in new (Button, string)[]
         {
             (ViewerClose, say.Get("Close")),
@@ -3452,6 +3455,17 @@ public sealed partial class ChatsView : UserControl
         {
             return;
         }
+        if (ViewerCopyImage.Visibility == Visibility.Visible && e.Key == Windows.System.VirtualKey.C
+            && !e.KeyStatus.IsMenuKeyDown && IsHeld(Windows.System.VirtualKey.Control)
+            && !IsHeld(Windows.System.VirtualKey.Menu) && !IsHeld(Windows.System.VirtualKey.Shift))
+        {
+            e.Handled = true;
+            if (!e.KeyStatus.WasKeyDown)
+            {
+                _ = CopyViewedPhotoAsync();
+            }
+            return;
+        }
         switch (album.Key(e.Key.ToString()))
         {
             case ViewerKey.Close:
@@ -3478,6 +3492,10 @@ public sealed partial class ChatsView : UserControl
         }
         var say = services.Say;
         var token = ++viewerShown;
+        copyingViewerPhoto = false;
+        ViewerCopyImage.IsEnabled = false;
+        ViewerCopyImage.Visibility = viewerDrawing is null && album.PhotoForCopy is not null
+            ? Visibility.Visible : Visibility.Collapsed;
         var paged = album.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
         ViewerTitle.Text = album.Title(say);
         ViewerPosition.Text = album.Position(say) ?? string.Empty;
@@ -3588,6 +3606,18 @@ public sealed partial class ChatsView : UserControl
             }
             ViewerImage.Source = picture;
             ViewerLoading.IsActive = false;
+            if (ViewerCopyImage.Visibility == Visibility.Visible)
+            {
+                if (AnimationPrep.Animated(bytes) is null)
+                {
+                    ViewerCopyImage.IsEnabled = true;
+                }
+                else
+                {
+                    ViewerCopyImage.Visibility = Visibility.Collapsed;
+                }
+                ViewerNotice.Visibility = Visibility.Collapsed;
+            }
             FitViewerImage();
         }
         catch (Exception e)
@@ -3744,6 +3774,10 @@ public sealed partial class ChatsView : UserControl
             ViewerRoundBar.Visibility = Visibility.Collapsed;
             return;
         }
+        if (ViewerCopyImage.Visibility == Visibility.Visible)
+        {
+            ViewerNotice.Visibility = Visibility.Collapsed;
+        }
         ViewerProblem.Text = services.Say.Get("The file could not be downloaded.");
         ViewerProblem.Visibility = Visibility.Visible;
     }
@@ -3830,6 +3864,71 @@ public sealed partial class ChatsView : UserControl
         {
             ViewerNotice.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private async Task CopyViewedPhotoAsync()
+    {
+        if (viewerDrawing is not null || viewing?.PhotoForCopy is not { } photo || copyingViewerPhoto)
+        {
+            return;
+        }
+        var say = services.Say;
+        if (!ViewerCopyImage.IsEnabled)
+        {
+            ShowViewerCopyNotice(say.Get("The full image is unavailable."));
+            return;
+        }
+
+        var token = viewerShown;
+        copyingViewerPhoto = true;
+        try
+        {
+            // The viewer loads independently. A page that was ready can lose its local file before the click.
+            var bytes = await Task.Run(() => connection.Attachments.ReadOriginal(photo));
+            if (token != viewerShown)
+            {
+                return;
+            }
+            using var image = bytes is { Length: > 0 } ? await ImageClipboard.PrepareAsync(bytes) : null;
+            if (token != viewerShown)
+            {
+                return;
+            }
+            if (image is null)
+            {
+                if (ViewerCopyImage.FocusState != FocusState.Unfocused)
+                {
+                    ViewerClose.Focus(FocusState.Programmatic);
+                }
+                ViewerCopyImage.IsEnabled = false;
+                ShowViewerCopyNotice(say.Get("The full image is unavailable."));
+                return;
+            }
+            ShowViewerCopyNotice(ImageClipboard.Publish(image) ? say.Get("Image copied.") : say.Get("Couldn't copy the image."));
+        }
+        catch (Exception e)
+        {
+            Diagnostics.Write($"copying a viewer photo: {e.GetType().Name}");
+            if (token == viewerShown)
+            {
+                ShowViewerCopyNotice(say.Get("Couldn't copy the image."));
+            }
+        }
+        finally
+        {
+            if (token == viewerShown)
+            {
+                copyingViewerPhoto = false;
+            }
+        }
+    }
+
+    private void ShowViewerCopyNotice(string message)
+    {
+        ViewerProblem.Visibility = Visibility.Collapsed;
+        ViewerNotice.Text = message;
+        ViewerNotice.Visibility = Visibility.Visible;
+        Announce(ViewerNotice);
     }
 
     /// <summary>Share — Windows' own share window, as the Mac's viewer offers its sharing menu — with the original's bytes.</summary>

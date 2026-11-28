@@ -436,11 +436,11 @@
                     <TextBlock x:Name="ViewerPosition" Foreground="#B3FFFFFF" Style="{StaticResource CaptionTextBlockStyle}" />
                 </StackPanel>
                 <TextBlock x:Name="ViewerProblem" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#FFFFA8A8" Visibility="Collapsed" />
-                <!-- What an "Add to family stickers" came to, when it was not a problem. -->
-                <TextBlock x:Name="ViewerNotice" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#E6FFFFFF" Visibility="Collapsed" />
+                <TextBlock x:Name="ViewerNotice" Grid.Column="1" VerticalAlignment="Center" MaxWidth="320" TextWrapping="Wrap" Foreground="#E6FFFFFF" AutomationProperties.LiveSetting="Polite" Visibility="Collapsed" />
                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
                     <!-- On a sticker the family's pack does not hold. -->
                     <Button x:Name="ViewerAddSticker" Visibility="Collapsed" />
+                    <Button x:Name="ViewerCopyImage" Visibility="Collapsed" IsEnabled="False" />
                     <Button x:Name="ViewerShare" />
                     <Button x:Name="ViewerSave" />
                 </StackPanel>

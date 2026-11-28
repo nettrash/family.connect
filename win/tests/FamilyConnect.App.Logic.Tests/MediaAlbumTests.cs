@@ -96,6 +96,24 @@ public sealed class MediaAlbumTests
     }
 
     [Fact]
+    public void CopyTargetsOnlyTheCurrentPhotoAndSkipsVideoAndStickers()
+    {
+        var photo = new AttachmentDto(1, "photo");
+        var animation = new AttachmentDto(2, "video", Animation: true);
+        var sticker = photo with { Id = 3, Sticker = true };
+        var other = photo with { Id = 4 };
+        var album = new MediaAlbum([photo, animation, sticker, other], 0);
+
+        Assert.Equal(photo, album.PhotoForCopy);
+        Assert.True(album.Step(1));
+        Assert.Null(album.PhotoForCopy);
+        Assert.True(album.Step(1));
+        Assert.Null(album.PhotoForCopy);
+        Assert.True(album.Step(1));
+        Assert.Equal(other, album.PhotoForCopy);
+    }
+
+    [Fact]
     public void TheWordsOverThePicture()
     {
         var album = new MediaAlbum(Three, 0);

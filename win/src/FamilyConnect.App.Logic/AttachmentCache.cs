@@ -39,6 +39,9 @@ public sealed class AttachmentCache(ApiClient api, IBlobStore blobs)
     public static string KeyFor(long attachmentId, bool preview) =>
         preview ? $"{attachmentId}.preview" : $"{attachmentId}";
 
+    /// <summary>Read the full stored attachment locally. A miss never fetches a preview or contacts the server.</summary>
+    public byte[]? ReadOriginal(AttachmentDto attachment) => blobs.Read(KeyFor(attachment.Id, preview: false));
+
     /// <summary>
     /// The bytes for this attachment, from the cache when they are held and from the server
     /// otherwise.
