@@ -885,4 +885,6 @@
     <string name="s_allowance_renews_on">Renews on %1$s</string>
     <string name="e_storage_allowance_used">This family has used its storage allowance.</string>
     <string name="e_ai_allowance_used">This family has used this month’s assistant allowance. It renews on %1$s.</string>
+    <string name="s_copy_image">Copy image</string>
+    <string name="s_full_image_unavailable">Full image unavailable on this device</string>
 </resources>

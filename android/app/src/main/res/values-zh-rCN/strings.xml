@@ -792,4 +792,6 @@
     <string name="s_allowance_renews_on">将于 %1$s 重置</string>
     <string name="e_storage_allowance_used">此家庭的存储额度已用完。</string>
     <string name="e_ai_allowance_used">此家庭本月的助手额度已用完。将于 %1$s 重置。</string>
+    <string name="s_copy_image">复制图片</string>
+    <string name="s_full_image_unavailable">此设备上没有完整图片</string>
 </resources>

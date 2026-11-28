@@ -882,4 +882,6 @@
     <string name="s_allowance_renews_on">Обновится %1$s</string>
     <string name="e_storage_allowance_used">Эта семья исчерпала лимит хранилища.</string>
     <string name="e_ai_allowance_used">Эта семья исчерпала лимит ассистента на этот месяц. Он обновится %1$s.</string>
+    <string name="s_copy_image">Скопировать изображение</string>
+    <string name="s_full_image_unavailable">Полное изображение недоступно на этом устройстве</string>
 </resources>

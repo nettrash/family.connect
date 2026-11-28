@@ -28,7 +28,13 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.os.Build
+import android.os.PersistableBundle
 import android.widget.MediaController
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -40,6 +46,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,6 +58,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,6 +73,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,13 +87,18 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
+import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.repo.PhotoTransfer
 import me.nettrash.familyconnect.ui.components.AnimationPlayback
 import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.ui.components.LocalAttachments
@@ -118,6 +132,54 @@ fun AttachmentViewer(
     // and the page reports itself out again when it resets or leaves.
     var zoomedPage by remember { mutableStateOf<Int?>(null) }
     val current = items[pager.currentPage]
+    val attachments = LocalAttachments.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val photoLabel = stringResource(R.string.s_photo)
+    val photoAction = PhotoTransfer.accepts(current)
+    // Android 8 cannot reliably grant cross-app clipboard reads of a private URI.
+    val canCopy = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+    val selected = !pager.isScrollInProgress && pager.currentPage == pager.settledPage
+    val decoded = if (photoAction) attachments?.cached(current.id, preview = false) else null
+    val available = remember(current, attachments) { mutableStateOf(false) }
+    var transferring by remember { mutableStateOf(false) }
+    LaunchedEffect(current, attachments, decoded, selected) {
+        if (selected) available.value = attachments?.hasCachedFullPhoto(current) == true
+    }
+    val transferPhoto: () -> Unit = {
+        if (selected && available.value && !transferring && attachments != null) {
+            transferring = true
+            scope.launch {
+                try {
+                    val transferred = attachments.transferCachedPhoto(current) { file ->
+                        if (!canCopy) {
+                            shareWithSystem(context, file, PhotoTransfer.MIME, "")
+                        } else {
+                            runCatching {
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                val clip = ClipData.newUri(context.contentResolver, photoLabel, uri)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    clip.description.extras = PersistableBundle().apply {
+                                        putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                                    }
+                                }
+                                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+                                true
+                            }.getOrDefault(false)
+                        }
+                    }
+                    if (!transferred) {
+                        available.value = attachments.hasCachedFullPhoto(current)
+                        Toast.makeText(context, R.string.s_full_image_unavailable, Toast.LENGTH_SHORT).show()
+                    } else if (canCopy && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        Toast.makeText(context, R.string.s_copied, Toast.LENGTH_SHORT).show()
+                    }
+                } finally {
+                    transferring = false
+                }
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -171,21 +233,17 @@ fun AttachmentViewer(
             ) {
                 Icon(imageVector = Icons.Filled.Close, contentDescription = stringResource(R.string.s_close))
             }
-            if (items.size > 1) {
-                // "2 of 5", in the buttons' own capsule so the top edge
-                // reads as one row of chrome. Absent on a lone photo: a
-                // "1 of 1" would only say the viewer has nothing to page.
-                Text(
-                    text = stringResource(R.string.s_n_of_m, pager.currentPage + 1, items.size),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 12.dp + 8.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.45f))
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                )
+            Column(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (photoAction && selected && !available.value) {
+                    ViewerLabel(stringResource(R.string.s_full_image_unavailable))
+                }
+                if (items.size > 1) {
+                    ViewerLabel(stringResource(R.string.s_n_of_m, pager.currentPage + 1, items.size))
+                }
             }
             Row(
                 modifier = Modifier
@@ -193,6 +251,19 @@ fun AttachmentViewer(
                     .padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (photoAction && canCopy) {
+                    IconButton(
+                        onClick = transferPhoto,
+                        enabled = selected && available.value && !transferring,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.45f),
+                            contentColor = Color.White,
+                            disabledContentColor = Color.White.copy(alpha = 0.45f),
+                        ),
+                    ) {
+                        Icon(Icons.Outlined.ContentCopy, stringResource(R.string.s_copy_image))
+                    }
+                }
                 IconButton(
                     onClick = { onSave(current) },
                     colors = IconButtonDefaults.iconButtonColors(
@@ -206,10 +277,12 @@ fun AttachmentViewer(
                     )
                 }
                 IconButton(
-                    onClick = { onShare(current) },
+                    onClick = { if (photoAction && !canCopy) transferPhoto() else onShare(current) },
+                    enabled = !photoAction || canCopy || (selected && available.value && !transferring),
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = Color.Black.copy(alpha = 0.45f),
                         contentColor = Color.White,
+                        disabledContentColor = Color.White.copy(alpha = 0.45f),
                     ),
                 ) {
                     Icon(imageVector = Icons.Filled.Share, contentDescription = stringResource(R.string.s_share))
@@ -217,6 +290,20 @@ fun AttachmentViewer(
             }
         }
     }
+}
+
+@Composable
+private fun ViewerLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        textAlign = TextAlign.Center,
+        color = Color.White,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    )
 }
 
 /**

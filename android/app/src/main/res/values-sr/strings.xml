@@ -845,4 +845,6 @@
     <string name="s_allowance_renews_on">Обнавља се %1$s</string>
     <string name="e_storage_allowance_used">Ова породица је искористила своју квоту простора.</string>
     <string name="e_ai_allowance_used">Ова породица је искористила квоту асистента за овај месец. Обнавља се %1$s.</string>
+    <string name="s_copy_image">Копирај слику</string>
+    <string name="s_full_image_unavailable">Слика у пуној величини није доступна на овом уређају</string>
 </resources>
