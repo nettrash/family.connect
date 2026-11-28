@@ -16,6 +16,8 @@ const COLD_ID: i64 = 7401;
 const EVICTED_ID: i64 = 7403;
 const COLD_PATH: &str = "/api/v1/attachments/7401";
 const EVICTED_PATH: &str = "/api/v1/attachments/7403";
+const UNSUPPORTED_ID: i64 = 7404;
+const UNSUPPORTED_PATH: &str = "/api/v1/attachments/7404";
 const SENTINEL: &str = "Clipboard before Copy Image";
 
 pub(super) async fn run(
@@ -245,6 +247,52 @@ pub(super) async fn run(
             "copy_image_eviction_has_no_copy_fallback",
             false,
             "viewer missing",
+        );
+    }
+
+    let video = AttachmentDto {
+        mime: Some("video/mp4".into()),
+        ..AttachmentDto::new(UNSUPPORTED_ID, "video")
+    };
+    let mut unsupported = MessageDto::new(8045, chat, author, None, "", "2026-11-28T09:00:00Z");
+    unsupported.attachments = Some(vec![video]);
+    fake.set_down(true);
+    viewer::open_message(&unsupported, 0);
+    if let Some(viewer) = viewer::find((unsupported.id, 0)) {
+        let viewer_load = h
+            .wait_until(WAIT, || {
+                fake.requests()
+                    .iter()
+                    .any(|request| request == &format!("GET {UNSUPPORTED_PATH}"))
+            })
+            .await;
+        let copy_hidden = !viewer.window.copy.is_visible();
+        clipboard.set_text(SENTINEL);
+        let before = fake.requests().len();
+        let window: gtk::Window = viewer.window.window.clone().upcast();
+        let key_delivered = !h.input() || (h.focus(&window).await && h.key("ctrl+c").await);
+        let kept = h
+            .with_timeout(WAIT, clipboard.read_text_future())
+            .await
+            .is_some_and(|value| value.ok().flatten().as_deref() == Some(SENTINEL));
+        h.check(
+            "copy_image_unsupported_video_preserves_clipboard",
+            viewer_load
+                && copy_hidden
+                && key_delivered
+                && kept
+                && fake.requests().len() == before,
+            format!(
+                "viewer-load request observed {viewer_load}; Copy hidden {copy_hidden}; sentinel kept {kept}; extra requests {:?}",
+                &fake.requests()[before..]
+            ),
+        );
+        viewer.window.window.close();
+    } else {
+        h.check(
+            "copy_image_unsupported_video_preserves_clipboard",
+            false,
+            "video viewer missing",
         );
     }
     fake.set_down(false);
