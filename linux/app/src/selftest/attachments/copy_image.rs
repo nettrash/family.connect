@@ -2,6 +2,7 @@
 
 use adw::prelude::*;
 use fc_core::protocol::{AttachmentDto, MessageDto};
+use fc_core::text::string_catalog::StringCatalog;
 use fc_logic::attachment_cache::AttachmentCache;
 use gtk::gdk;
 

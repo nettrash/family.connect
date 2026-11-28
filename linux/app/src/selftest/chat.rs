@@ -1283,7 +1283,7 @@ async fn conversation(
         .find(|m| m.reply_count.unwrap_or(0) > 0)
         .map(|m| m.id);
     if let Some(root) = root {
-        let photo_reply = copy_image_reply(&shell, world, root);
+        let photo_reply = copy_image_reply(shell, world, root);
         act(main, "win.message-view-thread", Some(&root.to_variant()));
         let open = h
             .wait_until(SHORT, || main.window().visible_dialog().is_some())
@@ -1453,16 +1453,42 @@ async fn verify_thread_image_copy(
     viewer.window.window.close();
     drop(viewer);
     let composer = thread.composer();
+    let texture_offered = h
+        .wait_until(SHORT, || {
+            composer
+                .field()
+                .clipboard()
+                .formats()
+                .contains_type(gtk::gdk::Texture::static_type())
+        })
+        .await;
     composer.paste_attachment();
     let staged = h.wait_until(SHORT, || composer.staging().len() == 1).await;
-    let matches = composer.staging().items().first().is_some_and(|item| {
+    let items = composer.staging().items();
+    let item = items.first();
+    let actual = item.map(|item| {
+        (
+            item.kind.clone(),
+            item.mime.clone(),
+            item.width,
+            item.height,
+            item.bytes.len(),
+        )
+    });
+    let matches = item.is_some_and(|item| {
         item.kind == "photo" && (item.width, item.height) == (Some(28), Some(18))
     });
     h.check(
         "thread_image_copy_stages_offline",
-        drawable && opened && ready && staged && matches && fake.requests().len() == before,
+        drawable
+            && opened
+            && ready
+            && texture_offered
+            && staged
+            && matches
+            && fake.requests().len() == before,
         format!(
-            "reply {id}, staged 28 × 18 still {matches}, extra requests {:?}",
+            "reply {id}, ready {ready}, texture offered {texture_offered}, staged {staged}, actual {actual:?}, expected 28 × 18 photo {matches}, extra requests {:?}",
             &fake.requests()[before..]
         ),
     );

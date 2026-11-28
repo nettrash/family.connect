@@ -675,11 +675,21 @@ impl Viewer {
         });
     }
 
-    /// Publish only the current page's held texture. The display clipboard owns its own
-    /// reference, so encoding for another app can happen after the viewer closes.
+    /// Publish only the current page's held texture as PNG. Keeping one PNG representation avoids
+    /// a lower-priority format such as WebP winning Family Connect's general paste preference.
     fn copy(self: &Rc<Self>) {
         if let Some(texture) = self.texture.borrow().as_ref() {
-            self.window.window.clipboard().set_texture(texture);
+            let png = texture.save_to_png_bytes();
+            let provider = gdk::ContentProvider::for_bytes("image/png", &png);
+            if self
+                .window
+                .window
+                .clipboard()
+                .set_content(Some(&provider))
+                .is_err()
+            {
+                crate::fc_warn!("viewer: could not set the image clipboard");
+            }
         }
     }
 
