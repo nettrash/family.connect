@@ -61,6 +61,8 @@ public sealed class MediaAlbum
 
     public AttachmentDto Current => Items[Index];
 
+    public AttachmentDto? PhotoForCopy => Current is { Kind: "photo", Sticker: false } photo ? photo : null;
+
     public bool IsVideo => Current.Kind == "video";
 
     /// <summary>A video message, shown in its circle and called one (S5.1); everything else is the ordinary item it is.</summary>

@@ -13,8 +13,13 @@ public class AttachmentCacheTests
     private sealed class Blobs : IBlobStore
     {
         public Dictionary<string, byte[]> Held { get; } = [];
+        public List<string> Reads { get; } = [];
 
-        public byte[]? Read(string key) => Held.TryGetValue(key, out var bytes) ? bytes : null;
+        public byte[]? Read(string key)
+        {
+            Reads.Add(key);
+            return Held.TryGetValue(key, out var bytes) ? bytes : null;
+        }
 
         public void Write(string key, ReadOnlyMemory<byte> bytes) => Held[key] = bytes.ToArray();
     }
@@ -137,6 +142,46 @@ public class AttachmentCacheTests
         // And it asks again rather than drawing nothing for ever.
         await cache.BytesAsync(photo);
         Assert.Equal(2, handler.Asked.Count);
+    }
+
+    [Fact]
+    public async Task LocalReadsTrackTheSelectedAlbumPageWithoutAdditionalRequests()
+    {
+        var (cache, handler, blobs) = Build();
+        var first = Photo(hasPreview: true);
+        var second = first with { Id = 59 };
+        var album = new MediaAlbum([first, second], 0);
+        await cache.BytesAsync(first, preview: true);
+        await cache.BytesAsync(first);
+        cache.Remember(second, new byte[] { 4, 5, 6 });
+        blobs.Reads.Clear();
+
+        Assert.Equal("JPEG", Encoding.UTF8.GetString(cache.ReadOriginal(album.PhotoForCopy!)!));
+        Assert.True(album.Step(1));
+        Assert.Equal(new byte[] { 4, 5, 6 }, cache.ReadOriginal(album.PhotoForCopy!));
+
+        Assert.Equal(["34", "59"], blobs.Reads);
+        Assert.Equal(["/api/v1/attachments/34/preview", "/api/v1/attachments/34"], handler.Asked);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingOrEvictedOriginalNeverFallsBackToAPreviewOrDownloads(bool evicted)
+    {
+        var (cache, handler, blobs) = Build();
+        var photo = Photo(hasPreview: true);
+        if (evicted)
+        {
+            cache.Remember(photo, new byte[] { 1 });
+            Assert.True(blobs.Held.Remove("34"));
+        }
+        cache.RememberPreview(photo, new byte[] { 2 });
+
+        Assert.Null(cache.ReadOriginal(photo));
+
+        Assert.Equal("34", Assert.Single(blobs.Reads));
+        Assert.Empty(handler.Asked);
     }
 
     [Fact]
